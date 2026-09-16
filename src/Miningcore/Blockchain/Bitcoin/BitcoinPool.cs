@@ -65,7 +65,7 @@ public class BitcoinPool : PoolBase
     protected readonly record struct PreparedSubscription(string UserAgent, double? NicehashDifficulty);
 
     protected static string ReadSubscribeUserAgent(JsonRpcRequest request) =>
-        request.ParamsAs<string[]>().FirstOrDefault()?.Trim();
+        request.ParamsAs<string[]>()?.FirstOrDefault()?.Trim();
 
     protected async Task OnSubscribeCoreAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest,
         PreparedSubscription? preparedSubscription = null)
@@ -826,6 +826,7 @@ public class BitcoinPool : PoolBase
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
+        var responseSequence = connection.ResponseSequence;
 
         try
         {
@@ -887,9 +888,15 @@ public class BitcoinPool : PoolBase
 
         catch(StratumException ex)
         {
-            await connection.RespondErrorAsync(ex.Code, ex.Message, request.Id, false);
+            await OnRequestErrorAsync(connection, request, ex, connection.ResponseSequence != responseSequence);
         }
     }
+
+    // Derived protocols can fail closed after a response has started. Keep the
+    // canonical Bitcoin policy unchanged unless a derived pool opts in.
+    protected virtual Task OnRequestErrorAsync(StratumConnection connection, JsonRpcRequest request,
+        StratumException error, bool responseStarted) =>
+        connection.RespondErrorAsync(error.Code, error.Message, request.Id, false);
 
     protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken ct)
     {

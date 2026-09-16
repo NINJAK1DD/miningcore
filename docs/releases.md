@@ -85,8 +85,12 @@ Subscribe resolves NiceHash autodiff before acquiring the gate and committing su
 state; an authorize-before-subscribe client cannot hold up broadcasts during the API lookup.
 The parsed user agent and lookup result are carried together into the subscription commit.
 Each successful acquisition releases its exact semaphore, including protocol-error paths.
-Unavailable work remains a recoverable protocol error while the pool is healthy; if job
-creation observes a pool fault, the affected connection closes immediately.
+If work publication fails after subscribe, configure, suggest or static authorization has
+already been acknowledged, the connection closes without a second response for the request.
+Buffered requests cannot reopen it. Errors before acknowledgement remain recoverable;
+successful responses retain difficulty-before-notify ordering. Omitted/null subscription
+parameters work on canonical Bitcoin and BLAKE2b, and authorization preserves date-shaped
+scalar conversion under non-English cultures.
 BLAKE2b continues to reject canonical direct-coinbase SOLO options at startup.
 
 ## Unreleased: Bitcoin-family verified job gate

@@ -72,6 +72,13 @@ public class StratumConnection
     private readonly Pipe receivePipe;
     private readonly BufferBlock<object> sendQueue;
     private WorkerContextBase context;
+    private long responseSequence;
+
+    // Dispatch awaits requests serially. Comparing this sequence before/after a
+    // handler detects a response attempt without retaining miner-controlled IDs.
+    // Notifications do not advance it. Count before enqueue: a failed send must
+    // never make a subsequent error response look safe.
+    internal long ResponseSequence => Interlocked.Read(ref responseSequence);
     private readonly Subject<Unit> terminated = new();
     private bool expectingProxyHeader;
     private bool gpdrCompliantLogging;
@@ -317,6 +324,7 @@ public class StratumConnection
 
     public Task RespondAsync<T>(JsonRpcResponse<T> response)
     {
+        Interlocked.Increment(ref responseSequence);
         return SendAsync(response);
     }
 

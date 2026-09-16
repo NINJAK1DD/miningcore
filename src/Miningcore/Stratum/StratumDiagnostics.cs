@@ -15,7 +15,7 @@ internal static class StratumDiagnostics
         Receive, Buffer, Send, ProxyHeader, Request, ConnectionError,
         AcceptError, ListenError, TerminalCallback, UntrackedCompletion,
         Completion, TaskRemoval, Drain, CertificateLoad, ReceiveWait, BufferWait,
-        DifficultyBudgetDisconnect, DuplicateSubscription,
+        DifficultyBudgetDisconnect, DuplicateSubscription, AssignmentPublicationFailure,
     }
 
     internal static string Method(string method) => method switch

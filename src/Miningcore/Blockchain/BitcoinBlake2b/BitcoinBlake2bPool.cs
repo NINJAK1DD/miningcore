@@ -247,7 +247,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             disposables.Add(manager.Jobs.Subscribe(_ => { }, HandleBlake2bPipelineFailure));
     }
 
-    private void HandleBlake2bPipelineFailure(Exception ex)
+    internal void HandleBlake2bPipelineFailure(Exception ex)
     {
         lock(statusSync)
             FaultPool(ex);
@@ -388,6 +388,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             return;
         }
 
+        var responseSequence = connection.ResponseSequence;
         try
         {
             PreparedSubscription? subscription = null;
@@ -426,14 +427,28 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         }
         catch(StratumException ex)
         {
-            // A pool fault is terminal even if it races an admitted assignment.
-            // Other Stratum errors (including temporarily unavailable work) remain
-            // protocol responses, after releasing the gate, so clients can recover.
-            if(operations.IsClosed)
-                Disconnect(connection);
-            else
-                await connection.RespondErrorAsync(ex.Code, ex.Message, request.Value.Id, false);
+            await OnRequestErrorAsync(connection, request.Value, ex, connection.ResponseSequence != responseSequence);
         }
+    }
+
+    protected override Task OnRequestErrorAsync(StratumConnection connection, JsonRpcRequest request,
+        StratumException error, bool responseStarted)
+    {
+        if(responseStarted || operations.IsClosed)
+        {
+            // Inherited handlers may acknowledge before constructing work. Once
+            // that happens, a publication failure is terminal: never send a second
+            // response or retain a live, partially published assignment. Also latch
+            // admission closed so requests already buffered cannot resume this session.
+            var budget = difficultyBudgets.GetValue(connection, createDifficultyBudget);
+            if(budget.TryClose())
+                StratumDiagnostics.Write(logger, NLog.LogLevel.Info,
+                    StratumDiagnostics.Event.AssignmentPublicationFailure, connection.ConnectionId);
+            Disconnect(connection);
+            return Task.CompletedTask;
+        }
+
+        return base.OnRequestErrorAsync(connection, request, error, false);
     }
 
     private async Task CompleteAssignmentAsync(StratumConnection connection, double previousDifficulty, string method)
@@ -491,20 +506,21 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         finally { gate.Release(); }
     }
 
-    // Subscribe's inherited string-array conversion accepts empty arrays and
-    // scalar/null entries. Json.NET also materializes ISO date strings as Date
-    // tokens, which the inherited conversion accepts. Reject nested containers.
+    // An omitted/null parameter list is an empty subscription, just like [].
+    // Reject nested containers before the inherited string-array conversion.
     private static bool IsValidSubscribe(object parameters) =>
-        parameters is JArray values && values.All(x => IsStringConvertibleScalar(x) || x.Type == JTokenType.Date);
+        parameters is null or JValue { Type: JTokenType.Null } ||
+        parameters is JArray values && values.All(IsStringConvertibleScalar);
 
     private static bool IsValidAuthorization(object parameters) =>
         parameters is JArray { Count: >= 1 } values && IsStringConvertibleScalar(values[0]) &&
         (values.Count == 1 || IsStringConvertibleScalar(values[1]));
 
-    // Preserve historical scalar conversion, including Boolean -> "True"/"False";
-    // authorization still validates the resulting miner address through the daemon.
+    // Preserve historical scalar conversion, including Boolean -> "True"/"False"
+    // and ISO-shaped strings parsed by Json.NET as Date tokens. Authorization still
+    // validates the converted miner address through the daemon.
     private static bool IsStringConvertibleScalar(JToken value) =>
-        value.Type is JTokenType.String or JTokenType.Integer or JTokenType.Float or JTokenType.Boolean or JTokenType.Null;
+        value.Type is JTokenType.String or JTokenType.Integer or JTokenType.Float or JTokenType.Boolean or JTokenType.Null or JTokenType.Date;
 
     private static bool TryValidateConfigure(object parameters, out JArray extensions, out double? minimumDifficulty)
     {

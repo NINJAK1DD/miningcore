@@ -47,9 +47,8 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal int JobsCreated => pool.JobsCreated;
     internal void SetLogger(NLog.ILogger value) => pool.SetLogger(value);
     internal Func<Miningcore.Mining.WorkerContextBase, Task<double?>> NicehashLookup { set => ((TestPool) pool).NicehashLookup = value; }
-    internal void FailJobPipeline() => typeof(BitcoinBlake2bPool)
-        .GetMethod("HandleBlake2bPipelineFailure", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
-        .Invoke(pool, new object[] { new InvalidOperationException("test pipeline failure") });
+    internal void FailJobPipeline() => ((BitcoinBlake2bPool) pool)
+        .HandleBlake2bPipelineFailure(new InvalidOperationException("test pipeline failure"));
     internal bool MiningFaulted => ((TestPool) pool).MiningFaulted;
     internal Action BeforeConfigure { set => ((TestPool) pool).BeforeConfigure = value; }
     internal Func<Task> AfterConfigure { set => ((TestPool) pool).AfterConfigure = value; }
@@ -71,6 +70,20 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
             // must still prove the exact admission diagnostic and unchanged work.
             await AssertDisconnectedAsync();
         }
+    }
+
+    internal async Task<IReadOnlyList<JObject>> ReadUntilDisconnectedAsync()
+    {
+        var messages = new List<JObject>();
+        try
+        {
+            while(await reader.ReadLineAsync(stop.Token) is { } line)
+                messages.Add(JObject.Parse(line));
+        }
+        catch(IOException ex) when(ex.InnerException is SocketException
+            { SocketErrorCode: SocketError.ConnectionReset or SocketError.ConnectionAborted }) { }
+        await AssertDisconnectedAsync();
+        return messages;
     }
 
     internal async Task AssertNoMoreMessagesAsync()

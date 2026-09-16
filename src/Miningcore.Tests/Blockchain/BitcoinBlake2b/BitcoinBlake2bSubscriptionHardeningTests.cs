@@ -12,7 +12,6 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 public partial class BitcoinBlake2bDifficultyBudgetTests
 {
     [Theory]
-    [InlineData("null")]
     [InlineData("{}")]
     [InlineData("123")]
     [InlineData("\"miner\"")]
@@ -50,6 +49,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     }
 
     [Theory]
+    [InlineData("null", null, false)]
     [InlineData("[]", null, false)]
     [InlineData("[null]", null, false)]
     [InlineData("[123]", "123", false)]
@@ -72,7 +72,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         };
         for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
         {
-            await wire.SendRawAsync("{\"id\":100,\"method\":\"mining.subscribe\",\"params\":null}");
+            await wire.SendRawAsync("{\"id\":100,\"method\":\"mining.subscribe\",\"params\":{}}");
             Assert.Equal("Invalid request parameters", (await wire.ReadAsync())["error"]["message"].Value<string>());
         }
         await Refused(wire, true);
@@ -109,35 +109,6 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
             await Accepted(wire, true, (i + 2) / 1e9);
         await Refused(wire, true);
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task UnavailableWorkerJob_ReturnsProtocolErrorAndAllowsRecovery(bool configure)
-    {
-        var (config, manager, clock, bus) = Fixture();
-        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
-        await Subscribe(wire);
-        var job = Assert.IsType<BitcoinBlake2bJob>(manager.GetJobForStratum());
-        manager.SetCurrentJob(null);
-        await Send(wire, configure, 2e-9);
-        // The inherited handler acknowledges the requested difficulty before
-        // work publication. If work disappears, completion reports its failure.
-        Assert.Null((await wire.ReadAsync())["error"]);
-        var announcement = await wire.ReadAsync();
-        Assert.Equal("mining.set_difficulty", announcement["method"].Value<string>());
-        Assert.Equal(2e-9, announcement["params"][0].Value<double>());
-        var response = await wire.ReadAsync();
-        Assert.Equal((int) StratumError.JobNotFound, response["error"]["code"].Value<int>());
-        Assert.Equal("Bitcoin BLAKE2b job is unavailable", response["error"]["message"].Value<string>());
-        Assert.False(response["result"].Value<bool>());
-        Assert.Equal(1, wire.JobsCreated);
-        Assert.True(wire.Connection.IsAlive);
-        Assert.False(wire.MiningFaulted);
-        manager.SetCurrentJob(job);
-        await Accepted(wire, configure, 3e-9);
-        await Fence(wire);
     }
 
     [Fact]

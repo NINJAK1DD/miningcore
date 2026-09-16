@@ -213,20 +213,21 @@ accommodates configure, static authorization, suggest, renegotiation and startup
 sustained miner-driven retargeting is limited to six requests per minute after that burst.
 There is no configuration switch to disable this admission boundary.
 
-Subscribe requires an array of scalar/null values, including an empty array. Its user
-agent is parsed once; the exact trimmed value used for NiceHash detection is carried
-into subscription commit. Non-array parameters and nested objects/arrays are rejected
+Subscribe accepts omitted/null parameters as an empty argument list, or an array of
+scalar/null values. Its user agent is parsed once; the exact trimmed value used for NiceHash detection is carried
+into subscription commit. Other non-array parameters and nested objects/arrays are rejected
 before lookup, extranonce changes or work creation. A valid first subscribe remains free
 when earlier malformed subscription attempts have exhausted the allowance.
 Configure requires a string extension array and parameter object; minimum-difficulty
 accepts a finite, positive JSON number or numeric string for firmware compatibility.
 Numbers and strings are parsed once with invariant culture, and that exact value reaches
 the assignment handler. Authorization preserves scalar-to-string conversion for worker
-names and optional passwords, including numeric worker names and null passwords; objects
+names and optional passwords, including numeric worker names, null passwords and
+ISO date-shaped strings that Json.NET materializes as date tokens; objects
 and arrays in those consumed positions are rejected. Configure and authorize ignore
-trailing fields after their consumed parameters. Invalid subscribe/configure/authorize requests
-consume a token and receive Stratum error
-20 without assignment or identity mutation or authorization RPC. Once exhausted, their
+trailing fields after their consumed parameters. Invalid subscribe/configure/authorize
+requests consume a token and receive Stratum error 20 without assignment or identity
+mutation or authorization RPC. Once exhausted, their
 responses follow the same bounded refusal/disconnect policy. Missing IDs receive error -1
 without charging.
 Admission precedes inherited acknowledgments, VarDiff/difficulty changes and work issuance.
@@ -283,12 +284,19 @@ holding it. A cold HTTP lookup cannot delay the broadcast pipeline even when aut
 precedes subscription. A completed lookup returning no difficulty is not repeated. Gates
 are independent between connections; each successful acquisition releases that exact
 semaphore in `finally`, and cancellation before acquisition does not release it.
-Protocol `StratumException` failures in the gated subscribe/configure/suggest dispatcher
-become error responses after the gate is released. This includes unavailable work while
-the pool remains healthy; clients can resume negotiation when work returns. The inherited
-handler may already have acknowledged the requested difficulty before job creation fails;
-that acknowledgement alone does not establish a new job. A pool fault observed on this
-error path closes the connection immediately instead of waiting for another request.
+
+A protocol error before any response starts can return one error and leave the connection
+usable. If an inherited handler has already acknowledged subscribe, configure, suggest or
+static authorization and subsequent work publication fails, the connection is terminal:
+no second response is sent under that request ID, and buffered requests cannot resume the
+session. This is a fail-closed boundary, not rollback of a published difficulty. A miner
+may receive an acknowledgement or difficulty prefix before the abortive close; it must
+reconnect and obtain a fresh complete assignment. A faulted pool also closes the connection.
+The policy preserves [JSON-RPC response correlation](https://www.jsonrpc.org/specification#response_object)
+without changing inherited success sequencing. Successful assignments still announce the
+difficulty before their matching immutable notify; unavailable work must never leave a
+live connection with a partial assignment. Canonical Bitcoin's error policy is unchanged.
+
 This assignment-ordering fix is tracked separately in
 [#182](https://github.com/NINJAK1DD/miningcore/issues/182).
 BLAKE2b supports custodial SOLO and rejects canonical `soloCoinbasePayout` options at
@@ -306,9 +314,9 @@ Stratum denial-of-service limit. Fresh connections receive fresh allowances. Cro
 churn defenses, including shared-proxy/NAT and trusted client-address policy, are tracked in
 [issue #180](https://github.com/NINJAK1DD/miningcore/issues/180).
 
-Enforcement emits one Info-level structured `DifficultyBudgetDisconnect` or
-`DuplicateSubscription` event per closed connection, with the server-generated connection
-ID and no request/password/address payload. Ordinary refusals produce no dedicated logs.
+Enforcement emits one Info-level structured `DifficultyBudgetDisconnect`,
+`DuplicateSubscription` or `AssignmentPublicationFailure` event per closed connection,
+with the server-generated connection ID and no request/password/address payload. Ordinary refusals produce no dedicated logs.
 `miningcore_stratum_admission_total{pool,outcome}` counts `difficulty-refused`,
 `difficulty-disconnect` and `duplicate-subscribe`; outcomes are allowlisted and there are
 no per-miner, connection-ID or IP labels. Use these counters to distinguish renegotiation
@@ -361,8 +369,12 @@ scalar worker/trailing-field compatibility with unchanged admission accounting,
 configure protocol-error recovery, exact malformed-error versus rate-refusal messages,
 malformed subscribe floods, free first-subscribe recovery, and identical prepared/committed
 user-agent values. Missing-ID subscribe does not perform lookup or charge admission.
-Real job-unavailability cases preserve protocol recovery; a fault during worker-job creation
-closes the connection immediately.
+Real job-unavailability cases cover all four publication-capable paths and prove at most
+one response per request followed by terminal closure, including requests buffered behind
+the failed one. Separate successful-publication tests require one response followed by the
+matching difficulty and immutable job. Pre-acknowledgement errors remain recoverable.
+Date-shaped subscribe/authorization values are checked under French and Turkish cultures;
+omitted/null subscribe is tested against both the canonical and BLAKE2b dispatchers.
 A canonical Bitcoin request missing `minimum-difficulty.value` now declines the extension
 without dropping the connection. Startup tests explicitly reject direct-coinbase SOLO
 options whether their `enabled` property is true or false.
@@ -402,6 +414,11 @@ PostgreSQL ledger test additionally requires `MININGCORE_TEST_POSTGRES`.
   client repeated the duplicate after that warning. Configure/authorize renegotiation
   does not require another subscribe. Fix the firmware/proxy sequence; initial subscribe
   remains free and the error does not invalidate previously issued work.
+- **Connection closes during assignment publication:** `AssignmentPublicationFailure`
+  means a response had already started when work publication failed, or the pool faulted.
+  No contradictory second response is sent. Reconnect for a fresh subscription and
+  assignment; investigate work availability or pool isolation if this repeats. This event
+  does not by itself mean the miner exceeded its negotiation allowance.
 - **Startup refuses a node:** check exact version, RPC authentication, selected chain,
   deployment state, and `!blake2b`. Do not remove the gate or substitute the `bitcoin` template.
 - **Activation parent RPC is temporarily unavailable:** work verification retries with
