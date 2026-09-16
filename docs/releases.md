@@ -61,8 +61,10 @@ without static difficulty, shares
 and server-driven VarDiff remain available while the budget recovers. Successful
 changes retain difficulty-before-notify ordering and immutable target/credit binding.
 The first duplicate subscribe receives an error while preserving work; another duplicate
-closes the connection. Malformed configure/authorize requests consume allowance without
-state mutation; missing IDs remain uncharged. Numeric-string minimum difficulty remains
+closes the connection. Malformed subscribe/configure/authorize requests consume allowance
+without state mutation; missing IDs remain uncharged. Subscribe validates parameters before
+external lookup or extranonce mutation, and a valid initial subscription stays free even
+after malformed requests exhaust the allowance. Numeric-string minimum difficulty remains
 compatible and is parsed once. Authorization preserves scalar worker/password conversion,
 and authorize/configure tolerate ignored trailing fields. Canonical Bitcoin now declines
 minimum-difficulty negotiation with a missing value without dropping the connection.
@@ -81,7 +83,10 @@ the latest announced difficulty. Previously issued work retains its original tar
 credit basis. Address-validation RPC and share submission/accounting run outside the gate.
 Subscribe resolves NiceHash autodiff before acquiring the gate and committing subscription
 state; an authorize-before-subscribe client cannot hold up broadcasts during the API lookup.
+The parsed user agent and lookup result are carried together into the subscription commit.
 Each successful acquisition releases its exact semaphore, including protocol-error paths.
+Unavailable work remains a recoverable protocol error while the pool is healthy; if job
+creation observes a pool fault, the affected connection closes immediately.
 BLAKE2b continues to reject canonical direct-coinbase SOLO options at startup.
 
 ## Unreleased: Bitcoin-family verified job gate

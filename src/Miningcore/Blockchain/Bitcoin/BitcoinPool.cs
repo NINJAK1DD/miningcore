@@ -60,11 +60,15 @@ public class BitcoinPool : PoolBase
     protected virtual Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest) =>
         OnSubscribeCoreAsync(connection, tsRequest);
 
-    // A present wrapper includes a completed lookup that returned no difficulty.
-    protected readonly record struct ResolvedNicehashDifficulty(double? Value);
+    // Carry the exact parsed user agent and completed lookup together, including
+    // null values, so lookup identity cannot diverge from committed worker state.
+    protected readonly record struct PreparedSubscription(string UserAgent, double? NicehashDifficulty);
+
+    protected static string ReadSubscribeUserAgent(JsonRpcRequest request) =>
+        request.ParamsAs<string[]>().FirstOrDefault()?.Trim();
 
     protected async Task OnSubscribeCoreAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest,
-        ResolvedNicehashDifficulty? resolvedNicehashDifficulty = null)
+        PreparedSubscription? preparedSubscription = null)
     {
         var request = tsRequest.Value;
 
@@ -72,7 +76,7 @@ public class BitcoinPool : PoolBase
             throw new StratumException(StratumError.MinusOne, "missing request id");
 
         var context = connection.ContextAs<BitcoinWorkerContext>();
-        var requestParams = request.ParamsAs<string[]>();
+        var userAgent = preparedSubscription.HasValue ? preparedSubscription.Value.UserAgent : ReadSubscribeUserAgent(request);
 
         var data = new object[]
         {
@@ -100,10 +104,10 @@ public class BitcoinPool : PoolBase
 
         // setup worker context
         context.IsSubscribed = true;
-        context.UserAgent = requestParams.FirstOrDefault()?.Trim();
+        context.UserAgent = userAgent;
 
         // Nicehash support
-        var nicehashDiff = resolvedNicehashDifficulty.HasValue ? resolvedNicehashDifficulty.Value.Value :
+        var nicehashDiff = preparedSubscription.HasValue ? preparedSubscription.Value.NicehashDifficulty :
             await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
 
         if(nicehashDiff.HasValue)

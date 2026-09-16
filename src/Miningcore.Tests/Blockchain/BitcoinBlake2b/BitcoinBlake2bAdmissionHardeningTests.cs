@@ -167,7 +167,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         var lookupStarted = Signal();
         var release = Signal();
         var lookups = 0;
-        wire.NicehashLookup = async () =>
+        wire.NicehashLookup = async _ =>
         {
             lookups++;
             lookupStarted.TrySetResult();
@@ -197,19 +197,19 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task AuthorizationScalarsAndTrailingFields_PreserveCompatibilityAndBudget(bool numericWorker)
+    [InlineData("test.worker", "test")]
+    [InlineData(123, "123")]
+    [InlineData(true, "True")]
+    public async Task AuthorizationScalarsAndTrailingFields_PreserveCompatibilityAndBudget(object worker, string miner)
     {
         var (config, manager, clock, bus) = Fixture();
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
             budgetTimeProvider: new ManualTimeProvider());
         await Subscribe(wire);
-        object worker = numericWorker ? 123 : "test.worker";
         await wire.SendRequestAsync("mining.authorize", worker, Password(2e-9), new JObject(), new JArray());
         Assert.True((await wire.ReadAsync())["result"].Value<bool>());
         await Assignment(wire, 2e-9);
-        Assert.Equal(numericWorker ? "123" : "test", wire.Connection.Context.Miner);
+        Assert.Equal(miner, wire.Connection.Context.Miner);
         Assert.Equal(1, manager.AddressValidations);
         for(var i = 0; i < DifficultyRequestBudget.Capacity - 1; i++)
             await Accepted(wire, true, (i + 3) / 1e9);
@@ -234,16 +234,18 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         await Refused(wire, true);
     }
 
-    [Fact]
-    public async Task ConfigureProtocolError_ReleasesGateAndKeepsConnectionUsable()
+    [Theory]
+    [InlineData(StratumError.Other)]
+    [InlineData(StratumError.JobNotFound)]
+    public async Task ConfigureProtocolError_ReleasesGateAndKeepsConnectionUsable(StratumError code)
     {
         var (config, manager, clock, bus) = Fixture();
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
         await Subscribe(wire);
-        wire.BeforeConfigure = () => throw new StratumException(StratumError.Other, "configure declined");
+        wire.BeforeConfigure = () => throw new StratumException(code, "configure declined");
         await Send(wire, true, 2e-9);
         var response = await wire.ReadAsync();
-        Assert.Equal((int) StratumError.Other, response["error"]["code"].Value<int>());
+        Assert.Equal((int) code, response["error"]["code"].Value<int>());
         Assert.Equal("configure declined", response["error"]["message"].Value<string>());
         Assert.False(response["result"].Value<bool>());
         Assert.Equal(1e-9, wire.Connection.Context.Difficulty);

@@ -206,20 +206,25 @@ third-party miner firmware or provide a production-ready adapter.
 Each BLAKE2b TCP connection shares one budget between `mining.suggest_difficulty`
 requests, `mining.configure` requests whose extension list includes `minimum-difficulty`,
 and `mining.authorize` requests with a parseable static-difficulty password control (`d=`).
-Malformed configure/authorize requests with an ID also consume this allowance.
+Malformed subscribe/configure/authorize requests with an ID also consume this allowance.
 It starts with **eight requests**, replenishes **one request per ten elapsed seconds**,
 and stores at most eight requests. Fractional refill time is retained. The allowance
 accommodates configure, static authorization, suggest, renegotiation and startup retries;
 sustained miner-driven retargeting is limited to six requests per minute after that burst.
 There is no configuration switch to disable this admission boundary.
 
+Subscribe requires an array of scalar/null values, including an empty array. Its user
+agent is parsed once; the exact trimmed value used for NiceHash detection is carried
+into subscription commit. Non-array parameters and nested objects/arrays are rejected
+before lookup, extranonce changes or work creation. A valid first subscribe remains free
+when earlier malformed subscription attempts have exhausted the allowance.
 Configure requires a string extension array and parameter object; minimum-difficulty
 accepts a finite, positive JSON number or numeric string for firmware compatibility.
 Numbers and strings are parsed once with invariant culture, and that exact value reaches
 the assignment handler. Authorization preserves scalar-to-string conversion for worker
 names and optional passwords, including numeric worker names and null passwords; objects
 and arrays in those consumed positions are rejected. Configure and authorize ignore
-trailing fields after their consumed parameters. Invalid configure/authorize requests
+trailing fields after their consumed parameters. Invalid subscribe/configure/authorize requests
 consume a token and receive Stratum error
 20 without assignment or identity mutation or authorization RPC. Once exhausted, their
 responses follow the same bounded refusal/disconnect policy. Missing IDs receive error -1
@@ -258,7 +263,7 @@ When exhausted:
   to reach a miner that continues flooding. A miner should wait at least ten seconds
   after a refusal before retrying.
 
-The **first subscribe is free**, even after difficulty allowance is exhausted. The first
+The **first valid subscribe is free**, even after difficulty allowance is exhausted. The first
 duplicate `mining.subscribe` receives Stratum error 20 with `result: false`, retaining the
 working connection. Another duplicate closes it without queuing another response. Neither
 duplicate rotates extranonce, changes work or emits difficulty/job notifications. The
@@ -278,6 +283,12 @@ holding it. A cold HTTP lookup cannot delay the broadcast pipeline even when aut
 precedes subscription. A completed lookup returning no difficulty is not repeated. Gates
 are independent between connections; each successful acquisition releases that exact
 semaphore in `finally`, and cancellation before acquisition does not release it.
+Protocol `StratumException` failures in the gated subscribe/configure/suggest dispatcher
+become error responses after the gate is released. This includes unavailable work while
+the pool remains healthy; clients can resume negotiation when work returns. The inherited
+handler may already have acknowledged the requested difficulty before job creation fails;
+that acknowledgement alone does not establish a new job. A pool fault observed on this
+error path closes the connection immediately instead of waiting for another request.
 This assignment-ordering fix is tracked separately in
 [#182](https://github.com/NINJAK1DD/miningcore/issues/182).
 BLAKE2b supports custodial SOLO and rejects canonical `soloCoinbasePayout` options at
@@ -347,7 +358,11 @@ check every wire target against the latest difficulty announcement. Additional c
 proves authorization RPC and delayed NiceHash autodiff do not hold this gate. It checks
 both present and absent autodiff results, no partial subscription/extranonce mutation,
 scalar worker/trailing-field compatibility with unchanged admission accounting,
-configure protocol-error recovery, and exact malformed-error versus rate-refusal messages.
+configure protocol-error recovery, exact malformed-error versus rate-refusal messages,
+malformed subscribe floods, free first-subscribe recovery, and identical prepared/committed
+user-agent values. Missing-ID subscribe does not perform lookup or charge admission.
+Real job-unavailability cases preserve protocol recovery; a fault during worker-job creation
+closes the connection immediately.
 A canonical Bitcoin request missing `minimum-difficulty.value` now declines the extension
 without dropping the connection. Startup tests explicitly reject direct-coinbase SOLO
 options whether their `enabled` property is true or false.

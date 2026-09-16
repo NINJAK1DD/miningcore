@@ -350,7 +350,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         }
 
         if(request.Value.Id == null && request.Value.Method is BitcoinStratumMethods.SuggestDifficulty or
-            BitcoinStratumMethods.Authorize or BitcoinStratumMethods.MiningConfigure)
+            BitcoinStratumMethods.Authorize or BitcoinStratumMethods.MiningConfigure or BitcoinStratumMethods.Subscribe)
         {
             await connection.RespondErrorAsync(StratumError.MinusOne, "missing request id", null, false);
             return;
@@ -362,6 +362,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         {
             BitcoinStratumMethods.MiningConfigure => !TryValidateConfigure(request.Value.Params, out extensions, out minimumDifficulty),
             BitcoinStratumMethods.Authorize => !IsValidAuthorization(request.Value.Params),
+            BitcoinStratumMethods.Subscribe => !IsValidSubscribe(request.Value.Params),
             _ => false,
         };
         var difficultyRequest = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty || minimumDifficulty.HasValue;
@@ -389,18 +390,18 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
 
         try
         {
-            ResolvedNicehashDifficulty? nicehashDifficulty = null;
+            PreparedSubscription? subscription = null;
             if(request.Value.Method == BitcoinStratumMethods.Subscribe)
             {
-                if(request.Value.Id == null)
-                    throw new StratumException(StratumError.MinusOne, "missing request id");
                 // Resolve external data before changing subscription/extranonce
                 // state. An already-authorized miner must not stall broadcasts
                 // behind a cold NiceHash HTTP lookup.
-                var userAgent = request.Value.ParamsAs<string[]>().FirstOrDefault()?.Trim();
+                var userAgent = ReadSubscribeUserAgent(request.Value);
                 var lookupContext = new BitcoinWorkerContext { UserAgent = userAgent };
+                // Configure requires a BitcoinBlake2bTemplate, a BitcoinTemplate
+                // subtype; this is the same template used by BitcoinPool.
                 var template = (BitcoinTemplate) poolConfig.Template;
-                nicehashDifficulty = new ResolvedNicehashDifficulty(
+                subscription = new PreparedSubscription(userAgent,
                     await GetNicehashStaticMinDiff(lookupContext, template.Name, template.GetAlgorithmName()));
             }
 
@@ -413,7 +414,10 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 if(request.Value.Method == BitcoinStratumMethods.MiningConfigure)
                     await OnConfigureMiningAsync(connection, request, minimumDifficulty);
                 else if(request.Value.Method == BitcoinStratumMethods.Subscribe)
-                    await OnSubscribeCoreAsync(connection, request, nicehashDifficulty);
+                    // Intentionally bypass OnSubscribeAsync: BLAKE2b owns the
+                    // preparation/commit boundary here. Overrides of that inherited
+                    // hook do not customize this pool's subscription dispatch.
+                    await OnSubscribeCoreAsync(connection, request, subscription);
                 else
                     await base.OnRequestAsync(connection, request, ct);
                 await CompleteAssignmentAsync(connection, previousDifficulty, request.Value.Method);
@@ -422,9 +426,13 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         }
         catch(StratumException ex)
         {
-            // Configure and subscribe call core handlers directly; preserve the
-            // same protocol-error boundary as BitcoinPool.OnRequestAsync.
-            await connection.RespondErrorAsync(ex.Code, ex.Message, request.Value.Id, false);
+            // A pool fault is terminal even if it races an admitted assignment.
+            // Other Stratum errors (including temporarily unavailable work) remain
+            // protocol responses, after releasing the gate, so clients can recover.
+            if(operations.IsClosed)
+                Disconnect(connection);
+            else
+                await connection.RespondErrorAsync(ex.Code, ex.Message, request.Value.Id, false);
         }
     }
 
@@ -483,11 +491,19 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         finally { gate.Release(); }
     }
 
-    private static bool IsValidAuthorization(object parameters) =>
-        parameters is JArray { Count: >= 1 } values && IsAuthorizationScalar(values[0]) &&
-        (values.Count == 1 || IsAuthorizationScalar(values[1]));
+    // Subscribe's inherited string-array conversion accepts empty arrays and
+    // scalar/null entries. Json.NET also materializes ISO date strings as Date
+    // tokens, which the inherited conversion accepts. Reject nested containers.
+    private static bool IsValidSubscribe(object parameters) =>
+        parameters is JArray values && values.All(x => IsStringConvertibleScalar(x) || x.Type == JTokenType.Date);
 
-    private static bool IsAuthorizationScalar(JToken value) =>
+    private static bool IsValidAuthorization(object parameters) =>
+        parameters is JArray { Count: >= 1 } values && IsStringConvertibleScalar(values[0]) &&
+        (values.Count == 1 || IsStringConvertibleScalar(values[1]));
+
+    // Preserve historical scalar conversion, including Boolean -> "True"/"False";
+    // authorization still validates the resulting miner address through the daemon.
+    private static bool IsStringConvertibleScalar(JToken value) =>
         value.Type is JTokenType.String or JTokenType.Integer or JTokenType.Float or JTokenType.Boolean or JTokenType.Null;
 
     private static bool TryValidateConfigure(object parameters, out JArray extensions, out double? minimumDifficulty)

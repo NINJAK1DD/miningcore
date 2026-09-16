@@ -557,6 +557,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
     {
         internal int AddressValidations { get; private set; }
         internal Func<Task> BeforeValidation { get; set; }
+        internal void SetCurrentJob(BitcoinBlake2bJob job) => currentJob = job;
         internal FixtureManager(IComponentContext ctx, IMasterClock clock, IMessageBus bus, BitcoinBlake2bJob job) :
             base(ctx, clock, bus, new BitcoinBlake2bExtraNonceProvider())
         {

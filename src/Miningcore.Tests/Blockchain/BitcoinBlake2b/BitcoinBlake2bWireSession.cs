@@ -46,7 +46,11 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal StratumConnection Connection { get; }
     internal int JobsCreated => pool.JobsCreated;
     internal void SetLogger(NLog.ILogger value) => pool.SetLogger(value);
-    internal Func<Task<double?>> NicehashLookup { set => ((TestPool) pool).NicehashLookup = value; }
+    internal Func<Miningcore.Mining.WorkerContextBase, Task<double?>> NicehashLookup { set => ((TestPool) pool).NicehashLookup = value; }
+    internal void FailJobPipeline() => typeof(BitcoinBlake2bPool)
+        .GetMethod("HandleBlake2bPipelineFailure", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+        .Invoke(pool, new object[] { new InvalidOperationException("test pipeline failure") });
+    internal bool MiningFaulted => ((TestPool) pool).MiningFaulted;
     internal Action BeforeConfigure { set => ((TestPool) pool).BeforeConfigure = value; }
     internal Func<Task> AfterConfigure { set => ((TestPool) pool).AfterConfigure = value; }
     internal Action BeforeCreateJob { set => ((TestPool) pool).BeforeCreateJob = value; }
@@ -179,12 +183,12 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
 
     private sealed class TestPool : BitcoinBlake2bPool, IWirePool
     {
-        internal Func<Task<double?>> NicehashLookup;
+        internal Func<Miningcore.Mining.WorkerContextBase, Task<double?>> NicehashLookup;
         internal Action BeforeConfigure;
         internal Func<Task> AfterConfigure;
 
         protected override Task<double?> GetNicehashStaticMinDiff(Miningcore.Mining.WorkerContextBase context,
-            string coinName, string algorithm) => NicehashLookup?.Invoke() ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm);
+            string coinName, string algorithm) => NicehashLookup?.Invoke(context) ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm);
         internal Action BeforeCreateJob;
         internal Action AssignmentWaiting;
 
