@@ -220,6 +220,18 @@ public class BitcoinBlake2bHeaderTests
     public void ImpossibleShareTargets_AreRejected(double difficulty) =>
         Assert.Throws<ArgumentOutOfRangeException>(() => BitcoinBlake2bHeader.TargetForDifficulty(difficulty));
 
+    [Fact]
+    public void ShareTarget_HighestRepresentableDifficultyHasAnExactBoundary()
+    {
+        // Diff1 = 65535 * 2^208 is exactly representable as a double.
+        var highest = (double) BitcoinConstants.Diff1;
+        Assert.Equal(BitcoinConstants.Diff1, new BigInteger(highest));
+        Assert.Equal(BigInteger.One, BitcoinBlake2bHeader.TargetForDifficulty(Math.BitDecrement(highest)));
+        Assert.Equal(BigInteger.One, BitcoinBlake2bHeader.TargetForDifficulty(highest));
+        Assert.Throws<ArgumentOutOfRangeException>(() => BitcoinBlake2bHeader.TargetForDifficulty(Math.BitIncrement(highest)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => BitcoinBlake2bHeader.TargetForDifficulty(1e100));
+    }
+
     [Theory]
     [InlineData(0x1a00ffffU, 22, 0x1c3fffc0U)]
     [InlineData(0x1d00ffffU, 22, 0x1d00ffffU)]

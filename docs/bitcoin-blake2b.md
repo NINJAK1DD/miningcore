@@ -240,6 +240,14 @@ A configure message consumes one
 request even when it repeats the minimum-difficulty extension name. Calls made before
 subscription consume the same connection budget; subscribing does not reset it.
 
+An admitted configure/suggest/static-authorization value that would change the assignment
+must also produce a representable BLAKE2b share target. Even finite positive values such
+as `1e100` can exceed that range. Such requests receive one Stratum error 20 before
+acknowledgment, mutation or authorization RPC, preserving identity, difficulty, VarDiff,
+pending updates and existing jobs. They consume their normal admission token and leave
+the healthy connection usable. Suggestion parsing retains the inherited culture/conversion
+rules; its exact parsed value is reused for execution.
+
 When exhausted:
 
 - `mining.suggest_difficulty` and static-difficulty `mining.authorize` return an error with Stratum code `20`,
@@ -286,8 +294,8 @@ are independent between connections; each successful acquisition releases that e
 semaphore in `finally`, and cancellation before acquisition does not release it.
 
 A protocol error before any response starts can return one error and leave the connection
-usable. If an inherited handler has already acknowledged subscribe, configure, suggest or
-static authorization and subsequent work publication fails, the connection is terminal:
+usable. If an inherited handler has already acknowledged subscribe, configure, suggest,
+static authorization or a share submission and subsequent work publication fails, the connection is terminal:
 no second response is sent under that request ID, and buffered requests cannot resume the
 session. This is a fail-closed boundary, not rollback of a published difficulty. A miner
 may receive an acknowledgement or difficulty prefix before the abortive close; it must
@@ -295,7 +303,14 @@ reconnect and obtain a fresh complete assignment. A faulted pool also closes the
 The policy preserves [JSON-RPC response correlation](https://www.jsonrpc.org/specification#response_object)
 without changing inherited success sequencing. Successful assignments still announce the
 difficulty before their matching immutable notify; unavailable work must never leave a
-live connection with a partial assignment. Canonical Bitcoin's error policy is unchanged.
+live connection with a partial assignment. The same terminal latch covers unexpected
+post-acknowledgment unrepresentable targets, including external autodiff values, and clears
+active jobs. An accepted share remains accepted if its subsequent VarDiff publication
+fails: accounting is preserved, with no extra invalid-share count or ban consideration.
+Canonical Bitcoin's response policy is unchanged and tracked in
+[#183](https://github.com/NINJAK1DD/miningcore/issues/183). The shared transport tracks
+response attempts with one interlocked increment per response; notification writes do
+not change that counter. All response payloads must use `RespondAsync`.
 
 This assignment-ordering fix is tracked separately in
 [#182](https://github.com/NINJAK1DD/miningcore/issues/182).
@@ -318,9 +333,10 @@ Enforcement emits one Info-level structured `DifficultyBudgetDisconnect`,
 `DuplicateSubscription` or `AssignmentPublicationFailure` event per closed connection,
 with the server-generated connection ID and no request/password/address payload. Ordinary refusals produce no dedicated logs.
 `miningcore_stratum_admission_total{pool,outcome}` counts `difficulty-refused`,
-`difficulty-disconnect` and `duplicate-subscribe`; outcomes are allowlisted and there are
+`difficulty-disconnect`, `duplicate-subscribe` and `publication-failure`; outcomes are allowlisted and there are
 no per-miner, connection-ID or IP labels. Use these counters to distinguish renegotiation
-refusals from duplicate-subscription disconnects.
+refusals from duplicate-subscription and work-publication disconnects. Each terminal
+publication failure is counted once, including failures following an accepted share.
 
 ### Research and wire validation for issue #152
 
@@ -369,7 +385,7 @@ scalar worker/trailing-field compatibility with unchanged admission accounting,
 configure protocol-error recovery, exact malformed-error versus rate-refusal messages,
 malformed subscribe floods, free first-subscribe recovery, and identical prepared/committed
 user-agent values. Missing-ID subscribe does not perform lookup or charge admission.
-Real job-unavailability cases cover all four publication-capable paths and prove at most
+Real job-unavailability cases cover the four negotiation publication paths and prove at most
 one response per request followed by terminal closure, including requests buffered behind
 the failed one. Separate successful-publication tests require one response followed by the
 matching difficulty and immutable job. Pre-acknowledgement errors remain recoverable.
@@ -382,7 +398,15 @@ The fixture drives the production server dispatch wrapper, not a direct handler 
 The [live Knots suite](../src/Miningcore.Tests/Blockchain/BitcoinBlake2b/BitcoinBlake2bRegtestTests.cs)
 also exhausts the shared budget before VarDiff and real accepted header-v2 submissions
 for SOLO, PPS, PROP and PPLNS, explicitly checking exhaustion immediately before the
-wire proof loop and after accepted submissions. Run the focused suite with:
+wire proof loop and after accepted submissions. A further live case removes current work
+during VarDiff publication after a real accepted proof across all four payout schemes.
+It verifies terminal closure, one response attempt, rejection of buffered follow-on
+requests, unchanged invalid-share counts and exactly-once PostgreSQL settlement.
+[Representability tests](../src/Miningcore.Tests/Blockchain/BitcoinBlake2b/BitcoinBlake2bRepresentabilityTests.cs)
+cover finite out-of-range requests, remaining token capacity, unchanged worker state,
+external/future post-acknowledgment failure and culture-compatible suggestion parsing.
+The target unit tests pin the adjacent floating-point values at the highest accepted
+difficulty. Run the focused suite with:
 
 ```sh
 dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj -c Release --filter FullyQualifiedName~BitcoinBlake2bDifficultyBudgetTests
@@ -416,6 +440,9 @@ PostgreSQL ledger test additionally requires `MININGCORE_TEST_POSTGRES`.
   remains free and the error does not invalidate previously issued work.
 - **Connection closes during assignment publication:** `AssignmentPublicationFailure`
   means a response had already started when work publication failed, or the pool faulted.
+  This includes disconnects immediately after an accepted `mining.submit` when its VarDiff
+  update cannot publish work. The accepted proof remains accounted for and is not counted
+  as invalid. Check the `publication-failure` admission-counter outcome.
   No contradictory second response is sent. Reconnect for a fresh subscription and
   assignment; investigate work availability or pool isolation if this repeats. This event
   does not by itself mean the miner exceeded its negotiation allowance.

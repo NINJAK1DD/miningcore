@@ -17,6 +17,7 @@ using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Notifications.Messages;
 using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
@@ -24,7 +25,9 @@ using Miningcore.Extensions;
 using Miningcore.Stratum;
 using Miningcore.Tests.Blockchain.Bitcoin;
 using Miningcore.Time;
+using Miningcore.VarDiff;
 using NBitcoin;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NSubstitute;
 using Xunit;
@@ -51,7 +54,10 @@ public class BitcoinBlake2bRegtestTests : TestBase
     [BitcoinBlake2bLedgerIntegrationFact]
     public Task HeaderV2_RealStratumPpsProof_CommitsExactlyOnceToPostgres() => ExerciseAsync(true);
 
-    private async Task ExerciseAsync(bool requirePostgres)
+    [BitcoinBlake2bLedgerIntegrationFact]
+    public Task HeaderV2_AcceptedProofSurvivesTerminalVarDiffPublicationFailure() => ExerciseAsync(true, true);
+
+    private async Task ExerciseAsync(bool requirePostgres, bool failPublication = false)
     {
         await using var ledger = requirePostgres ? await BitcoinBlake2bLedgerProbe.CreateAsync() : null;
         await using var node = await BitcoinPayoutHandlerRegtestTests.BitcoinCoreRegtestNode.StartAsync(
@@ -225,11 +231,48 @@ public class BitcoinBlake2bRegtestTests : TestBase
                 if(BitcoinBlake2bHeader.HashValue(proof) > BitcoinBlake2bHeader.DecodeCompactTarget(
                     BitcoinBlake2bHeader.ParseCompactBits((string) notify[6])))
                     continue;
+                if(failPublication && BitcoinBlake2bHeader.HashValue(proof) >
+                   BitcoinBlake2bHeader.DecodeCompactTarget(BitcoinBlake2bHeader.ParseCompactBits(template.Bits)))
+                    continue;
                 try
                 {
-                    var response = await wire.RequestAsync("mining.submit", destination + ".test",
-                        notify[0], "0000000000000000", time, nonceBytes.ToHexString());
-                    Assert.True(response["result"]?.Value<bool>() == true, response.ToString());
+                    if(failPublication)
+                    {
+                        var context = worker.ContextAs<BitcoinWorkerContext>();
+                        var options = new VarDiffConfig { MinDiff = 1e-9, MaxDiff = 4e-9,
+                            TargetTime = 10, RetargetTime = 1, VariancePercent = 0 };
+                        pool.Ports[worker.LocalEndpoint.Port].VarDiff = options;
+                        context.VarDiff = new VarDiffContext { Config = options,
+                            LastTs = clock.Now.ToUnixSeconds() - 1, LastRetarget = clock.Now.ToUnixSeconds() - 10 };
+                        // The proof is real and accounting completes first; remove
+                        // current work only when the subsequent VarDiff publishes.
+                        wire.BeforeCreateJob = () => manager.ClearCurrentJob();
+                        var valid = context.Stats.ValidShares;
+                        var invalid = context.Stats.InvalidShares;
+                        var responses = worker.ResponseSequence;
+                        bus.ClearReceivedCalls();
+                        await wire.SendDisconnectingBatchAsync(JsonConvert.SerializeObject(new { id = 100,
+                            method = "mining.submit", @params = new object[] { destination + ".test",
+                                notify[0], "0000000000000000", time, nonceBytes.ToHexString() } }) +
+                            "\n{\"id\":101,\"method\":\"mining.extranonce.subscribe\",\"params\":[]}");
+                        var messages = await wire.ReadUntilDisconnectedAsync();
+                        Assert.Equal(1, worker.ResponseSequence - responses);
+                        Assert.DoesNotContain(messages, x => x["id"]?.Value<int?>() == 101);
+                        Assert.DoesNotContain(messages, x => x["error"]?.Type is not (null or JTokenType.Null));
+                        Assert.DoesNotContain(messages, x => x["method"]?.Value<string>() == "mining.notify");
+                        Assert.Equal(valid + 1, context.Stats.ValidShares);
+                        Assert.Equal(invalid, context.Stats.InvalidShares);
+                        Assert.Empty(context.validJobs);
+                        bus.Received(1).SendMessage(Arg.Any<Share>(), Arg.Any<string>());
+                        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
+                            x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());
+                    }
+                    else
+                    {
+                        var response = await wire.RequestAsync("mining.submit", destination + ".test",
+                            notify[0], "0000000000000000", time, nonceBytes.ToHexString());
+                        Assert.True(response["result"]?.Value<bool>() == true, response.ToString());
+                    }
                     candidate = Assert.IsType<Share>(published);
                     if(candidate.IsBlockCandidate)
                         Assert.Equal(proof.ToHexString(), candidate.BlockHash);
@@ -243,12 +286,15 @@ public class BitcoinBlake2bRegtestTests : TestBase
             // The valid mining.submit above traversed the wire dispatcher with
             // an exhausted bucket. No time elapsed on its injected monotonic
             // clock: prove it remains exhausted even after accepting the proof.
-            await wire.SendRequestAsync("mining.suggest_difficulty", 100e-9);
-            var stillRefused = await wire.ReadAsync();
-            Assert.Equal((int) StratumError.Other, stillRefused["error"]["code"].Value<int>());
-            Assert.False(stillRefused["result"].Value<bool>());
-            await wire.SendRequestAsync("mining.configure", new[] { "version-rolling" }, new Dictionary<string, object>());
-            Assert.Null((await wire.ReadAsync())["method"]);
+            if(!failPublication)
+            {
+                await wire.SendRequestAsync("mining.suggest_difficulty", 100e-9);
+                var stillRefused = await wire.ReadAsync();
+                Assert.Equal((int) StratumError.Other, stillRefused["error"]["code"].Value<int>());
+                Assert.False(stillRefused["result"].Value<bool>());
+                await wire.SendRequestAsync("mining.configure", new[] { "version-rolling" }, new Dictionary<string, object>());
+                Assert.Null((await wire.ReadAsync())["method"]);
+            }
             if(schemes[index] == PayoutScheme.PPS)
             {
                 Assert.True(candidate.BlockRecordEmitted);
@@ -331,6 +377,7 @@ public class BitcoinBlake2bRegtestTests : TestBase
 
     private sealed class SubmissionManager : BitcoinBlake2bJobManager
     {
+        internal void ClearCurrentJob() => currentJob = null;
         internal SubmissionManager(IComponentContext ctx, IMasterClock clock,
             IMessageBus bus, IBlockCandidateRecorder recorder) :
             base(ctx, clock, bus, new BitcoinBlake2bExtraNonceProvider(), recorder) { }

@@ -219,15 +219,18 @@ public class BitcoinPool : PoolBase
         }
     }
 
+    protected static bool ShouldApplyStaticDifficulty(BitcoinWorkerContext context, double? difficulty) =>
+        difficulty.HasValue &&
+        (context.VarDiff != null && difficulty.Value >= context.VarDiff.Config.MinDiff ||
+            context.VarDiff == null && difficulty.Value > context.Difficulty);
+
     // Address validation and identity updates finish before this assignment-only hook.
     protected virtual async Task ApplyStaticDifficultyAsync(StratumConnection connection,
         double? staticDiff, CancellationToken ct)
     {
         var context = connection.ContextAs<BitcoinWorkerContext>();
         // Static diff
-        if(staticDiff.HasValue &&
-           (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-               context.VarDiff == null && staticDiff.Value > context.Difficulty))
+        if(ShouldApplyStaticDifficulty(context, staticDiff))
         {
             context.VarDiff = null; // disable vardiff
             context.SetDifficulty(staticDiff.Value);
@@ -405,8 +408,6 @@ public class BitcoinPool : PoolBase
 
             // update client stats
             context.Stats.ValidShares++;
-
-            await UpdateVarDiffAsync(connection, false, ct);
         }
 
         catch(StratumException ex)
@@ -423,6 +424,10 @@ public class BitcoinPool : PoolBase
 
             throw;
         }
+
+        // Work publication after acceptance is not proof validation. Its failure
+        // must not count the accepted share again as invalid or feed miner bans.
+        await UpdateVarDiffAsync(connection, false, ct);
     }
 
     internal static bool ShouldPublishStatisticalShare(Share share)
@@ -430,7 +435,26 @@ public class BitcoinPool : PoolBase
         return share?.StatisticalRecordEmitted != true;
     }
 
-    private async Task OnSuggestDifficultyAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    // A present wrapper with no value is an already parsed no-op, not a request
+    // to parse again. BLAKE2b validates and executes the same converted value.
+    protected readonly record struct ParsedSuggestedDifficulty(double? Value);
+
+    protected double? ReadSuggestedDifficulty(JsonRpcRequest request)
+    {
+        try
+        {
+            var requestParams = request.ParamsAs<object[]>();
+            return (double) Convert.ChangeType(requestParams.FirstOrDefault()?.ToString().Trim(), typeof(double));
+        }
+        catch(Exception ex)
+        {
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPool.OnSuggestDifficultyAsync", failure: ex);
+            return null;
+        }
+    }
+
+    protected async Task OnSuggestDifficultyAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest,
+        ParsedSuggestedDifficulty? parsedDifficulty = null)
     {
         var request = tsRequest.Value;
         var context = connection.ContextAs<BitcoinWorkerContext>();
@@ -451,15 +475,14 @@ public class BitcoinPool : PoolBase
 
         try
         {
-            var requestParams = request.ParamsAs<object[]>();
-            var requestedDiff = (double) Convert.ChangeType(requestParams.FirstOrDefault()?.ToString().Trim(), typeof(double));
+            var requestedDiff = parsedDifficulty.HasValue ? parsedDifficulty.Value.Value : ReadSuggestedDifficulty(request);
 
             // client may suggest higher-than-base difficulty, but not a lower one
             var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
 
             if(requestedDiff > poolEndpoint.Difficulty)
             {
-                context.SetDifficulty(requestedDiff);
+                context.SetDifficulty(requestedDiff.Value);
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
 
                 logger.Info(() => $"[{connection.ConnectionId}] Difficulty set to {requestedDiff} as requested by miner");

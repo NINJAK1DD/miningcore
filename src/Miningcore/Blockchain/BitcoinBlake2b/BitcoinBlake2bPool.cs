@@ -412,6 +412,12 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 if(IsAdmissionClosed(connection))
                     return;
                 var previousDifficulty = context.Difficulty;
+                var suggestedDifficulty = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty
+                    ? ReadSuggestedDifficulty(request.Value) : null;
+                var proposedDifficulty = minimumDifficulty ?? suggestedDifficulty;
+                if(proposedDifficulty > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty &&
+                   !await ValidateProposedDifficultyAsync(connection, request.Value, proposedDifficulty.Value))
+                    return;
                 if(request.Value.Method == BitcoinStratumMethods.MiningConfigure)
                     await OnConfigureMiningAsync(connection, request, minimumDifficulty);
                 else if(request.Value.Method == BitcoinStratumMethods.Subscribe)
@@ -420,7 +426,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                     // hook do not customize this pool's subscription dispatch.
                     await OnSubscribeCoreAsync(connection, request, subscription);
                 else
-                    await base.OnRequestAsync(connection, request, ct);
+                    await OnSuggestDifficultyAsync(connection, request, new ParsedSuggestedDifficulty(suggestedDifficulty));
                 await CompleteAssignmentAsync(connection, previousDifficulty, request.Value.Method);
             }
             finally { gate.Release(); }
@@ -440,15 +446,43 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             // that happens, a publication failure is terminal: never send a second
             // response or retain a live, partially published assignment. Also latch
             // admission closed so requests already buffered cannot resume this session.
-            var budget = difficultyBudgets.GetValue(connection, createDifficultyBudget);
-            if(budget.TryClose())
-                StratumDiagnostics.Write(logger, NLog.LogLevel.Info,
-                    StratumDiagnostics.Event.AssignmentPublicationFailure, connection.ConnectionId);
-            Disconnect(connection);
+            CloseAssignmentPublicationFailure(connection);
             return Task.CompletedTask;
         }
 
         return base.OnRequestErrorAsync(connection, request, error, false);
+    }
+
+    private void CloseAssignmentPublicationFailure(StratumConnection connection)
+    {
+        // Even a submit-only session needs the latch: disconnect alone does not
+        // prevent dispatch of further lines already in the receive buffer.
+        if(!difficultyBudgets.TryGetValue(connection, out var budget))
+            budget = difficultyBudgets.GetValue(connection, createDifficultyBudget);
+        if(budget.TryClose())
+        {
+            connection.ContextAs<BitcoinWorkerContext>().ClearJobs();
+            StratumDiagnostics.Write(logger, NLog.LogLevel.Info,
+                StratumDiagnostics.Event.AssignmentPublicationFailure, connection.ConnectionId);
+            PublishTelemetry(TelemetryCategory.StratumAdmission, "publication-failure", TimeSpan.Zero);
+        }
+        Disconnect(connection);
+    }
+
+    private async Task<bool> ValidateProposedDifficultyAsync(StratumConnection connection, JsonRpcRequest request,
+        double difficulty)
+    {
+        try
+        {
+            Blake2bManager.ValidateWorkerDifficulty(difficulty);
+            return true;
+        }
+        catch(ArgumentOutOfRangeException)
+        {
+            await connection.RespondErrorAsync(StratumError.Other,
+                "Difficulty produces an unrepresentable BLAKE2b share target", request.Id, false);
+            return false;
+        }
     }
 
     private async Task CompleteAssignmentAsync(StratumConnection connection, double previousDifficulty, string method)
@@ -463,8 +497,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         catch(ArgumentOutOfRangeException)
         {
             context.SetDifficulty(previousDifficulty);
-            context.ClearJobs();
-            Disconnect(connection);
+            CloseAssignmentPublicationFailure(connection);
             return;
         }
         if(context.IsSubscribed && method != BitcoinStratumMethods.Subscribe)
@@ -487,6 +520,20 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         if(difficulty.HasValue && !await AdmitDifficultyRequestAsync(connection,
             difficultyBudgets.GetValue(connection, createDifficultyBudget), request.Value, null))
             return;
+        if(difficulty.HasValue)
+        {
+            var gate = await EnterAssignmentAsync(connection, ct);
+            try
+            {
+                if(IsAdmissionClosed(connection))
+                    return;
+                var context = connection.ContextAs<BitcoinWorkerContext>();
+                if(ShouldApplyStaticDifficulty(context, difficulty) &&
+                   !await ValidateProposedDifficultyAsync(connection, request.Value, difficulty.Value))
+                    return;
+            }
+            finally { gate.Release(); }
+        }
         await OnAuthorizeCoreAsync(connection, request, ct, new ParsedStaticDifficulty(difficulty), parameters);
     }
 

@@ -65,7 +65,9 @@ closes the connection. Malformed subscribe/configure/authorize requests consume 
 without state mutation; missing IDs remain uncharged. Subscribe validates parameters before
 external lookup or extranonce mutation, and a valid initial subscription stays free even
 after malformed requests exhaust the allowance. Numeric-string minimum difficulty remains
-compatible and is parsed once. Authorization preserves scalar worker/password conversion,
+compatible and is parsed once. Miner-selected values that cannot produce a BLAKE2b target are rejected before
+acknowledgment or state mutation while still consuming admission allowance.
+Authorization preserves scalar worker/password conversion,
 and authorize/configure tolerate ignored trailing fields. Canonical Bitcoin now declines
 minimum-difficulty negotiation with a missing value without dropping the connection.
 Terminal events have structured Info diagnostics and bounded admission counters; custom
@@ -85,12 +87,18 @@ Subscribe resolves NiceHash autodiff before acquiring the gate and committing su
 state; an authorize-before-subscribe client cannot hold up broadcasts during the API lookup.
 The parsed user agent and lookup result are carried together into the subscription commit.
 Each successful acquisition releases its exact semaphore, including protocol-error paths.
-If work publication fails after subscribe, configure, suggest or static authorization has
+If work publication fails after subscribe, configure, suggest, static authorization or a share submission has
 already been acknowledged, the connection closes without a second response for the request.
 Buffered requests cannot reopen it. Errors before acknowledgement remain recoverable;
 successful responses retain difficulty-before-notify ordering. Omitted/null subscription
 parameters work on canonical Bitcoin and BLAKE2b, and authorization preserves date-shaped
 scalar conversion under non-English cultures.
+Unexpected unrepresentable post-acknowledgment assignments use the same terminal latch
+and invalidate jobs. The `publication-failure` admission-counter outcome counts each
+terminal publication failure once. Accepted shares remain credited and do not acquire
+an invalid-share count or ban penalty when subsequent VarDiff publication fails.
+Canonical Bitcoin's post-response policy is tracked separately in
+[#183](https://github.com/NINJAK1DD/miningcore/issues/183).
 BLAKE2b continues to reject canonical direct-coinbase SOLO options at startup.
 
 ## Unreleased: Bitcoin-family verified job gate

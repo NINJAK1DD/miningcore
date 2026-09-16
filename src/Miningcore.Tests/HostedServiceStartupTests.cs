@@ -42,12 +42,13 @@ public class HostedServiceStartupTests
             Metrics.WithCustomRegistry(registry), registry);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await publisher.StartAsync(CancellationToken.None).WaitAsync(timeout.Token);
-        foreach(var outcome in new[] { "difficulty-refused", "difficulty-disconnect", "duplicate-subscribe", "miner-controlled-value" })
+        foreach(var outcome in new[] { "difficulty-refused", "difficulty-disconnect", "duplicate-subscribe", "publication-failure", "miner-controlled-value" })
             telemetry.OnNext(new TelemetryEvent("pool", TelemetryCategory.StratumAdmission, outcome, TimeSpan.Zero));
         var metrics = await WaitForMetricsAsync(registry, text =>
             text.Contains("miningcore_stratum_admission_total{pool=\"pool\",outcome=\"difficulty-refused\"} 1") &&
             text.Contains("miningcore_stratum_admission_total{pool=\"pool\",outcome=\"difficulty-disconnect\"} 1") &&
-            text.Contains("miningcore_stratum_admission_total{pool=\"pool\",outcome=\"duplicate-subscribe\"} 1"), timeout.Token);
+            text.Contains("miningcore_stratum_admission_total{pool=\"pool\",outcome=\"duplicate-subscribe\"} 1") &&
+            text.Contains("miningcore_stratum_admission_total{pool=\"pool\",outcome=\"publication-failure\"} 1"), timeout.Token);
         Assert.DoesNotContain("miner-controlled-value", metrics);
         await publisher.StopAsync(timeout.Token);
     }

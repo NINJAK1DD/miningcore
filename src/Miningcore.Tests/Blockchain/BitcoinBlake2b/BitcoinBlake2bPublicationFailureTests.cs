@@ -5,9 +5,11 @@ using System.Linq;
 using System.Threading.Tasks;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Extensions;
+using Miningcore.Notifications.Messages;
 using Miningcore.Stratum;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using NSubstitute;
 using Xunit;
 
 namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
@@ -58,6 +60,9 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         Assert.Equal(jobs, wire.JobsCreated);
         Assert.False(wire.MiningFaulted); // A per-connection publication failure is not a pool fault.
         Assert.Single(target.Logs.Where(x => x.Contains("AssignmentPublicationFailure")));
+        Assert.Empty(wire.Connection.ContextAs<BitcoinWorkerContext>().validJobs);
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
+            x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());
     }
 
     [Theory]
