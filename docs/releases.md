@@ -52,14 +52,19 @@ copying a recovery command from the maintainer section.
 ## Unreleased: BLAKE2b difficulty request budget
 
 [#152](https://github.com/NINJAK1DD/miningcore/issues/152) limits miner-requested BLAKE2b
-difficulty negotiation to a four-request burst and one replenished request per ten
+difficulty negotiation to an eight-request burst and one replenished request per ten
 seconds per connection. Suggest-difficulty, configure minimum-difficulty and authorization
 with a parseable `d=` static-difficulty password control share the budget, including
 duplicate requests. Excess requests receive a protocol refusal;
-eight consecutive refusals close the connection. Subscribe, ordinary authorization
+eight consecutive refusals close the connection. First subscribe, ordinary authorization
 without static difficulty, shares
 and server-driven VarDiff remain available while the budget recovers. Successful
 changes retain difficulty-before-notify ordering and immutable target/credit binding.
+Repeated subscribe now closes the connection before extranonce rotation or new work.
+Malformed configure and missing request IDs are rejected without spending allowance.
+Terminal events have structured Info diagnostics and bounded admission counters; custom
+BLAKE2b templates must disable version rolling. Cross-connection churn defenses are
+tracked separately in [#180](https://github.com/NINJAK1DD/miningcore/issues/180).
 See the [policy and validation evidence](bitcoin-blake2b.md#miner-requested-difficulty-budget).
 
 ## Unreleased: Bitcoin-family verified job gate

@@ -118,7 +118,14 @@ public class BitcoinPool : PoolBase
         }
     }
 
-    protected virtual async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
+    protected virtual Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct) =>
+        OnAuthorizeCoreAsync(connection, tsRequest, ct);
+
+    // A present wrapper also represents a parsed password with no static difficulty.
+    protected readonly record struct ParsedStaticDifficulty(double? Value);
+
+    protected async Task OnAuthorizeCoreAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest,
+        CancellationToken ct, ParsedStaticDifficulty? parsedDifficulty = null)
     {
         var request = tsRequest.Value;
 
@@ -129,7 +136,6 @@ public class BitcoinPool : PoolBase
         var requestParams = request.ParamsAs<string[]>();
         var workerValue = requestParams?.Length > 0 ? requestParams[0] : null;
         var password = requestParams?.Length > 1 ? requestParams[1] : null;
-        var passParts = password?.Split(PasswordControlVarsSeparator);
 
         // extract worker/miner
         var split = workerValue?.Split('.');
@@ -170,7 +176,8 @@ public class BitcoinPool : PoolBase
                 : $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
 
             // extract control vars from password
-            var staticDiff = GetStaticDiffFromPassparts(passParts);
+            var staticDiff = parsedDifficulty.HasValue ? parsedDifficulty.Value.Value :
+                GetStaticDiffFromPassparts(password?.Split(PasswordControlVarsSeparator));
 
             // Static diff
             if(staticDiff.HasValue &&

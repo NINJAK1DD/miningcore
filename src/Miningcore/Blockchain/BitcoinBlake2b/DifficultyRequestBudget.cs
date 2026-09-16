@@ -6,7 +6,7 @@ namespace Miningcore.Blockchain.BitcoinBlake2b;
 /// </summary>
 internal sealed class DifficultyRequestBudget
 {
-    internal const int Capacity = 4;
+    internal const int Capacity = 8;
     internal const int DisconnectAfterRefusals = 8;
     internal static readonly TimeSpan RefillInterval = TimeSpan.FromSeconds(10);
 
@@ -23,6 +23,10 @@ internal sealed class DifficultyRequestBudget
     private long previousTimestamp;
     private double tokens = Capacity;
     private int refusals;
+    private int closed;
+
+    internal bool IsClosed => Volatile.Read(ref closed) != 0;
+    internal bool TryClose() => Interlocked.Exchange(ref closed, 1) == 0;
 
     internal Admission TryAcquire()
     {
@@ -30,7 +34,7 @@ internal sealed class DifficultyRequestBudget
         {
             // A disconnect decision is terminal even if buffered requests are
             // dispatched while the socket teardown is still completing.
-            if(refusals >= DisconnectAfterRefusals)
+            if(IsClosed || refusals >= DisconnectAfterRefusals)
                 return Admission.Disconnect;
 
             var now = timeProvider.GetTimestamp();

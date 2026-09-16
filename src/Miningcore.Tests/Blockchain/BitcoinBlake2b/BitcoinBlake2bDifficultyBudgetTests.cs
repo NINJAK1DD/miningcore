@@ -14,6 +14,8 @@ using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
+using Miningcore.Mining;
+using Miningcore.Notifications.Messages;
 using Miningcore.Extensions;
 using Miningcore.Stratum;
 using Miningcore.VarDiff;
@@ -30,6 +32,108 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
 {
     private readonly ITestOutputHelper output;
     public BitcoinBlake2bDifficultyBudgetTests(ITestOutputHelper output) => this.output = output;
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DuplicateSubscribe_DisconnectsBeforeAnyWorkOrExtranonceMutation(bool exhausted)
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, budgetTimeProvider: new ManualTimeProvider());
+        using var logs = new NLog.LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(NLog.LogLevel.Info, NLog.LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        wire.SetLogger(logs.GetLogger("subscribe-test"));
+        if(exhausted)
+        {
+            for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
+            {
+                await Send(wire, false, 0);
+                Assert.True((await wire.ReadAsync())["result"].Value<bool>());
+            }
+            await Refused(wire, true);
+        }
+        await Subscribe(wire);
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var extraNonce = context.ExtraNonce1;
+        var jobs = context.validJobs.ToArray();
+        var difficulty = context.Difficulty;
+        await wire.SendRawAsync(string.Join("\n", Enumerable.Range(1, 20).Select(i =>
+            $"{{\"id\":{100 + i},\"method\":\"mining.subscribe\",\"params\":[\"repeat\"]}}")));
+        await wire.AssertNoMoreMessagesAsync();
+        Assert.Equal(1, wire.JobsCreated);
+        Assert.Equal(extraNonce, context.ExtraNonce1);
+        Assert.Equal(difficulty, context.Difficulty);
+        Assert.Equal(jobs, context.validJobs.ToArray());
+        Assert.Single(target.Logs.Where(x => x.Contains("DuplicateSubscription")));
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
+            x.Category == TelemetryCategory.StratumAdmission && x.Info == "duplicate-subscribe"), Arg.Any<string>());
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("[[\"minimum-difficulty\"]]")]
+    [InlineData("[[\"minimum-difficulty\"],{}]")]
+    [InlineData("[[\"minimum-difficulty\"],null]")]
+    [InlineData("[[\"minimum-difficulty\"],[]]")]
+    [InlineData("[[null],{}]")]
+    [InlineData("[[123],{}]")]
+    [InlineData("[[\"minimum-difficulty\"],{\"minimum-difficulty.value\":\"invalid\"}]")]
+    [InlineData("[[\"minimum-difficulty\"],{\"minimum-difficulty.value\":null}]")]
+    [InlineData("[[\"minimum-difficulty\"],{\"minimum-difficulty.value\":-1}]")]
+    [InlineData("[[\"minimum-difficulty\"],{\"minimum-difficulty.value\":1e999}]")]
+    public async Task MalformedConfigure_ReturnsErrorWithoutMutationOrChargingBudget(string parameters)
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, budgetTimeProvider: new ManualTimeProvider());
+        await Subscribe(wire);
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var jobs = context.validJobs.ToArray();
+        var varDiff = context.VarDiff = new VarDiffContext { Config = new VarDiffConfig { MinDiff = 1e-9 } };
+        context.EnqueueNewDifficulty(6e-9);
+        await wire.SendRawAsync($"{{\"id\":100,\"method\":\"mining.configure\",\"params\":{parameters}}}");
+        Assert.Equal((int) StratumError.Other, (await wire.ReadAsync())["error"]["code"].Value<int>());
+        await Fence(wire);
+        Assert.Equal(1e-9, context.Difficulty);
+        Assert.Same(varDiff, context.VarDiff);
+        Assert.True(context.HasPendingDifficulty);
+        Assert.Equal(jobs, context.validJobs.ToArray());
+        Assert.Equal(1, wire.JobsCreated);
+        for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
+            await Accepted(wire, true, (i + 2) / 1e9);
+        await Refused(wire, true);
+    }
+
+    [Theory]
+    [InlineData("mining.suggest_difficulty", "[0.000000002]")]
+    [InlineData("mining.configure", "[[\"minimum-difficulty\"],{\"minimum-difficulty.value\":0.000000002}]")]
+    [InlineData("mining.authorize", "[\"test.worker\",\"d=0.000000002\"]")]
+    public async Task NullId_DoesNotChargeBudget(string method, string parameters)
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, budgetTimeProvider: new ManualTimeProvider());
+        await Subscribe(wire);
+        await wire.SendRawAsync($"{{\"id\":null,\"method\":\"{method}\",\"params\":{parameters}}}");
+        Assert.Equal((int) StratumError.MinusOne, (await wire.ReadAsync())["error"]["code"].Value<int>());
+        await Fence(wire);
+        Assert.Equal(1e-9, wire.Connection.Context.Difficulty);
+        Assert.Equal(0, manager.AddressValidations);
+        for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
+            await Accepted(wire, true, (i + 2) / 1e9);
+        await Refused(wire, true);
+    }
+
+    [Fact]
+    public void CustomTemplate_CannotEnableVersionRollingAtPoolConfigure()
+    {
+        var (config, manager, clock, bus) = Fixture();
+        config.Template = new BitcoinBlake2bTemplate { DisableVersionRolling = false };
+        Assert.Throws<PoolStartupException>(() =>
+            new BitcoinBlake2bWireSession(container, clock, config, manager, bus));
+    }
 
     [Theory]
     [InlineData("d={0}")]
@@ -80,6 +184,36 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
     private static string Password(double difficulty, string format = "d={0}") =>
         string.Format(CultureInfo.InvariantCulture, format, difficulty.ToString("0.000000000", CultureInfo.InvariantCulture));
 
+    [Fact]
+    public async Task CanonicalBitcoin_DifficultyAndAuthorizationRemainUnbudgeted()
+    {
+        var (config, manager, clock, bus) = Fixture();
+        config.Template = ModuleInitializer.CoinTemplates["bitcoin"];
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: true);
+        await Subscribe(wire);
+        for(var i = 0; i < 20; i++)
+        {
+            var difficulty = (i + 2) / 1e9;
+            if(i % 3 == 0)
+                await wire.SendRequestAsync("mining.authorize", "test.worker", Password(difficulty));
+            else
+                await Send(wire, i % 3 == 1, difficulty);
+            var response = await wire.ReadAsync();
+            Assert.Null(response["method"]);
+            Assert.True((i % 3 == 1 ? response["result"]["minimum-difficulty"] : response["result"]).Value<bool>());
+            if(i % 3 != 1)
+                Assert.Equal(difficulty, (await wire.ReadAsync())["params"][0].Value<double>());
+            Assert.Equal(difficulty, wire.Connection.Context.Difficulty);
+        }
+        // Canonical Bitcoin still issues work only at subscribe here.
+        Assert.Equal(1, wire.JobsCreated);
+        Assert.Equal(7, manager.AddressValidations);
+        await Subscribe(wire);
+        Assert.Equal(2, wire.JobsCreated);
+        bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
+            x.Category == TelemetryCategory.StratumAdmission), Arg.Any<string>());
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
@@ -91,7 +225,13 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         await Subscribe(wire);
         var before = wire.JobsCreated;
         var timer = Stopwatch.StartNew();
-        for(var i = 0; i < 4; i++)
+        using var logs = new NLog.LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(NLog.LogLevel.Info, NLog.LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        wire.SetLogger(logs.GetLogger("budget-test"));
+        for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
             await Accepted(wire, mode == 1 || mode == 2 && i % 2 == 0, i % 2 == 0 ? 2e-9 : 3e-9);
         var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
         var jobs = context.validJobs.ToArray();
@@ -99,16 +239,23 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         context.EnqueueNewDifficulty(6e-9);
         for(var i = 0; i < 7; i++)
             await Refused(wire, mode == 1 || mode == 2 && i % 2 == 0);
+        Assert.DoesNotContain(target.Logs, x => x.Contains("DifficultyBudgetDisconnect"));
+        bus.Received(7).SendMessage(Arg.Is<TelemetryEvent>(x =>
+            x.Category == TelemetryCategory.StratumAdmission && x.Info == "difficulty-refused"), Arg.Any<string>());
         Assert.Equal(3e-9, context.Difficulty);
         Assert.Same(varDiff, context.VarDiff);
         Assert.True(context.HasPendingDifficulty);
         Assert.Equal(jobs, context.validJobs.ToArray());
-        Assert.Equal(4, wire.JobsCreated - before);
-        output.WriteLine("Mode {0}: 11 requests, 4 jobs, 11 responses, 4 set_difficulty, 4 notify in {1:F2} ms; next request disconnects",
-            mode, timer.Elapsed.TotalMilliseconds);
-        await Send(wire, mode == 1, 2e-9);
-        await wire.AssertDisconnectedAsync();
-        Assert.Equal(4, wire.JobsCreated - before);
+        Assert.Equal(DifficultyRequestBudget.Capacity, wire.JobsCreated - before);
+        output.WriteLine("Mode {0}: {1} admitted requests and jobs, seven refusal replies in {2:F2} ms; next request disconnects",
+            mode, DifficultyRequestBudget.Capacity, timer.Elapsed.TotalMilliseconds);
+        await wire.SendRawAsync(string.Join("\n", Enumerable.Range(1, 20).Select(i =>
+            $"{{\"id\":{100 + i},\"method\":\"mining.suggest_difficulty\",\"params\":[0.000000002]}}")));
+        await wire.AssertNoMoreMessagesAsync();
+        Assert.Single(target.Logs.Where(x => x.Contains("DifficultyBudgetDisconnect")));
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
+            x.Category == TelemetryCategory.StratumAdmission && x.Info == "difficulty-disconnect"), Arg.Any<string>());
+        Assert.Equal(DifficultyRequestBudget.Capacity, wire.JobsCreated - before);
     }
 
     [Theory]
@@ -124,7 +271,7 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         await Subscribe(wire);
         if(nicehash)
             wire.Connection.Context.UserAgent = "NiceHash/budget-test";
-        for(var i = 0; i < 4; i++)
+        for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
         {
             await wire.SendRequestAsync("mining.configure", new[] { "minimum-difficulty", "minimum-difficulty" },
                 new Dictionary<string, object> { ["minimum-difficulty.value"] = (i + 2) * 1e-9 });
@@ -140,7 +287,7 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         Assert.Equal(JTokenType.String, response["result"]["minimum-difficulty"].Type);
         Assert.False(response["result"]["version-rolling"].Value<bool>());
         Assert.False(response["result"]["unknown"].Value<bool>());
-        Assert.Equal(5e-9, wire.Connection.Context.Difficulty);
+        Assert.Equal((DifficultyRequestBudget.Capacity + 1) * 1e-9, wire.Connection.Context.Difficulty);
         await Fence(wire);
     }
 
@@ -178,7 +325,7 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         await Subscribe(wire);
         await Accepted(wire, configure, 2e-9);
         var before = wire.JobsCreated;
-        for(var i = 0; i < 3; i++)
+        for(var i = 0; i < DifficultyRequestBudget.Capacity - 1; i++)
         {
             await Send(wire, configure, 2e-9);
             Assert.Null((await wire.ReadAsync())["method"]);
@@ -198,7 +345,7 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         var time = new ManualTimeProvider();
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, budgetTimeProvider: time);
         await Subscribe(wire);
-        for(var i = 0; i < 4; i++)
+        for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
             await Accepted(wire, false, (i + 2) * 1e-9);
         foreach(var delta in new[] { TimeSpan.FromDays(365), TimeSpan.FromDays(-730) })
         {
@@ -212,7 +359,7 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         await Accepted(wire, true, 6e-9);
         await Refused(wire, false);
         time.AdvanceMonotonic(TimeSpan.FromDays(30));
-        for(var i = 0; i < 4; i++)
+        for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
             await Accepted(wire, i % 2 == 0, (i + 7) * 1e-9);
         await Refused(wire, true);
         await Fence(wire);
@@ -224,6 +371,12 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         var (config, manager, clock, bus) = Fixture();
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, budgetTimeProvider: new ManualTimeProvider());
         await Subscribe(wire);
+        // Spend the extra startup headroom before testing a bounded pipelined batch.
+        for(var i = 0; i < DifficultyRequestBudget.Capacity - 4; i++)
+        {
+            await Send(wire, false, 0);
+            Assert.True((await wire.ReadAsync())["result"].Value<bool>());
+        }
         // Five requests fit below the dispatcher's 32 KiB and 16-response bounds.
         for(var i = 0; i < 5; i++)
             await Send(wire, i % 2 == 0, (i + 2) * 1e-9);
@@ -260,7 +413,7 @@ public class BitcoinBlake2bDifficultyBudgetTests : TestBase
         var (config, manager, clock, bus) = Fixture();
         var time = new ManualTimeProvider();
         await using var first = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, budgetTimeProvider: time);
-        for(var i = 0; i < 4; i++)
+        for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
         {
             // Below-base requests do no useful work but must still consume admission.
             await Send(first, false, 0);

@@ -50,7 +50,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             rmsm, nicehashService)
     {
         ArgumentNullException.ThrowIfNull(difficultyBudgetTimeProvider);
-        this.difficultyBudgetTimeProvider = difficultyBudgetTimeProvider;
+        createDifficultyBudget = _ => new DifficultyRequestBudget(difficultyBudgetTimeProvider);
     }
 
     private readonly PoolOperationGate operations = new();
@@ -58,7 +58,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     // configure and static-difficulty authorization share one bucket, including
     // pre-subscription calls.
     private readonly ConditionalWeakTable<StratumConnection, DifficultyRequestBudget> difficultyBudgets = new();
-    private readonly TimeProvider difficultyBudgetTimeProvider;
+    private readonly ConditionalWeakTable<StratumConnection, DifficultyRequestBudget>.CreateValueCallback createDifficultyBudget;
     private readonly object statusSync = new();
     private CancellationToken hostShutdown;
     private int lifetimeStarted;
@@ -70,6 +70,14 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         Volatile.Read(ref online) != 0 ? "online" : "starting";
     public bool MiningFaulted => operations.IsClosed;
     public IDisposable TryAcquireOperation() => operations.TryAcquire();
+
+    public override void Configure(PoolConfig pc, ClusterConfig cc)
+    {
+        // Also enforce the loader's invariant for programmatically supplied templates.
+        if(pc.Template is not BitcoinBlake2bTemplate { DisableVersionRolling: true })
+            throw new PoolStartupException("Bitcoin BLAKE2b requires version rolling to be disabled", pc.Id);
+        base.Configure(pc, cc);
+    }
 
     protected override void NotifyPoolOnline()
     {
@@ -290,21 +298,39 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             return;
         }
 
-        if(TryClassifyDifficultyRequest(request.Value, out var extensions))
+        var budget = difficultyBudgets.GetValue(connection, createDifficultyBudget);
+        if(budget.IsClosed)
+            return;
+
+        var context = connection.ContextAs<BitcoinWorkerContext>();
+        if(request.Value.Method == BitcoinStratumMethods.Subscribe && context.IsSubscribed)
         {
-            var admission = difficultyBudgets.GetValue(connection,
-                _ => new DifficultyRequestBudget(difficultyBudgetTimeProvider)).TryAcquire();
-            if(admission != DifficultyRequestBudget.Admission.Allowed)
+            CloseAdmission(connection, budget, StratumDiagnostics.Event.DuplicateSubscription, "duplicate-subscribe");
+            return;
+        }
+
+        JArray extensions = null;
+        // Validate before admission: malformed requests neither mutate state nor
+        // consume tokens. Keep errors controlled at the BLAKE2b wire boundary.
+        if(request.Value.Method == BitcoinStratumMethods.MiningConfigure &&
+            !TryValidateConfigure(request.Value.Params, out extensions))
+        {
+            await connection.RespondErrorAsync(StratumError.Other, "Invalid mining.configure parameters", request.Value.Id, false);
+            return;
+        }
+        var difficultyRequest = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty ||
+            extensions?.Any(x => x.Value<string>() == BitcoinStratumExtensions.MinimumDiff) == true;
+        if(difficultyRequest || request.Value.Method is BitcoinStratumMethods.Authorize or BitcoinStratumMethods.MiningConfigure)
+        {
+            if(request.Value.Id == null)
             {
-                if(admission == DifficultyRequestBudget.Admission.Disconnect)
-                    Disconnect(connection);
-                else
-                    await RefuseDifficultyRequestAsync(connection, request.Value, extensions);
+                await connection.RespondErrorAsync(StratumError.MinusOne, "missing request id", null, false);
                 return;
             }
         }
+        if(difficultyRequest && !await AdmitDifficultyRequestAsync(connection, request.Value, extensions))
+            return;
 
-        var context = connection.ContextAs<BitcoinWorkerContext>();
         var previousDifficulty = context.Difficulty;
         await base.OnRequestAsync(connection, request, ct);
         if(context.Difficulty == previousDifficulty)
@@ -341,36 +367,61 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         }
     }
 
-    private bool TryClassifyDifficultyRequest(JsonRpcRequest request, out JArray extensions)
+    protected override async Task OnAuthorizeAsync(StratumConnection connection,
+        Timestamped<JsonRpcRequest> request, CancellationToken ct)
+    {
+        var parameters = request.Value.ParamsAs<string[]>();
+        var password = parameters?.Length > 1 ? parameters[1] : null;
+        // Use exactly the inherited parser once, including legacy embedded d= syntax.
+        var difficulty = GetStaticDiffFromPassparts(password?.Split(PasswordControlVarsSeparator));
+        if(difficulty.HasValue && !await AdmitDifficultyRequestAsync(connection, request.Value, null))
+            return;
+        await OnAuthorizeCoreAsync(connection, request, ct, new ParsedStaticDifficulty(difficulty));
+    }
+
+    private static bool TryValidateConfigure(object parameters, out JArray extensions)
     {
         extensions = null;
-        switch(request.Method)
+        if(parameters is not JArray { Count: 2 } array || array[0] is not JArray requested ||
+            requested.Any(x => x.Type != JTokenType.String) || array[1] is not JObject values)
+            return false;
+        if(requested.Any(x => x.Value<string>() == BitcoinStratumExtensions.MinimumDiff))
         {
-            case BitcoinStratumMethods.SuggestDifficulty:
-                return true;
-
-            case BitcoinStratumMethods.MiningConfigure:
-                if(request.Params is JArray { Count: > 0 } parameters && parameters[0] is JArray requested &&
-                   requested.Any(x => x.Type == JTokenType.String && x.Value<string>() == BitcoinStratumExtensions.MinimumDiff))
-                {
-                    extensions = requested;
-                    return true;
-                }
-                return false;
-
-            case BitcoinStratumMethods.Authorize:
-                // Match the inherited parser, including its legacy embedded d=
-                // syntax. A separate StartsWith check would leave a bypass.
-                // JSON strings are the only wire password tokens that can
-                // contain this control variable. Ordinary authorization is free.
-                return request.Params is JArray { Count: > 1 } authorization &&
-                    authorization[1].Type == JTokenType.String &&
-                    GetStaticDiffFromPassparts(authorization[1].Value<string>()
-                        .Split(PasswordControlVarsSeparator)).HasValue;
-
-            default:
+            var value = values["minimum-difficulty.value"];
+            if(value?.Type is not (JTokenType.Integer or JTokenType.Float) ||
+                !double.TryParse(value.ToString(Formatting.None), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var difficulty) ||
+                !double.IsFinite(difficulty) || difficulty <= 0)
                 return false;
         }
+        extensions = requested;
+        return true;
+    }
+
+    private async Task<bool> AdmitDifficultyRequestAsync(StratumConnection connection, JsonRpcRequest request, JArray extensions)
+    {
+        var budget = difficultyBudgets.GetValue(connection, createDifficultyBudget);
+        var admission = budget.TryAcquire();
+        if(admission == DifficultyRequestBudget.Admission.Allowed)
+            return true;
+        if(admission == DifficultyRequestBudget.Admission.Disconnect)
+            CloseAdmission(connection, budget, StratumDiagnostics.Event.DifficultyBudgetDisconnect, "difficulty-disconnect");
+        else
+        {
+            PublishTelemetry(TelemetryCategory.StratumAdmission, "difficulty-refused", TimeSpan.Zero);
+            await RefuseDifficultyRequestAsync(connection, request, extensions);
+        }
+        return false;
+    }
+
+    private void CloseAdmission(StratumConnection connection, DifficultyRequestBudget budget,
+        StratumDiagnostics.Event reason, string outcome)
+    {
+        if(!budget.TryClose())
+            return;
+        StratumDiagnostics.Write(logger, NLog.LogLevel.Info, reason, connection.ConnectionId);
+        PublishTelemetry(TelemetryCategory.StratumAdmission, outcome, TimeSpan.Zero);
+        Disconnect(connection);
     }
 
     private Task RefuseDifficultyRequestAsync(StratumConnection connection, JsonRpcRequest request, JArray extensions)

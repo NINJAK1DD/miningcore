@@ -162,10 +162,10 @@ public class BitcoinBlake2bRegtestTests : TestBase
                 lastRequestedDifficulty = requested;
             }
             await wire.SendRequestAsync("mining.configure", new[] { "minimum-difficulty" },
-                new Dictionary<string, object> { ["minimum-difficulty.value"] = 6e-9 });
+                new Dictionary<string, object> { ["minimum-difficulty.value"] = 100e-9 });
             Assert.Equal(JTokenType.String, (await wire.ReadAsync())["result"]["minimum-difficulty"].Type);
             Assert.Equal(lastRequestedDifficulty, worker.Context.Difficulty);
-            await wire.SendRequestAsync("mining.authorize", destination + ".test", "d=0.000000006");
+            await wire.SendRequestAsync("mining.authorize", destination + ".test", "d=0.000000100");
             var refusedAuthorization = await wire.ReadAsync();
             Assert.Equal((int) StratumError.Other, refusedAuthorization["error"]["code"].Value<int>());
             Assert.False(refusedAuthorization["result"].Value<bool>());
@@ -234,6 +234,15 @@ public class BitcoinBlake2bRegtestTests : TestBase
             }
             Assert.True(candidate?.IsBlockCandidate);
             Assert.Equal(1e-9, candidate.Difficulty);
+            // The valid mining.submit above traversed the wire dispatcher with
+            // an exhausted bucket. No time elapsed on its injected monotonic
+            // clock: prove it remains exhausted even after accepting the proof.
+            await wire.SendRequestAsync("mining.suggest_difficulty", 100e-9);
+            var stillRefused = await wire.ReadAsync();
+            Assert.Equal((int) StratumError.Other, stillRefused["error"]["code"].Value<int>());
+            Assert.False(stillRefused["result"].Value<bool>());
+            await wire.SendRequestAsync("mining.configure", new[] { "version-rolling" }, new Dictionary<string, object>());
+            Assert.Null((await wire.ReadAsync())["method"]);
             if(schemes[index] == PayoutScheme.PPS)
             {
                 Assert.True(candidate.BlockRecordEmitted);
