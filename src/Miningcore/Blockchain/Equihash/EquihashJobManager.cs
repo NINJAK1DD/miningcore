@@ -112,10 +112,10 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
                 GetBlockTemplateFromJson(json);
 
             // may happen if daemon is currently not connected to peers
-            if(response.Error != null)
+            if(response.Error != null || response.Response == null)
             {
-                logger.Warn(() => $"Unable to update job. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
-                return (false, forceUpdate);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "EquihashJobManager.UpdateJob", code: response.Error?.Code);
+                return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
             }
 
             var blockTemplate = response.Response;
@@ -172,10 +172,10 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashJobManager.UpdateJob", failure: ex);
         }
 
-        return (false, forceUpdate);
+        return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
     }
 
     protected override object GetJobParamsForStratum(bool isNew)
@@ -304,7 +304,7 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
 
             if(share.IsBlockCandidate)
             {
-                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
+                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] (miner identity withheld)");
 
                 OnBlockFound();
 
@@ -353,8 +353,8 @@ public class EquihashJobManager : BitcoinJobManagerBase<EquihashJob>
 
         if((!isPBaaSActive && !string.IsNullOrEmpty(submitError)) || (isPBaaSActive && !submitError.Contains("accepted")))
         {
-            logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {submitError}");
-            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {submitError}"));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "EquihashJobManager.SubmitVeruscoinBlockAsync");
+            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
             return new SubmitResult(false, null);
         }
 

@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Net;
 using System.Reactive;
 using System.Reactive.Concurrency;
@@ -9,6 +10,7 @@ using MimeKit;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Payments;
 using Miningcore.Pushover;
@@ -29,7 +31,7 @@ public class NotificationService : StartupGatedBackgroundService,
         Contract.RequiresNonNull(messageBus);
 
         this.clusterConfig = clusterConfig;
-        emailSenderConfig = clusterConfig.Notifications.Email;
+        emailSenderConfig = clusterConfig.Notifications?.Email;
         this.messageBus = messageBus;
         this.pushoverClient = pushoverClient;
 
@@ -189,7 +191,10 @@ public class NotificationService : StartupGatedBackgroundService,
                 notification.Reconciliation?.NotAttempted, symbol);
 
             if(!string.IsNullOrWhiteSpace(notification.Error))
-                sections.Add($"Reason: {HtmlEncode(notification.Error)}");
+                sections.Add(RpcConsumerDiagnostics.WithheldError);
+            sections.Add("Reconcile wallet history before retrying or releasing ownership.");
+            if(notification.FailureDiagnostic != null)
+                sections.Add(HtmlEncode(notification.FailureDiagnostic.Summary));
 
             var pushoverSections = new List<string>
             {
@@ -205,17 +210,26 @@ public class NotificationService : StartupGatedBackgroundService,
                 "Uncertain", notification.Reconciliation?.Uncertain, symbol);
             AppendPushoverReconciliationSummary(pushoverSections,
                 "Not attempted", notification.Reconciliation?.NotAttempted, symbol);
-            pushoverSections.Add("See email and logs for recipient, transaction, and error details.");
+            pushoverSections.Add("See email for the recipient/transaction reconciliation summary. Consult retained private reconciliation evidence and wallet history for withheld error details.");
+            if(notification.FailureDiagnostic != null)
+                pushoverSections.Add(notification.FailureDiagnostic.Summary);
 
             return (subject, string.Join("<br/>", sections),
                 TruncateForPushover(string.Join("\n", pushoverSections)), false);
         }
 
+        // Conclusive failures do not carry the uncertain-outcome reconciliation
+        // requirement. Keep both channels credential-safe without implying a held lease.
+        const string conclusiveFailureGuidance =
+            "Payout failed conclusively; sensitive error detail is withheld. " +
+            "Check the operation diagnostics and correct the cause before retrying.";
+        var failureSummary = notification.FailureDiagnostic?.Summary;
         var emailFailureMessage = FormatHtmlFailedAmount(notification, symbol) + " " +
             $"from pool {HtmlEncode(notification.PoolId)}: " +
-            HtmlEncode(notification.Error);
+            conclusiveFailureGuidance + (failureSummary == null ? string.Empty : " " + HtmlEncode(failureSummary));
         var pushoverFailureMessage = FormatFailedAmount(notification, symbol) + " " +
-            $"from pool {notification.PoolId}: {notification.Error}";
+            $"from pool {notification.PoolId}: {conclusiveFailureGuidance}" +
+            (failureSummary == null ? string.Empty : " " + failureSummary);
         return ("Payout Failure Notification", emailFailureMessage,
             TruncateForPushover(pushoverFailureMessage), false);
     }
@@ -249,18 +263,18 @@ public class NotificationService : StartupGatedBackgroundService,
                 transactionIds = new[] { x.TransactionId };
 
             if(transactionIds.Length == 1)
-                parts.Add($"transaction {HtmlEncode(transactionIds[0])}");
+                parts.Add($"transaction {HtmlEncode(RpcConsumerDiagnostics.TransactionId(transactionIds[0]))}");
             else if(transactionIds.Length > 1)
             {
                 var transactionDetail = $"transactions " +
-                    string.Join(", ", transactionIds.Select(HtmlEncode));
+                    string.Join(", ", transactionIds.Select(RpcConsumerDiagnostics.TransactionId).Select(HtmlEncode));
                 if(!string.IsNullOrWhiteSpace(x.TransactionId))
-                    transactionDetail += $" (canonical {HtmlEncode(x.TransactionId)})";
+                    transactionDetail += $" (canonical {HtmlEncode(RpcConsumerDiagnostics.TransactionId(x.TransactionId))})";
                 parts.Add(transactionDetail);
             }
 
             if(!string.IsNullOrWhiteSpace(x.Detail))
-                parts.Add(HtmlEncode(x.Detail));
+                parts.Add("Sensitive reconciliation detail withheld; retain the original evidence for manual reconciliation.");
 
             return string.Join(", ", parts);
         });
@@ -409,6 +423,11 @@ public class NotificationService : StartupGatedBackgroundService,
 
     public async Task SendEmailAsync(string recipient, string subject, string body, CancellationToken ct)
     {
+        // The critical-sender singleton is separate from the hosted instance under the
+        // current Autofac registrations, even in normal operation. Recovery also resolves
+        // it without hosting. Delivery cannot rely on the hosted startup validation.
+        if(emailSenderConfig == null)
+            throw new InvalidOperationException("Email delivery requires notifications.email configuration");
         logger.Info(() => $"Sending '{subject.ToLower()}' email to {recipient}");
 
         var message = new MimeMessage();
@@ -430,7 +449,7 @@ public class NotificationService : StartupGatedBackgroundService,
 
     private void LogGuarded(Exception ex)
     {
-        logger.Error(ex);
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "NotificationService.LogGuarded", failure: ex);
     }
 
     private IObservable<IObservable<Unit>> Subscribe<T>(Func<T, CancellationToken, Task> handler, CancellationToken ct)
@@ -448,6 +467,13 @@ public class NotificationService : StartupGatedBackgroundService,
 
             if(clusterConfig.Notifications?.Admin?.Enabled == true)
             {
+                // Normal non-recovery validation already requires email configuration.
+                // Validate before subscriptions/readiness, not in the constructor where
+                // Autofac would wrap the named startup error. Block/payment delivery can
+                // use the sender even when the recipient is absent or whitespace.
+                // Keep this aligned with the policy consolidation tracked in issue #148.
+                if(emailSenderConfig == null)
+                    throw new PoolStartupException("Admin email notifications require notifications.email configuration");
                 obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));
                 obs.Add(Subscribe<BlockFoundNotification>(OnBlockFoundNotificationAsync, ct));
                 obs.Add(Subscribe<PaymentNotification>(OnPaymentNotificationAsync, ct));

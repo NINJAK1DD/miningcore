@@ -1,27 +1,30 @@
 {
+    // Starter configuration: replace every CHANGE_ME value and review it before use.
+    // See README.md and ../config.example.json for topology and field guidance.
     "logging": {
         "level": "info",
         "enableConsoleLog": true,
         "enableConsoleColors": true,
-        "logFile": "",
-        "apiLogFile": "",
-        "logBaseDirectory": "",
+        "logFile": "miningcore.log",
+        "apiLogFile": "miningcore-api.log",
+        "logBaseDirectory": "logs",
         "perPoolLogFile": false
     },
     "banning": {
         "manager": "Integrated",
         "banOnJunkReceive": true,
-        "banOnInvalidShares": false
+        "banOnInvalidShares": true,
+        "banOnLoginFailure": true
     },
     "notifications": {
         "enabled": false,
         "email": {
             "host": "smtp.example.com",
             "port": 587,
-            "user": "user",
-            "password": "password",
-            "fromAddress": "info@yourpool.org",
-            "fromName": "pool support"
+            "user": "CHANGE_ME_SMTP_USER",
+            "password": "CHANGE_ME_SMTP_PASSWORD",
+            "fromAddress": "pool@example.com",
+            "fromName": "Miningcore operator"
         },
         "admin": {
             "enabled": false,
@@ -34,32 +37,27 @@
             "host": "127.0.0.1",
             "port": 5432,
             "user": "miningcore",
-            "password": "password",
+            "password": "CHANGE_ME_POSTGRES_PASSWORD",
             "database": "miningcore"
         }
     },
     "paymentProcessing": {
         "enabled": true,
         "interval": 600,
-        "shareRecoveryFile": "recovered-shares.txt"
+        "coinbaseString": "Miningcore"
     },
+    "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
     "api": {
         "enabled": true,
-        "listenAddress": "*",
+        "listenAddress": "127.0.0.1",
         "port": 4000,
-        "metricsIpWhitelist": [],
+        "adminPort": 4001,
+        "metricsPort": 4002,
+        "adminIpWhitelist": [ "127.0.0.1" ],
+        "metricsIpWhitelist": [ "127.0.0.1" ],
+        "legacyNullValueHandling": false,
         "rateLimiting": {
-            "disabled": true,
-            "rules": [
-                {
-                    "Endpoint": "*",
-                    "Period": "1s",
-                    "Limit": 5
-                }
-            ],
-            "ipWhitelist": [
-                ""
-            ]
+            "disabled": true
         }
     },
     "pools": [
@@ -67,17 +65,19 @@
             "id": "zano1",
             "enabled": true,
             "coin": "zano",
-            "address": "ZxDKT1aqiEXPA5cDADtYEfMR1oXsRd68bby4nzUvVmnjHzzrfvjwhNdQ9yiWNeGutzg9LZdwsbP2FGB1gNpZXiYY1fCfpw33c",
+            "address": "CHANGE_ME_ZANO_POOL_WALLET_ADDRESS",
             "rewardRecipients": [
                 {
                     "type": "op",
-                    "address": "ZxDKT1aqiEXPA5cDADtYEfMR1oXsRd68bby4nzUvVmnjHzzrfvjwhNdQ9yiWNeGutzg9LZdwsbP2FGB1gNpZXiYY1fCfpw33c",
-                    "percentage": 0.1
+                    "address": "CHANGE_ME_ZANO_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
+                    "percentage": 0
                 }
             ],
+            "enableInternalStratum": true,
             "blockRefreshInterval": 250,
             "jobRebroadcastTimeout": 3,
             "clientConnectionTimeout": 600,
+            "vardiffIdleSweepInterval": 30,
             "banning": {
                 "enabled": true,
                 "time": 600,
@@ -86,30 +86,31 @@
             },
             "ports": {
                 "3364": {
-                    "listenAddress": "0.0.0.0",
+                    "name": "ZANO-LOW-DIFF",
+                    "listenAddress": "*",
                     "difficulty": 250000000,
                     "varDiff": {
-                        "minDiff": 250000000,
+                        "minDiff": 125000000,
                         "maxDiff": null,
                         "targetTime": 15,
                         "retargetTime": 90,
                         "variancePercent": 30,
-                        "maxDelta": 500
+                        "maxDelta": 250000000
                     }
                 },
                 "3365": {
-                    "listenAddress": "0.0.0.0",
-                    "difficulty": 250000000,
-                    "tls": true,
-                    "tlsPfxFile": "<Your directory for the pfx file>",
-                    "tlsPfxPassword": "password",
+                    "name": "ZANO-HIGH-DIFF",
+                    "listenAddress": "*",
+                    "difficulty": 4000000000,
+                    "tls": false,
+                    // To enable TLS, add tlsPfxFile and tlsPfxPassword with a readable PFX.
                     "varDiff": {
-                        "minDiff": 250000000,
+                        "minDiff": 2000000000,
                         "maxDiff": null,
                         "targetTime": 15,
                         "retargetTime": 90,
                         "variancePercent": 30,
-                        "maxDelta": 500
+                        "maxDelta": 4000000000
                     }
                 }
             },

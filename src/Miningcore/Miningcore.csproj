@@ -13,7 +13,22 @@
         <IsWindows Condition="'$(OS)' == 'Windows_NT'">true</IsWindows>
         <IsLinux Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))' == 'true'">true</IsLinux>
         <IsOSX Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::OSX)))' == 'true'">true</IsOSX>
+        <BuildOdoCryptWindows Condition="'$(BuildOdoCryptWindows)' == ''">true</BuildOdoCryptWindows>
+        <OdoCryptWindowsRuntime Condition="'$(IsWindows)' == 'true'">$(ProjectDir)..\Native\libodocrypt\bin\x64\Release\libodocrypt.dll</OdoCryptWindowsRuntime>
     </PropertyGroup>
+
+    <ItemGroup Condition="'$(IsWindows)' == 'true'">
+        <OdoCryptWindowsBuildInputs Include="$(MSBuildProjectFullPath)" />
+        <OdoCryptWindowsBuildInputs Include="$(ProjectDir)..\..\scripts\release\build-windows-odocrypt.ps1" />
+        <OdoCryptWindowsBuildInputs Include="$(ProjectDir)..\Native\libodocrypt\libodocrypt.vcxproj" />
+        <OdoCryptWindowsBuildInputs Include="$(ProjectDir)..\Native\libodocrypt\exports.cpp" />
+        <OdoCryptWindowsBuildInputs Include="$(ProjectDir)..\Native\libodocrypt\upstream.sha256" />
+        <OdoCryptWindowsBuildInputs Include="$(ProjectDir)..\Native\libmultihash\odocrypt.cpp" />
+        <OdoCryptWindowsBuildInputs Include="$(ProjectDir)..\Native\libmultihash\odocrypt.h" />
+        <OdoCryptWindowsBuildInputs Include="$(ProjectDir)..\Native\libmultihash\KeccakP-800-reference.c" />
+        <OdoCryptWindowsBuildInputs Include="$(ProjectDir)..\Native\libmultihash\KeccakP-800-SnP.h" />
+        <OdoCryptWindowsBuildInputs Include="$(ProjectDir)..\Native\libmultihash\brg_endian.h" />
+    </ItemGroup>
 
     <ItemGroup>
         <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
@@ -52,7 +67,7 @@
 
     <ItemGroup>
         <PackageReference Include="AspNetCoreRateLimit" Version="5.0.0" />
-        <PackageReference Include="Autofac" Version="8.2.0" />
+        <PackageReference Include="Autofac" Version="9.3.2" />
         <PackageReference Include="Autofac.Extensions.DependencyInjection" Version="10.0.0" />
         <PackageReference Include="CircularBuffer" Version="1.4.0" />
         <PackageReference Include="blake3" Version="0.5.1" />
@@ -72,13 +87,13 @@
         </PackageReference>
         <PackageReference Include="NLog.Extensions.Hosting" Version="5.3.8" />
         <PackageReference Include="AutoMapper" Version="16.2.0" />
-        <PackageReference Include="Dapper" Version="2.1.35" />
-        <PackageReference Include="FluentValidation" Version="11.11.0" />
+        <PackageReference Include="Dapper" Version="2.1.86" />
+        <PackageReference Include="FluentValidation" Version="12.1.1" />
         <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.0" />
-        <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.11.0" />
+        <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
         <PackageReference Include="JetBrains.Annotations" Version="2026.2.0" />
         <PackageReference Include="MailKit" Version="4.17.0" />
-        <PackageReference Include="McMaster.Extensions.CommandLineUtils" Version="4.0.2" />
+        <PackageReference Include="McMaster.Extensions.CommandLineUtils" Version="5.1.0" />
         <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.10" />
         <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.10" />
         <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.10" />
@@ -103,7 +118,7 @@
         <PackageReference Include="System.Reactive" Version="6.0.0" />
         <PackageReference Include="Grpc.AspNetCore" Version="2.66.0" />
         <PackageReference Include="Google.Protobuf" Version="3.27.0" />
-        <PackageReference Include="Grpc.Net.Client" Version="2.66.0" />
+        <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
         <PackageReference Include="Grpc.Tools" Version="2.66.0">
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
             <PrivateAssets>all</PrivateAssets>
@@ -128,11 +143,18 @@
         </None>
     </ItemGroup>
 
-    <!-- Reference pre-built library binaries on Windows  -->
+    <!-- Reference legacy pre-built library binaries on Windows. Odocrypt is deliberately absent
+         from this directory and is built from its reviewed, pinned sources below. -->
     <ItemGroup Condition="'$(IsWindows)' == 'true'">
-        <NativeLibs Include="$(ProjectDir)..\..\libs\runtimes\win-x64\*.dll" />
+        <NativeLibs Include="$(ProjectDir)..\..\libs\runtimes\win-x64\*.dll"
+                    Exclude="$(ProjectDir)..\..\libs\runtimes\win-x64\libodocrypt.dll" />
         <None Include="@(NativeLibs)" Visible="False">
             <Link>%(RecursiveDir)%(FileName)%(Extension)</Link>
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+        <None Include="$(OdoCryptWindowsRuntime)" Visible="False"
+              Condition="'$(BuildOdoCryptWindows)' == 'true'">
+            <Link>libodocrypt.dll</Link>
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </None>
     </ItemGroup>
@@ -154,11 +176,53 @@
         <Exec Command="(cd $(ProjectDir) &amp;&amp; bash build-libs-linux.sh $(OutDir))" />
     </Target>
 
-    <!-- Include library binaries in publish on Windows -->
-    <Target Name="NativeLibsPublishIncludeWin" BeforeTargets="PrepareForPublish" Condition="'$(IsWindows)' == 'true'">
+    <!-- Fail closed before every ordinary Windows build or publish: verify the immutable native
+         inputs and compile Odocrypt locally instead of trusting an opaque checked-in DLL. -->
+    <Target Name="GuardOdoCryptWindows" BeforeTargets="PrepareForBuild"
+            Condition="'$(IsWindows)' == 'true' and '$(DesignTimeBuild)' != 'true'">
+        <Error Condition="'$(BuildOdoCryptWindows)' != 'true' and '$(BuildOdoCryptWindows)' != 'false'"
+               Text="BuildOdoCryptWindows must be true or false." />
+        <Error Condition="Exists('$(ProjectDir)..\..\libs\runtimes\win-x64\libodocrypt.dll')"
+               Text="Remove the opaque checked-in libs\runtimes\win-x64\libodocrypt.dll; Windows Odocrypt must be built from reviewed source." />
+    </Target>
+
+    <Target Name="RemoveOdoCryptFromManagedOnlyOutput" BeforeTargets="PrepareForBuild"
+            Condition="'$(IsWindows)' == 'true' and '$(DesignTimeBuild)' != 'true' and '$(BuildOdoCryptWindows)' == 'false'">
+        <Delete Files="$(TargetDir)libodocrypt.dll" />
+    </Target>
+
+    <Target Name="CompileOdoCryptWindows" BeforeTargets="PrepareForBuild"
+            DependsOnTargets="GuardOdoCryptWindows"
+            Inputs="@(OdoCryptWindowsBuildInputs)" Outputs="$(OdoCryptWindowsRuntime)"
+            Condition="'$(IsWindows)' == 'true' and '$(DesignTimeBuild)' != 'true' and '$(BuildOdoCryptWindows)' == 'true' and '$(MININGCORE_WINDOWS_PLATFORM_TOOLSET)' == ''">
+        <Exec Command="powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\..\scripts\release\build-windows-odocrypt.ps1&quot;" />
+        <Error Condition="!Exists('$(OdoCryptWindowsRuntime)')"
+               Text="The reviewed Windows Odocrypt build did not produce $(OdoCryptWindowsRuntime)." />
+        <!-- Native MSBuild can report an up-to-date project without updating the DLL timestamp.
+             Mark the verified output current so this outer target can remain incremental. -->
+        <Touch Files="$(OdoCryptWindowsRuntime)" />
+    </Target>
+
+    <!-- A compatibility-toolset override is an input that cannot be represented by a source-file
+         timestamp. Rebuild unconditionally so changing it always reaches native MSBuild. -->
+    <Target Name="CompileOdoCryptWindowsWithToolsetOverride" BeforeTargets="PrepareForBuild"
+            DependsOnTargets="GuardOdoCryptWindows"
+            Condition="'$(IsWindows)' == 'true' and '$(DesignTimeBuild)' != 'true' and '$(BuildOdoCryptWindows)' == 'true' and '$(MININGCORE_WINDOWS_PLATFORM_TOOLSET)' != ''">
+        <Exec Command="powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\..\scripts\release\build-windows-odocrypt.ps1&quot;" />
+        <Error Condition="!Exists('$(OdoCryptWindowsRuntime)')"
+               Text="The reviewed Windows Odocrypt build did not produce $(OdoCryptWindowsRuntime)." />
+    </Target>
+
+    <!-- Include legacy binaries plus the source-built Odocrypt runtime in Windows publishes. -->
+    <Target Name="NativeLibsPublishIncludeWin" BeforeTargets="PrepareForPublish"
+            DependsOnTargets="GuardOdoCryptWindows;CompileOdoCryptWindows;CompileOdoCryptWindowsWithToolsetOverride" Condition="'$(IsWindows)' == 'true'">
+        <Error Condition="'$(BuildOdoCryptWindows)' != 'true'"
+               Text="Windows publish requires BuildOdoCryptWindows=true so Odocrypt is compiled from reviewed source." />
         <ItemGroup>
-            <Libs Include="$(ProjectDir)..\..\libs\runtimes\win-x64\*.dll" />
+            <Libs Include="$(ProjectDir)..\..\libs\runtimes\win-x64\*.dll"
+                  Exclude="$(ProjectDir)..\..\libs\runtimes\win-x64\libodocrypt.dll" />
             <ContentWithTargetPath Include="@(Libs->'%(FullPath)')" RelativePath="%(Libs.Identity)" TargetPath="%(Libs.Filename)%(Libs.Extension)" CopyToPublishDirectory="PreserveNewest" />
+            <ContentWithTargetPath Include="$(OdoCryptWindowsRuntime)" RelativePath="$(OdoCryptWindowsRuntime)" TargetPath="libodocrypt.dll" CopyToPublishDirectory="PreserveNewest" />
         </ItemGroup>
     </Target>
 

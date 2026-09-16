@@ -105,10 +105,10 @@ public class SatoshicashJobManager : BitcoinJobManagerBase<SatoshicashJob>
                 GetBlockTemplateFromJson(json);
 
             // may happen if daemon is currently not connected to peers
-            if(response.Error != null)
+            if(response.Error != null || response.Response == null)
             {
-                logger.Warn(() => $"Unable to update job. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
-                return (false, forceUpdate);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "SatoshicashJobManager.UpdateJob", code: response.Error?.Code);
+                return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
             }
 
             var blockTemplate = response.Response;
@@ -170,10 +170,10 @@ public class SatoshicashJobManager : BitcoinJobManagerBase<SatoshicashJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "SatoshicashJobManager.UpdateJob", failure: ex);
         }
 
-        return (false, forceUpdate);
+        return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
     }
 
     private void UpdateHashParams(BlockTemplate blockTemplate)
@@ -309,7 +309,7 @@ public class SatoshicashJobManager : BitcoinJobManagerBase<SatoshicashJob>
 
             if(share.IsBlockCandidate)
             {
-                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
+                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] (miner identity withheld)");
 
                 OnBlockFound();
 

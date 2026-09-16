@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
@@ -77,6 +78,11 @@ public abstract class PoolBase : StratumServer,
     private StratumListenerReservationSession stratumListenerReservations;
 
     protected abstract Task SetupJobManager(CancellationToken ct);
+    protected virtual void NotifyPoolOnline()
+    {
+        LogPoolInfo();
+        messageBus.NotifyPoolStatus(this, PoolStatus.Online);
+    }
     protected abstract WorkerContextBase CreateWorkerContext();
 
     protected double? GetStaticDiffFromPassparts(string[] parts)
@@ -133,11 +139,11 @@ public abstract class PoolBase : StratumServer,
 
                 catch(Exception ex)
                 {
-                    logger.Error(ex);
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.EnsureNoZombieClient", failure: ex);
                 }
             }, ex =>
             {
-                logger.Error(ex, nameof(EnsureNoZombieClient));
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.EnsureNoZombieClient", failure: ex);
             });
     }
 
@@ -179,7 +185,7 @@ public abstract class PoolBase : StratumServer,
                 await Guard(() => ForEachMinerAsync(async (connection, _ct) =>
                 {
                     await Guard(() => UpdateVarDiffAsync(connection, true, _ct),
-                        ex => logger.Error(() => $"[{connection.ConnectionId}] Error updating vardiff: {ex.Message}"));
+                        ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.RunVardiffIdleUpdaterAsync", failure: ex));
                 }, ct));
 
                 logger.Debug(() => "Vardiff Idle Update pass ends");
@@ -187,7 +193,7 @@ public abstract class PoolBase : StratumServer,
         }, ex =>
         {
             if(ex is not OperationCanceledException)
-                logger.Error(ex);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.RunVardiffIdleUpdaterAsync", failure: ex);
         });
     }
 
@@ -224,7 +230,7 @@ public abstract class PoolBase : StratumServer,
 
             catch(Exception ex)
             {
-                logger.Error(() => $"[{connection.ConnectionId}] {LogUtil.DotTerminate(ex.Message)} Closing connection ...");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.ForEachMinerAsync", failure: ex);
 
                 Disconnect(connection);
             }
@@ -240,7 +246,7 @@ public abstract class PoolBase : StratumServer,
             var minerEffort = await cf.Run(con => shareRepo.GetMinerEffortBetweenCreatedAsync(con, poolConfig.Id, connection.Context.Miner, dateStart, clock.Now, ct));
             if(minerEffort.HasValue)
             {
-                logger.Debug(() => $"[{connection.Context.Miner}] Checking effort for worker: {minerEffort.Value}%");
+                logger.Debug(() => $"[{connection.ConnectionId}] Checking effort for worker: {minerEffort.Value}%");
 
                 if(minerEffort.Value >= poolConfig.Banning.MinerEffortPercent.Value)
                 {
@@ -295,7 +301,7 @@ public abstract class PoolBase : StratumServer,
 
         catch(Exception ex)
         {
-            logger.Warn(ex, () => "Unable to load pool stats");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "PoolBase.LoadStatsAsync", failure: ex);
         }
     }
 
@@ -435,9 +441,7 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
                     listener.Activate();
             }
 
-            LogPoolInfo();
-
-            messageBus.NotifyPoolStatus(this, PoolStatus.Online);
+            NotifyPoolOnline();
 
             if(poolConfig.EnableInternalStratum == true)
                 await RunStratum(ct, listeners);
@@ -459,7 +463,7 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
 
         catch(Exception ex)
         {
-            logger.Error(ex);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.RunAsync", failure: ex);
             throw;
         }
 

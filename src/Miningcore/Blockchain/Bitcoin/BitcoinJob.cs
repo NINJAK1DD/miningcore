@@ -20,6 +20,7 @@ namespace Miningcore.Blockchain.Bitcoin;
 
 public class BitcoinJob
 {
+    internal const long BitcoinConsensusMaxBlockWeight = 4_000_000;
     protected IHashAlgorithm blockHasher;
     protected IMasterClock clock;
     protected IHashAlgorithm coinbaseHasher;
@@ -29,6 +30,7 @@ public class BitcoinJob
     protected bool isPoS;
     protected string txComment;
     protected PayeeBlockTemplateExtra payeeParameters;
+    protected byte[] mwebPayload;
 
     protected Network network;
     protected IDestination poolAddressDestination;
@@ -42,8 +44,6 @@ public class BitcoinJob
     protected string coinbaseInitialHex;
     protected string[] merkleBranchesHex;
     protected MerkleTree mt;
-    protected string[] merkleSegwitBranchesHex;
-    protected MerkleTree mtSegwit;
 
     ///////////////////////////////////////////
     // GetJobParams related properties
@@ -52,6 +52,7 @@ public class BitcoinJob
     protected string previousBlockHashReversedHex;
     protected Money rewardToPool;
     protected Transaction txOut;
+    private BitcoinDirectCoinbaseTemplate directCoinbaseTemplate;
 
     // serialization constants
     protected byte[] scriptSigFinalBytes;
@@ -61,8 +62,13 @@ public class BitcoinJob
 
     protected static uint txInputCount = 1u;
     protected static uint txInPrevOutIndex = (uint) (Math.Pow(2, 32) - 1);
-    protected static uint txInSequence;
-    protected static uint txLockTime;
+    protected uint txInSequence;
+    protected uint txLockTime;
+    private bool emitBip54CoinbaseFields;
+    private bool witnessCommitmentLast;
+
+    // CKPool and AxeOS use 0xfffffffe for their BIP 54-compatible shape.
+    private const uint Bip54CoinbaseSequence = uint.MaxValue - 1;
 
     protected virtual void BuildMerkleBranches()
     {
@@ -77,29 +83,6 @@ public class BitcoinJob
         merkleBranchesHex = mt.Steps
             .Select(x => x.ToHexString())
             .ToArray();
-    }
-
-    protected virtual MerkleTree BuildSegwitMerkleBranches()
-    {
-        var segwitTransactionHashes = BlockTemplate.Transactions
-            .Where(tx => IsSegWitTransaction(tx))
-            .Select(tx => (tx.TxId ?? tx.Hash)
-                .HexToByteArray()
-                .ReverseInPlace())
-            .ToArray();
-        // Build Merkle Tree with SegWit transactions
-        return new MerkleTree(segwitTransactionHashes);
-    }
-
-    protected virtual bool IsSegWitTransaction(BitcoinBlockTransaction tx)
-    {
-        // Convert hex string to byte array
-        byte[] txBytes = tx.Data.HexToByteArray();
-        // Convert byte array to hex string
-        string hexString = txBytes.ToHexString();
-        // Parse the transaction using NBitcoin
-        var transaction = Transaction.Parse(hexString, Network.Main);
-        return transaction.HasWitness;
     }
 
     protected virtual void BuildCoinbase()
@@ -202,68 +185,41 @@ public class BitcoinJob
             // write output count
             bs.ReadWriteAsVarInt(ref outputCount);
 
-            long amount;
-            byte[] raw;
-            uint rawLength;
-
-            // serialize witness (segwit)
-            if(withDefaultWitnessCommitment)
-            {
-                amount = 0;
-                raw = BlockTemplate.DefaultWitnessCommitment.HexToByteArray();
-                rawLength = (uint) raw.Length;
-
-                if (coin.Symbol == "ANOK" || coin.Symbol == "RVH")
-                {
-                    // Compute witness commitment
-                    raw = BlockTemplate.DefaultWitnessCommitment.HexToByteArray();
-                    byte[] witnessRoot = raw;
-                    byte[] witnessNonce = new byte[32];
-
-                    // Build Merkle Tree
-                    var mtSegwit = BuildSegwitMerkleBranches();
-                    var merkleRoot = mtSegwit.WithFirst(new byte[32]);
-
-                    // Concatenate witness root and nonce
-                    Span<byte> witnessRootAndNonce = stackalloc byte[witnessRoot.Length + witnessNonce.Length];
-                    witnessRoot.CopyTo(witnessRootAndNonce);
-                    witnessNonce.CopyTo(witnessRootAndNonce[witnessRoot.Length..]);
-
-                    // Generate SHA256^2 hash
-                    Sha256D sha256DHasher = new Sha256D();
-                    byte[] hash = new byte[32];
-                    sha256DHasher.Digest(witnessRootAndNonce, hash);
-
-                    // Create scriptPubKey
-                    byte[] magic = new byte[] { 0xaa, 0x21, 0xa9, 0xed };
-                    Span<byte> scriptPubKey = stackalloc byte[magic.Length + hash.Length];
-                    magic.CopyTo(scriptPubKey);
-                    hash.CopyTo(scriptPubKey[magic.Length..]);
-
-                    raw = scriptPubKey.ToArray();
-                    rawLength = (uint)raw.Length;
-                }
-
-                bs.ReadWrite(ref amount);
-                bs.ReadWriteAsVarInt(ref rawLength);
-                bs.ReadWrite(raw);
-            }
+            // Preserve the established layout for other Bitcoin-family chains.
+            // Canonical Bitcoin puts value-bearing outputs first and the BIP141
+            // witness commitment last, matching CKPool's operator-facing layout.
+            if(withDefaultWitnessCommitment && !witnessCommitmentLast)
+                SerializeDefaultWitnessCommitment(bs);
 
             // serialize outputs
             foreach(var output in tx.Outputs)
             {
-                amount = output.Value.Satoshi;
+                var amount = output.Value.Satoshi;
                 var outScript = output.ScriptPubKey;
-                raw = outScript.ToBytes(true);
-                rawLength = (uint) raw.Length;
+                var raw = outScript.ToBytes(true);
+                var rawLength = (uint) raw.Length;
 
                 bs.ReadWrite(ref amount);
                 bs.ReadWriteAsVarInt(ref rawLength);
                 bs.ReadWrite(raw);
             }
 
+            if(withDefaultWitnessCommitment && witnessCommitmentLast)
+                SerializeDefaultWitnessCommitment(bs);
+
             return stream.ToArray();
         }
+    }
+
+    private void SerializeDefaultWitnessCommitment(BitcoinStream bs)
+    {
+        long amount = 0;
+        var raw = BlockTemplate.DefaultWitnessCommitment.HexToByteArray();
+
+        var rawLength = (uint) raw.Length;
+        bs.ReadWrite(ref amount);
+        bs.ReadWriteAsVarInt(ref rawLength);
+        bs.ReadWrite(raw);
     }
 
     protected virtual Script GenerateScriptSigInitial()
@@ -327,8 +283,36 @@ public class BitcoinJob
         if(coin.HasDeveloper)
             rewardToPool = CreateDeveloperOutputs(tx, rewardToPool);
 
-        // Remaining amount goes to pool
-        tx.Outputs.Add(rewardToPool, poolAddressDestination);
+        if(directCoinbaseTemplate == null)
+        {
+            // Remaining amount goes to pool
+            tx.Outputs.Add(rewardToPool, poolAddressDestination);
+        }
+        else
+        {
+            if(rewardToPool.Satoshi != BlockTemplate.CoinbaseValue)
+                throw new InvalidDataException(
+                    "Direct SOLO coinbase payout is restricted to canonical Bitcoin templates without additional consensus-owned value outputs");
+            DirectCoinbaseSettlement = BitcoinDirectCoinbase.Split(
+                rewardToPool.Satoshi, directCoinbaseTemplate);
+
+            // Miner first, followed by a canonical script-sorted recipient list.
+            // Canonical Bitcoin serialization appends the BIP141 commitment afterward.
+            tx.Outputs.Add(new Money(
+                    DirectCoinbaseSettlement.MinerRewardSatoshis,
+                    MoneyUnit.Satoshi),
+                directCoinbaseTemplate.MinerDestination);
+
+            foreach(var output in DirectCoinbaseSettlement.RecipientOutputs)
+            {
+                var recipient = directCoinbaseTemplate.Recipients.Single(x =>
+                    string.Equals(x.ScriptPubKey, output.ScriptPubKey,
+                        StringComparison.OrdinalIgnoreCase));
+                tx.Outputs.Add(new Money(output.AmountSatoshis,
+                        MoneyUnit.Satoshi),
+                    recipient.Destination);
+            }
+        }
 
         return tx;
     }
@@ -394,11 +378,8 @@ public class BitcoinJob
         var merkleRoot = mt.WithFirst(coinbaseHash.ToArray());
 
         // Build version
-        var version = BlockTemplate.Version;
-
-        // Overt-ASIC boost
-        if(versionMask.HasValue && versionBits.HasValue)
-            version = (version & ~versionMask.Value) | (versionBits.Value & versionMask.Value);
+        var version = ApplyVersionRolling(BlockTemplate.Version, versionMask,
+            versionBits);
 
 #pragma warning disable 618
         var blockHeader = new BlockHeader
@@ -413,6 +394,16 @@ public class BitcoinJob
         };
 
             return blockHeader.ToBytes();
+    }
+
+    internal static uint ApplyVersionRolling(uint templateVersion,
+        uint? versionMask, uint? versionBits)
+    {
+        if(!versionMask.HasValue || !versionBits.HasValue)
+            return templateVersion;
+
+        return (templateVersion & ~versionMask.Value) |
+            (versionBits.Value & versionMask.Value);
     }
 
     protected virtual (Share Share, string BlockHex) ProcessShareInternal(
@@ -474,6 +465,22 @@ public class BitcoinJob
         {
             result.IsBlockCandidate = true;
 
+            if(DirectCoinbaseSettlement != null)
+            {
+                result.SettlementMode =
+                    BitcoinDirectCoinbaseSettlement.Mode;
+                result.GrossRewardSatoshis =
+                    DirectCoinbaseSettlement.GrossRewardSatoshis;
+                result.DirectMinerRewardSatoshis =
+                    DirectCoinbaseSettlement.MinerRewardSatoshis;
+                result.DirectMinerScriptPubKey =
+                    DirectCoinbaseSettlement.MinerScriptPubKey;
+                result.DirectRecipientOutputs =
+                    DirectCoinbaseSettlement.SerializeRecipientOutputs();
+                result.TransactionConfirmationData =
+                    new uint256(coinbaseHash).ToString();
+            }
+
             Span<byte> blockHash = stackalloc byte[32];
             blockHasher.Digest(headerBytes, blockHash, nTime);
             result.BlockHash = blockHash.ToHexString();
@@ -522,16 +529,15 @@ public class BitcoinJob
             if(isPoS)
                 bs.ReadWrite((byte) 0);
 
-            // if pool supports MWEB, we have to append the MWEB data to the block
+            // MWEB-capable daemons require the client rule before activation but only
+            // return extension bytes for templates that must serialize them.
             // https://github.com/litecoin-project/litecoin/blob/0.21/doc/mweb/mining-changes.md
-            if(coin.HasMWEB)
+            if(mwebPayload != null)
             {
                 var separator = new byte[] { 0x01 };
-                var mweb = BlockTemplate.Extra.SafeExtensionDataAs<MwebBlockTemplateExtra>();
-                var mwebRaw = mweb.Mweb.HexToByteArray();
 
                 bs.ReadWrite(separator);
-                bs.ReadWrite(mwebRaw);
+                bs.ReadWrite(mwebPayload);
             }
 
             return stream.ToArray();
@@ -867,6 +873,13 @@ public class BitcoinJob
 
     public BlockTemplate BlockTemplate { get; protected set; }
     public double Difficulty { get; protected set; }
+    public long RewardBasisSatoshis => rewardToPool.Satoshi;
+    internal BitcoinDirectCoinbaseSettlement DirectCoinbaseSettlement { get;
+        private set; }
+    internal long? DirectBlockWeight { get; private set; }
+    internal string DirectPayoutAddress => directCoinbaseTemplate?.MinerAddress;
+    internal long? DirectPayoutGeneration =>
+        directCoinbaseTemplate?.AuthorizationGeneration;
 
     public string JobId { get; protected set; }
 
@@ -875,7 +888,31 @@ public class BitcoinJob
         ClusterConfig cc, IMasterClock clock,
         IDestination poolAddressDestination, Network network,
         bool isPoS, double shareMultiplier, IHashAlgorithm coinbaseHasher,
-        IHashAlgorithm headerHasher, IHashAlgorithm blockHasher)
+        IHashAlgorithm headerHasher, IHashAlgorithm blockHasher) =>
+        InitDirect(blockTemplate, jobId, pc, extraPoolConfig, cc, clock,
+            poolAddressDestination, network, isPoS, shareMultiplier,
+            coinbaseHasher, headerHasher, blockHasher, null);
+
+    internal void InitWithCoinbasePolicy(BlockTemplate blockTemplate,
+        string jobId, PoolConfig pc,
+        BitcoinPoolConfigExtra extraPoolConfig, ClusterConfig cc,
+        IMasterClock clock, IDestination poolAddressDestination,
+        Network network, bool isPoS, double shareMultiplier,
+        IHashAlgorithm coinbaseHasher, IHashAlgorithm headerHasher,
+        IHashAlgorithm blockHasher, bool bip54CoinbaseEnabled) =>
+        InitDirect(blockTemplate, jobId, pc, extraPoolConfig, cc, clock,
+            poolAddressDestination, network, isPoS, shareMultiplier,
+            coinbaseHasher, headerHasher, blockHasher, null,
+            bip54CoinbaseEnabled);
+
+    internal void InitDirect(BlockTemplate blockTemplate, string jobId,
+        PoolConfig pc, BitcoinPoolConfigExtra extraPoolConfig,
+        ClusterConfig cc, IMasterClock clock,
+        IDestination poolAddressDestination, Network network,
+        bool isPoS, double shareMultiplier, IHashAlgorithm coinbaseHasher,
+        IHashAlgorithm headerHasher, IHashAlgorithm blockHasher,
+        BitcoinDirectCoinbaseTemplate directCoinbaseTemplate = null,
+        bool? bip54CoinbaseEnabled = null)
     {
         Contract.RequiresNonNull(blockTemplate);
         Contract.RequiresNonNull(pc);
@@ -890,16 +927,41 @@ public class BitcoinJob
         coin = pc.Template.As<BitcoinTemplate>();
         networkParams = coin.GetNetwork(network.ChainName);
         txVersion = coin.CoinbaseTxVersion;
+        var isCanonicalBitcoin = IsCanonicalBitcoin(pc, coin);
+        emitBip54CoinbaseFields = isCanonicalBitcoin &&
+            (bip54CoinbaseEnabled ?? BitcoinPoolConfigPolicy
+                .ResolveBip54Coinbase(pc, extraPoolConfig));
+        // The compatibility switch restores the complete pre-change coinbase
+        // shape, including witness-output placement.
+        witnessCommitmentLast = emitBip54CoinbaseFields;
+        txInSequence = emitBip54CoinbaseFields ? Bip54CoinbaseSequence : 0;
+        if(emitBip54CoinbaseFields)
+        {
+            if(blockTemplate.Height == 0)
+                throw new InvalidDataException(
+                    "Canonical Bitcoin BIP54 coinbase construction requires a positive block height");
+
+            txLockTime = blockTemplate.Height - 1;
+        }
+        else
+            txLockTime = 0;
         this.network = network;
         this.clock = clock;
         this.poolAddressDestination = poolAddressDestination;
+        this.directCoinbaseTemplate = directCoinbaseTemplate;
         BlockTemplate = blockTemplate;
         JobId = jobId;
+        if(directCoinbaseTemplate != null)
+            ValidateBlockTemplateTransactionWeights(blockTemplate, network);
+        if(headerHasher is OdoCrypt)
+            OdoCrypt.ValidateJobContract(blockTemplate, networkParams);
+
+        mwebPayload = ParseMwebPayload(coin, blockTemplate);
 
         var coinbaseString = !string.IsNullOrEmpty(cc.PaymentProcessing?.CoinbaseString) ?
             cc.PaymentProcessing?.CoinbaseString.Trim() : "Miningcore";
 
-        scriptSigFinalBytes = new Script(Op.GetPushOp(Encoding.UTF8.GetBytes(coinbaseString))).ToBytes();
+        scriptSigFinalBytes = BuildScriptSigFinalBytes(coinbaseString);
 
         Difficulty = new Target(System.Numerics.BigInteger.Parse(BlockTemplate.Target, NumberStyles.HexNumber)).Difficulty;
 
@@ -976,6 +1038,8 @@ public class BitcoinJob
 
         BuildMerkleBranches();
         BuildCoinbase();
+        if(directCoinbaseTemplate != null)
+            DirectBlockWeight = CalculateDirectBlockWeight();
 
         jobParams = new object[]
         {
@@ -991,10 +1055,175 @@ public class BitcoinJob
         };
     }
 
-    public object GetJobParams(bool isNew)
+    internal static bool IsCanonicalBitcoin(PoolConfig pc,
+        CoinTemplate template) =>
+        string.Equals(pc.Coin, "bitcoin", StringComparison.Ordinal) &&
+        template.Family == CoinFamily.Bitcoin &&
+        string.Equals(template.Symbol, "BTC", StringComparison.Ordinal) &&
+        string.Equals(template.CanonicalName, "Bitcoin", StringComparison.Ordinal);
+
+    private long CalculateDirectBlockWeight()
     {
-        jobParams[^1] = isNew;
-        return jobParams;
+        long weight;
+
+        try
+        {
+            var transactionCount = checked(
+                (ulong) BlockTemplate.Transactions.Length + 1);
+            var coinbaseLength = checked((long) coinbaseInitial.Length +
+                extraNoncePlaceHolderLength + coinbaseFinal.Length);
+            // This is the exact non-witness coinbase byte sequence written by
+            // SerializeBlock. A default witness-commitment output is already
+            // inside coinbaseFinal; Miningcore does not append a separate
+            // coinbase witness serialization outside these bytes. Do not add
+            // hypothetical witness-stack weight unless SerializeBlock starts
+            // emitting those bytes as well.
+            weight = checked((80L + CompactSizeLength(transactionCount) +
+                coinbaseLength) * 4L);
+
+            var transactionWeight = BlockTemplate.ValidatedTransactionWeight >= 0
+                ? BlockTemplate.ValidatedTransactionWeight
+                : ValidateBlockTemplateTransactionWeights(BlockTemplate,
+                    network);
+            weight = checked(weight + transactionWeight);
+        }
+        catch(OverflowException ex)
+        {
+            throw new InvalidDataException(
+                "Direct SOLO block-weight calculation overflowed", ex);
+        }
+
+        if(weight > BitcoinConsensusMaxBlockWeight)
+        {
+            throw new InvalidDataException(
+                $"Direct SOLO block weight {weight} exceeds Bitcoin's " +
+                $"{BitcoinConsensusMaxBlockWeight}-weight-unit consensus limit");
+        }
+
+        return weight;
+    }
+
+    internal static long ValidateBlockTemplateTransactionWeights(
+        BlockTemplate blockTemplate, Network network)
+    {
+        ArgumentNullException.ThrowIfNull(blockTemplate);
+        ArgumentNullException.ThrowIfNull(network);
+        if(blockTemplate.ValidatedTransactionWeight >= 0)
+            return blockTemplate.ValidatedTransactionWeight;
+
+        long result = 0;
+        var transactions = blockTemplate.Transactions ??
+            throw new InvalidDataException(
+                "Direct SOLO requires a getblocktemplate transaction array");
+
+        try
+        {
+            foreach(var templateTransaction in transactions)
+            {
+                if(templateTransaction.Weight is not > 0)
+                {
+                    throw new InvalidDataException(
+                        "Direct SOLO requires a positive daemon-reported weight " +
+                        "for every getblocktemplate transaction");
+                }
+                if(string.IsNullOrWhiteSpace(templateTransaction.Data))
+                {
+                    throw new InvalidDataException(
+                        "Direct SOLO requires serialized data for every getblocktemplate transaction");
+                }
+
+                Transaction transaction;
+                try
+                {
+                    transaction = Transaction.Parse(templateTransaction.Data,
+                        network);
+                }
+                catch(Exception ex)
+                {
+                    throw new InvalidDataException(
+                        "Direct SOLO could not parse a getblocktemplate transaction",
+                        ex);
+                }
+
+                var totalSize = transaction
+                    .WithOptions(TransactionOptions.Witness).ToBytes().Length;
+                var strippedSize = transaction
+                    .WithOptions(TransactionOptions.None).ToBytes().Length;
+                var actualWeight = checked(strippedSize * 3L + totalSize);
+                if(templateTransaction.Weight.Value != actualWeight)
+                {
+                    throw new InvalidDataException(
+                        $"Direct SOLO daemon-reported transaction weight " +
+                        $"{templateTransaction.Weight.Value} does not match " +
+                        $"serialized weight {actualWeight}");
+                }
+
+                result = checked(result + actualWeight);
+            }
+        }
+        catch(OverflowException ex)
+        {
+            throw new InvalidDataException(
+                "Direct SOLO template transaction-weight calculation overflowed",
+                ex);
+        }
+
+        blockTemplate.ValidatedTransactionWeight = result;
+        return result;
+    }
+
+    private static int CompactSizeLength(ulong value) => value switch
+    {
+        < 253 => 1,
+        <= ushort.MaxValue => 3,
+        <= uint.MaxValue => 5,
+        _ => 9,
+    };
+
+    internal static byte[] ParseMwebPayload(BitcoinTemplate coin, BlockTemplate blockTemplate)
+    {
+        if(!coin.HasMWEB || blockTemplate.Extra?.TryGetValue("mweb", out var value) != true)
+            return null;
+
+        var mweb = value switch
+        {
+            string text => text,
+            JValue { Type: JTokenType.String } token => token.Value<string>(),
+            _ => throw new InvalidDataException("Block template field 'mweb' must be a hexadecimal string")
+        };
+
+        if(string.IsNullOrWhiteSpace(mweb))
+            throw new InvalidDataException("Block template field 'mweb' must not be empty");
+
+        try
+        {
+            return Convert.FromHexString(mweb);
+        }
+        catch(FormatException ex)
+        {
+            throw new InvalidDataException("Block template field 'mweb' must be valid hexadecimal", ex);
+        }
+    }
+
+    protected virtual byte[] BuildScriptSigFinalBytes(string coinbaseString) =>
+        new Script(Op.GetPushOp(Encoding.UTF8.GetBytes(coinbaseString)))
+            .ToBytes();
+
+    public virtual object GetJobParams(bool isNew)
+    {
+        // Stratum queues payloads before serializing them. Never mutate the cached
+        // template or expose its mutable arrays to a notification's caller.
+        var result = (object[]) jobParams.Clone();
+        // Copy branch containers by type rather than coupling this method to a
+        // particular slot in a subclass's notification layout.
+        for(var i = 0; i < result.Length; i++)
+        {
+            if(result[i] is string[] values)
+                result[i] = values.Clone();
+        }
+        result[^1] = isNew;
+        // All remaining fields and the branch strings are immutable cached values.
+        return result;
     }
 
     public virtual (Share Share, string BlockHex) ProcessShare(StratumConnection worker,

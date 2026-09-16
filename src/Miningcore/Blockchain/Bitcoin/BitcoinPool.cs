@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Globalization;
 using System.Reactive;
 using System.Reactive.Linq;
@@ -39,9 +40,22 @@ public class BitcoinPool : PoolBase
     {
     }
 
-    protected object currentJobParams;
     protected BitcoinJobManager manager;
     private BitcoinTemplate coin;
+    private int directJobPipelineFailed;
+    internal bool DirectJobPipelineFailed =>
+        Volatile.Read(ref directJobPipelineFailed) != 0;
+
+    internal enum VersionRollingNegotiationStatus
+    {
+        Enabled,
+        TemplateDisabled,
+        InvalidMinerMask,
+        DisjointMask,
+    }
+
+    internal readonly record struct VersionRollingNegotiation(
+        VersionRollingNegotiationStatus Status, uint? Mask);
 
     protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
     {
@@ -92,11 +106,16 @@ public class BitcoinPool : PoolBase
             context.SetDifficulty(nicehashDiff.Value);
         }
 
-        var minerJobParams = CreateWorkerJob(connection, context.IsSubscribed);
-
-        // send intial update
+        // send initial update. Direct-SOLO work is withheld until the username
+        // address has passed network-aware authorization.
         await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
+        if(!manager.DirectCoinbasePayoutEnabled || context.IsAuthorized)
+        {
+            var minerJobParams = CreateWorkerJob(connection,
+                context.IsSubscribed);
+            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify,
+                minerJobParams);
+        }
     }
 
     protected virtual async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -146,7 +165,9 @@ public class BitcoinPool : PoolBase
                 DateTime.UtcNow);
 
             // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
+            logger.Info(() => manager.DirectCoinbasePayoutEnabled
+                ? $"[{connection.ConnectionId}] Authorized direct-SOLO worker (payout destination retained in immutable job audit state)"
+                : $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
 
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
@@ -163,6 +184,13 @@ public class BitcoinPool : PoolBase
 
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
             }
+
+            if(manager.DirectCoinbasePayoutEnabled && context.IsSubscribed)
+            {
+                var minerJobParams = CreateWorkerJob(connection, true);
+                await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify,
+                    minerJobParams);
+            }
         }
 
         else
@@ -172,7 +200,9 @@ public class BitcoinPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => manager.DirectCoinbasePayoutEnabled
+                    ? $"[{connection.ConnectionId}] Banning unauthorized direct-SOLO worker for {loginFailureBanTimeout.TotalSeconds} sec"
+                    : $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
@@ -184,20 +214,60 @@ public class BitcoinPool : PoolBase
     protected virtual Task<bool> ValidateWorkerAsync(BitcoinWorkerContext context,
         string minerName, string password, CancellationToken ct)
     {
-        return manager.ValidateAddressAsync(minerName, ct);
+        if(!manager.DirectCoinbasePayoutEnabled)
+            return manager.ValidateAddressAsync(minerName, ct);
+
+        return ValidateDirectWorkerAsync(context, minerName, ct);
     }
 
-    private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
+    private async Task<bool> ValidateDirectWorkerAsync(
+        BitcoinWorkerContext context, string minerName, CancellationToken ct)
     {
-        var context = connection.ContextAs<BitcoinWorkerContext>();
-        var job = manager.GetJobForStratum();
+        var destination = await manager.ValidateDirectPayoutAddressAsync(
+            minerName, ct);
+        if(destination == null)
+            return false;
 
-        // update context
-        lock(context)
+        await context.SetDirectPayoutAuthorizationAsync(minerName,
+            destination, ct);
+
+        return true;
+    }
+
+    protected virtual object CreateWorkerJob(StratumConnection connection,
+        bool cleanJob)
+    {
+        if(manager.DirectCoinbasePayoutEnabled &&
+           Volatile.Read(ref directJobPipelineFailed) != 0)
+            throw new StratumException(StratumError.JobNotFound,
+                "Direct SOLO job delivery has entered fail-stop state");
+
+        var context = connection.ContextAs<BitcoinWorkerContext>();
+        if(manager.DirectCoinbasePayoutEnabled)
         {
-            context.AddJob(job, manager.maxActiveJobs);
+            // Building a per-worker coinbase can overlap reauthorization. Publish
+            // only a job built for the authorization generation that is still
+            // current at insertion time; otherwise rebuild from the new snapshot.
+            for(var attempt = 0; attempt < 2; attempt++)
+            {
+                var authorization = context.GetDirectPayoutAuthorization() ??
+                    throw new StratumException(StratumError.JobNotFound,
+                        "Direct SOLO worker has no payout authorization");
+                var directJob = manager.GetDirectJobForStratum(
+                    authorization.Address, authorization.Destination,
+                    authorization.Generation);
+
+                if(context.TryAddDirectJob(directJob,
+                       manager.maxActiveJobs))
+                    return directJob.GetJobParams(cleanJob);
+            }
+
+            throw new StratumException(StratumError.JobNotFound,
+                "Direct SOLO payout authorization changed while assigning work");
         }
 
+        var job = manager.GetJobForStratum();
+        context.AddJob(job, manager.maxActiveJobs);
         return job.GetJobParams(cleanJob);
     }
 
@@ -208,6 +278,11 @@ public class BitcoinPool : PoolBase
 
         try
         {
+            if(manager.DirectCoinbasePayoutEnabled &&
+               Volatile.Read(ref directJobPipelineFailed) != 0)
+                throw new StratumException(StratumError.JobNotFound,
+                    "Direct SOLO job delivery has entered fail-stop state");
+
             if(request.Id == null)
                 throw new StratumException(StratumError.MinusOne, "missing request id");
 
@@ -231,8 +306,27 @@ public class BitcoinPool : PoolBase
 
             var requestParams = request.ParamsAs<string[]>();
 
-            // submit
-            var share = await manager.SubmitShareAsync(connection, requestParams, ct);
+            // Direct submission and successful reauthorization form one ordered
+            // financial boundary. If submission entered first, reauthorization
+            // cannot report success until that immutable job finishes. If
+            // reauthorization entered first, the old generation cannot resolve.
+            Miningcore.Blockchain.Share share;
+            if(manager.DirectCoinbasePayoutEnabled)
+            {
+                await context.EnterDirectPayoutSubmissionAsync(ct);
+                try
+                {
+                    share = await manager.SubmitShareAsync(connection,
+                        requestParams, ct);
+                }
+                finally
+                {
+                    context.ExitDirectPayoutSubmission();
+                }
+            }
+            else
+                share = await manager.SubmitShareAsync(connection,
+                    requestParams, ct);
 
             // Nicehash's stupid validator insists on "error" property present
             // in successful responses which is a violation of the JSON-RPC spec
@@ -295,7 +389,7 @@ public class BitcoinPool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            logger.Info(() => $"[{connection.ConnectionId}] Share rejected: {ex.Message} [{context.UserAgent}]");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "BitcoinPool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);
@@ -347,7 +441,7 @@ public class BitcoinPool : PoolBase
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Unable to convert suggested difficulty {request.Params}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPool.OnSuggestDifficultyAsync", failure: ex);
         }
     }
 
@@ -395,20 +489,132 @@ public class BitcoinPool : PoolBase
     private void ConfigureVersionRolling(StratumConnection connection, BitcoinWorkerContext context,
         IReadOnlyDictionary<string, JToken> extensionParams, Dictionary<string, object> result)
     {
-        //var requestedBits = extensionParams[BitcoinStratumExtensions.VersionRollingBits].Value<int>();
-        var requestedMask = BitcoinConstants.VersionRollingPoolMask;
+        var hasRequestedMask = extensionParams.TryGetValue(
+            BitcoinStratumExtensions.VersionRollingMask, out var requestedMaskValue);
+        var negotiation = NegotiateVersionRolling(poolConfig.Template,
+            hasRequestedMask, requestedMaskValue);
 
-        if(extensionParams.TryGetValue(BitcoinStratumExtensions.VersionRollingMask, out var requestedMaskValue))
-            requestedMask = uint.Parse(requestedMaskValue.Value<string>(), NumberStyles.HexNumber);
+        ApplyVersionRollingNegotiation(context, result, negotiation);
 
-        // Compute effective mask
-        context.VersionRollingMask = BitcoinConstants.VersionRollingPoolMask & requestedMask;
+        if(negotiation.Status != VersionRollingNegotiationStatus.Enabled)
+        {
+            var reason = negotiation.Status switch
+            {
+                VersionRollingNegotiationStatus.TemplateDisabled =>
+                    "disabled by the coin-template policy",
+                VersionRollingNegotiationStatus.InvalidMinerMask =>
+                    "declined because the miner supplied an invalid mask",
+                VersionRollingNegotiationStatus.DisjointMask =>
+                    "declined because the miner and pool masks are disjoint",
+                _ => throw new InvalidOperationException(
+                    $"Unhandled version-rolling status {negotiation.Status}"),
+            };
 
-        // enabled
-        result[BitcoinStratumExtensions.VersionRolling] = true;
-        result[BitcoinStratumExtensions.VersionRollingMask] = context.VersionRollingMask.Value.ToStringHex8();
+            logger.Info(() => $"[{connection.ConnectionId}] Version rolling {reason} " +
+                $"for {poolConfig.Template.Symbol}");
+            return;
+        }
 
-        logger.Info(() => $"[{connection.ConnectionId}] Using version-rolling mask {result[BitcoinStratumExtensions.VersionRollingMask]}");
+        logger.Info(() => $"[{connection.ConnectionId}] Using version-rolling " +
+            $"mask {result[BitcoinStratumExtensions.VersionRollingMask]}");
+    }
+
+    internal static void ApplyVersionRollingNegotiation(
+        BitcoinWorkerContext context, IDictionary<string, object> result,
+        VersionRollingNegotiation negotiation)
+    {
+        var enabled =
+            negotiation.Status == VersionRollingNegotiationStatus.Enabled;
+
+        if(enabled && !negotiation.Mask.HasValue)
+        {
+            throw new InvalidOperationException(
+                "Enabled version rolling requires a negotiated mask");
+        }
+
+        context.VersionRollingMask = enabled ? negotiation.Mask : null;
+        result[BitcoinStratumExtensions.VersionRolling] = enabled;
+        result.Remove(BitcoinStratumExtensions.VersionRollingMask);
+
+        if(enabled)
+        {
+            result[BitcoinStratumExtensions.VersionRollingMask] =
+                negotiation.Mask.Value.ToStringHex8();
+        }
+    }
+
+    internal static VersionRollingNegotiation NegotiateVersionRolling(
+        CoinTemplate coin, bool hasRequestedMask, JToken requestedMaskValue)
+    {
+        if(coin is BitcoinTemplate {DisableVersionRolling: true})
+        {
+            return new VersionRollingNegotiation(
+                VersionRollingNegotiationStatus.TemplateDisabled, null);
+        }
+
+        // BIP310 defines an unprefixed, case-insensitive eight-digit TMask.
+        // Accept an optional 0x prefix defensively, but reject every other shape
+        // without tearing down the miner connection.
+        // An omitted miner mask means no miner-side narrowing. ResolveVersionRollingMask
+        // still applies the template mask and the global BIP310 envelope.
+        var requestedMask = uint.MaxValue;
+
+        if(hasRequestedMask &&
+           !TryParseRequestedVersionRollingMask(requestedMaskValue,
+               out requestedMask))
+        {
+            return new VersionRollingNegotiation(
+                VersionRollingNegotiationStatus.InvalidMinerMask, null);
+        }
+
+        // A merged pool evaluates its parent template here because rolling changes
+        // only the parent header; the auxiliary header remains daemon-owned.
+        var mask = ResolveVersionRollingMask(coin, requestedMask);
+
+        return mask.HasValue
+            ? new VersionRollingNegotiation(
+                VersionRollingNegotiationStatus.Enabled, mask)
+            : new VersionRollingNegotiation(
+                VersionRollingNegotiationStatus.DisjointMask, null);
+    }
+
+    internal static bool TryParseRequestedVersionRollingMask(JToken value,
+        out uint mask)
+    {
+        mask = 0;
+
+        if(value?.Type != JTokenType.String)
+            return false;
+
+        var text = value.Value<string>();
+
+        if(text?.Length == 10 && text[0] == '0' &&
+           (text[1] == 'x' || text[1] == 'X'))
+        {
+            text = text[2..];
+        }
+
+        return text?.Length == 8 && uint.TryParse(text,
+            NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture,
+            out mask);
+    }
+
+    internal static uint? ResolveVersionRollingMask(CoinTemplate coin,
+        uint requestedMask)
+    {
+        var poolMask = BitcoinConstants.VersionRollingPoolMask;
+
+        if(coin is BitcoinTemplate bitcoinTemplate)
+        {
+            if(bitcoinTemplate.DisableVersionRolling)
+                return null;
+
+            poolMask = bitcoinTemplate.AllowedVersionRollingMask ?? poolMask;
+        }
+
+        var negotiatedMask = poolMask & requestedMask;
+
+        return negotiatedMask == 0 ? null : negotiatedMask;
     }
 
     private void ConfigureMinimumDiff(StratumConnection connection, BitcoinWorkerContext context,
@@ -433,13 +639,13 @@ public class BitcoinPool : PoolBase
 
     protected virtual async Task OnNewJobAsync(object jobParams)
     {
-        currentJobParams = jobParams;
-
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        async Task BroadcastAsync() => await ForEachMinerAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<BitcoinWorkerContext>();
+            if(manager.DirectCoinbasePayoutEnabled && !context.IsAuthorized)
+                return;
             var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
 
             // varDiff: if the client has a pending difficulty change, apply it now
@@ -448,7 +654,57 @@ public class BitcoinPool : PoolBase
 
             // send job
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
-        }));
+        });
+
+        await Guard(BroadcastAsync);
+    }
+
+    internal void HandleJobPipelineFailure(Exception ex)
+    {
+        if(!manager.DirectCoinbasePayoutEnabled)
+        {
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BitcoinPool.HandleJobPipelineFailure", failure: ex);
+            return;
+        }
+
+        if(Interlocked.Exchange(ref directJobPipelineFailed, 1) != 0)
+            return;
+
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "BitcoinPool.HandleJobPipelineFailure", failure: ex);
+        logger.Fatal("Invalidating all work and stopping Miningcore because direct-SOLO job construction failed. Operator investigation and restart are required.");
+
+        Guard(() => messageBus.SendMessage(new AdminNotification(
+            "Bitcoin direct-SOLO job delivery stopped",
+            $"Pool {poolConfig.Id} invalidated all jobs and is stopping because a direct-coinbase template could not be constructed safely. Operator investigation and restart are required. {RpcConsumerDiagnostics.WithheldError}")));
+
+        void InvalidateWork()
+        {
+            foreach(var connection in connections.Values.ToArray())
+            {
+                try
+                {
+                    connection.ContextAs<BitcoinWorkerContext>().ClearJobs();
+                    Disconnect(connection);
+                }
+                catch(Exception invalidateError)
+                {
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPool.HandleJobPipelineFailure", failure: invalidateError);
+                }
+            }
+        }
+
+        var failStop = ctx.ResolveOptional<IMiningFailStopCoordinator>();
+        if(failStop != null)
+        {
+            failStop.BeginFailStopAndCapture(ProcessExitCodes.GeneralFailure,
+                () =>
+                {
+                    InvalidateWork();
+                    return true;
+                });
+        }
+        else
+            InvalidateWork();
     }
 
     public override double HashrateFromShares(double shares, double interval)
@@ -469,14 +725,29 @@ public class BitcoinPool : PoolBase
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         coin = pc.Template.As<BitcoinTemplate>();
-
         base.Configure(pc, cc);
+
+        if(UsesUnauditedDefaultVersionRolling(coin))
+        {
+            logger.Warn(() => $"Pool '{pc.Id}' coin template '{pc.Coin}' " +
+                $"({coin.Symbol}) uses " +
+                $"the compatibility BIP310 mask " +
+                $"0x{BitcoinConstants.VersionRollingPoolMask:x8} without a " +
+                "source-reviewed version-rolling policy");
+        }
     }
+
+    internal static bool UsesUnauditedDefaultVersionRolling(
+        BitcoinTemplate template) => !template.DisableVersionRolling &&
+        !template.AllowedVersionRollingMask.HasValue &&
+        !template.VersionRollingConsensusMask.HasValue;
 
     protected override async Task SetupJobManager(CancellationToken ct)
     {
         manager = ctx.Resolve<BitcoinJobManager>(
             new TypedParameter(typeof(IExtraNonceProvider), new BitcoinExtraNonceProvider(poolConfig.Id, clusterConfig.InstanceId)));
+
+        manager.DirectJobConstructionFailed += HandleJobPipelineFailure;
 
         manager.Configure(poolConfig, clusterConfig);
 
@@ -487,11 +758,11 @@ public class BitcoinPool : PoolBase
             disposables.Add(manager.Jobs
                 .Select(job => Observable.FromAsync(() =>
                     Guard(()=> OnNewJobAsync(job),
-                        ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"))))
+                        ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BitcoinPool.SetupJobManager", failure: ex))))
                 .Concat()
                 .Subscribe(_ => { }, ex =>
                 {
-                    logger.Debug(ex, nameof(OnNewJobAsync));
+                    HandleJobPipelineFailure(ex);
                 }));
 
             // start with initial blocktemplate
@@ -573,7 +844,7 @@ public class BitcoinPool : PoolBase
                     break;
 
                 default:
-                    logger.Debug(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BitcoinPool.OnRequestAsync");
 
                     await connection.RespondErrorAsync(StratumError.Other, $"Unsupported request {request.Method}", request.Id);
                     break;
@@ -592,11 +863,8 @@ public class BitcoinPool : PoolBase
 
         if(connection.Context.ApplyPendingDifficulty())
         {
-            var cleanJob = (bool) ((object[]) currentJobParams)[^1];
-            if(cleanJob)
-                cleanJob = !cleanJob;
-
-            var minerJobParams = CreateWorkerJob(connection, cleanJob);
+            // A difficulty change preserves work from the current block.
+            var minerJobParams = CreateWorkerJob(connection, false);
 
             await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);

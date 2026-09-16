@@ -1,3 +1,5 @@
+using Miningcore.Diagnostics;
+
 namespace Miningcore.Stratum;
 
 public enum StratumError
@@ -11,7 +13,7 @@ public enum StratumError
     MinusOne = -1
 }
 
-public class StratumException : Exception
+public class StratumException : Exception, IBoundedShareFailure
 {
     public StratumException(StratumError code, string message) : base(message)
     {
@@ -19,4 +21,15 @@ public class StratumException : Exception
     }
 
     public StratumError Code { get; set; }
+
+    int IBoundedShareFailure.DiagnosticCode => (int) Code;
+    ShareFailureKind IBoundedShareFailure.DiagnosticKind => Code switch
+    {
+        StratumError.JobNotFound => ShareFailureKind.JobNotFound,
+        StratumError.DuplicateShare => ShareFailureKind.DuplicateShare,
+        StratumError.LowDifficultyShare => ShareFailureKind.LowDifficultyShare,
+        StratumError.UnauthorizedWorker => ShareFailureKind.UnauthorizedWorker,
+        StratumError.NotSubscribed => ShareFailureKind.NotSubscribed,
+        _ => ShareFailureKind.Rejected,
+    };
 }

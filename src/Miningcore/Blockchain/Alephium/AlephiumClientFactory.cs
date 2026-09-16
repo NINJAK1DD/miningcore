@@ -17,7 +17,7 @@ public static class AlephiumClientFactory
 
         if(logger != null && clusterConfig.PaymentProcessing?.Enabled == true &&
            poolConfig.PaymentProcessing?.Enabled == true && string.IsNullOrEmpty(extra?.ApiKey))
-            throw new PoolStartupException("Alephium daemon apiKey not provided", poolConfig.Id);
+            throw new TrustedPoolStartupException("Alephium daemon apiKey not provided", poolConfig.Id);
 
         var baseUrl = new UriBuilder(epConfig.Ssl || epConfig.Http2 ? Uri.UriSchemeHttps : Uri.UriSchemeHttp,
             epConfig.Host, epConfig.Port, epConfig.HttpPath);

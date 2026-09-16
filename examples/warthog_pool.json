@@ -1,27 +1,30 @@
 ﻿{
+    // Starter configuration: replace every CHANGE_ME value and review it before use.
+    // See README.md and ../config.example.json for topology and field guidance.
     "logging": {
         "level": "info",
         "enableConsoleLog": true,
         "enableConsoleColors": true,
-        "logFile": "",
-        "apiLogFile": "",
-        "logBaseDirectory": "",
+        "logFile": "miningcore.log",
+        "apiLogFile": "miningcore-api.log",
+        "logBaseDirectory": "logs",
         "perPoolLogFile": false
     },
     "banning": {
         "manager": "Integrated",
-        "banOnJunkReceive": false,
-        "banOnInvalidShares": false
+        "banOnJunkReceive": true,
+        "banOnInvalidShares": true,
+        "banOnLoginFailure": true
     },
     "notifications": {
         "enabled": false,
         "email": {
             "host": "smtp.example.com",
             "port": 587,
-            "user": "user",
-            "password": "password",
-            "fromAddress": "info@yourpool.org",
-            "fromName": "support"
+            "user": "CHANGE_ME_SMTP_USER",
+            "password": "CHANGE_ME_SMTP_PASSWORD",
+            "fromAddress": "pool@example.com",
+            "fromName": "Miningcore operator"
         },
         "admin": {
             "enabled": false,
@@ -34,49 +37,46 @@
             "host": "127.0.0.1",
             "port": 5432,
             "user": "miningcore",
-            "password": "password",
+            "password": "CHANGE_ME_POSTGRES_PASSWORD",
             "database": "miningcore"
         }
     },
     "paymentProcessing": {
         "enabled": true,
         "interval": 600,
-        "shareRecoveryFile": "recovered-shares.txt"
+        "coinbaseString": "Miningcore"
     },
+    "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
     "api": {
         "enabled": true,
-        "listenAddress": "*",
+        "listenAddress": "127.0.0.1",
         "port": 4000,
-        "metricsIpWhitelist": [],
+        "adminPort": 4001,
+        "metricsPort": 4002,
+        "adminIpWhitelist": [ "127.0.0.1" ],
+        "metricsIpWhitelist": [ "127.0.0.1" ],
+        "legacyNullValueHandling": false,
         "rateLimiting": {
-            "disabled": true,
-            "rules": [
-                {
-                    "Endpoint": "*",
-                    "Period": "1s",
-                    "Limit": 5
-                }
-            ],
-            "ipWhitelist": [
-                ""
-            ]
+            "disabled": true
         }
     },
     "pools": [{
         "id": "wart1",
         "enabled": true,
         "coin": "warthog",
-        "address": "5d896758ee0ade5f09fa93d012783beddd82a6ff322f2073",
+        "address": "CHANGE_ME_WARTHOG_POOL_WALLET_ADDRESS",
         "rewardRecipients": [
           {
             "type": "op",
-            "address": "5d896758ee0ade5f09fa93d012783beddd82a6ff322f2073",
-            "percentage": 1.0
+            "address": "4701843e274a2a4dfbac59678cb693233274bf5fefcc4e46",
+            "percentage": 0
           }
         ],
+        "enableInternalStratum": true,
         "blockRefreshInterval": 250,
         "jobRebroadcastTimeout": 0,
         "clientConnectionTimeout": 600,
+        "vardiffIdleSweepInterval": 30,
         "banning": {
           "enabled": true,
           "time": 600,
@@ -85,7 +85,7 @@
         },
         "ports": {
           "4073": {
-            "name": "GPU-SMALL",
+            "name": "WART-LOW-DIFF",
             "listenAddress": "*",
             "difficulty": 512000000,
             "varDiff": {
@@ -93,8 +93,21 @@
               "maxDiff": null,
               "targetTime": 15,
               "retargetTime": 90,
-              "variancePercent": 100,
-              "maxDelta": 512
+              "variancePercent": 30,
+              "maxDelta": 512000000
+            }
+          },
+          "4074": {
+            "name": "WART-HIGH-DIFF",
+            "listenAddress": "*",
+            "difficulty": 8192000000,
+            "varDiff": {
+              "minDiff": 4096000000,
+              "maxDiff": null,
+              "targetTime": 15,
+              "retargetTime": 90,
+              "variancePercent": 30,
+              "maxDelta": 8192000000
             }
           }
         },
@@ -107,7 +120,7 @@
           }
         ],
         "paymentProcessing": {
-            "walletPrivateKey": "<DANGER: The Warthog Node's wallet private key which owns the pool address>",
+            "walletPrivateKey": "CHANGE_ME_WARTHOG_WALLET_PRIVATE_KEY",
             "enabled": true,
             "minimumPayment": 1,
             "payoutScheme": "PPLNS",

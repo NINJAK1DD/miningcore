@@ -33,6 +33,8 @@ using Polly.CircuitBreaker;
 using ProtoBuf;
 using Xunit;
 using Block = Miningcore.Persistence.Model.Block;
+using ShareAccountingBatch = Miningcore.Persistence.Model.ShareAccountingBatch;
+using ShareAccountingInsertResult = Miningcore.Persistence.Model.ShareAccountingInsertResult;
 using PersistedShare = Miningcore.Persistence.Model.Share;
 
 namespace Miningcore.Tests.Mining;
@@ -40,6 +42,31 @@ namespace Miningcore.Tests.Mining;
 [Collection(ShareRecoveryLoggingCollection.Name)]
 public class ShareRecorderTests
 {
+    [Fact]
+    public async Task PairedAccounting_RetryCommitsOneAuthenticatedGroup()
+    {
+        var fixture = CreateRecoveryFixture();
+        var pair = CreateAccountingPair();
+        fixture.ShareRepository.InsertAccountingBatchAsync(fixture.Connection,
+                fixture.Transaction, Arg.Any<ShareAccountingBatch>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<ShareAccountingInsertResult>(
+                    new TimeoutException("injected retry")),
+                Task.FromResult(ShareAccountingInsertResult.Inserted));
+
+        await fixture.Recorder.PersistSharesAsync(new[] { pair });
+
+        await fixture.ShareRepository.Received(2).InsertAccountingBatchAsync(
+            fixture.Connection, fixture.Transaction,
+            Arg.Is<ShareAccountingBatch>(batch => batch.Shares.Length == 2),
+            Arg.Any<CancellationToken>());
+        fixture.Transaction.Received(1).Commit();
+        fixture.MessageBus.Received(1).SendMessage(
+            Arg.Is<ShareAccountingTelemetryEvent>(x =>
+                x.Outcome == ShareAccountingInsertResult.Inserted),
+            Arg.Any<string>());
+    }
+
     [Fact]
     public async Task StartAsync_ReceivesImmediateShareAndDisposesSubscription()
     {
@@ -695,6 +722,11 @@ public class ShareRecorderTests
         }
         finally
         {
+            // The assertion above deliberately exercises very small production deadlines.
+            // Cleanup has a different contract: after releasing the fake provider, wait long
+            // enough for the persistence worker to relinquish every recovery-journal handle.
+            recorder.ShutdownPersistenceDrainTimeout = TimeSpan.FromSeconds(5);
+            recorder.ShutdownRecoveryCompletionTimeout = TimeSpan.FromSeconds(5);
             releaseDatabase.TrySetResult();
             await StopRecorderBeforeFixtureCleanupAsync(recorder);
 
@@ -702,6 +734,19 @@ public class ShareRecorderTests
             ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
             Directory.Delete(directory, true);
         }
+    }
+
+    [Fact]
+    public async Task FixtureCleanup_RejectsServiceTimeoutThatMayLeaveWorkerActive()
+    {
+        var timeout = new TimeoutException(
+            "simulated completed stop with an active persistence worker");
+
+        var error = await Assert.ThrowsAsync<TimeoutException>(() =>
+            AwaitRecorderStopBeforeFixtureCleanupAsync(
+                Task.FromException(timeout)));
+
+        Assert.Same(timeout, error);
     }
 
     [Fact]
@@ -1438,6 +1483,10 @@ public class ShareRecorderTests
         var bus = new MessageBus(coordinator);
         var fatalState = new ShareRecoveryFatalState(config, processStatus,
             config.ShareRecoveryStateDirectory);
+        var completedIncidentPublished = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        fatalState.CompletedIncidentPublishedCheckpoint = () =>
+            completedIncidentPublished.TrySetResult();
         var handler = new ShareRecoveryFailureHandler(coordinator,
             new Lazy<ICriticalNotificationSender>(() =>
                 Substitute.For<ICriticalNotificationSender>()), fatalState);
@@ -1490,8 +1539,15 @@ public class ShareRecorderTests
             returnedShare.SetPersistenceAdmission(
                 statisticalShare.PersistenceAdmission);
             returnedShare.StatisticalRecordEmitted = true;
+
+            // Publishing the exact-share sidecar performs durable writes for the
+            // complete 551-share incident. Observe that production boundary instead
+            // of imposing a five-second filesystem SLA on a loaded Windows runner.
+            await completedIncidentPublished.Task.WaitAsync(
+                TimeSpan.FromSeconds(30));
             await Assert.ThrowsAnyAsync<IOException>(() =>
-                returnedShare.PersistenceAdmission.WaitAsync(TimeSpan.FromSeconds(5)));
+                returnedShare.PersistenceAdmission.WaitAsync(
+                    TimeSpan.FromSeconds(30)));
             Assert.Throws<OperationCanceledException>(() =>
                 acceptance.QueueResponse(() => acknowledged = true));
 
@@ -1510,15 +1566,7 @@ public class ShareRecorderTests
         finally
         {
             releaseDatabase.TrySetResult();
-            using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            try
-            {
-                await recorder.StopAsync(stop.Token);
-            }
-            catch
-            {
-                // The injected journal failure deliberately faults the hosted service.
-            }
+            await StopRecorderBeforeFixtureCleanupAsync(recorder);
 
             if(Directory.Exists(directory))
                 Directory.Delete(directory, true);
@@ -1543,9 +1591,27 @@ public class ShareRecorderTests
         var bus = new MessageBus(coordinator);
         var fatalState = new ShareRecoveryFatalState(config, processStatus,
             config.ShareRecoveryStateDirectory);
+        var completedIncidentPublished = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFinalLatch = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        fatalState.CompletedIncidentPublishedCheckpoint = () =>
+        {
+            completedIncidentPublished.TrySetResult();
+            releaseFinalLatch.Task.GetAwaiter().GetResult();
+        };
+        var fatalStateRecorded = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var notificationSender = Substitute.For<ICriticalNotificationSender>();
+        notificationSender.SendCriticalAdminNotificationAsync(
+                Arg.Any<AdminNotification>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                fatalStateRecorded.TrySetResult();
+                return Task.CompletedTask;
+            });
         var handler = new ShareRecoveryFailureHandler(coordinator,
-            new Lazy<ICriticalNotificationSender>(() =>
-                Substitute.For<ICriticalNotificationSender>()), fatalState);
+            new Lazy<ICriticalNotificationSender>(() => notificationSender), fatalState);
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var connection = Substitute.For<IDbConnection>();
         var transaction = Substitute.For<IDbTransaction>();
@@ -1614,10 +1680,19 @@ public class ShareRecorderTests
             Assert.Throws<OperationCanceledException>(() =>
                 acceptance.QueueResponse(() => { }));
 
-            await WaitUntilAsync(
-                () => FatalStateIsComplete(fatalState.FatalStateFilename),
-                TimeSpan.FromSeconds(5));
+            // Incident publication precedes the final latch replacement. Hold that
+            // handoff to verify that our completion signal cannot fire prematurely.
+            await completedIncidentPublished.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            Assert.False(fatalStateRecorded.Task.IsCompleted);
+            releaseFinalLatch.TrySetResult();
+
+            // Notification follows MarkFatalShares. Reading only after that call
+            // returns avoids a Windows FileShare.Read handle blocking File.Move
+            // during replacement. Still assert completeness: the handler also
+            // notifies when fatal-state publication fails.
+            await fatalStateRecorded.Task.WaitAsync(TimeSpan.FromSeconds(30));
             var latch = File.ReadAllLines(fatalState.FatalStateFilename);
+            Assert.Contains("detailState=complete", latch);
             var sidecar = Assert.Single(latch.Where(line =>
                 line.StartsWith("detailFile=", StringComparison.Ordinal)))[
                 "detailFile=".Length..];
@@ -1644,6 +1719,12 @@ public class ShareRecorderTests
         }
         finally
         {
+            // This test proves the captured fail-stop set, not a one-second shutdown SLA.
+            // Give the deliberately faulted providers a bounded cleanup window before the
+            // outer guard decides that deleting their retained recovery directory is unsafe.
+            recorder.ShutdownPersistenceDrainTimeout = TimeSpan.FromSeconds(5);
+            recorder.ShutdownRecoveryCompletionTimeout = TimeSpan.FromSeconds(5);
+            releaseFinalLatch.TrySetResult();
             releaseJournal.TrySetResult();
             releaseDatabase.TrySetResult();
             await StopRecorderBeforeFixtureCleanupAsync(recorder);
@@ -3198,6 +3279,93 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task RecoverSharesAsync_PairedAccountingRemainsOneTransactionalEnvelope()
+    {
+        var fixture = CreateRecoveryFixture();
+        var accountingId = ShareAccounting.CreateId();
+        var created = new DateTime(2026, 8, 29, 12, 0, 0, DateTimeKind.Utc);
+        var parent = new Share
+        {
+            PoolId = "ltc-solo",
+            Miner = "ltc-miner",
+            Worker = "rig-1",
+            UserAgent = "miner/1.0",
+            IpAddress = "192.0.2.1",
+            Source = "direct",
+            SessionId = "session-1",
+            Created = created,
+            Difficulty = 16,
+            ActualDifficulty = 18,
+            ShareDifficulty = 16,
+            NetworkDifficulty = 100,
+            BlockHeight = 200,
+            RewardBasisSatoshis = 5_000_000_000,
+            PpsCalculatedAmount = 8m,
+            AccountingId = accountingId,
+            AccountingRole = ShareAccountingRole.Parent,
+        };
+        parent.PairedShare = new Share
+        {
+            PoolId = "doge-solo",
+            Miner = "doge-miner",
+            Worker = parent.Worker,
+            UserAgent = parent.UserAgent,
+            IpAddress = parent.IpAddress,
+            Source = parent.Source,
+            SessionId = parent.SessionId,
+            Created = created,
+            Difficulty = 2_000,
+            ActualDifficulty = 2_250,
+            ShareDifficulty = parent.ShareDifficulty,
+            NetworkDifficulty = 10_000,
+            BlockHeight = 300,
+            RewardBasisSatoshis = 1_000_000_000_000_000,
+            PpsCalculatedAmount = 2_000_000m,
+            AccountingId = accountingId,
+            AccountingRole = ShareAccountingRole.Auxiliary,
+        };
+        var filename = await WriteRecoveryFileAsync(new[]
+        {
+            JsonConvert.SerializeObject(parent),
+        });
+        string archiveFilename = null;
+
+        try
+        {
+            archiveFilename = await fixture.Recorder.RecoverSharesAsync(filename);
+
+            await fixture.ShareRepository.Received(1).InsertAccountingBatchAsync(
+                fixture.Connection, fixture.Transaction,
+                Arg.Is<ShareAccountingBatch>(batch =>
+                    batch.AccountingId == Guid.ParseExact(accountingId, "N") &&
+                    batch.Shares.Length == 2 &&
+                    batch.Shares.Any(x => x.PoolId == "ltc-solo" &&
+                        x.AccountingRole == (short) ShareAccountingRole.Parent) &&
+                    batch.Shares.Any(x => x.PoolId == "doge-solo" &&
+                        x.AccountingRole == (short) ShareAccountingRole.Auxiliary) &&
+                    batch.PpsCredits.Length == 2 &&
+                    batch.PpsCredits.Any(x => x.PoolId == "ltc-solo" &&
+                        x.Address == "ltc-miner" && x.CalculatedAmount == 8m) &&
+                    batch.PpsCredits.Any(x => x.PoolId == "doge-solo" &&
+                        x.Address == "doge-miner" &&
+                        x.CalculatedAmount == 2_000_000m)),
+                Arg.Any<CancellationToken>());
+            await fixture.ShareRepository.DidNotReceive().BatchInsertAsync(
+                fixture.Connection, fixture.Transaction,
+                Arg.Any<IEnumerable<PersistedShare>>(),
+                Arg.Any<CancellationToken>());
+            fixture.Transaction.Received(1).Commit();
+            Assert.True(File.Exists(archiveFilename));
+        }
+        finally
+        {
+            File.Delete(filename);
+            if(archiveFilename != null)
+                File.Delete(archiveFilename);
+        }
+    }
+
+    [Fact]
     public async Task RecoverSharesAsync_SuccessfulOrdinaryReplay_IsRetiredWithoutReinsert()
     {
         var fixture = CreateRecoveryFixture();
@@ -3456,28 +3624,6 @@ public class ShareRecorderTests
     }
 
     [Fact]
-    public void GetSharesForPersistence_ExcludesBlockOnlyCandidates()
-    {
-        var regularShare = new Share { PoolId = "ltc-solo" };
-        var parentBlockCandidate = new Share { PoolId = "ltc-solo", IsBlockCandidate = true };
-        var auxiliaryBlockCandidate = new Share
-        {
-            PoolId = "doge-solo",
-            IsBlockCandidate = true,
-            BlockOnly = true,
-        };
-
-        var result = ShareRecorder.GetSharesForPersistence(new[]
-        {
-            regularShare,
-            parentBlockCandidate,
-            auxiliaryBlockCandidate,
-        }).ToArray();
-
-        Assert.Equal(new[] { regularShare, parentBlockCandidate }, result);
-    }
-
-    [Fact]
     public void MergedMiningFields_RoundTripThroughShareRelayWireFormat()
     {
         var share = new Share
@@ -3683,6 +3829,237 @@ public class ShareRecorderTests
             blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>());
             transaction.Commit();
         });
+    }
+
+    [Fact]
+    public async Task PersistDirectBlockSubmissionAsync_RetryableDatabaseFailureUsesImmediateExactJournalFallback()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-direct-outbox-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        connectionFactory.OpenConnectionAsync().Returns(_ =>
+            Task.FromException<IDbConnection>(new TimeoutException(
+                "simulated PostgreSQL timeout")));
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(),
+            Substitute.For<IBlockRepository>(), new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+            }, Substitute.For<IMessageBus>());
+        var submission = global::Miningcore.Tests.Blockchain.Bitcoin
+            .BitcoinDirectSubmissionTestData.Create();
+        var candidate = new Share
+        {
+            PoolId = "btc-direct",
+            Miner = "miner",
+            BlockHeight = 123,
+            BlockHash = submission.BlockHash,
+            BlockType = BitcoinDirectCoinbaseSettlement.BlockType,
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = submission.CoinbaseTxId,
+            SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+            GrossRewardSatoshis = 5_000_000_000,
+            DirectMinerRewardSatoshis = 4_900_000_000,
+            DirectMinerScriptPubKey = "0014" + new string('1', 40),
+            DirectRecipientOutputs = "[]",
+            DirectSubmissionState = BitcoinDirectSubmission.Prepared,
+            DirectSubmissionBlock = submission.BlockHex,
+            DirectSubmissionAttempts = 0,
+            DirectSubmissionDefinitiveMisses = 0,
+        };
+
+        try
+        {
+            var result = await recorder.PersistDirectBlockSubmissionAsync(
+                candidate);
+
+            Assert.Null(result.DeferredFailStopError);
+            await connectionFactory.Received(1).OpenConnectionAsync();
+            var persisted = (await File.ReadAllLinesAsync(recoveryFilename))
+                .Where(x => !string.IsNullOrWhiteSpace(x) &&
+                    !x.StartsWith('#'))
+                .Select(JsonConvert.DeserializeObject<Share>)
+                .Single();
+            Assert.Equal(submission.BlockHex,
+                persisted.DirectSubmissionBlock);
+            Assert.Equal(BitcoinDirectSubmission.Prepared,
+                persisted.DirectSubmissionState);
+        }
+        finally
+        {
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task PersistDirectBlockSubmissionAsync_CommittedCleanupDefersFailStopAndKeepsExactPayloadDurable()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-direct-committed-cleanup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var recoveryHandler = Substitute.For<IShareRecoveryFailureHandler>();
+        var cleanupFailure = new IOException("transaction dispose failed");
+        connectionFactory.OpenConnectionAsync().Returns(connection);
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>(),
+            Arg.Any<CancellationToken>()).Returns(true);
+        transaction.When(x => x.Dispose()).Do(_ => throw cleanupFailure);
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), blockRepository,
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+            }, Substitute.For<IMessageBus>(), recoveryHandler,
+            Substitute.For<IMiningFailStopCoordinator>(),
+            Substitute.For<ICandidatePersistenceFailureHandler>());
+        var candidate = CreateDirectSubmissionCandidate();
+
+        try
+        {
+            var preparation = await recorder
+                .PersistDirectBlockSubmissionAsync(candidate);
+
+            var error = Assert.IsType<TransactionCommittedCleanupException>(
+                preparation.DeferredFailStopError);
+            Assert.Equal(
+                DirectBlockSubmissionFailStopReason.CommittedCleanupFailure,
+                preparation.DeferredFailStopReason);
+            Assert.Same(cleanupFailure, error.InnerException);
+            await recoveryHandler.DidNotReceive()
+                .StopClusterAfterReplaySafeCommittedCleanupAsync(
+                    Arg.Any<IReadOnlyCollection<Share>>(), Arg.Any<string>(),
+                    Arg.Any<Exception>(), Arg.Any<Exception>());
+            var persisted = ReadSingleRecoveryShare(recoveryFilename);
+            Assert.Equal(candidate.DirectSubmissionBlock,
+                persisted.DirectSubmissionBlock);
+
+            await Assert.ThrowsAsync<TransactionCommittedCleanupException>(() =>
+                recorder.CompleteDirectBlockSubmissionPreparationAsync(
+                    candidate, preparation));
+            await recoveryHandler.Received(1)
+                .StopClusterAfterReplaySafeCommittedCleanupAsync(
+                    Arg.Is<IReadOnlyCollection<Share>>(x =>
+                        x.Single() == candidate), recoveryFilename, error, null);
+        }
+        finally
+        {
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task PersistDirectBlockSubmissionAsync_UncertainCommitDefersFailStopAndJournalsExactPayload()
+    {
+        var directory = Path.Combine(Path.GetTempPath(),
+            $"miningcore-direct-uncertain-commit-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var recoveryFilename = Path.Combine(directory, "recovered-shares.txt");
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var recoveryHandler = Substitute.For<IShareRecoveryFailureHandler>();
+        var commitFailure = new IOException("commit acknowledgement lost");
+        connectionFactory.OpenConnectionAsync().Returns(connection);
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.InsertAsync(connection, transaction, Arg.Any<Block>(),
+            Arg.Any<CancellationToken>()).Returns(true);
+        transaction.When(x => x.Commit()).Do(_ => throw commitFailure);
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), blockRepository,
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+                ShareRecoveryStateDirectory = Path.Combine(directory, "state"),
+            }, Substitute.For<IMessageBus>(), recoveryHandler,
+            Substitute.For<IMiningFailStopCoordinator>(),
+            Substitute.For<ICandidatePersistenceFailureHandler>());
+        var candidate = CreateDirectSubmissionCandidate();
+
+        try
+        {
+            var preparation = await recorder
+                .PersistDirectBlockSubmissionAsync(candidate);
+
+            var error = Assert.IsType<TransactionCommitOutcomeUncertainException>(
+                preparation.DeferredFailStopError);
+            Assert.Equal(
+                DirectBlockSubmissionFailStopReason.CommitOutcomeUncertain,
+                preparation.DeferredFailStopReason);
+            Assert.Same(commitFailure, error.InnerException);
+            await recoveryHandler.DidNotReceive()
+                .StopClusterForReplaySafeUncertainCommitAsync(
+                    Arg.Any<IReadOnlyCollection<Share>>(), Arg.Any<string>(),
+                    Arg.Any<Exception>());
+            var persisted = ReadSingleRecoveryShare(recoveryFilename);
+            Assert.Equal(candidate.DirectSubmissionBlock,
+                persisted.DirectSubmissionBlock);
+
+            await Assert.ThrowsAsync<
+                TransactionCommitOutcomeUncertainException>(() => recorder
+                .CompleteDirectBlockSubmissionPreparationAsync(candidate,
+                    preparation));
+            await recoveryHandler.Received(1)
+                .StopClusterForReplaySafeUncertainCommitAsync(
+                    Arg.Is<IReadOnlyCollection<Share>>(x =>
+                        x.Single() == candidate), recoveryFilename, error);
+        }
+        finally
+        {
+            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task CompleteDirectBlockSubmissionPreparationAsync_UnknownReasonFailsClosed()
+    {
+        var candidateFailureHandler =
+            Substitute.For<ICandidatePersistenceFailureHandler>();
+        var recorder = new ShareRecorder(Substitute.For<IConnectionFactory>(),
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(),
+            Substitute.For<IBlockRepository>(), new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+            }, Substitute.For<IMessageBus>(),
+            Substitute.For<IShareRecoveryFailureHandler>(),
+            Substitute.For<IMiningFailStopCoordinator>(),
+            candidateFailureHandler);
+        var candidate = CreateDirectSubmissionCandidate();
+        var databaseError = new InvalidOperationException(
+            "simulated deferred database failure");
+        var preparation = new DirectBlockSubmissionPreparation(databaseError,
+            (DirectBlockSubmissionFailStopReason) 999);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            recorder.CompleteDirectBlockSubmissionPreparationAsync(candidate,
+                preparation));
+
+        Assert.Contains("Unsupported deferred direct-submission fail-stop reason",
+            error.Message, StringComparison.Ordinal);
+        Assert.Same(databaseError, error.InnerException);
+        await candidateFailureHandler.Received(1).StopClusterAsync(
+            Arg.Is<IReadOnlyCollection<Share>>(shares =>
+                shares.Single() == candidate), databaseError, null, true);
     }
 
     [Fact]
@@ -4558,6 +4935,41 @@ public class ShareRecorderTests
                 "/recovery/recovered-shares.txt"));
 
         Assert.Contains("record line longer", error.Message);
+    }
+
+    [Fact]
+    public async Task RecoveryJournal_OrdinaryRecordsRetainOneMiBWriteLimit()
+    {
+        var recoveryFilename = Path.Combine(Path.GetTempPath(),
+            Path.GetRandomFileName());
+        var recorder = new ShareRecorder(Substitute.For<IConnectionFactory>(),
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(),
+            new ClusterConfig
+            {
+                Pools = Array.Empty<PoolConfig>(),
+                ShareRecoveryFile = recoveryFilename,
+            }, Substitute.For<IMessageBus>());
+
+        try
+        {
+            var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+                recorder.WriteRecoveryJournalAsync(new[]
+                {
+                    new Share
+                    {
+                        PoolId = "ordinary",
+                        Miner = new string('x',
+                            ShareRecorder.MaxOrdinaryRecoveryRecordLineLength),
+                    },
+                }));
+
+            Assert.Contains("1048576-character limit", error.Message);
+        }
+        finally
+        {
+            File.Delete(recoveryFilename);
+        }
     }
 
     [Fact]
@@ -5736,6 +6148,100 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task RecordDirectSubmissionAttempt_EmitsObservedNotificationOnlyAfterCommit()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var pool = new PoolConfig
+        {
+            Id = "btc-direct",
+            Template = new BitcoinTemplate { Symbol = "BTC", Name = "Bitcoin" },
+        };
+        var observed = new Block
+        {
+            PoolId = pool.Id,
+            BlockHeight = 123,
+            Hash = new string('a', 64),
+            Type = BitcoinDirectCoinbaseSettlement.BlockType,
+            SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+            DirectSubmissionState = BitcoinDirectSubmission.ObservedActive,
+        };
+        connectionFactory.OpenConnectionAsync().Returns(connection);
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        blockRepository.RecordBitcoinDirectSubmissionAttemptAsync(connection,
+                transaction, pool.Id, observed.Hash,
+                BitcoinDirectSubmissionOutcome.ObservedActive,
+                Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<DateTime>(),
+                Arg.Any<CancellationToken>())
+            .Returns(observed);
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), blockRepository,
+            new ClusterConfig { Pools = new[] { pool } }, messageBus);
+        var share = new Share { PoolId = pool.Id, BlockHash = observed.Hash };
+
+        await recorder.RecordDirectBlockSubmissionAttemptAsync(share,
+            BitcoinDirectSubmissionOutcome.ObservedActive, DateTime.UtcNow);
+
+        Received.InOrder(() =>
+        {
+            transaction.Commit();
+            messageBus.SendMessage(Arg.Any<BlockFoundNotification>(),
+                Arg.Any<string>());
+        });
+    }
+
+    [Fact]
+    public async Task RecordDirectSubmissionAttempt_UncertainCommitDoesNotNotify()
+    {
+        var connectionFactory = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        var blockRepository = Substitute.For<IBlockRepository>();
+        var messageBus = Substitute.For<IMessageBus>();
+        var pool = new PoolConfig
+        {
+            Id = "btc-direct",
+            Template = new BitcoinTemplate { Symbol = "BTC", Name = "Bitcoin" },
+        };
+        var observed = new Block
+        {
+            PoolId = pool.Id,
+            BlockHeight = 123,
+            Hash = new string('a', 64),
+            Type = BitcoinDirectCoinbaseSettlement.BlockType,
+            SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+            DirectSubmissionState = BitcoinDirectSubmission.ObservedActive,
+        };
+        connectionFactory.OpenConnectionAsync().Returns(connection);
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        transaction.When(x => x.Commit()).Do(_ =>
+            throw new IOException("commit acknowledgement lost"));
+        blockRepository.RecordBitcoinDirectSubmissionAttemptAsync(connection,
+                transaction, pool.Id, observed.Hash,
+                BitcoinDirectSubmissionOutcome.ObservedActive,
+                Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<DateTime>(),
+                Arg.Any<CancellationToken>())
+            .Returns(observed);
+        var recorder = new ShareRecorder(connectionFactory,
+            AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            Substitute.For<IShareRepository>(), blockRepository,
+            new ClusterConfig { Pools = new[] { pool } }, messageBus);
+        var share = new Share { PoolId = pool.Id, BlockHash = observed.Hash };
+
+        await Assert.ThrowsAsync<IOException>(() =>
+            recorder.RecordDirectBlockSubmissionAttemptAsync(share,
+                BitcoinDirectSubmissionOutcome.ObservedActive,
+                DateTime.UtcNow));
+
+        messageBus.DidNotReceive().SendMessage(
+            Arg.Any<BlockFoundNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
     public async Task PersistSharesCoreAsync_PostCommitNotificationFailureDoesNotFailPersistence()
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
@@ -5932,7 +6438,9 @@ public class ShareRecorderTests
 
         await handler.StopClusterAsync(new[] { CreateDurableCandidate("ltc-parent") },
             new InvalidOperationException("parent failed"), null, true);
-        await handler.StopClusterAsync(new[] { CreateDurableCandidate("doge-aux", "auxpow") },
+        var auxiliaryCandidate = CreateDurableCandidate(new string('b', 64), "auxpow");
+        auxiliaryCandidate.TransactionConfirmationData = "private-submission-evidence";
+        await handler.StopClusterAsync(new[] { auxiliaryCandidate },
             new InvalidOperationException("aux failed"),
             new IOException("journal failed"), false);
 
@@ -5949,7 +6457,9 @@ public class ShareRecorderTests
         await notificationSender.Received(1).SendCriticalAdminNotificationAsync(
             Arg.Is<AdminNotification>(notification =>
                 notification.Subject == "Escalated block-candidate durability loss" &&
-                notification.Message.Contains("doge-aux") &&
+                notification.Message.Contains("pool=doge-solo") &&
+                notification.Message.Contains(new string('b', 64)) &&
+                !notification.Message.Contains("private-submission-evidence") &&
                 notification.Message.Contains(fatalState.FatalStateFilename)),
             Arg.Any<CancellationToken>());
     }
@@ -6095,6 +6605,75 @@ public class ShareRecorderTests
     }
 
     [Fact]
+    public async Task ShareRecoveryFailureHandler_ReplaySafeDirectCommitUncertaintyIsImportableAndLatched()
+    {
+        var processStatus = new ProcessStatus();
+        var applicationLifetime = Substitute.For<IHostApplicationLifetime>();
+        var notificationSender = Substitute.For<ICriticalNotificationSender>();
+        var fatalState = Substitute.For<IShareRecoveryFatalState>();
+        fatalState.FatalStateFilename.Returns("/state/direct-uncertain.fatal");
+        var handler = new ShareRecoveryFailureHandler(
+            new MiningFailStopCoordinator(processStatus, applicationLifetime),
+            new Lazy<ICriticalNotificationSender>(() => notificationSender),
+            fatalState);
+        var shares = new[] { CreateDirectSubmissionCandidate() };
+        var commitError = new IOException("commit acknowledgement lost");
+
+        await handler.StopClusterForReplaySafeUncertainCommitAsync(shares,
+            "/recovery/recovered-shares.txt", commitError);
+
+        Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+            processStatus.ExitCode);
+        applicationLifetime.Received(1).StopApplication();
+        fatalState.Received(1).MarkFatalShares(shares, commitError, null,
+            "bitcoin-direct-postgresql-commit-outcome-uncertain");
+        await notificationSender.Received(1).SendCriticalAdminNotificationAsync(
+            Arg.Is<AdminNotification>(notification =>
+                notification.Subject == "Uncertain PostgreSQL direct-block commit" &&
+                notification.Message.Contains("Exact replay-safe records") &&
+                notification.Message.Contains("idempotent") &&
+                notification.Message.Contains("recovered-shares.txt")),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ShareRecoveryFailureHandler_CommittedDirectCleanupUsesCommittedOutbox(
+        bool journalFailed)
+    {
+        var processStatus = new ProcessStatus();
+        var applicationLifetime = Substitute.For<IHostApplicationLifetime>();
+        var notificationSender = Substitute.For<ICriticalNotificationSender>();
+        var fatalState = Substitute.For<IShareRecoveryFatalState>();
+        var handler = new ShareRecoveryFailureHandler(
+            new MiningFailStopCoordinator(processStatus, applicationLifetime),
+            new Lazy<ICriticalNotificationSender>(() => notificationSender),
+            fatalState);
+        var shares = new[] { CreateDirectSubmissionCandidate() };
+
+        await handler.StopClusterAfterReplaySafeCommittedCleanupAsync(shares,
+            "/recovery/recovered-shares.txt", new IOException("dispose failed"),
+            journalFailed ? new IOException("journal failed") : null);
+
+        Assert.Equal(ProcessExitCodes.GeneralFailure, processStatus.ExitCode);
+        applicationLifetime.Received(1).StopApplication();
+        fatalState.DidNotReceiveWithAnyArgs().MarkFatalShares(default, default,
+            default);
+        var expectedJournalText = journalFailed
+            ? "could not be appended"
+            : "replay-safe duplicate";
+        await notificationSender.Received(1).SendCriticalAdminNotificationAsync(
+            Arg.Is<AdminNotification>(notification =>
+                notification.Subject ==
+                    "Direct block transaction cleanup failed after commit" &&
+                notification.Message.Contains("propagated 1 direct block") &&
+                notification.Message.Contains("durable outbox row") &&
+                notification.Message.Contains(expectedJournalText)),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task ShareRecoveryFailureHandler_JournalledPipelineFailureUsesGeneralExit()
     {
         var processStatus = new ProcessStatus();
@@ -6121,6 +6700,108 @@ public class ShareRecorderTests
         await notificationSender.Received(1).SendCriticalAdminNotificationAsync(
             Arg.Is<AdminNotification>(notification =>
                 notification.Subject == "Share persistence pipeline stopped"),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RecoverSharesAsync_DirectCoinbaseRecordRequiresCompleteDirectSchema()
+    {
+        var fixture = CreateRecoveryFixture();
+        var submission = global::Miningcore.Tests.Blockchain.Bitcoin
+            .BitcoinDirectSubmissionTestData.Create();
+        var candidate = CreateDurableCandidate("direct-block",
+            BitcoinDirectCoinbaseSettlement.BlockType);
+        candidate.BlockHash = submission.BlockHash;
+        candidate.TransactionConfirmationData = submission.CoinbaseTxId;
+        candidate.SettlementMode = BitcoinDirectCoinbaseSettlement.Mode;
+        candidate.GrossRewardSatoshis = 5_000_000_000;
+        candidate.DirectMinerRewardSatoshis = 4_900_000_000;
+        candidate.DirectMinerScriptPubKey = "0014" + new string('1', 40);
+        candidate.DirectRecipientOutputs = JsonConvert.SerializeObject(new[]
+        {
+            new BitcoinDirectCoinbaseOutput
+            {
+                Address = "fee",
+                ScriptPubKey = "0014" + new string('2', 40),
+                AmountSatoshis = 100_000_000,
+            },
+        });
+        candidate.DirectSubmissionState = BitcoinDirectSubmission.Prepared;
+        candidate.DirectSubmissionBlock = submission.BlockHex;
+        candidate.DirectSubmissionAttempts = 0;
+        candidate.DirectSubmissionDefinitiveMisses = 0;
+        var filename = await WriteRecoveryFileAsync(new[]
+        {
+            JsonConvert.SerializeObject(candidate),
+        });
+        fixture.BlockRepository.HasMergedMiningBlockIndexesAsync(
+                fixture.Connection, Arg.Any<CancellationToken>())
+            .Returns(true);
+        fixture.BlockRepository.HasBitcoinDirectSoloSchemaAsync(
+                fixture.Connection, Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        try
+        {
+            var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+                fixture.Recorder.RecoverSharesAsync(filename));
+
+            Assert.Contains("add_bitcoin_direct_solo.sql", error.Message,
+                StringComparison.Ordinal);
+            Assert.Contains("has not been imported", error.Message,
+                StringComparison.Ordinal);
+            fixture.Connection.DidNotReceive().BeginTransaction(
+                Arg.Any<IsolationLevel>());
+            await fixture.BlockRepository.Received(1)
+                .HasBitcoinDirectSoloSchemaAsync(fixture.Connection,
+                    Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            File.Delete(filename);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ShareRecoveryFailureHandler_DistinguishesRecoveryAndQuarantine(
+        bool hasRecoverableShare)
+    {
+        var processStatus = new ProcessStatus();
+        var applicationLifetime = Substitute.For<IHostApplicationLifetime>();
+        var notificationSender = Substitute.For<ICriticalNotificationSender>();
+        var handler = new ShareRecoveryFailureHandler(
+            new MiningFailStopCoordinator(processStatus, applicationLifetime),
+            new Lazy<ICriticalNotificationSender>(() => notificationSender),
+            Substitute.For<IShareRecoveryFatalState>());
+        var recoveryFile = Path.Combine(Path.GetTempPath(),
+            $"recovery-{Guid.NewGuid():N}.txt");
+        var quarantineFile = $"{recoveryFile}.quarantine-test";
+        var recoverable = hasRecoverableShare
+            ? new[] { new Share { PoolId = "ltc", Miner = "recoverable" } }
+            : Array.Empty<Share>();
+        var quarantined = new[]
+        {
+            new Share { PoolId = "doge", Miner = "quarantined" },
+        };
+
+        await handler.StopClusterAfterJournalAsync(recoverable, recoveryFile,
+            quarantined, quarantineFile,
+            new InvalidDataException("invalid accounting evidence"));
+
+        await notificationSender.Received(1).SendCriticalAdminNotificationAsync(
+            Arg.Is<AdminNotification>(notification =>
+                notification.Message.Contains(quarantineFile) &&
+                notification.Message.Contains("must not be imported with -rs") &&
+                notification.Message.Contains("manual financial reconciliation") &&
+                (hasRecoverableShare
+                    ? notification.Message.Contains(recoveryFile) &&
+                      notification.Message.Contains("Import and verify only")
+                    : notification.Message.Contains(
+                          "No importable recovery-journal records remained") &&
+                      notification.Message.Contains(
+                          "Do not run -rs against a quarantine file"))),
             Arg.Any<CancellationToken>());
     }
 
@@ -6223,7 +6904,7 @@ public class ShareRecorderTests
     }
 
     [Fact]
-    public async Task ShareRecoveryFailureHandler_LogsDatabaseWriteAndRollbackCauses()
+    public async Task ShareRecoveryFailureHandler_ReportsSafeCategoriesAndRetainsOriginalCauses()
     {
         var previousConfiguration = LogManager.Configuration;
         var target = new MemoryTarget
@@ -6259,9 +6940,12 @@ public class ShareRecorderTests
             LogManager.Flush();
             var output = string.Join("\n", target.Logs);
 
-            Assert.Contains("postgres insert failed", output);
-            Assert.Contains("journal write failed", output);
-            Assert.Contains("journal rollback flush failed", output);
+            Assert.Contains("\"failure\":\"io\"", output);
+            Assert.DoesNotContain("postgres insert failed", output);
+            Assert.DoesNotContain("journal write failed", output);
+            Assert.DoesNotContain("journal rollback flush failed", output);
+            fatalState.Received(1).MarkFatalShares(Arg.Any<IReadOnlyCollection<Share>>(),
+                Arg.Is<Exception>(ex => ex.Message == "postgres insert failed"), journalError);
         }
         finally
         {
@@ -7725,6 +8409,39 @@ public class ShareRecorderTests
             : "coinbase-transaction",
     };
 
+    private static Share CreateDirectSubmissionCandidate()
+    {
+        var submission = global::Miningcore.Tests.Blockchain.Bitcoin
+            .BitcoinDirectSubmissionTestData.Create();
+        return new Share
+        {
+            PoolId = "btc-direct",
+            Miner = "miner",
+            BlockHeight = 123,
+            BlockHash = submission.BlockHash,
+            BlockType = BitcoinDirectCoinbaseSettlement.BlockType,
+            IsBlockCandidate = true,
+            BlockOnly = true,
+            TransactionConfirmationData = submission.CoinbaseTxId,
+            SettlementMode = BitcoinDirectCoinbaseSettlement.Mode,
+            GrossRewardSatoshis = 5_000_000_000,
+            DirectMinerRewardSatoshis = 4_900_000_000,
+            DirectMinerScriptPubKey = "0014" + new string('1', 40),
+            DirectRecipientOutputs = "[]",
+            DirectSubmissionState = BitcoinDirectSubmission.Prepared,
+            DirectSubmissionBlock = submission.BlockHex,
+            DirectSubmissionAttempts = 0,
+            DirectSubmissionDefinitiveMisses = 0,
+        };
+    }
+
+    private static Share ReadSingleRecoveryShare(string filename) =>
+        File.ReadLines(filename)
+            .Where(x => !string.IsNullOrWhiteSpace(x) &&
+                !x.StartsWith('#'))
+            .Select(JsonConvert.DeserializeObject<Share>)
+            .Single();
+
     private static List<Task> GetDeferredFailStopTasks(ShareRecorder recorder) =>
         (List<Task>) typeof(ShareRecorder)
             .GetField("deferredFailStopHandling",
@@ -7752,12 +8469,22 @@ public class ShareRecorderTests
         var dogecoinPool = new PoolConfig
         {
             Id = "doge-solo",
-            Template = new BitcoinTemplate { Symbol = "DOGE", Name = "Dogecoin" },
+            Template = new BitcoinTemplate
+            {
+                Symbol = "DOGE",
+                Name = "Dogecoin",
+                Family = CoinFamily.Bitcoin,
+            },
         };
         var litecoinPool = new PoolConfig
         {
             Id = "ltc-solo",
-            Template = new BitcoinTemplate { Symbol = "LTC", Name = "Litecoin" },
+            Template = new BitcoinTemplate
+            {
+                Symbol = "LTC",
+                Name = "Litecoin",
+                Family = CoinFamily.Bitcoin,
+            },
         };
 
         connectionFactory.OpenConnectionAsync().Returns(Task.FromResult(connection));
@@ -7832,6 +8559,51 @@ public class ShareRecorderTests
         });
     }
 
+    private static Share CreateAccountingPair()
+    {
+        var accountingId = ShareAccounting.CreateId();
+        var created = new DateTime(2026, 8, 29, 12, 0, 0, DateTimeKind.Utc);
+        var parent = new Share
+        {
+            PoolId = "ltc-solo",
+            Miner = "ltc-miner",
+            Worker = "rig-1",
+            UserAgent = "miner/1.0",
+            IpAddress = "192.0.2.1",
+            Source = "direct",
+            SessionId = "session-1",
+            Created = created,
+            Difficulty = 16,
+            ActualDifficulty = 18,
+            ShareDifficulty = 16,
+            NetworkDifficulty = 100,
+            BlockHeight = 200,
+            RewardBasisSatoshis = 5_000_000_000,
+            AccountingId = accountingId,
+            AccountingRole = ShareAccountingRole.Parent,
+        };
+        parent.PairedShare = new Share
+        {
+            PoolId = "doge-solo",
+            Miner = "doge-miner",
+            Worker = parent.Worker,
+            UserAgent = parent.UserAgent,
+            IpAddress = parent.IpAddress,
+            Source = parent.Source,
+            SessionId = parent.SessionId,
+            Created = created,
+            Difficulty = 2_000,
+            ActualDifficulty = 2_250,
+            ShareDifficulty = parent.ShareDifficulty,
+            NetworkDifficulty = 10_000,
+            BlockHeight = 300,
+            RewardBasisSatoshis = 1_000_000_000_000_000,
+            AccountingId = accountingId,
+            AccountingRole = ShareAccountingRole.Auxiliary,
+        };
+        return parent;
+    }
+
     private static async Task<string> WriteRecoveryFileAsync(
         IEnumerable<string> records)
     {
@@ -7859,30 +8631,16 @@ public class ShareRecorderTests
     {
         try
         {
-            await stopping.WaitAsync(TimeSpan.FromSeconds(10));
+            await stopping.WaitAsync(TimeSpan.FromSeconds(30));
         }
-        catch(Exception) when(stopping.IsCompleted)
+        catch(Exception ex) when(stopping.IsCompleted && ex is not TimeoutException)
         {
             // These fixtures deliberately fault persistence and recovery targets.
-            // Swallow only a terminal service failure. If the outer wait expires
-            // while StopAsync is still running, let that timeout escape so callers
-            // cannot delete a directory beneath a live recovery owner or worker.
-        }
-    }
-
-    private static bool FatalStateIsComplete(string filename)
-    {
-        try
-        {
-            return File.ReadLines(filename).Any(line =>
-                string.Equals(line, "detailState=complete",
-                    StringComparison.Ordinal));
-        }
-        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
-        {
-            // The fail-closed latch is atomically advanced from hash-pending to complete.
-            // Retry while either publication is in flight.
-            return false;
+            // Swallow only a terminal non-timeout service failure. A StopAsync
+            // TimeoutException means its underlying worker may still be running even
+            // though the stop task itself is complete. The outer 30-second timeout has
+            // the same unsafe-cleanup meaning, so either timeout must escape before a
+            // caller can delete a directory beneath a live recovery owner or worker.
         }
     }
 

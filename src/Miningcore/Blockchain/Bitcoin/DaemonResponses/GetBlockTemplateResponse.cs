@@ -23,6 +23,11 @@ public class BitcoinBlockTransaction
     /// The amount of the fee in BTC
     /// </summary>
     public decimal Fee { get; set; }
+
+    /// <summary>
+    /// Transaction weight as calculated by the daemon
+    /// </summary>
+    public long? Weight { get; set; }
 }
 
 public class CoinbaseAux
@@ -32,10 +37,23 @@ public class CoinbaseAux
 
 public class BlockTemplate
 {
+    [JsonIgnore]
+    // The job manager fills this before publishing the shared template. Direct
+    // worker jobs only read the immutable cached value, so broadcast tasks do
+    // not race to parse or mutate transaction data.
+    internal long ValidatedTransactionWeight { get; set; } = -1;
+
     /// <summary>
     /// The preferred block version
     /// </summary>
     public uint Version { get; set; }
+
+    /// <summary>
+    /// Consensus rules advertised by the daemon. Mandatory rules are prefixed
+    /// with '!'. Dedicated protocol runtimes use this to fail closed when a
+    /// daemon returns work for another chain or header revision.
+    /// </summary>
+    public string[] Rules { get; set; }
 
     /// <summary>
     /// The hash of current highest block
@@ -71,6 +89,12 @@ public class BlockTemplate
     /// The height of the next block
     /// </summary>
     public uint Height { get; set; }
+
+    /// <summary>
+    /// DigiByte Odocrypt key derived by the daemon for this template.
+    /// </summary>
+    [JsonProperty("odokey", NullValueHandling = NullValueHandling.Ignore)]
+    public uint? OdoKey { get; set; }
 
     /// <summary>
     /// Contents of non-coinbase transactions that should be included in the next block

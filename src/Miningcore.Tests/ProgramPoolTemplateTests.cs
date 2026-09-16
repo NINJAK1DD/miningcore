@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Autofac;
 using Autofac.Extensions.DependencyInjection;
 using AutoMapper;
+using Miningcore.Blockchain;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
@@ -27,6 +28,7 @@ using Xunit;
 
 namespace Miningcore.Tests;
 
+[Collection(IntegrationDeadlineCollection.Name)]
 public class ProgramPoolTemplateTests
 {
     [Fact]
@@ -74,6 +76,20 @@ public class ProgramPoolTemplateTests
         var recovered = false;
         var stopped = false;
         Exception templateWarning = null;
+        var pool = new PoolConfig { Id = "bitcoin-recovery" };
+        var share = new Share
+        {
+            PoolId = pool.Id,
+            Miner = "recovery-miner",
+            AccountingId = ShareAccounting.CreateId(),
+            AccountingRole = ShareAccountingRole.Single,
+            Difficulty = 1,
+            NetworkDifficulty = 1,
+            RewardBasisSatoshis = 100_000_000,
+            PpsCalculatedAmount = 1,
+            Created = DateTime.UtcNow,
+        };
+        Miningcore.Persistence.Model.PpsShareCredit recoveredCredit = null;
 
         var exitCode = await Program.RunStartupBoundaryAsync(
             () => Program.RunRecoveryModeAsync(
@@ -81,6 +97,8 @@ public class ProgramPoolTemplateTests
                     () => throw new FileNotFoundException("optional coin template is missing"),
                     () =>
                     {
+                        recoveredCredit = ShareAccounting.CreatePpsCredit(pool, share,
+                            allowMissingPpsConfiguration: true);
                         recovered = true;
                         return Task.CompletedTask;
                     },
@@ -93,6 +111,8 @@ public class ProgramPoolTemplateTests
         Assert.True(stopped);
         Assert.Equal(0, exitCode);
         Assert.IsType<FileNotFoundException>(templateWarning);
+        Assert.NotNull(recoveredCredit);
+        Assert.Equal(1m, recoveredCredit.CalculatedAmount);
     }
 
     [Fact]

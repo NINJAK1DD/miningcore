@@ -64,6 +64,9 @@ public record PaymentNotification
     [JsonIgnore]
     public string Error { get; set; }
 
+    [JsonIgnore]
+    internal PaymentFailureDiagnostic FailureDiagnostic { get; init; }
+
     [JsonConverter(typeof(StringEnumConverter), true)]
     public PaymentNotificationOutcome Outcome { get; set; }
 

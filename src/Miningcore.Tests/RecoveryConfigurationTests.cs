@@ -444,6 +444,31 @@ public class RecoveryConfigurationTests
         }
     }
 
+    [Theory]
+    [InlineData("SoloCoinbasePayout", "true", "canonical casing")]
+    [InlineData("soloCoinbasePayout", "\"true\"", "JSON Boolean")]
+    public void RecoveryMode_RejectsMalformedDirectSoloSwitchBeforeSanitization(
+        string propertyName, string valueJson, string expected)
+    {
+        var document = CreateRecoveryDocument();
+        var pool = Assert.IsType<JObject>(document["pools"]?[0]);
+        pool[propertyName] = JToken.Parse(valueJson);
+        var configFile = WriteTemporaryConfig(document);
+
+        try
+        {
+            var error = Assert.Throws<PoolStartupException>(() =>
+                Program.ReadConfig(configFile, true));
+
+            Assert.Contains(expected, error.Message,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
     [Fact]
     public async Task RecoveryMode_SanitizedDisabledPoolsStillRequireSharePartitions()
     {
@@ -502,6 +527,32 @@ public class RecoveryConfigurationTests
                 .IsValid);
             Assert.True(new ClusterConfigValidator(true).Validate(directConfig)
                 .IsValid);
+        }
+        finally
+        {
+            File.Delete(configFile);
+        }
+    }
+
+    [Fact]
+    public void RecoveryMode_IntentionallyIgnoresImplicitDirectSoloMiningPrerequisites()
+    {
+        var liveConfig = CreateRecoveryConfig();
+        Assert.True(Program.RequiresBitcoinDirectSoloPersistence(liveConfig));
+        var liveError = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateBitcoinDirectSoloDeployment(liveConfig));
+        Assert.Contains("defaulted to direct settlement in v0.3.0",
+            liveError.Message, StringComparison.Ordinal);
+
+        var configFile = WriteTemporaryConfig(CreateRecoveryDocument());
+
+        try
+        {
+            var recoveryConfig = Program.ReadAndValidateConfig(configFile,
+                true);
+
+            Assert.Equal("recovery-pool",
+                Assert.Single(recoveryConfig.Pools).Id);
         }
         finally
         {
@@ -629,6 +680,39 @@ public class RecoveryConfigurationTests
         var error = Assert.Throws<PoolStartupException>(() =>
             Program.ValidateConfig(config, false));
         Assert.Equal("No pools are enabled.", error.Message);
+    }
+
+    [Theory]
+    [InlineData(999)]
+    [InlineData(100_001)]
+    public void Startup_RejectsUnsafeShareAccountingPruneBatchSize(int batchSize)
+    {
+        var config = CreateRecoveryConfig();
+        config.PaymentProcessing.ShareAccountingPruneBatchSize = batchSize;
+
+        var result = new ClusterConfigValidator().Validate(config);
+
+        var error = Assert.Single(result.Errors, failure =>
+            failure.PropertyName ==
+            "PaymentProcessing.ShareAccountingPruneBatchSize");
+        Assert.Equal(
+            "Cluster paymentProcessing.shareAccountingPruneBatchSize must be between 1000 and 100000",
+            error.ErrorMessage);
+    }
+
+    [Theory]
+    [InlineData(1_000)]
+    [InlineData(100_000)]
+    public void Startup_AcceptsBoundedShareAccountingPruneBatchSize(int batchSize)
+    {
+        var config = CreateRecoveryConfig();
+        config.PaymentProcessing.ShareAccountingPruneBatchSize = batchSize;
+
+        var result = new ClusterConfigValidator().Validate(config);
+
+        Assert.DoesNotContain(result.Errors, failure =>
+            failure.PropertyName ==
+            "PaymentProcessing.ShareAccountingPruneBatchSize");
     }
 
     [Theory]

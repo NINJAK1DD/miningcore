@@ -1,13 +1,17 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Reactive.Subjects;
 using System.Text;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Autofac;
+using Autofac.Extensions.DependencyInjection;
 using AutoMapper;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Miningcore.Blockchain;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
@@ -15,7 +19,9 @@ using Miningcore.Mining;
 using Miningcore.Notifications;
 using Miningcore.Notifications.Messages;
 using Miningcore.Persistence;
+using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
+using Miningcore.Pushover;
 using Miningcore.Tests.Util;
 using NSubstitute;
 using Prometheus;
@@ -72,11 +78,16 @@ public class HostedServiceStartupTests
         var hashrates = new Subject<HashrateNotification>();
         var auxiliaryRpc = new Subject<AuxiliaryTemplateRpcTelemetryEvent>();
         var auxiliaryState = new Subject<AuxiliaryTemplateStateTelemetryEvent>();
+        var accounting = new Subject<ShareAccountingTelemetryEvent>();
+        var attribution = new Subject<MergedMiningAttributionRejectedTelemetryEvent>();
         var messageBus = Substitute.For<IMessageBus>();
         messageBus.Listen<TelemetryEvent>().Returns(telemetry);
         messageBus.Listen<HashrateNotification>().Returns(hashrates);
         messageBus.Listen<AuxiliaryTemplateRpcTelemetryEvent>().Returns(auxiliaryRpc);
         messageBus.Listen<AuxiliaryTemplateStateTelemetryEvent>().Returns(auxiliaryState);
+        messageBus.Listen<ShareAccountingTelemetryEvent>().Returns(accounting);
+        messageBus.Listen<MergedMiningAttributionRejectedTelemetryEvent>()
+            .Returns(attribution);
         using var publisher = new MetricsPublisher(messageBus);
         using var timeout = new CancellationTokenSource(
             TimeSpan.FromSeconds(30));
@@ -88,6 +99,8 @@ public class HostedServiceStartupTests
         Assert.True(hashrates.HasObservers);
         Assert.True(auxiliaryRpc.HasObservers);
         Assert.True(auxiliaryState.HasObservers);
+        Assert.True(accounting.HasObservers);
+        Assert.True(attribution.HasObservers);
         telemetry.OnNext(new TelemetryEvent("pool", TelemetryCategory.Share,
             TimeSpan.Zero, true));
         hashrates.OnNext(new HashrateNotification { PoolId = "pool", Hashrate = 1 });
@@ -98,6 +111,8 @@ public class HostedServiceStartupTests
         Assert.False(hashrates.HasObservers);
         Assert.False(auxiliaryRpc.HasObservers);
         Assert.False(auxiliaryState.HasObservers);
+        Assert.False(accounting.HasObservers);
+        Assert.False(attribution.HasObservers);
     }
 
     [Fact]
@@ -107,11 +122,16 @@ public class HostedServiceStartupTests
         var hashrates = new Subject<HashrateNotification>();
         var auxiliaryRpc = new Subject<AuxiliaryTemplateRpcTelemetryEvent>();
         var auxiliaryState = new Subject<AuxiliaryTemplateStateTelemetryEvent>();
+        var accounting = new Subject<ShareAccountingTelemetryEvent>();
+        var attribution = new Subject<MergedMiningAttributionRejectedTelemetryEvent>();
         var messageBus = Substitute.For<IMessageBus>();
         messageBus.Listen<TelemetryEvent>().Returns(telemetry);
         messageBus.Listen<HashrateNotification>().Returns(hashrates);
         messageBus.Listen<AuxiliaryTemplateRpcTelemetryEvent>().Returns(auxiliaryRpc);
         messageBus.Listen<AuxiliaryTemplateStateTelemetryEvent>().Returns(auxiliaryState);
+        messageBus.Listen<ShareAccountingTelemetryEvent>().Returns(accounting);
+        messageBus.Listen<MergedMiningAttributionRejectedTelemetryEvent>()
+            .Returns(attribution);
         var registry = Metrics.NewCustomRegistry();
         using var publisher = new MetricsPublisher(messageBus, null,
             Metrics.WithCustomRegistry(registry), registry);
@@ -169,6 +189,68 @@ public class HostedServiceStartupTests
         Assert.Contains(
             "miningcore_auxiliary_template_fallback_total{pool=\"ltc-a\",aux_pool=\"doge-solo\"} 1",
             recovered);
+        await publisher.StopAsync(timeout.Token);
+    }
+
+    [Fact]
+    public async Task MetricsPublisher_ExportsBoundedShareAccountingOutcomes()
+    {
+        var telemetry = new Subject<TelemetryEvent>();
+        var hashrates = new Subject<HashrateNotification>();
+        var auxiliaryRpc = new Subject<AuxiliaryTemplateRpcTelemetryEvent>();
+        var auxiliaryState = new Subject<AuxiliaryTemplateStateTelemetryEvent>();
+        var accounting = new Subject<ShareAccountingTelemetryEvent>();
+        var attribution = new Subject<MergedMiningAttributionRejectedTelemetryEvent>();
+        var messageBus = Substitute.For<IMessageBus>();
+        messageBus.Listen<TelemetryEvent>().Returns(telemetry);
+        messageBus.Listen<HashrateNotification>().Returns(hashrates);
+        messageBus.Listen<AuxiliaryTemplateRpcTelemetryEvent>().Returns(auxiliaryRpc);
+        messageBus.Listen<AuxiliaryTemplateStateTelemetryEvent>().Returns(auxiliaryState);
+        messageBus.Listen<ShareAccountingTelemetryEvent>().Returns(accounting);
+        messageBus.Listen<MergedMiningAttributionRejectedTelemetryEvent>()
+            .Returns(attribution);
+        var registry = Metrics.NewCustomRegistry();
+        using var publisher = new MetricsPublisher(messageBus, null,
+            Metrics.WithCustomRegistry(registry), registry);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await publisher.StartAsync(CancellationToken.None)
+            .WaitAsync(timeout.Token);
+
+        accounting.OnNext(new ShareAccountingTelemetryEvent(Guid.NewGuid(),
+            ShareAccountingInsertResult.Inserted,
+            new[]
+            {
+                new ShareAccountingProjectionTelemetry("ltc",
+                    ShareAccountingRole.Parent),
+                new ShareAccountingProjectionTelemetry("doge",
+                    ShareAccountingRole.Auxiliary),
+            },
+            new[] { new ShareAccountingPpsTelemetry("doge", 0.125m) }));
+        attribution.OnNext(new MergedMiningAttributionRejectedTelemetryEvent(
+            "ltc", "doge", MergedMiningAttributionRejection.Missing));
+        accounting.OnNext(new ShareAccountingTelemetryEvent(Guid.NewGuid(),
+            ShareAccountingInsertResult.AlreadyCommitted,
+            new[]
+            {
+                new ShareAccountingProjectionTelemetry("ltc",
+                    ShareAccountingRole.Parent),
+                new ShareAccountingProjectionTelemetry("doge",
+                    ShareAccountingRole.Auxiliary),
+            },
+            new[] { new ShareAccountingPpsTelemetry("doge", 0.125m) }));
+
+        var metrics = await WaitForMetricsAsync(registry, text =>
+            text.Contains("miningcore_share_accounting_batches_total{outcome=\"inserted\"} 1") &&
+            text.Contains("miningcore_share_accounting_batches_total{outcome=\"replay_suppressed\"} 1") &&
+            text.Contains("miningcore_share_accounting_projections_total{pool=\"ltc\",role=\"parent\",outcome=\"inserted\"} 1") &&
+            text.Contains("miningcore_share_accounting_projections_total{pool=\"doge\",role=\"auxiliary\",outcome=\"inserted\"} 1") &&
+            text.Contains("miningcore_pps_share_credits_total{pool=\"doge\",outcome=\"replay_suppressed\"} 1") &&
+            text.Contains("miningcore_pps_liability_coin_total{pool=\"doge\"} 0.125") &&
+            text.Contains("miningcore_merged_mining_attribution_rejections_total{pool=\"ltc\",aux_pool=\"doge\",reason=\"missing\"} 1"),
+            timeout.Token);
+
+        Assert.DoesNotContain("accounting_id", metrics,
+            StringComparison.OrdinalIgnoreCase);
         await publisher.StopAsync(timeout.Token);
     }
 
@@ -334,6 +416,160 @@ public class HostedServiceStartupTests
         Assert.Contains(
             $"miningcore_share_persistence_queue_overflow_total{{queue=\"primary\"}} {finalSnapshot.OverflowCount}",
             text);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NotificationService_OptionalConfigurationDoesNotPreventStartup(bool emptySection)
+    {
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            Notifications = emptySection ? new NotificationsConfig() : null,
+        };
+        var messageBus = Substitute.For<IMessageBus>();
+        var factory = Substitute.For<IHttpClientFactory>();
+        using var httpClient = new HttpClient();
+        factory.CreateClient(Arg.Any<string>()).Returns(httpClient);
+        // Exercise both actual constructors used by the hosted-service graph.
+        var pushover = new PushoverClient(config, factory);
+        using var service = new NotificationService(config, pushover, messageBus);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await service.StartAsync(timeout.Token).WaitAsync(timeout.Token);
+        await service.SendCriticalAdminNotificationAsync(new AdminNotification("test", "disabled"), timeout.Token);
+        await service.StopAsync(timeout.Token);
+
+        messageBus.DidNotReceive().Listen<AdminNotification>();
+        messageBus.DidNotReceive().Listen<BlockFoundNotification>();
+        messageBus.DidNotReceive().Listen<PaymentNotification>();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" \t ")]
+    [InlineData("admin@example.invalid")]
+    public async Task NotificationService_MissingProviderFailsSequentialHostBeforeLaterServices(string recipient)
+    {
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            Notifications = new NotificationsConfig
+            {
+                Admin = new AdminNotifications
+                {
+                    Enabled = true,
+                    EmailAddress = recipient,
+                },
+            },
+        };
+        var messageBus = Substitute.For<IMessageBus>();
+
+        var laterService = Substitute.For<IHostedService>();
+        var factory = Substitute.For<IHttpClientFactory>();
+        using var httpClient = new HttpClient();
+        factory.CreateClient(Arg.Any<string>()).Returns(httpClient);
+        using var host = new HostBuilder()
+            .UseServiceProviderFactory(new AutofacServiceProviderFactory())
+            .ConfigureServices(services =>
+            {
+                services.AddSingleton(config);
+                services.AddSingleton(messageBus);
+                services.AddSingleton(factory);
+                services.AddHostedService<NotificationService>();
+                services.AddSingleton(laterService);
+            })
+            .ConfigureContainer<ContainerBuilder>(builder =>
+            {
+                builder.RegisterType<PushoverClient>().SingleInstance();
+                builder.RegisterType<NotificationService>()
+                    .AsSelf().As<ICriticalNotificationSender>().SingleInstance();
+            })
+            .Build();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        // Match production's separate registrations and sequential, notification-first startup.
+        // Resolve BOTH instances, not just the singleton that is never started by the host.
+        var hosted = host.Services.GetServices<IHostedService>().ToArray();
+        Assert.Equal(2, hosted.Length);
+        var hostedNotification = Assert.IsType<NotificationService>(hosted[0]);
+        Assert.Same(laterService, hosted[1]);
+        var criticalSender = host.Services.GetRequiredService<ICriticalNotificationSender>();
+        Assert.Same(host.Services.GetRequiredService<NotificationService>(), criticalSender);
+        Assert.NotSame(hostedNotification, criticalSender);
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
+            host.StartAsync(CancellationToken.None).WaitAsync(timeout.Token));
+        Assert.Contains("notifications.email", error.Message);
+        await laterService.DidNotReceive().StartAsync(Arg.Any<CancellationToken>());
+        messageBus.DidNotReceive().Listen<AdminNotification>();
+        messageBus.DidNotReceive().Listen<BlockFoundNotification>();
+        messageBus.DidNotReceive().Listen<PaymentNotification>();
+    }
+
+    [Fact]
+    public async Task NotificationService_DisabledAdminWithoutEmailProviderStartsWithoutSubscriptions()
+    {
+        var messageBus = Substitute.For<IMessageBus>();
+        using var service = new NotificationService(new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            Notifications = new NotificationsConfig
+            {
+                Admin = new AdminNotifications { Enabled = false, EmailAddress = "admin@example.invalid" },
+            },
+        }, null, messageBus);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await service.StartAsync(CancellationToken.None).WaitAsync(timeout.Token);
+        await service.SendCriticalAdminNotificationAsync(new AdminNotification("test", "disabled"), timeout.Token);
+        await service.StopAsync(timeout.Token);
+
+        messageBus.DidNotReceive().Listen<AdminNotification>();
+        messageBus.DidNotReceive().Listen<BlockFoundNotification>();
+        messageBus.DidNotReceive().Listen<PaymentNotification>();
+    }
+
+    [Fact]
+    public async Task NotificationService_UnstartedCriticalSenderReportsDeliveryConfigurationError()
+    {
+        var config = new ClusterConfig
+        {
+            Pools = Array.Empty<PoolConfig>(),
+            Notifications = new NotificationsConfig
+            {
+                Admin = new AdminNotifications { Enabled = true, EmailAddress = "admin@example.invalid" },
+            },
+        };
+        var messageBus = Substitute.For<IMessageBus>();
+        var factory = Substitute.For<IHttpClientFactory>();
+        using var httpClient = new HttpClient();
+        factory.CreateClient(Arg.Any<string>()).Returns(httpClient);
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(config);
+        builder.RegisterInstance(messageBus).As<IMessageBus>();
+        builder.RegisterInstance(factory).As<IHttpClientFactory>();
+        builder.RegisterType<PushoverClient>().SingleInstance();
+        builder.RegisterType<NotificationService>()
+            .AsSelf().As<ICriticalNotificationSender>().SingleInstance();
+        using var container = builder.Build();
+        var lazy = container.Resolve<Lazy<ICriticalNotificationSender>>();
+        Assert.False(lazy.IsValueCreated);
+        // Recovery and normal critical-failure handling both resolve this unhosted singleton.
+        var sender = lazy.Value;
+        Assert.IsType<NotificationService>(sender);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var aggregate = await Assert.ThrowsAsync<AggregateException>(() =>
+            sender.SendCriticalAdminNotificationAsync(new AdminNotification("test", "recovery"), timeout.Token));
+        var transport = Assert.IsType<IOException>(Assert.Single(aggregate.InnerExceptions));
+        var error = Assert.IsType<InvalidOperationException>(transport.InnerException);
+        Assert.Contains("Email delivery", error.Message);
+        Assert.Contains("notifications.email", error.Message);
+        messageBus.DidNotReceive().Listen<AdminNotification>();
+        messageBus.DidNotReceive().Listen<BlockFoundNotification>();
+        messageBus.DidNotReceive().Listen<PaymentNotification>();
     }
 
     [Fact]

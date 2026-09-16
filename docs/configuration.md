@@ -4,14 +4,179 @@ Miningcore reads JSON with comments. Start with [`config.example.json`](../confi
 it to `config.json`, and replace every `CHANGE_ME` placeholder. Strict JSON editors may complain about
 comments even though Miningcore accepts them.
 
+For a smaller topology-specific starting point, choose a direct, multi-coin, merged-mining or
+distributed-recorder file from the [example configuration index](../examples/README.md).
+
 Miningcore preserves JSON string values in both the cluster configuration and bundled or
 operator-supplied coin-template files. Content that resembles an ISO date remains the exact string
 the operator configured; it is not silently converted to a date or rewritten for the host's locale
 or time zone. This policy applies to configuration files, not daemon RPC, Stratum or
 recovery-journal JSON readers.
 
-The exhaustive machine-readable reference is [`config.schema.json`](../src/Miningcore/config.schema.json).
-Coin-family extensions are intentionally flexible and may also be documented beside their implementation.
+The machine-readable [`config.schema.json`](../src/Miningcore/config.schema.json) validates shared
+typed structure before CLR binding. It is not an exhaustive catalogue of coin-family extension
+fields carried through `JsonExtensionData`; use the reviewed examples and the
+[coin-specific guidance](#coin-specific-extension-fields) for those settings.
+
+| Task | Section |
+| --- | --- |
+| Choose a complete example topology | [Example configurations](../examples/README.md) |
+| Configure a pool and miner difficulty | [Pool basics](#pool-basics) |
+| Configure a coin-family-only field | [Coin-specific extension fields](#coin-specific-extension-fields) |
+| Isolate API, admin, metrics and Stratum ports | [API listener isolation](#api-listener-isolation) |
+| Configure log rotation | [Log files and rotation](#log-files-and-rotation) |
+| Authenticate a remote PostgreSQL server | [PostgreSQL TLS and migration](postgres-tls.md) |
+| Configure database command limits or migrate an unlimited timeout | [PostgreSQL command timeout](postgres-command-timeout.md) |
+| Configure payout precision | [Bitcoin-family payout precision](#bitcoin-family-payout-precision) |
+| Configure default non-custodial Bitcoin SOLO | [Bitcoin direct-coinbase SOLO](#bitcoin-direct-coinbase-solo) |
+| Enable direct Bitcoin-family PPS | [Bitcoin-family PPS](#bitcoin-family-pps) |
+| Enable Litecoin–Dogecoin merged mining | [LTC/DOGE merged mining](#ltcdoge-merged-mining) |
+| Protect emergency share persistence | [Share recovery storage](#share-recovery-storage) |
+| Validate an edited file | [Validate changes safely](#validate-changes-safely) |
+| Produce a credential-safe diagnostic summary | [Safe configuration dumps](#safe-configuration-dumps) |
+
+For symptom-first diagnostics, use [Troubleshooting](troubleshooting.md).
+
+## Safe configuration dumps
+
+```console
+dotnet Miningcore.dll -c /etc/miningcore/config.json --dumpconfig
+```
+
+`-dc` is the short alias. The command reads the specified file and emits a **lossy diagnostic
+projection**, not a configuration export. It exits without starting listeners, connecting to
+databases or daemons, loading coin-template files, importing shares, or configuring file logging.
+It uses the normal JSON/schema loading policy, but does not run live deployment validation or
+resolve environment credentials. Consequently success does not prove a deployment is usable.
+
+The JSON envelope contains `diagnosticFormatVersion: 2`, a notice, and `configuration`. Explicitly
+reviewed numeric/boolean settings, bounded enum names (for example `PPLNS`, not its numeric value)
+and section structure are included. Pool and daemon arrays preserve **config-file order**, so an
+operator can map each index back to the original file when sharing the dump; IDs/coin names are
+not disclosed. Numeric Stratum port keys are retained and ordered numerically. Object properties
+from all policies are sorted by emitted name; the envelope retains the fixed order
+`diagnosticFormatVersion`, `notice`, `configuration`. Null sections stay null. Reviewed strings use three
+states: null (absent), `[blank]` (empty or whitespace-only), and `[set]` (nonblank). These describe
+input shape, not runtime effectiveness: a blank certificate path is ignored by PostgreSQL setup,
+whereas a whitespace password can be significant. Values are never modified, and markers do not
+prove validity, file existence or successful authentication.
+
+Exceptions are explicit bounded metadata, never raw strings:
+
+- `logging.level`: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `off` (case-normalized), null,
+  or `[omitted]` for any other value.
+- `api.listenAddressCategory` and `pools[].ports.<port>.listenAddressCategory`: null (absent),
+  `blank` (empty/whitespace), `any` (wildcard/unspecified address), `loopback`, `private`
+  (RFC1918, IPv4/IPv6 link-local or IPv6 unique-local), or `other` (including invalid values).
+  IPv4-mapped IPv6 is normalized. RFC6598 shared/CGNAT space (`100.64.0.0/10`) is not RFC1918
+  private space and deliberately remains `other`. These are input categories, not effective bind
+  results; defaults/validation still apply at startup. No DNS or network lookup occurs.
+- `coinTemplatesCount`, `adminIpWhitelistCount`, `metricsIpWhitelistCount`, `ipWhitelistCount`
+  and `proxyAddressesCount`: array length, or null for an absent array. Elements are never read.
+
+Brackets deliberately distinguish presence/omission markers (`[blank]`, `[set]`, `[omitted]`) from
+bare category vocabulary (`blank`, `any`, etc.); matching `[blank]` alone will not find blank listeners.
+
+The following audit defines which actual values/payloads are omitted; reviewed string fields can
+still have presence markers as described above:
+
+| Surface | Omitted from diagnostic output |
+| --- | --- |
+| PostgreSQL | Host, database, user, password, TLS certificate/private-key paths and TLS password |
+| Daemon RPC and auxiliary daemons | Host, user, password, category, HTTP path, API keys and all extension payloads, including nested merged-mining configuration |
+| Pool and payout configuration | IDs, coin names, addresses, public keys, wallet passwords/private keys, all `payoutSchemeConfig` data and all extension payloads |
+| API and Stratum TLS | Certificate paths and passwords; listener addresses and address allowlists are also omitted |
+| SMTP and Pushover | Host, usernames, passwords, token, sender and recipient identities |
+| Share relays and ZeroMQ configuration | URLs, topics, shared encryption keys and nested extension endpoints |
+| Logging, recovery, templates and labels | All filenames, directories, template paths/content, free-form labels and coinbase text |
+| Unknown fields | Names and values are not traversed or emitted, including numeric/boolean extension values and names resembling allowed fields |
+| Environment | No environment dump or credential resolution; the admin API token and PostgreSQL environment credentials are not included |
+
+All arbitrary configuration string values are omitted, even apparently harmless names: credentials can
+be embedded in URLs, paths, identifiers or extension keys. Allowlists are specific to exact CLR
+types and members, not recursive property-name matching. New runtime fields and derived types
+are not automatically admitted. Unreviewed types and invalid enum values are represented by
+`[omitted]` if encountered in a reviewed slot. Runtime configuration objects, extension dictionaries,
+JSON converters, the schema, API serialization and normal startup behavior are unchanged.
+
+Unreadable files, malformed JSON, schema failures and invalid command arguments on the dump path
+produce a nonzero exit code and a fixed diagnostic with one category: `usage`, `unreadable`,
+`invalid-json`, `schema-invalid`, `invalid-configuration` (including duplicates or binding/syntax
+policy errors), `output-unavailable` (for example closed stdout), or `internal`. Only read-stage
+I/O failures for the user configuration are called `unreadable`; a missing, inaccessible or
+malformed bundled `config.schema.json` is an installation failure (`internal`). Projection
+or output failures are not blamed on the file. Internal failures advise checking the installation
+and diagnostic tooling without disclosing paths or exception details.
+No input values, exception text or file paths are included. Start
+with the named category. For configuration errors, inspect the original file privately and check the schema and reviewed
+coin-family examples for extension spelling. Unknown extension fields are not validated by this
+summary. Normal startup can give detailed errors **but may start services if validation succeeds**;
+use a controlled environment and do not publish its logs unreviewed.
+Detailed errors from **normal startup and other commands** are outside this boundary;
+review those logs before sharing. This command is not a global log-redaction feature. The summary
+still exposes topology, numeric settings and feature switches: share it only with appropriate
+recipients. It cannot prevent a user deliberately encoding a secret in an allowed numeric setting.
+
+Help (`-h`, `-?`, `--help`) and version (`-v`, `--version`) take precedence over a dump without
+reading its file. Parsing remains guarded: malformed options encountered before help produce safe
+usage failures. A dump retains precedence over schema generation and recovery commands; it never
+executes them. The conservative pre-scan also guards dump-looking tokens supplied as another
+option's value or after `--`. Space, `:` and `=` separators share the parser's explicit policy.
+
+For source/version boundaries, the upstream full-dump behavior, the fork's inherited `null`-output
+bug, and credential-rotation guidance, see the
+[release notes](releases.md#unreleased-credential-safe-configuration-dumps).
+
+Do not round-trip the diagnostic JSON into Miningcore, use it as a backup, or use it to check
+spelling in omitted extension fields. Keep the original configuration under service-account-only
+permissions and use the schema and reviewed examples when editing it. No unsafe export switch is
+provided. Check `diagnosticFormatVersion` before consuming this summary programmatically.
+
+### Maintaining the diagnostic contract
+
+Every public property of a reviewed type must have exactly one explicit value, presence, count,
+category or excluded policy. Tests check both CLR types and emitted JSON names (including generated
+`Count`/`Category` suffixes). New properties remain omitted at runtime until reviewed, but fail the
+inventory test rather than silently losing diagnostic usefulness.
+
+After intentionally changing the public example or projection, rebuild Miningcore and regenerate
+the reviewed snapshot from the repository root. On Linux (Bash, Python 3 and .NET):
+
+```console
+bash scripts/release/update-config-diagnostics-snapshot.sh
+```
+
+On Windows or another host with PowerShell 7 (Windows PowerShell 5.1 is not supported):
+
+```powershell
+pwsh -NoProfile -File scripts/release/update-config-diagnostics-snapshot.ps1
+```
+
+Both helpers use the Debug build by default (pass `Release` to Bash or `-Configuration Release` to
+PowerShell), accept only the checked-in public example, and write UTF-8 without a BOM, with LF line
+endings, only after a successful command and JSON/format-version/configuration-object validation.
+Review the diff in `src/Miningcore.Tests/Fixtures/config-diagnostics-v2.json`; do not blindly accept
+new output fields. The snapshot is a review gate, not automatic approval of a wider output policy.
+The shared isolated failure-preservation suite exercises both helpers in CI and can be run on
+Linux with `python3 scripts/release/test-config-diagnostics-snapshot.py` (requires Bash, Python 3
+and PowerShell 7; missing interpreters fail the suite). It does not use a real configuration.
+CI also runs the same PowerShell contract on Windows. To run it locally on Windows, use
+`python scripts/release/test-config-diagnostics-snapshot.py PowerShellSnapshotHelperTests`
+with Python 3, PowerShell 7 and the .NET 10 SDK installed. The Windows fixture builds a small
+test-only executable to simulate `dotnet`; it does not execute Miningcore or use live configuration.
+Both helpers strip a leading UTF-8 BOM, reject invalid UTF-8, and suppress child-process stderr
+on success as well as failure. Failure wording may differ by platform; the shared contract is
+nonzero exit, preservation of the old fixture, and no replay of child stderr.
+
+CI retains the exhaustive 60-case subprocess information-option matrix. For a faster local pass,
+exclude its `ExhaustiveCli` trait; eight representative combinations remain in the ordinary suite:
+
+```console
+dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --filter "Category!=ExhaustiveCli"
+```
+
+Design references: [OWASP logging data exclusions](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html#data-to-exclude)
+and [Json.NET extension-data serialization](https://www.newtonsoft.com/json/help/html/T_Newtonsoft_Json_JsonExtensionDataAttribute.htm).
 
 ## Main sections
 
@@ -34,13 +199,35 @@ Coin-family extensions are intentionally flexible and may also be documented bes
 Do not store a production configuration in Git. It contains database, daemon, mail and possibly TLS
 secrets. Restrict the file to the service account.
 
-Distributed sender/receiver roles have additional durability, security and database requirements;
-use the dedicated [share-relay guide](share-relays.md) rather than copying an old relay example.
+`persistence.postgres.commandTimeout` accepts whole seconds from **1 to 86,400**;
+omitted/null uses **300 seconds**, while the shipped example explicitly uses
+**60 seconds**. Explicit **zero (unlimited) is rejected**, as are
+negative and oversized values, in normal and `-rs` recovery startup. This is a
+command timeout, not a connection/cancellation timeout or an entire-transaction
+deadline. Review [the timeout policy and migration guidance](postgres-command-timeout.md)
+before changing it for maintenance, payouts or recovery.
+
+Distributed sender/receiver roles have additional durability, security and database requirements.
+Start with the maintained [relay example pair](../examples/README.md#distributed-recorder-layout),
+then follow the dedicated [share-relay guide](share-relays.md).
 
 ## Pool basics
 
 Every enabled pool needs a unique `id`, a matching entry from `coins.json`, a pool wallet `address`,
 one or more daemon RPC endpoints and at least one Stratum port in `ports`.
+
+For the newer Scrypt definitions, consult the
+[source and compatibility record](scrypt-coin-definitions.md). A definition records a reviewed
+daemon contract; it does not make every Scrypt or AuxPoW protocol interchangeable. In particular,
+researched AuxPoW-capable definitions are withheld until daemon-backed direct submission or explicit
+child-proof support is verified, and Quai Scrypt requires a dedicated non-Bitcoin job protocol.
+Neither is advertised merely because the underlying proof-of-work function is Scrypt.
+
+Hybrid and proof-of-stake-derived Bitcoin-family daemons may require a raw compressed public key to
+construct the pool payout destination. Miningcore uses `pools[].pubKey` when configured and otherwise
+uses the `pubkey` returned by `validateaddress`. Set `pubKey` explicitly when the daemon omits that
+field. BlockChainCoinX requires this setting; startup fails with a pool-specific diagnostic if it is
+missing or malformed.
 
 Every configured pool entry, including a disabled pool, must retain a non-null per-pool
 `paymentProcessing` object. Set that object's `enabled` value to `false` when the pool must not
@@ -56,6 +243,13 @@ schema's required list, because that would prevent `-rs` from loading its saniti
 The configured Stratum `difficulty` is the initial fixed difficulty. A `varDiff` block allows the pool
 to adjust it toward a target share interval. A miner can request a supported starting difficulty with
 `d=VALUE` in its password.
+
+Shipped miner-facing examples expose low and high starting tiers with VarDiff enabled. Their common
+15-second target, 90-second retarget interval and 30% variance band are commissioning baselines, not
+hardware classifications. Select the tier that produces prompt first shares, then verify accepted
+share cadence under the real miner fleet. Receiver-only and auxiliary-only examples deliberately do
+not advertise duplicate dormant tiers. See the [example index](../examples/README.md) for the audited
+common and coin-specific defaults.
 
 Each `ports` entry must contain an endpoint object. The endpoint's `listenAddress` may be omitted to
 use the `127.0.0.1` default, but the endpoint object itself must not be replaced with JSON `null` for
@@ -99,35 +293,50 @@ both conflicting pools and their effective endpoints.
 
 ### Stratum listener reservation
 
-Normal startup then creates, configures, binds and retains every enabled internal Stratum socket as
-one cluster-scoped reservation phase. No pool initialization can announce `Online` until the whole
-set has been reserved. If any endpoint is occupied, unavailable in the current host or container
-network namespace, or otherwise rejected by the operating system, Miningcore releases every socket
-acquired by that attempt and stops the complete cluster. The startup error identifies the pool,
-effective endpoint, socket classification and native error. Miningcore hands those same retained
-sockets to the Stratum accept loops; it does not probe, close and later rebind them. Reservation
-calls `Bind` but deliberately defers `Listen` until that pool has completed initialization and enters
-its accept path, so miners cannot accumulate in a connection backlog while daemon synchronization
-or first-job setup is still pending. Reserved listeners are exclusive: Miningcore does not enable
-`SO_REUSEADDR`, because two reuse-enabled sockets can bind the same endpoint before either calls
-`Listen` on Linux and Windows does not provide deterministic ownership in that configuration.
-Accepted sockets begin with abortive-close protection so an OOM kill, forced container stop,
-process crash or ordinary host shutdown normally cannot strand the exclusive endpoint. Only a
-genuine peer-initiated EOF disarms that protection and closes gracefully; bytes already written to
-the network may then drain with FIN, but Miningcore does not drain its application send queue during
-shutdown. Fail-stop, banned-client, pre-dispatch, malformed-request, TLS-handshake,
-request-handler-failure, send-timeout and other independent-cancellation paths remain abortive. If
-an unclean stop still leaves a
-local `TIME_WAIT` entry, startup retries only `AddressAlreadyInUse` reservation failures with one
-shared, bounded retry-delay budget totalling up to 90 seconds for the complete cluster reservation
-attempt. Scheduled waits do not multiply with the number of endpoints. This is not a hard
-wall-clock deadline: bind-call duration and scheduler overshoot are additional and ordinarily
-negligible. Sockets acquired earlier in the attempt remain reserved but do not listen while a later
-endpoint consumes that budget; this preserves the all-or-nothing ownership boundary. A genuinely
-occupied port exhausts the shared delay allowance and then fails with the complete pool and socket
-diagnostic; no partial cluster starts. Configure the service manager's startup timeout to exceed
-the retry-delay budget, binding overhead and ordinary pool initialization time so it cannot
-terminate Miningcore before the final diagnostic is emitted.
+#### Reservation lifecycle
+
+Normal startup reserves every enabled internal Stratum socket in one cluster-scoped phase:
+
+1. Miningcore creates, configures and binds the complete listener set.
+2. No pool can announce `Online` until every bind succeeds.
+3. A failure releases every socket acquired by that attempt and stops the complete cluster.
+4. The retained sockets are handed to their Stratum accept loops; Miningcore never probes, closes
+   and later rebinds them.
+5. `Listen` is deferred until the owning pool finishes initialization, preventing miners from
+   waiting in an accept backlog during daemon synchronization or first-job setup.
+
+The startup error identifies the pool, effective endpoint, socket classification and native error.
+Reserved listeners are exclusive and do not enable `SO_REUSEADDR`; reuse-enabled sockets do not
+provide deterministic ownership across the supported operating systems.
+
+#### Connection shutdown behavior
+
+Accepted sockets start with abortive-close protection. OOM termination, forced container stop,
+process failure and independent cancellation therefore normally release the endpoint promptly.
+Only a genuine peer-initiated EOF disarms that protection and closes gracefully. Bytes already
+written to the network may drain with FIN, but Miningcore does not drain its application send queue
+during shutdown.
+
+Fail-stop, banned-client, pre-dispatch, malformed-request, TLS-handshake, handler-failure and send-
+timeout paths remain abortive. These are implementation guarantees; operators should diagnose the
+named endpoint rather than changing socket-reuse policy.
+
+#### Restart retry budget
+
+An unclean stop can leave a local `TIME_WAIT` entry. Startup retries only
+`AddressAlreadyInUse` failures, using one cluster-wide retry-delay budget totalling up to 90
+seconds. Scheduled waits do not multiply with listener count.
+
+The 90 seconds is not a hard wall-clock deadline: bind duration and scheduler overshoot are
+additional and normally small. Earlier sockets stay reserved without listening while a later
+endpoint consumes the budget. A genuinely occupied port exhausts the allowance and then fails the
+whole cluster; no partial pool set starts.
+
+Configure the service manager's startup timeout to cover the retry-delay budget, binding overhead
+and normal pool initialization. See [Troubleshooting](troubleshooting.md) for safe endpoint and
+process checks.
+
+#### Address suitability
 
 IPv4 broadcast and IPv4/IPv6 multicast addresses are rejected statically. IPv4 loopback addresses
 throughout `127.0.0.0/8` and IPv4 link-local addresses in `169.254.0.0/16` remain valid configuration;
@@ -138,6 +347,7 @@ addresses, so containers, dynamic interfaces and failover addresses still rely o
 The active IPv4 subnet snapshot is captured once per validation or reservation pass and is used only
 for positive directed-broadcast rejection, so one pass cannot classify ports from different host
 interface snapshots.
+
 For IPv6 link-local addresses, include the correct interface scope where the operating system
 requires it. A missing or incorrect scope fails startup safely rather than leaving a partial pool set.
 Dedicated listeners bind to the same `api.listenAddress` and use the same TLS certificate as the
@@ -153,10 +363,14 @@ Protected admin and metrics responses produced by the API pipeline send
 `Cross-Origin-Resource-Policy: same-origin`, `Cache-Control: no-store` and
 `X-Content-Type-Options: nosniff` on success and on listener, rate-limit, whitelist, authentication,
 credential-unavailable or method rejection. Protocol errors rejected by Kestrel before the request
-enters the pipeline cannot carry these application headers. The resource policy blocks eligible
+enters the pipeline cannot carry these application headers.
+
+The resource policy blocks eligible
 cross-origin no-CORS subresource use, but does not generally prohibit navigation or iframe
 embedding. CORS and these headers limit how a browser can use the response; they do not prevent the
-request or replace the listener, IP, authentication, TLS and firewall controls above. Once listener,
+request or replace the listener, IP, authentication, TLS and firewall controls above.
+
+Once listener,
 rate-limit and IP checks pass, the metrics route accepts only the exact, case-sensitive `GET` and
 `HEAD` method tokens; unsupported methods return an empty `405 Method Not Allowed` with
 `Allow: GET, HEAD`. Exact scrapes bypass the public API rate limiter, while rejected lowercase,
@@ -199,9 +413,11 @@ pool fields it consumes: required `id` and optional string `coin` metadata. It d
 live-only field, including cluster instance identity, enabled state, Stratum listeners, wallet and
 daemon settings, payout and banning policy, reward recipients, timing values and extension data.
 Empty `ports` and `daemons` placeholders satisfy the configuration schema without starting those
-services. Damaged or stale
-live-pool values therefore cannot block recovery, while ambiguous names and missing or malformed
-pool identity remain errors. Pools may all be disabled during import. A non-empty pool collection
+services. Damaged or stale live-pool values therefore cannot block recovery, while ambiguous names
+and missing or malformed
+pool identity remain errors.
+
+Pools may all be disabled during import. A non-empty pool collection
 with unique, non-empty IDs and complete `persistence.postgres` settings remains mandatory. Those
 IDs form a fail-closed import allowlist: every journal record must name one exactly. An unknown,
 missing or mistyped record pool ID stops recovery before the pending marker, database transaction
@@ -263,6 +479,21 @@ directory, validate every changed network and hashing field, and retest them aft
 Duplicate properties inside one file are rejected; an intentional definition in a later file can
 replace one loaded earlier.
 
+`blockSerializer` is not a supported coin-template field. Earlier releases exposed a public
+`BitcoinTemplate.BlockSerializer` property but no production path read it, so setting it never
+changed block wire serialization. Template loading now rejects the property case-insensitively
+instead of silently retaining or discarding it. Remove the field only when the coin uses
+Miningcore's standard family serializer; a coin that requires different block framing needs an
+explicit typed implementation and serialization tests before it is safe to enable.
+
+Bitcoin-family version rolling is a per-template capability. Strict-chain-ID templates set
+`disableVersionRolling: true`; reviewed ordinary templates may declare `versionRollingMask`, and
+`versionRollingConsensusMask` records bits that must never be miner-controlled. Miningcore
+validates these fields before opening listeners and intersects miner requests with the pool-owned
+mask. The absence of all three fields retains the compatibility default; it is not evidence that a
+custom template has received a source audit. See
+[Bitcoin-family version rolling](version-rolling.md) before editing a custom template.
+
 Native proof validation can consume substantial CPU and memory:
 
 - `cryptonightMaxThreads` limits cluster-wide CryptoNight validation concurrency.
@@ -277,6 +508,27 @@ Native proof validation can consume substantial CPU and memory:
 
 Do not copy a setting from a different coin merely because it uses the same broad family. Read the
 coin definition and daemon/wallet documentation together.
+
+### Coin-specific extension fields
+
+Pool, daemon and payment extensions let coin families expose settings that are not common to every
+Miningcore pool. Examples include Bitcoin-family `addressType` and `gbtArgs`, daemon-level ZMQ
+notification settings, and CryptoNote or Equihash tuning fields. These values intentionally pass
+through the shared JSON schema as extension data and are bound only by the matching coin-family
+implementation.
+
+Scope is part of the contract. For Bitcoin-derived pools, place `minimumConfirmations` on the pool
+object because payout reconciliation consumes it there. Place `zmqBlockNotifySocket` and optional
+`zmqBlockNotifyTopic` on an individual daemon endpoint because template notification consumes them
+there. Moving any of these fields between those objects makes the setting ineffective and is
+rejected in shipped examples.
+
+That flexibility means a structurally valid key can still be ineffective when placed at the wrong
+level or copied to an unrelated coin family. Start from the matching file in the
+[example configuration index](../examples/README.md), retain its exact camel-case spelling and
+nesting, and verify the daemon or wallet feature during staged startup. CI derives the permitted
+pool, daemon and payment fields from each family's concrete runtime contracts and rejects unknown,
+mis-cased, wrong-family, wrong-scope and wrong-typed extension values in every shipped example.
 
 ## Log files and rotation
 
@@ -325,6 +577,51 @@ but can remain indefinitely when a miner stops before reaching the threshold aga
 selected balance is below the configured precision, Miningcore skips wallet submission and logs the
 active `payoutDecimalPlaces` value so the operator can review `minimumPayment`.
 
+## Bitcoin direct-coinbase SOLO
+
+The canonical `bitcoin` template defaults to direct coinbase settlement when its payment scheme is
+`SOLO`. The base authorized `address.worker` username becomes the immutable miner coinbase
+destination; positive `rewardRecipients` are separate direct fee/donation outputs, so Miningcore
+does not hold the miner's reward first. `soloCoinbasePayout` is a strict Boolean; set it to `false`
+to retain custodial Bitcoin SOLO. The default never applies to another coin or payout scheme, and
+explicitly enabling it for a non-BTC template, pooled scheme, relay or merged-mining topology fails
+before work is delivered. Existing databases need the additive direct-settlement migration before
+using the default. Follow the complete [Bitcoin direct-SOLO guide](bitcoin-direct-solo.md); do not
+infer that other Bitcoin-family coinbase layouts are compatible.
+
+Canonical Bitcoin coinbases use `nLockTime = block height - 1` and `nSequence = 0xfffffffe` in both
+custodial and direct-SOLO modes. This is valid under existing Bitcoin consensus and is forward-
+compatible with BIP 54; it does not claim or signal network activation. Value-bearing outputs are
+serialized first and the BIP 141 witness commitment last. The policy is deliberately limited to
+the canonical `bitcoin` template so altcoin transaction framing and output order remain unchanged.
+It is enabled by default. If an incompatible miner or Stratum proxy cannot process the new shape,
+`bip54Coinbase: false` temporarily restores the complete earlier form: zero locktime and sequence,
+with the witness commitment before value-bearing outputs. Startup logs the effective policy; upgrade
+the incompatible component and remove the override after validation.
+
+## Bitcoin-family PPS
+
+Direct pools using an audited Bitcoin-family template may set pool-level
+`paymentProcessing.payoutScheme` to `PPS`. Both the cluster and pool payment-processing switches
+must be enabled. The direct examples deliberately remain `SOLO`; PPS creates a liability for every
+valid share and requires an operator-funded reserve, three database migrations, retention planning
+and pre-production accounting tests.
+
+```json
+"paymentProcessing": {
+  "enabled": true,
+  "minimumPayment": 0.001,
+  "payoutScheme": "PPS",
+  "ppsShareRetentionDays": 7
+}
+```
+
+The snippet replaces only the selected pool's payment-processing object. Cluster-level
+`paymentProcessing.shareAccountingRetentionDays` and `shareAccountingPruneBatchSize` control the
+replay/evidence horizon and bounded cleanup. Read the [PPS operator guide](pps.md) before enabling
+the scheme; it covers the economic contract, migrations, reserve, relay ordering, commissioning,
+monitoring and recovery.
+
 ## Kaspa multi-transaction payouts
 
 Kaspa wallet can auto-compound a large logical payout into an ordered transaction chain. Miningcore
@@ -344,7 +641,8 @@ implementations.
 
 ## LTC/DOGE merged mining
 
-Both the Litecoin parent pool and Dogecoin auxiliary pool must be enabled and use `SOLO`. The parent
+Both the Litecoin parent pool and Dogecoin auxiliary pool must be enabled. Each independently uses
+one of `SOLO`, `PPS`, `PROP` or `PPLNS`; unsupported schemes fail before listeners open. The parent
 pool contains:
 
 ```json
@@ -359,8 +657,32 @@ pool contains:
 
 `auxPoolId` must exactly match the Dogecoin pool `id`. `addressParameter` controls the password name;
 the recommended default is `doge`. `requireAuxAddress: true` rejects miners that omit a DOGE payout
-address. The template poll timeout is milliseconds and may be raised for a healthy but slower local
-daemon.
+address and is mandatory whenever Dogecoin is not SOLO. The template poll timeout is milliseconds
+and may be raised for a healthy but slower local daemon. Apply the three migrations and read the
+[merged-mining accounting guide](merged-mining-litecoin-dogecoin.md) before enabling pooled payouts.
+
+PPS liabilities are calculated at the accepting node and embedded in the authenticated share
+envelope. Recovery therefore does not depend on payout settings that are deliberately removed by
+`-rs` configuration sanitisation. `paymentProcessing.ppsShareRetentionDays` (default `7`) controls
+statistical `shares` retention for each PPS pool independently of finding a block.
+`paymentProcessing.shareAccountingRetentionDays` at cluster scope (default `30`) is the maximum
+accepted relay/recovery replay age. Miningcore rechecks that boundary when PostgreSQL attempts to
+create a new accounting receipt, so time spent in the recorder queue cannot reopen an expired
+liability. Detailed evidence and receipts are physically retained for an additional one-day safety
+margin and pruned in bounded batches. Choose a horizon longer than the maximum time an emergency
+journal or disconnected relay can remain unreconciled.
+
+`paymentProcessing.shareAccountingPruneBatchSize` controls the bounded rows examined or deleted
+per affected table and payout cycle. Its default is `50000`, and startup accepts values from `1000`
+through `100000`. Size it above the peak rows that can expire during one payment-processing
+interval, including both projections when parent and auxiliary pools use PPS. A remaining-backlog
+warning means the configured batch needs review if it persists after catch-up. The limit is per
+pool/table, but one maintenance transaction can process that limit for every PPS pool plus the
+global evidence tables. Account for the number of PPS pools before raising it so the transaction
+does not become unnecessarily long or delay vacuum progress. Configure the same retention horizon
+on every sender, receiver, recorder and payout owner in the topology. Evidence outside it fails
+closed and must be reconciled manually; see the
+[database sizing and archival procedure](database.md#share-accounting-retention-and-sizing).
 
 Miner examples:
 
@@ -402,6 +724,13 @@ the journal difficult to locate. Miningcore logs the resolved path when the Shar
 Restrict the file and its parent directory to the service account because share records are
 financial accounting data.
 
+If deterministic validation rejects one accounting record in a recorder batch, Miningcore commits
+valid siblings independently and writes only the rejected record to a sibling
+`*.quarantine-<UTC>-<UUID>` checksum-chained evidence file before fail-stopping. The normal recovery
+journal therefore remains importable without hand-editing. Never pass a quarantine file directly to
+`-rs`; preserve it and reconcile the named accounting evidence, configuration and database state
+manually. A quarantine write failure is treated as dual-durability failure and retains status 74.
+
 ### Ownership and path safety
 
 Miningcore acquires an adjacent exclusive process-lifetime owner file before startup recovery checks
@@ -429,7 +758,7 @@ while Miningcore is running.
 
 ### Atomic filesystem operations
 
-On the supported Ubuntu 22.04 Linux target, Miningcore first uses
+On the supported Ubuntu 22.04, 24.04 and 26.04 Linux targets, Miningcore first uses
 `renameat2(..., RENAME_NOREPLACE)` for atomic no-replacement publication and retirement. If libc does
 not export that call, or the kernel/filesystem reports it unsupported, Miningcore falls back to
 `linkat` followed by `unlinkat`. The link step still refuses an existing destination. A process or
