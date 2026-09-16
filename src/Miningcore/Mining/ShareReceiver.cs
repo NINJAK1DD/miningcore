@@ -47,6 +47,8 @@ public class ShareReceiver : BackgroundService
         this.clusterConfig = clusterConfig;
         this.clock = clock;
         this.messageBus = messageBus;
+        accountingPools = (clusterConfig.Pools ?? Array.Empty<PoolConfig>())
+            .ToDictionary(x => x.Id, StringComparer.Ordinal);
         this.receiveTimeout = receiveTimeout;
         this.reconnectTimeout = reconnectTimeout;
     }
@@ -55,10 +57,13 @@ public class ShareReceiver : BackgroundService
     private readonly IMasterClock clock;
     private readonly IMessageBus messageBus;
     private readonly ClusterConfig clusterConfig;
+    private readonly IReadOnlyDictionary<string, PoolConfig> accountingPools;
     private readonly TimeSpan receiveTimeout;
     private readonly TimeSpan reconnectTimeout;
     private readonly CompositeDisposable disposables = new();
     private readonly ConcurrentDictionary<string, PoolContext> pools = new();
+    private readonly ConcurrentDictionary<string, byte> offlineAccountingWarnings =
+        new(StringComparer.Ordinal);
     private readonly BufferBlock<(string Url, ZMessage Message)> queue = new();
     internal int AttachedPoolCount => pools.Count;
 
@@ -327,14 +332,76 @@ public class ShareReceiver : BackgroundService
 
                 break;
 
+            case ShareRelay.WireFormat.ProtocolBuffersAccounting:
+                using(var stream = new MemoryStream(data))
+                {
+                    share = Serializer.Deserialize<Share>(stream);
+                    share.BlockReward = (decimal) share.BlockRewardDouble;
+                    if(share.PairedShare != null)
+                    {
+                        share.PairedShare.BlockReward =
+                            (decimal) share.PairedShare.BlockRewardDouble;
+                    }
+                }
+
+                break;
+
             default:
                 logger.Error(() => $"Unsupported wire format {wireFormat} of share received from {url}/{topic} ");
+                messageBus.SendMessage(
+                    new UnsupportedShareRelayWireFormatTelemetryEvent(url,
+                        (int) wireFormat));
                 break;
         }
 
         if(share == null)
         {
             logger.Error(() => $"Unable to deserialize share received from {url}/{topic}");
+            return;
+        }
+
+        if(wireFormat == ShareRelay.WireFormat.ProtocolBuffersAccounting)
+        {
+            if(!string.Equals(share.PoolId, topic, StringComparison.Ordinal) ||
+               string.IsNullOrEmpty(share.AccountingId))
+            {
+                logger.Error(() => $"Accounting share from {url}/{topic} has a mismatched topic or no accounting id");
+                return;
+            }
+
+            NormalizeCreatedTimestamp(share, clock.Now);
+            if(share.PairedShare != null)
+                NormalizeCreatedTimestamp(share.PairedShare, share.Created);
+
+            try
+            {
+                ShareAccounting.ValidateReplayHorizon(share, clock.Now,
+                    clusterConfig.PaymentProcessing?
+                        .ShareAccountingRetentionDays ?? 30);
+                var projections = ShareAccounting.ValidateAndFlatten(share,
+                    accountingPools);
+
+                foreach(var projection in projections)
+                {
+                    if(pools.ContainsKey(projection.PoolId) ||
+                       !offlineAccountingWarnings.TryAdd(projection.PoolId, 0))
+                        continue;
+
+                    logger.Warn(() =>
+                        $"Accounting projection for configured pool '{projection.PoolId}' arrived before that pool was online; preserving its financial evidence while share telemetry remains gated by the online topic pool");
+                }
+            }
+            catch(Exception ex) when(ex is InvalidDataException or ArgumentException)
+            {
+                logger.Error(ex, () =>
+                    $"Rejected malformed accounting share from {url}/{topic}");
+                return;
+            }
+        }
+        else if(!string.IsNullOrEmpty(share.AccountingId) || share.PairedShare != null)
+        {
+            logger.Error(() =>
+                $"Accounting share from {url}/{topic} used a legacy wire format");
             return;
         }
 

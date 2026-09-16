@@ -34,6 +34,10 @@ fi
 
 assert_contains "configuration-directory creation" \
   'sudo mkdir -p /etc/miningcore'
+assert_contains "root-only credential pre-creation" \
+  'sudo install -m 0600 -o root -g root /dev/null '
+assert_contains "root-only replacement credential pre-creation" \
+  '/etc/miningcore/miningcore.env.new'
 assert_contains "service-group directory ownership" \
   'sudo chown root:miningcore /etc/miningcore'
 assert_contains "service-readable directory mode" \
@@ -42,6 +46,41 @@ assert_contains "root-only credential ownership" \
   'sudo chown root:root /etc/miningcore/miningcore.env'
 assert_contains "root-only credential mode" \
   'sudo chmod 0600 /etc/miningcore/miningcore.env'
+
+if ! awk '
+  /^```/ {
+    in_code = !in_code
+    pending_install = 0
+    secure_live = 0
+    secure_new = 0
+    next
+  }
+  !in_code { next }
+  /sudo install -m 0600 -o root -g root \/dev\/null/ {
+    pending_install = 1
+    next
+  }
+  pending_install && /\/etc\/miningcore\/miningcore\.env\.new/ {
+    secure_new = 1
+    pending_install = 0
+    next
+  }
+  pending_install && /\/etc\/miningcore\/miningcore\.env/ {
+    secure_live = 1
+    pending_install = 0
+    next
+  }
+  /sudo tee \/etc\/miningcore\/miningcore\.env\.new/ && !secure_new {
+    unsafe = 1
+  }
+  /sudo tee \/etc\/miningcore\/miningcore\.env([^.]|$)/ && !secure_live {
+    unsafe = 1
+  }
+  END { exit unsafe ? 1 : 0 }
+' "$security_guide"; then
+  echo 'Administrative API guide writes a token before creating its root-only file' >&2
+  exit 1
+fi
 assert_prose_contains "Docker recreation warning" \
   '`docker[[:space:]]+restart`[[:space:]]+is[[:space:]]+insufficient'
 assert_prose_contains "tombstone-route prohibition" \
@@ -72,5 +111,15 @@ assert_prose_contains "whitelist rejection counter" \
   '`miningcore_api_ip_whitelist_rejections_total`[[:space:]]+increments[[:space:]]+for[[:space:]]+every[[:space:]]+source-IP[[:space:]]+whitelist[[:space:]]+rejection'
 assert_prose_contains "fixed whitelist metric cardinality" \
   'fixed[[:space:]]+values[[:space:]]+`admin`,[[:space:]]+`metrics`[[:space:]]+or[[:space:]]+`other`;[[:space:]]+it[[:space:]]+never[[:space:]]+includes[[:space:]]+a[[:space:]]+client[[:space:]]+address[[:space:]]+or[[:space:]]+request[[:space:]]+path'
+assert_prose_contains "atomic payment-processing toggles" \
+  'Payment-processing[[:space:]]+toggles[[:space:]]+are[[:space:]]+validated[[:space:]]+atomically[[:space:]]+before[[:space:]]+any[[:space:]]+pool[[:space:]]+is[[:space:]]+changed'
+assert_prose_contains "active PPS and direct-SOLO disable prohibition" \
+  'rejects[[:space:]]+disabling[[:space:]]+payment[[:space:]]+processing[[:space:]]+while[[:space:]]+an[[:space:]]+enabled[[:space:]]+PPS[[:space:]]+or[[:space:]]+Bitcoin[[:space:]]+direct-SOLO[[:space:]]+pool[[:space:]]+is[[:space:]]+accepting[[:space:]]+work'
+assert_prose_contains "financial-mode controlled-restart requirement" \
+  'make[[:space:]]+either[[:space:]]+financial[[:space:]]+contract[[:space:]]+change[[:space:]]+through[[:space:]]+a[[:space:]]+reviewed[[:space:]]+configuration[[:space:]]+and[[:space:]]+controlled[[:space:]]+restart'
+assert_prose_contains "unaffected per-pool toggle fallback" \
+  'If[[:space:]]+a[[:space:]]+bulk[[:space:]]+operation[[:space:]]+is[[:space:]]+rejected,[[:space:]]+unaffected[[:space:]]+pools[[:space:]]+remain[[:space:]]+individually[[:space:]]+controllable[[:space:]]+through[[:space:]]+their[[:space:]]+per-pool[[:space:]]+routes'
+assert_prose_contains "financial-mode operator guides" \
+  '\[PPS[[:space:]]+operator[[:space:]]+guide\]\(pps\.md\)[[:space:]]+and[[:space:]]+\[Bitcoin[[:space:]]+direct-SOLO[[:space:]]+guide\]\(bitcoin-direct-solo\.md\)'
 
 echo "Administrative API documentation invariants are present"

@@ -1,27 +1,30 @@
 ﻿{
+    // Starter configuration: replace every CHANGE_ME value and review it before use.
+    // See README.md and ../config.example.json for topology and field guidance.
     "logging": {
         "level": "info",
         "enableConsoleLog": true,
         "enableConsoleColors": true,
-        "logFile": "",
-        "apiLogFile": "",
-        "logBaseDirectory": "",
+        "logFile": "miningcore.log",
+        "apiLogFile": "miningcore-api.log",
+        "logBaseDirectory": "logs",
         "perPoolLogFile": false
     },
     "banning": {
         "manager": "Integrated",
         "banOnJunkReceive": true,
-        "banOnInvalidShares": false
+        "banOnInvalidShares": true,
+        "banOnLoginFailure": true
     },
     "notifications": {
         "enabled": false,
         "email": {
             "host": "smtp.example.com",
             "port": 587,
-            "user": "user",
-            "password": "password",
-            "fromAddress": "info@yourpool.org",
-            "fromName": "support"
+            "user": "CHANGE_ME_SMTP_USER",
+            "password": "CHANGE_ME_SMTP_PASSWORD",
+            "fromAddress": "pool@example.com",
+            "fromName": "Miningcore operator"
         },
         "admin": {
             "enabled": false,
@@ -34,32 +37,27 @@
             "host": "127.0.0.1",
             "port": 5432,
             "user": "miningcore",
-            "password": "password",
+            "password": "CHANGE_ME_POSTGRES_PASSWORD",
             "database": "miningcore"
         }
     },
     "paymentProcessing": {
         "enabled": true,
         "interval": 600,
-        "shareRecoveryFile": "recovered-shares.txt"
+        "coinbaseString": "Miningcore"
     },
+    "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
     "api": {
         "enabled": true,
-        "listenAddress": "*",
+        "listenAddress": "127.0.0.1",
         "port": 4000,
-        "metricsIpWhitelist": [],
+        "adminPort": 4001,
+        "metricsPort": 4002,
+        "adminIpWhitelist": [ "127.0.0.1" ],
+        "metricsIpWhitelist": [ "127.0.0.1" ],
+        "legacyNullValueHandling": false,
         "rateLimiting": {
-            "disabled": true,
-            "rules": [
-                {
-                    "Endpoint": "*",
-                    "Period": "1s",
-                    "Limit": 5
-                }
-            ],
-            "ipWhitelist": [
-                ""
-            ]
+            "disabled": true
         }
     },
     "pools": [{
@@ -67,15 +65,18 @@
       "enabled": true,
       "coin": "monero",
       "randomXRealm": "xmr1",
-      "address": "43g9avHw8WYHnq749LU1Nw1BZ8FCwS2B7GLoW4vif7cPjJB7e9f6WgU8ptDFM7kyNS9kz1zy334dAYFKgP2KJU8vMoZ3hYD",
+      "address": "CHANGE_ME_MONERO_POOL_WALLET_ADDRESS",
       "rewardRecipients": [
         {
-          "address": "475YVJbPHPedudkhrcNp1wDcLMTGYusGPF5fqE7XjnragVLPdqbCHBdZg3dF4dN9hXMjjvGbykS6a77dTAQvGrpiQqHp2eH",
-          "percentage": 1
+          "address": "43iiCs5pjvqbzYDvGSPgwtTdR4E4s996cSBsCSTe5HHbSrzr4HBosKZch8t7Fpg34DL9dNcN22T7H6JWEC23B9iDLAZqQsp",
+          "percentage": 0
         }
       ],
+      "enableInternalStratum": true,
       "blockRefreshInterval": 500,
+      "jobRebroadcastTimeout": 0,
       "clientConnectionTimeout": 600,
+      "vardiffIdleSweepInterval": 30,
       "banning": {
         "enabled": true,
         "time": 600,
@@ -84,9 +85,9 @@
       },
       "ports": {
         "3032": {
-          "listenAddress": "0.0.0.0",
+          "listenAddress": "*",
           "difficulty": 7500,
-          "name": "CPU Mining",
+          "name": "XMR-LOW-DIFF",
           "varDiff": {
             "minDiff": 1000,
             "maxDiff": null,
@@ -96,9 +97,9 @@
           }
         },
         "3033": {
-          "listenAddress": "0.0.0.0",
+          "listenAddress": "*",
           "difficulty": 25000,
-          "name": "GPU Mining",
+          "name": "XMR-MEDIUM-DIFF",
           "varDiff": {
             "minDiff": 10000,
             "maxDiff": null,
@@ -108,14 +109,14 @@
           }
         },
         "3034": {
-          "listenAddress": "0.0.0.0",
+          "listenAddress": "*",
           "difficulty": 200000,
-          "name": "High-End Multi GPU Mining",
+          "name": "XMR-HIGH-DIFF",
           "varDiff": {
-            "minDiff": 200000,
+            "minDiff": 100000,
             "maxDiff": null,
             "targetTime": 15,
-            "retargetTime": 120,
+            "retargetTime": 90,
             "variancePercent": 30
           }
         }
@@ -124,14 +125,14 @@
         {
           "host": "127.0.0.1",
           "port": 18081,
-           "user": "user",
-          "password": "password"
+          "user": "CHANGE_ME_DAEMON_RPC_USER",
+          "password": "CHANGE_ME_DAEMON_RPC_PASSWORD"
        },
         {
           "host": "127.0.0.1",
           "port": 18082,
-          "user": "user",
-          "password": "password",
+          "user": "CHANGE_ME_WALLET_RPC_USER",
+          "password": "CHANGE_ME_WALLET_RPC_PASSWORD",
           "category": "wallet"
         }
       ],

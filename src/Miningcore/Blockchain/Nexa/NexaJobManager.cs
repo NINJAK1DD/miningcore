@@ -1,7 +1,6 @@
 using System.Globalization;
 using Autofac;
 using Miningcore.Blockchain.Bitcoin;
-using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Nexa.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
@@ -94,10 +93,10 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
                 GetMiningCandidateFromJson(json);
 
             // may happen if daemon is currently not connected to peers
-            if(response.Error != null)
+            if(response.Error != null || response.Response == null)
             {
-                logger.Warn(() => $"Unable to update job. GetMiningCandidate failed. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
-                return (false, forceUpdate);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "NexaJobManager.UpdateJob", code: response.Error?.Code);
+                return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
             }
 
             var miningCandidate = response.Response;
@@ -111,10 +110,10 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
             if(isNew)
             {
                 var gbtResponse = await GetBlockTemplateAsync(ct);
-                if(gbtResponse.Error != null)
+                if(gbtResponse.Error != null || gbtResponse.Response == null)
                 {
-                    logger.Warn(() => $"Unable to update job. GetBlockTemplate failed. Daemon responded with: {gbtResponse.Error.Message} Code {gbtResponse.Error.Code}");
-                    return (false, forceUpdate);
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "NexaJobManager.UpdateJob", code: gbtResponse.Error?.Code);
+                    return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
                 }
                 blockTemplate = gbtResponse.Response;
                 messageBus.NotifyChainHeight(poolConfig.Id, blockTemplate.Height, poolConfig.Template);
@@ -163,10 +162,10 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "NexaJobManager.UpdateJob", failure: ex);
         }
 
-        return (false, forceUpdate);
+        return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
     }
 
     protected override object GetJobParamsForStratum(bool isNew)
@@ -187,10 +186,6 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
     {
         poolAddress = pc.Address;
         coin = pc.Template.As<BitcoinTemplate>();
-        extraPoolConfig = pc.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>();
-
-        if(extraPoolConfig?.MaxActiveJobs.HasValue == true)
-            maxActiveJobs = extraPoolConfig.MaxActiveJobs.Value;
 
         base.Configure(pc, cc);
     }
@@ -272,7 +267,7 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
 
             if(share.IsBlockCandidate)
             {
-                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
+                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] (miner identity withheld)");
 
                 OnBlockFound();
 
@@ -322,8 +317,8 @@ public class NexaJobManager : BitcoinJobManagerBase<NexaJob>
 
         if(!string.IsNullOrEmpty(submitError))
         {
-            logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {submitError}");
-            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {submitError}"));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "NexaJobManager.SubmitBlockAsync");
+            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
             return new SubmitResult(false, null, null);
         }
 

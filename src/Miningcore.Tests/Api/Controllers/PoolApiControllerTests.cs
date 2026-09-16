@@ -43,6 +43,7 @@ public class PoolApiControllerTests
             }, nameof(AlephiumPaymentProcessingConfigExtra.WalletPassword)),
         Contract(CoinFamily.Beam, null),
         BitcoinContract(CoinFamily.Bitcoin),
+        BitcoinContract(CoinFamily.BitcoinBlake2b),
         Contract(CoinFamily.Conceal,
             typeof(ConcealPoolPaymentProcessingConfigExtra),
             new Dictionary<string, object>
@@ -1223,6 +1224,8 @@ public class PoolApiControllerTests
     [Theory]
     [InlineData(true, PayoutScheme.SOLO, false)]
     [InlineData(true, PayoutScheme.SOLO, true)]
+    [InlineData(true, PayoutScheme.PPS, false)]
+    [InlineData(true, PayoutScheme.PPS, true)]
     [InlineData(false, PayoutScheme.PPLNSBF, false)]
     [InlineData(false, PayoutScheme.PPLNSBF, true)]
     public void PoolResponses_PreservePresentPaymentProcessing(

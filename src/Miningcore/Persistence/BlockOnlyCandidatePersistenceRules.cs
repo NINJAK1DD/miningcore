@@ -1,3 +1,4 @@
+using Miningcore.Blockchain.Bitcoin;
 using Share = Miningcore.Blockchain.Share;
 
 namespace Miningcore.Persistence;
@@ -8,15 +9,21 @@ internal sealed record BlockOnlyCandidatePersistenceRule(string Type,
 internal static class BlockOnlyCandidatePersistenceRules
 {
     internal const string MissingIndexesMessage =
-        "Merged-mining recovery records require the AuxPoW block idempotency migration. " +
-        "Apply add_auxpow_block_idempotency.sql before importing the recovery journal; " +
-        "the recovery journal has not been imported.";
+        "Block-only candidate recovery records require the current AuxPoW and " +
+        "share-accounting idempotency migrations. Apply add_auxpow_block_idempotency.sql " +
+        "and add_share_accounting.sql before importing the recovery journal; the recovery " +
+        "journal has not been imported.";
 
     private static readonly IReadOnlyDictionary<string,
         BlockOnlyCandidatePersistenceRule> Rules =
         new Dictionary<string, BlockOnlyCandidatePersistenceRule>(
             StringComparer.Ordinal)
         {
+            ["bitcoin-direct"] = new("bitcoin-direct", "poolId + blockHash",
+                " ON CONFLICT (poolid, hash) WHERE type = 'bitcoin-direct' DO NOTHING"),
+            [BitcoinDirectCoinbaseSettlement.BlockType] = new(
+                BitcoinDirectCoinbaseSettlement.BlockType, "poolId + blockHash",
+                $" ON CONFLICT (poolid, hash) WHERE type = '{BitcoinDirectCoinbaseSettlement.BlockType}' DO NOTHING"),
             ["auxpow"] = new("auxpow", "poolId + blockHash",
                 " ON CONFLICT (poolid, hash) WHERE type = 'auxpow' DO NOTHING"),
             ["auxpow-claim"] = new("auxpow-claim",
@@ -46,6 +53,13 @@ internal static class BlockOnlyCandidatePersistenceRules
         candidate?.IsBlockCandidate == true &&
         !candidate.BlockRecordEmitted &&
         TryGet(candidate.BlockType, out _);
+
+    internal static bool RequiresBitcoinDirectSoloSchema(Share candidate) =>
+        candidate?.IsBlockCandidate == true &&
+        !candidate.BlockRecordEmitted &&
+        string.Equals(candidate.BlockType,
+            BitcoinDirectCoinbaseSettlement.BlockType,
+            StringComparison.Ordinal);
 
     internal static void EnsureDeclared(Share candidate)
     {

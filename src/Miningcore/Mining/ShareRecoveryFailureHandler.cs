@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using Miningcore.Blockchain;
 using Miningcore.Notifications;
 using Miningcore.Notifications.Messages;
@@ -11,10 +12,19 @@ public interface IShareRecoveryFailureHandler
         Exception databaseError, Exception journalError);
     Task StopClusterAfterJournalAsync(IReadOnlyCollection<Share> shares,
         string recoveryFilename, Exception pipelineError);
+    Task StopClusterAfterJournalAsync(IReadOnlyCollection<Share> recoverableShares,
+        string recoveryFilename, IReadOnlyCollection<Share> quarantinedShares,
+        string quarantineFilename, Exception pipelineError);
     Task StopClusterAfterCommittedCleanupAsync(IReadOnlyCollection<Share> shares,
         string recoveryFilename, Exception cleanupError);
     Task StopClusterForUncertainCommitAsync(IReadOnlyCollection<Share> shares,
         string recoveryFilename, Exception commitError);
+    Task StopClusterAfterReplaySafeCommittedCleanupAsync(
+        IReadOnlyCollection<Share> shares, string recoveryFilename,
+        Exception cleanupError, Exception journalError);
+    Task StopClusterForReplaySafeUncertainCommitAsync(
+        IReadOnlyCollection<Share> shares, string recoveryFilename,
+        Exception commitError);
 }
 
 public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
@@ -60,12 +70,10 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         var poolSummary = pools.Length > 0 ? string.Join(", ", pools) : "(unknown)";
 
         if(databaseError != null)
-            logger.Fatal(databaseError,
-                "PostgreSQL failed before the share-recovery journal fallback");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterAsync", failure: databaseError);
 
         if(journalError != null)
-            logger.Fatal(journalError,
-                "The share-recovery journal append or rollback failed");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterAsync", failure: journalError);
 
         logger.Fatal(
             "Stopping cluster because neither PostgreSQL nor the recovery journal stored {0} share(s). Pools: {1}. Recovery file: {2}",
@@ -77,10 +85,7 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         }
         catch(Exception ex)
         {
-            logger.Fatal(ex,
-                "Unable to persist the share-recovery fatal-state marker {0}; exit status {1} still prevents automatic restart under the supplied systemd unit",
-                fatalState.FatalStateFilename,
-                ProcessExitCodes.UnreconciledShareDurabilityLoss);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterAsync", failure: ex);
         }
 
         // Always refresh the fail-closed state above. Only the slower operator alert is
@@ -106,9 +111,7 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         }
         catch(Exception ex)
         {
-            logger.Error(ex,
-                "Critical share-recovery notification was not delivered within {0}; shutdown will continue",
-                CriticalNotificationTimeout);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ShareRecoveryFailureHandler.StopClusterAsync", failure: ex);
         }
     }
 
@@ -116,15 +119,38 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         IReadOnlyCollection<Share> shares, string recoveryFilename,
         Exception pipelineError)
     {
-        ArgumentNullException.ThrowIfNull(shares);
+        await StopClusterAfterJournalAsync(shares, recoveryFilename,
+            Array.Empty<Share>(), null, pipelineError);
+    }
+
+    public async Task StopClusterAfterJournalAsync(
+        IReadOnlyCollection<Share> recoverableShares, string recoveryFilename,
+        IReadOnlyCollection<Share> quarantinedShares, string quarantineFilename,
+        Exception pipelineError)
+    {
+        ArgumentNullException.ThrowIfNull(recoverableShares);
+        ArgumentNullException.ThrowIfNull(quarantinedShares);
         ArgumentException.ThrowIfNullOrWhiteSpace(recoveryFilename);
+        if(quarantinedShares.Count > 0)
+            ArgumentException.ThrowIfNullOrWhiteSpace(quarantineFilename);
         failStopCoordinator.BeginFailStop(ProcessExitCodes.GeneralFailure);
         var absoluteRecoveryFilename = Path.GetFullPath(recoveryFilename);
+        var absoluteQuarantineFilename = quarantinedShares.Count > 0
+            ? Path.GetFullPath(quarantineFilename)
+            : null;
 
-        logger.Fatal(pipelineError,
-            "Stopping cluster after an unexpected share-persistence pipeline failure. " +
-            "The complete unresolved set of {0} share(s) was force-flushed to {1}.",
-            shares.Count, absoluteRecoveryFilename);
+        var recoverableSummary = recoverableShares.Count > 0
+            ? $"{recoverableShares.Count} recoverable share(s) were force-flushed to " +
+              $"{absoluteRecoveryFilename}"
+            : "No importable recovery-journal records remained";
+        var quarantineSummary = quarantinedShares.Count > 0
+            ? $" {quarantinedShares.Count} rejected share(s) were written to quarantine " +
+              $"{absoluteQuarantineFilename}; that file must not be imported with -rs and " +
+              "requires manual financial reconciliation."
+            : string.Empty;
+
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterAfterJournalAsync", failure: pipelineError);
+        logger.Fatal("Stopping cluster after share-persistence failure. {0}.{1}", recoverableSummary, quarantineSummary);
 
         if(!TryClaimNotificationSeverity(1))
             return;
@@ -132,9 +158,10 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         var notification = new AdminNotification(
             "Share persistence pipeline stopped",
             $"Miningcore is stopping with exit status {ProcessExitCodes.GeneralFailure} after " +
-            $"an unexpected accounting-pipeline failure. All {shares.Count} unresolved share(s) " +
-            $"were force-flushed to {absoluteRecoveryFilename}. Import and verify that journal " +
-            "before resuming normal operation.");
+            $"an unexpected accounting-pipeline failure. {recoverableSummary}." +
+            quarantineSummary + (recoverableShares.Count > 0
+                ? " Import and verify only the recovery journal before resuming normal operation."
+                : " Do not run -rs against a quarantine file."));
         await SendCriticalNotificationSafelyAsync(notification);
     }
 
@@ -150,10 +177,8 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         var suppression = new InvalidOperationException(
             "Recovery-journal replay was intentionally suppressed because the PostgreSQL commit outcome is uncertain");
 
-        logger.Fatal(commitError,
-            "Stopping cluster because the PostgreSQL commit outcome is uncertain for {0} " +
-            "share(s). They were not copied to the importable recovery journal to avoid duplicate accounting.",
-            shares.Count);
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterForUncertainCommitAsync", failure: commitError);
+        logger.Fatal("Stopping after an uncertain PostgreSQL commit for {0} share(s). Records were not copied to the recovery journal to avoid duplicate accounting. Preserve fatal-state evidence {1} and recovery file {2}.", shares.Count, fatalState.FatalStateFilename, absoluteRecoveryFilename);
 
         try
         {
@@ -162,10 +187,7 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         }
         catch(Exception ex)
         {
-            logger.Fatal(ex,
-                "Unable to persist uncertain-commit fatal state {0}; exit status {1} remains active",
-                fatalState.FatalStateFilename,
-                ProcessExitCodes.UnreconciledShareDurabilityLoss);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterForUncertainCommitAsync", failure: ex);
         }
 
         if(!TryClaimNotificationSeverity(2))
@@ -191,9 +213,8 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         failStopCoordinator.BeginFailStop(ProcessExitCodes.GeneralFailure);
         var absoluteRecoveryFilename = Path.GetFullPath(recoveryFilename);
 
-        logger.Fatal(cleanupError,
-            "Stopping cluster because PostgreSQL committed {0} share(s), but transaction cleanup failed. " +
-            "Those committed shares were not copied to the recovery journal.", shares.Count);
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterAfterCommittedCleanupAsync", failure: cleanupError);
+        logger.Fatal("Stopping after PostgreSQL committed {0} share(s), but cleanup failed. These records were not copied to recovery journal {1}; investigate before restarting.", shares.Count, absoluteRecoveryFilename);
 
         if(!TryClaimNotificationSeverity(1))
             return;
@@ -205,6 +226,72 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
             "cleanup failed. Those committed records were deliberately excluded from the " +
             $"replayable recovery journal at {absoluteRecoveryFilename}. Investigate the " +
             "database provider and connection health before restarting.");
+        await SendCriticalNotificationSafelyAsync(notification);
+    }
+
+    public async Task StopClusterAfterReplaySafeCommittedCleanupAsync(
+        IReadOnlyCollection<Share> shares, string recoveryFilename,
+        Exception cleanupError, Exception journalError)
+    {
+        ArgumentNullException.ThrowIfNull(shares);
+        ArgumentException.ThrowIfNullOrWhiteSpace(recoveryFilename);
+        failStopCoordinator.BeginFailStop(ProcessExitCodes.GeneralFailure);
+        var absoluteRecoveryFilename = Path.GetFullPath(recoveryFilename);
+
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterAfterReplaySafeCommittedCleanupAsync", failure: cleanupError);
+        logger.Fatal("Stopping after PostgreSQL committed {0} direct-block outbox record(s), but cleanup failed. Recovery journal {1}; replay-safe duplicate written: {2}. PostgreSQL remains authoritative.", shares.Count, absoluteRecoveryFilename, journalError == null);
+        if(journalError != null)
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ShareRecoveryFailureHandler.StopClusterAfterReplaySafeCommittedCleanupAsync", failure: journalError);
+
+        if(!TryClaimNotificationSeverity(1))
+            return;
+
+        var journalSummary = journalError == null
+            ? $" A replay-safe duplicate was also appended to {absoluteRecoveryFilename}."
+            : " The recovery-journal duplicate could not be appended, but PostgreSQL committed the authoritative outbox row.";
+        var notification = new AdminNotification(
+            "Direct block transaction cleanup failed after commit",
+            $"Miningcore propagated {shares.Count} direct block submission(s), then requested " +
+            $"exit status {ProcessExitCodes.GeneralFailure} because transaction or connection " +
+            "cleanup failed after PostgreSQL committed the durable outbox row." +
+            journalSummary + " Investigate database-provider and connection health before restarting.");
+        await SendCriticalNotificationSafelyAsync(notification);
+    }
+
+    public async Task StopClusterForReplaySafeUncertainCommitAsync(
+        IReadOnlyCollection<Share> shares, string recoveryFilename,
+        Exception commitError)
+    {
+        ArgumentNullException.ThrowIfNull(shares);
+        ArgumentException.ThrowIfNullOrWhiteSpace(recoveryFilename);
+        failStopCoordinator.BeginFailStop(
+            ProcessExitCodes.UnreconciledShareDurabilityLoss);
+        var absoluteRecoveryFilename = Path.GetFullPath(recoveryFilename);
+
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterForReplaySafeUncertainCommitAsync", failure: commitError);
+        logger.Fatal("Stopping after an uncertain PostgreSQL commit for {0} direct-block submission(s). Replay-safe records are in {1}; preserve fatal-state evidence {2} and reconcile before resuming.", shares.Count, absoluteRecoveryFilename, fatalState.FatalStateFilename);
+
+        try
+        {
+            fatalState.MarkFatalShares(shares, commitError, null,
+                "bitcoin-direct-postgresql-commit-outcome-uncertain");
+        }
+        catch(Exception ex)
+        {
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecoveryFailureHandler.StopClusterForReplaySafeUncertainCommitAsync", failure: ex);
+        }
+
+        if(!TryClaimNotificationSeverity(2))
+            return;
+
+        var notification = new AdminNotification(
+            "Uncertain PostgreSQL direct-block commit",
+            $"Miningcore propagated {shares.Count} direct block submission(s), then requested " +
+            $"exit status {ProcessExitCodes.UnreconciledShareDurabilityLoss} because PostgreSQL " +
+            "may or may not have committed their outbox rows. Exact replay-safe records are in " +
+            $"{absoluteRecoveryFilename}; their stable unique identities make recovery import " +
+            "idempotent. Reconcile PostgreSQL and the journal before resuming mining. " +
+            ShareRecoveryFatalState.OperatorAcknowledgementInstruction);
         await SendCriticalNotificationSafelyAsync(notification);
     }
 
@@ -233,9 +320,7 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
         }
         catch(Exception ex)
         {
-            logger.Error(ex,
-                "Critical share-recovery notification was not delivered within {0}; shutdown will continue",
-                CriticalNotificationTimeout);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ShareRecoveryFailureHandler.SendCriticalNotificationSafelyAsync", failure: ex);
         }
     }
 }

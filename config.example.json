@@ -1,9 +1,12 @@
 {
-  // Copy this file to config.json and replace every CHANGE_ME value.
+  // Copy this file to config.json and replace every active placeholder value.
   // Miningcore accepts comments, although strict JSON tools may not.
+  // Smaller direct, multi-coin, merged-mining and relay starting points are indexed in
+  // examples/README.md. This maintained reference keeps LTC/DOGE sections because they
+  // demonstrate coin-specific merged-mining settings that do not apply to ordinary pools.
 
   // Friendly name included in logs, metrics, notifications and relayed shares.
-  "clusterName": "btcpool-local",
+  "clusterName": "miningcore-local",
 
   // Optional numeric identity for this Miningcore process in a multi-node cluster.
   // Give each node a different value; omit it for a simple single-node deployment.
@@ -33,9 +36,10 @@
   "api": {
     // Set false to run Miningcore without its HTTP API.
     "enabled": true,
-    // Use "127.0.0.1" when a host reverse proxy is the only API client.
-    // "*" is useful in a container but requires firewall/reverse-proxy protection.
-    "listenAddress": "*",
+    // Safe copy-first baseline: a same-host reverse proxy is the only API client.
+    // Container or remote exposure requires an explicit address change plus firewall,
+    // whitelist, TLS and reverse-proxy review.
+    "listenAddress": "127.0.0.1",
     // Main public API and WebSocket port.
     "port": 4000,
     // Dedicated administrative API port. When omitted, /api/admin remains on
@@ -59,9 +63,11 @@
     // "tls": {
     //   "enabled": true,
     //   "tlsPfxFile": "/etc/miningcore/api-certificate.pfx",
-    //   "tlsPfxPassword": "CHANGE_ME_API_CERTIFICATE_PASSWORD"
+    //   "tlsPfxPassword": "REPLACE_WITH_API_CERTIFICATE_PASSWORD"
     // },
-    // Per-client API request limiting.
+    // Per-client API request limiting. Miningcore does not process trusted forwarded-client
+    // headers. If a same-host reverse proxy connects over loopback, enforce public-client limits
+    // at that proxy because Miningcore sees the proxy's loopback address, not the remote client.
     "rateLimiting": {
       // Disabling this exposes the API without application-level throttling.
       "disabled": false,
@@ -104,9 +110,13 @@
       "database": "miningcore",
       // Maximum duration in seconds for database commands.
       "commandTimeout": 60,
-      // Enable PostgreSQL transport encryption.
+      // Legacy false uses opportunistic Prefer: TLS may be used, without server authentication.
       "tls": false,
-      // Never enable in production unless certificate validation is handled elsewhere.
+      // false does NOT validate server identity in Npgsql 9, even with tls=true.
+      // For remote authenticated TLS, REMOVE both legacy flags and use:
+      // "sslMode": "VerifyFull",
+      // "tlsRootCert": "/etc/miningcore/postgres-root-ca.crt"
+      // See docs/postgres-tls.md for trust sources and migration.
       "tlsNoValidate": false
     }
   },
@@ -117,8 +127,14 @@
     "enabled": true,
     // Seconds between payment-processing cycles.
     "interval": 600,
+    // Maximum rows examined or removed from each accounting table per cycle.
+    // The 50000 default keeps ahead of the documented 20-envelope/s merged-PPS baseline.
+    "shareAccountingPruneBatchSize": 50000,
+    // Keep exactly-once share-accounting receipts for this many days. Delayed relay
+    // or recovery evidence older than this horizon is rejected for manual reconciliation.
+    "shareAccountingRetentionDays": 30,
     // Optional text included in supported coinbase transactions.
-    "coinbaseString": "BTCPool.co.uk"
+    "coinbaseString": "Miningcore"
   },
 
   // Periodic pool, miner and network statistic aggregation.
@@ -144,7 +160,7 @@
       "user": "CHANGE_ME_SMTP_USER",
       "password": "CHANGE_ME_SMTP_PASSWORD",
       "fromAddress": "pool@example.com",
-      "fromName": "BTCPool operator"
+      "fromName": "Miningcore operator"
     },
     "admin": {
       // Operational alerts for block, payment and persistence events.
@@ -182,18 +198,19 @@
   //   // false binds/listens; true connects to an already-bound relay endpoint.
   //   "connect": false,
   //   // Replace with a long random ZeroMQ shared secret.
-  //   "sharedEncryptionKey": "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
+  //   "sharedEncryptionKey": "REPLACE_WITH_A_LONG_RANDOM_SECRET"
   // },
   // Advanced central receiver/recorder example:
   // "shareRelays": [
   //   {
   //     "url": "tcp://192.0.2.20:5555",
-  //     "sharedEncryptionKey": "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
+  //     "sharedEncryptionKey": "REPLACE_WITH_A_LONG_RANDOM_SECRET"
   //   }
   // ],
 
-  // Each entry defines one coin pool. The LTC entry below is the parent Stratum pool;
-  // the DOGE entry supplies the auxiliary daemon, wallet and SOLO accounting policy.
+  // Each entry defines one pool. The first two demonstrate LTC/DOGE merged mining.
+  // The final disabled Bitcoin entry demonstrates an ordinary, non-merged pool and can
+  // be enabled after its placeholders, difficulty and listener choices are reviewed.
   "pools": [
     {
       // Stable database/API identifier. Do not change after a production pool starts.
@@ -215,8 +232,13 @@
       // Seconds between checks for idle VarDiff connections.
       "vardiffIdleSweepInterval": 30,
       // Optional fixed reward splits (for example pool fees). Percentages reduce miner reward.
-      // Example: [ { "address": "LTC_FEE_ADDRESS", "percentage": 1.0 } ]
-      "rewardRecipients": [],
+      // The zero-percent placeholder is inactive; replace or remove it before production.
+      "rewardRecipients": [
+        {
+          "address": "CHANGE_ME_LTC_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
+          "percentage": 0
+        }
+      ],
       // One pool may expose several ports with different initial/variable difficulties.
       // Different pools may reuse a port only on distinct, non-overlapping specific addresses.
       // Miningcore reserves every enabled internal listener before any pool starts. One bind
@@ -226,16 +248,16 @@
         // JSON property name is the TCP port miners connect to.
         "3032": {
           // Human-readable port label shown through the API.
-          "name": "LTC-DOGE-SOLO",
+          "name": "LTC-DOGE-LOW-DIFF",
           // "*" listens on every IPv4 interface. A specific address must exist and be
           // bindable inside the host/container network namespace at startup.
           "listenAddress": "*",
           // Initial fixed difficulty assigned when a miner connects.
-          "difficulty": 65536,
+          "difficulty": 1024,
           // Optional automatic per-miner difficulty adjustment.
           "varDiff": {
             // Never retarget below this difficulty.
-            "minDiff": 65536,
+            "minDiff": 512,
             // Maximum difficulty; null means no configured ceiling.
             "maxDiff": null,
             // Maximum single retarget change; null uses the implementation default.
@@ -253,7 +275,7 @@
           "tlsAuto": false,
           // When TLS is enabled, uncomment and replace both values:
           // "tlsPfxFile": "/etc/miningcore/stratum-certificate.pfx",
-          // "tlsPfxPassword": "CHANGE_ME_STRATUM_CERTIFICATE_PASSWORD",
+          // "tlsPfxPassword": "REPLACE_WITH_STRATUM_CERTIFICATE_PASSWORD",
           // Accept HAProxy PROXY protocol information from explicitly trusted proxies only.
           "tcpProxyProtocol": {
             // Parse PROXY headers on this port.
@@ -262,6 +284,20 @@
             "mandatory": false,
             // Only these direct peers may assert a miner's original address.
             "proxyAddresses": [ "127.0.0.1" ]
+          }
+        },
+        "3033": {
+          // Higher starting floor for large Scrypt ASICs, farms, proxies and rentals.
+          "name": "LTC-DOGE-HIGH-DIFF",
+          "listenAddress": "*",
+          "difficulty": 65536,
+          "varDiff": {
+            "minDiff": 32768,
+            "maxDiff": null,
+            "maxDelta": null,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
           }
         }
       },
@@ -294,7 +330,7 @@
       // This object is required even when the pool is disabled; set enabled=false
       // instead of removing it or replacing it with null.
       "paymentProcessing": {
-        // Must be true for this merged-mining SOLO parent pool.
+        // Must be true for this example's merged-mining parent pool.
         // When this pool pays transaction fees, fund this exact wallet with a confirmed
         // reserve; minersPayTxFees covers normal sendmany fees but per-recipient fallback
         // submissions can still require additional spendable input.
@@ -302,8 +338,11 @@
         "enabled": true,
         // Smallest LTC balance paid automatically, denominated in whole LTC.
         "minimumPayment": 0.01,
-        // LTC/DOGE merged mining currently requires SOLO on both pools.
+        // This baseline uses SOLO; each chain may independently use SOLO, PPS, PROP or PPLNS.
+        // Read docs/pps.md before enabling PPS: it requires reserve, migration and ledger checks.
         "payoutScheme": "SOLO"
+        // For PPS, optionally retain statistical share rows independently of block luck:
+        // "ppsShareRetentionDays": 7
       },
       // Link this Litecoin parent pool to the Dogecoin auxiliary pool below.
       "mergedMining": {
@@ -339,14 +378,20 @@
       // Disconnect silent direct-DOGE workers after this many seconds.
       "clientConnectionTimeout": 600,
       // Optional DOGE fee/donation recipients, using the same format as the LTC pool.
-      "rewardRecipients": [],
+      "rewardRecipients": [
+        {
+          "address": "CHANGE_ME_DOGE_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
+          "percentage": 0
+        }
+      ],
       // A ports object is part of the pool contract even when internal Stratum is disabled.
+      // Keep one dormant direct-mining endpoint: merged miners use the LTC ports above.
       "ports": {
-        "3033": {
+        "3042": {
           // This port is not opened while enableInternalStratum is false.
-          "name": "DOGE-SOLO-DISABLED",
+          "name": "DOGE-DIRECT-DISABLED",
           "listenAddress": "127.0.0.1",
-          "difficulty": 65536
+          "difficulty": 1024
         }
       },
       // Dogecoin Core RPC used for createauxblock, submitauxblock, proof attribution,
@@ -383,6 +428,83 @@
         "enabled": true,
         // Smallest automatic payout, denominated in whole DOGE.
         "minimumPayment": 1.0,
+        "payoutScheme": "SOLO"
+      }
+    },
+    {
+      // Bitcoin SOLO defaults to direct coinbase settlement in v0.3.0. See
+      // examples/bitcoin_pool.json for separate low/high difficulty ports and a
+      // smaller standalone configuration.
+      // Keep SOLO unless the migrations, reserve and docs/pps.md checklist are complete.
+      "id": "bitcoin-solo",
+      "enabled": false,
+      "coin": "bitcoin",
+      // Retained for historical custodial blocks and daemon validation. New direct
+      // blocks pay the address supplied by each authorized miner.
+      "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
+      "soloCoinbasePayout": true,
+      // Keep staged ports disabled until this pool is configured and intentionally enabled.
+      "enableInternalStratum": false,
+      "blockRefreshInterval": 1000,
+      "jobRebroadcastTimeout": 10,
+      "clientConnectionTimeout": 600,
+      "rewardRecipients": [
+        {
+          "address": "CHANGE_ME_BITCOIN_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
+          "percentage": 0
+        }
+      ],
+      "ports": {
+        "3052": {
+          "name": "BTC-LOW-DIFF-DISABLED",
+          "listenAddress": "127.0.0.1",
+          "difficulty": 8192,
+          "varDiff": {
+            "minDiff": 4096,
+            "maxDiff": null,
+            "maxDelta": null,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        },
+        "3053": {
+          "name": "BTC-HIGH-DIFF-DISABLED",
+          "listenAddress": "127.0.0.1",
+          "difficulty": 1048576,
+          "varDiff": {
+            "minDiff": 524288,
+            "maxDiff": null,
+            "maxDelta": null,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        }
+      },
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          "port": 8332,
+          "user": "CHANGE_ME_BITCOIN_RPC_USER",
+          "password": "CHANGE_ME_BITCOIN_RPC_PASSWORD",
+          // Optional: must exactly match bitcoin.conf's zmqpubhashblock endpoint.
+          // "zmqBlockNotifySocket": "tcp://127.0.0.1:28332",
+          "ssl": false,
+          "http2": false
+        }
+      ],
+      "banning": {
+        "enabled": true,
+        "checkThreshold": 50,
+        "invalidPercent": 50,
+        "time": 600
+      },
+      // Required even while the pool is disabled. Direct SOLO requires both this
+      // switch and cluster payment processing, plus the direct-settlement schema.
+      "paymentProcessing": {
+        "enabled": false,
+        "minimumPayment": 0.001,
         "payoutScheme": "SOLO"
       }
     }

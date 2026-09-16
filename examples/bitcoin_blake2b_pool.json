@@ -1,0 +1,45 @@
+{
+  // This is the separate BLAKE2b hard-fork chain, NOT SHA-256d Bitcoin.
+  // See ../docs/bitcoin-blake2b.md. Replace every CHANGE_ME value.
+  "clusterName": "bitcoin-blake2b-example",
+  "logging": { "level": "info", "enableConsoleLog": true, "enableConsoleColors": true, "logFile": "miningcore.log" },
+  "banning": { "manager": "Integrated", "banOnJunkReceive": true, "banOnInvalidShares": true, "banOnLoginFailure": true },
+  "api": {
+    "enabled": true, "listenAddress": "127.0.0.1", "port": 4000,
+    "adminPort": 4001, "metricsPort": 4002,
+    "adminIpWhitelist": [ "127.0.0.1" ], "metricsIpWhitelist": [ "127.0.0.1" ],
+    "legacyNullValueHandling": false, "rateLimiting": { "disabled": true }
+  },
+  "persistence": { "postgres": {
+    "host": "127.0.0.1", "port": 5432, "user": "miningcore",
+    "password": "CHANGE_ME_POSTGRES_PASSWORD", "database": "miningcore"
+  } },
+  "paymentProcessing": { "enabled": true, "interval": 600, "coinbaseString": "Miningcore" },
+  "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
+  "pools": [ {
+    "id": "bitcoin-blake2b-solo", "enabled": true, "coin": "bitcoin-blake2b",
+    "address": "CHANGE_ME_BLAKE2B_CHAIN_POOL_WALLET_ADDRESS",
+    // Conventional custodial SOLO: the chain wallet receives and pays rewards.
+    // Canonical Bitcoin's soloCoinbasePayout/bip54Coinbase options do not apply.
+    "rewardRecipients": [ { "address": "CHANGE_ME_BLAKE2B_CHAIN_FEE_ADDRESS", "percentage": 0 } ],
+    "enableInternalStratum": true,
+    "blockRefreshInterval": 1000, "jobRebroadcastTimeout": 10,
+    "clientConnectionTimeout": 600, "vardiffIdleSweepInterval": 30,
+    "ports": {
+      "3132": {
+        "name": "BTCB2B-LOW-DIFF", "listenAddress": "*", "difficulty": 64,
+        "varDiff": { "minDiff": 32, "maxDiff": 4096, "targetTime": 15, "retargetTime": 90, "variancePercent": 30 }
+      },
+      "3133": {
+        "name": "BTCB2B-HIGH-DIFF", "listenAddress": "*", "difficulty": 8192,
+        "varDiff": { "minDiff": 4096, "maxDiff": 1048576, "targetTime": 15, "retargetTime": 90, "variancePercent": 30 }
+      }
+    },
+    "daemons": [ {
+      "host": "127.0.0.1", "port": 18332,
+      "user": "CHANGE_ME_BLAKE2B_RPC_USER", "password": "CHANGE_ME_BLAKE2B_RPC_PASSWORD"
+    } ],
+    "banning": { "enabled": true, "checkThreshold": 50, "invalidPercent": 50, "time": 600 },
+    "paymentProcessing": { "enabled": true, "minimumPayment": 0.001, "payoutScheme": "SOLO" }
+  } ]
+}

@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Globalization;
 using System.Reactive;
 using System.Reactive.Linq;
@@ -37,7 +38,6 @@ public class ProgpowPool : PoolBase
     {
     }
 
-    private ProgpowJobParams currentJobParams;
     private long currentJobId;
     private ProgpowJobManager manager;
     private ProgpowCoinTemplate coin;
@@ -103,8 +103,9 @@ public class ProgpowPool : PoolBase
             context.SetDifficulty(nicehashDiff.Value);
         }
 
-        var minerJobParams = CreateWorkerJob(connection, currentJobParams.CleanJobs);
-        // send intial update
+        // Initial work starts a clean job set independently of prior broadcasts.
+        var minerJobParams = CreateWorkerJob(connection, true);
+        // send initial update
         await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
         await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, minerJobParams);
     }
@@ -149,7 +150,7 @@ public class ProgpowPool : PoolBase
             await connection.RespondAsync(response);
 
             // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
 
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
@@ -175,7 +176,7 @@ public class ProgpowPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
@@ -285,7 +286,7 @@ public class ProgpowPool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            logger.Info(() => $"[{connection.ConnectionId}] Share rejected: {ex.Message} [{context.UserAgent}]");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "ProgpowPool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);
@@ -298,13 +299,15 @@ public class ProgpowPool : PoolBase
     {
         logger.Info(() => $"Broadcasting jobs");
 
-        currentJobParams = job as ProgpowJobParams;
+        var notification = (ProgpowJobParams) job;
+        // Bind this broadcast to its own flag while miner callbacks are running.
+        var cleanJobs = notification.CleanJobs;
 
         await Guard(() => ForEachMinerAsync(async (connection, _) =>
         {
             var context = connection.ContextAs<ProgpowWorkerContext>();
 
-            var minerJobParams = CreateWorkerJob(connection, currentJobParams.CleanJobs);
+            var minerJobParams = CreateWorkerJob(connection, cleanJobs);
 
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
@@ -361,11 +364,11 @@ public class ProgpowPool : PoolBase
             disposables.Add(manager.Jobs
                 .Select(job => Observable.FromAsync(() =>
                     Guard(() => OnNewJobAsync(job),
-                        ex => logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"))))
+                        ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ProgpowPool.SetupJobManager", failure: ex))))
                 .Concat()
                 .Subscribe(_ => { }, ex =>
                 {
-                    logger.Debug(ex, nameof(OnNewJobAsync));
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ProgpowPool.SetupJobManager", failure: ex);
                 }));
 
             // start with initial blocktemplate
@@ -419,13 +422,13 @@ public class ProgpowPool : PoolBase
                 case BitcoinStratumMethods.ExtraNonceSubscribe:
                 case BitcoinStratumMethods.GetTransactions:
                 case ProgpowStratumMethods.SubmitHashrate:
-                    logger.Debug(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ProgpowPool.OnRequestAsync");
 
                     await connection.RespondErrorAsync(StratumError.Other, $"Unsupported request {request.Method}", request.Id);
                     break;
                 
                 default:
-                    logger.Debug(() => $"[{connection.ConnectionId}] Unknown RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ProgpowPool.OnRequestAsync");
 
                     await connection.NotifyAsync(ProgpowStratumMethods.UnknownMethod, request);
                     break;
@@ -444,9 +447,8 @@ public class ProgpowPool : PoolBase
 
         if(connection.Context.ApplyPendingDifficulty())
         {
-            bool cleanJob = (currentJobParams.CleanJobs) ? !currentJobParams.CleanJobs : currentJobParams.CleanJobs;
-
-            var minerJobParams = CreateWorkerJob(connection, cleanJob);
+            // A difficulty change preserves work from the current block.
+            var minerJobParams = CreateWorkerJob(connection, false);
             await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(connection.Context.Difficulty) });
             await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, minerJobParams);
         }

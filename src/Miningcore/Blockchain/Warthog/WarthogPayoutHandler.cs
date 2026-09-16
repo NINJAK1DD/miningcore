@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System;
 using System.Collections.Concurrent;
 using System.Linq;
@@ -149,7 +150,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
             chainInfo = await restClient.Get<GetChainInfoResponse>(WarthogCommands.GetChainInfo, ct);
             if(chainInfo?.Error != null)
             {
-                logger.Warn(() => $"[{LogCategory}] '{WarthogCommands.GetChainInfo}': {chainInfo.Error} (Code {chainInfo?.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "WarthogPayoutHandler.ClassifyBlocksAsync");
                 return blocks;
             }
         }
@@ -182,7 +183,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
                 {
                     response = await restClient.Get<WarthogBlock>(WarthogCommands.GetBlockByHeight.Replace(WarthogCommands.DataLabel, block.BlockHeight.ToString()), ct);
                     if(response?.Error != null)
-                        logger.Warn(() => $"[{LogCategory}] Block {block.BlockHeight}: {response.Error} (Code {response?.Code})");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "WarthogPayoutHandler.ClassifyBlocksAsync");
                 }
 
                 catch(Exception e)
@@ -199,7 +200,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
                     block.Status = BlockStatus.Orphaned;
                     block.Reward = 0;
 
-                    logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} classified as orphaned because {(response?.Error != null ? "it's not on chain" : $"it has a different hash on chain: {response.Data.Header.Hash}")}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "WarthogPayoutHandler.ClassifyBlocksAsync");
 
                     messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
                 }
@@ -284,7 +285,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
             {
                 var responseAddress = await GetPayoutAddressTemplateAsync(pair.Key, ct);
                 if(responseAddress?.Error != null)
-                    logger.Warn(()=> $"[{LogCategory}] Address {pair.Key} is not valid: {responseAddress.Error} (Code {responseAddress?.Code})");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "WarthogPayoutHandler.PayoutTrackedAsync");
             }
 
             catch(OperationCanceledException) when(ct.IsCancellationRequested)
@@ -303,7 +304,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
         {
             responseBalance = await GetPayoutWalletBalanceAsync(ct);
             if(responseBalance?.Error != null)
-                logger.Warn(()=> $"[{LogCategory}] '{WarthogCommands.GetBalance}': {responseBalance.Error} (Code {responseBalance?.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "WarthogPayoutHandler.PayoutTrackedAsync");
         }
 
         catch(OperationCanceledException) when(ct.IsCancellationRequested)
@@ -402,7 +403,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
             }).ToArray();
             var error = string.Join(", ", txFailures.Select(x => $"{x.Item1.Key} {FormatAmount(x.Item1.Value)}: {x.Item2.Message}"));
 
-            logger.Error(()=> $"[{LogCategory}] Failed to transfer the following balances: {error}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "WarthogPayoutHandler.PayoutTrackedAsync");
 
             NotifyPayoutFailure(poolConfig.Id, failureBalances, error, null);
         }

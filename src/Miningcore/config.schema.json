@@ -253,6 +253,14 @@
         },
         "interval": {
           "type": "integer"
+        },
+        "shareAccountingPruneBatchSize": {
+          "type": "integer",
+          "default": 50000
+        },
+        "shareAccountingRetentionDays": {
+          "type": "integer",
+          "default": 30
         }
       }
     },
@@ -545,7 +553,11 @@
             "PPLNSBF"
           ]
         },
-        "payoutSchemeConfig": {}
+        "payoutSchemeConfig": {},
+        "ppsShareRetentionDays": {
+          "type": "integer",
+          "default": 7
+        }
       }
     },
     "PoolShareBasedBanningConfig": {
@@ -587,10 +599,13 @@
       ],
       "properties": {
         "commandTimeout": {
+          "description": "Command timeout in seconds: 1-86400; omitted/null uses 300. Zero (unlimited) is rejected.",
           "type": [
             "integer",
             "null"
-          ]
+          ],
+          "minimum": 1.0,
+          "maximum": 86400.0
         },
         "database": {
           "type": [
@@ -619,8 +634,26 @@
         "port": {
           "type": "integer"
         },
+        "sslMode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            null,
+            "Disable",
+            "Allow",
+            "Prefer",
+            "Require",
+            "VerifyCA",
+            "VerifyFull"
+          ]
+        },
         "tls": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "tlsCert": {
           "type": [
@@ -635,9 +668,18 @@
           ]
         },
         "tlsNoValidate": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "tlsPassword": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tlsRootCert": {
           "type": [
             "string",
             "null"
@@ -649,7 +691,69 @@
             "null"
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "not": {
+            "type": "object",
+            "required": [
+              "sslMode",
+              "tls"
+            ],
+            "properties": {
+              "sslMode": {
+                "type": "string"
+              },
+              "tls": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "not": {
+            "type": "object",
+            "required": [
+              "sslMode",
+              "tlsNoValidate"
+            ],
+            "properties": {
+              "sslMode": {
+                "type": "string"
+              },
+              "tlsNoValidate": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "not": {
+            "type": "object",
+            "required": [
+              "tlsRootCert"
+            ],
+            "properties": {
+              "tlsRootCert": {
+                "type": "string"
+              }
+            },
+            "not": {
+              "required": [
+                "sslMode"
+              ],
+              "properties": {
+                "sslMode": {
+                  "enum": [
+                    "VerifyCA",
+                    "VerifyFull"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "PushoverConfig": {
       "type": [

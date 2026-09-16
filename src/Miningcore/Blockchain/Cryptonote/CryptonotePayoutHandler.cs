@@ -68,7 +68,7 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
                 response.Response?.TxHash, CryptonoteWalletCommands.Transfer);
             var txFee = response.Response.Fee / coin.SmallestUnit;
 
-            logger.Info(() => $"[{LogCategory}] Payment transaction id: {txHash}, TxFee {FormatAmount(txFee)}, TxKey {response.Response.TxKey}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "CryptonotePayoutHandler.HandleTransferResponseAsync");
 
             await PersistPaymentsAsync(balances, txHash);
             NotifyPayoutSuccess(poolConfig.Id, balances, new[] { txHash }, txFee);
@@ -77,9 +77,9 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
 
         else
         {
-            logger.Error(() => $"[{LogCategory}] Daemon command '{CryptonoteWalletCommands.Transfer}' returned error: {response.Error.Message} code {response.Error.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "CryptonotePayoutHandler.HandleTransferResponseAsync", code: response.Error?.Code);
 
-            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{CryptonoteWalletCommands.Transfer}' returned error: {response.Error.Message} code {response.Error.Code}", null);
+            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{CryptonoteWalletCommands.Transfer}' returned error: {response.Error.Message} code {response.Error.Code}", null, daemonCode: response.Error.Code);
             return false;
         }
     }
@@ -108,9 +108,9 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
 
         else
         {
-            logger.Error(() => $"[{LogCategory}] Daemon command '{CryptonoteWalletCommands.TransferSplit}' returned error: {response.Error.Message} code {response.Error.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "CryptonotePayoutHandler.HandleTransferSplitResponseAsync", code: response.Error?.Code);
 
-            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{CryptonoteWalletCommands.TransferSplit}' returned error: {response.Error.Message} code {response.Error.Code}", null);
+            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{CryptonoteWalletCommands.TransferSplit}' returned error: {response.Error.Message} code {response.Error.Code}", null, daemonCode: response.Error.Code);
             return false;
         }
     }
@@ -205,7 +205,7 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
 
                 if(responseBalances.Error != null)
                 {
-                    logger.Error(() => $"[{LogCategory}] Daemon command '{CryptonoteWalletCommands.GetBalance}' returned error: {responseBalances.Error.Message} code {responseBalances.Error.Code}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "CryptonotePayoutHandler.EnsureBalance", code: responseBalances.Error?.Code);
                     return false;
                 }
                 
@@ -224,7 +224,7 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
 
                 if(responseBalance.Error != null)
                 {
-                    logger.Error(() => $"[{LogCategory}] Daemon command '{CryptonoteWalletCommands.GetBalance}' returned error: {responseBalance.Error.Message} code {responseBalance.Error.Code}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "CryptonotePayoutHandler.EnsureBalance", code: responseBalance.Error?.Code);
                     return false;
                 }
                 
@@ -318,7 +318,7 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
 
             if(walletSupportsTransferSplit)
             {
-                logger.Error(() => $"[{LogCategory}] Daemon command '{CryptonoteWalletCommands.Transfer}' returned error: {transferResponse.Error.Message} code {transferResponse.Error.Code}");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "CryptonotePayoutHandler.PayoutBatch", code: transferResponse.Error?.Code);
                 logger.Info(() => $"[{LogCategory}] Retrying transfer using {CryptonoteWalletCommands.TransferSplit}");
 
                 TrackPayoutSubmission(ct, balances);
@@ -520,7 +520,7 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
 
                 if(rpcResult.Error != null)
                 {
-                    logger.Debug(() => $"[{LogCategory}] Daemon reports error '{rpcResult.Error.Message}' (Code {rpcResult.Error.Code}) for block {block.BlockHeight}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "CryptonotePayoutHandler.ClassifyBlocksAsync", code: rpcResult.Error?.Code);
                     continue;
                 }
 

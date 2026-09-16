@@ -1,4 +1,5 @@
 #include "xelishash.hpp"
+#include "aes.hpp"
 #include <stdlib.h>
 #include <iostream>
 
@@ -11,10 +12,6 @@
 #include <cstring>
 #include <array>
 #include <cassert>
-
-#if !defined(__AES__)
-  #include <openssl/aes.h>
-#endif
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -82,9 +79,7 @@ static void aes_round(uint8_t *block, const uint8_t *key)
   __m128i result = _mm_aesenc_si128(block_m128i, key_m128i);
   _mm_store_si128((__m128i *)block, result);
   #else
-    AES_KEY aes_key;
-    AES_set_encrypt_key(key, 128, &aes_key);
-    AES_encrypt(block, block, &aes_key);
+    aes_single_round_no_intrinsics(block, key);
   #endif
 }
 
@@ -630,7 +625,7 @@ void xelis_hash(const unsigned char *input, uint32_t inputLen, unsigned char *ha
 {
   alignas(64) uint64_t scratchPad[XELIS_MEMORY_SIZE] = {0};
   uint64_t *int_input = const_cast<uint64_t *>(reinterpret_cast<const uint64_t *>(input));
-  uint32_t *smallPad;
+  uint32_t *smallPad = reinterpret_cast<uint32_t *>(scratchPad);
   alignas(64) uint32_t slots[XELIS_SLOT_LENGTH] = {0};
   alignas(64) unsigned char indices[XELIS_SLOT_LENGTH] = {0};
 
@@ -645,7 +640,6 @@ void xelis_hash(const unsigned char *input, uint32_t inputLen, unsigned char *ha
   // Stage 2
   __builtin_prefetch(slots, 1, 3);
   __builtin_prefetch(smallPad, 1, 3);
-  smallPad = reinterpret_cast<uint32_t *>(scratchPad);
 
   std::copy(&smallPad[XELIS_MEMORY_SIZE * 2 - XELIS_SLOT_LENGTH], &smallPad[XELIS_MEMORY_SIZE * 2], slots);
 

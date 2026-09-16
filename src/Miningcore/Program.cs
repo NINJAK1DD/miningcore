@@ -28,8 +28,10 @@ using Miningcore.Api.Controllers;
 using Miningcore.Api.Extensions;
 using Miningcore.Api.Middlewares;
 using Miningcore.Api.Responses;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
+using Miningcore.Rpc;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Crypto.Hashing.Equihash;
 using Miningcore.Crypto.Hashing.Ethash.Etchash;
@@ -94,6 +96,22 @@ public class Program : ProcessStatusBackgroundService
     internal const int MaxLogArchiveFiles = 4;
 
     internal static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(45);
+    private static readonly (string Symbol, string Address)[] DonationAddresses =
+    {
+        ("BTC", "bc1q94x9ncw62g09c80yr38jkewyn6cre3h473g54j"),
+        ("ETH", "0x4DE55672F0bBB88882A5a589b320eE40FfbdebF9"),
+        ("DOGE", "DQKEyZ2sTzcCPeeqzP4xUiPHzwtCS9LUTt"),
+        ("ZEC", "t1TbjCnoNdGWnwEt9QqCZvHuG3MsWf4Bj66"),
+        ("XMR", "43iiCs5pjvqbzYDvGSPgwtTdR4E4s996cSBsCSTe5HHbSrzr4HBosKZch8t7Fpg34" +
+            "DL9dNcN22T7H6JWEC23B9iDLAZqQsp"),
+        ("BCH", "bitcoincash:qzyvaurh8vlj22jvyhpdce6ld4lt3zfc3svyt665de"),
+        ("LTC", "ltc1qgnt28drw663gldx76zp3s28xl58wsp0ccv4vxg"),
+        ("KAS", "kaspa:qzdtdjatlzecrt9u4v22p5vgud6w6ylvemly9df6zpu0gp0yks9xxp24q79pu"),
+        ("ETC", "0x331e6c8d7Caae3Dd1136EefF6c828dBDe5ae64F0"),
+        ("FIRO", "aH1tURoFqY1quNraAtceE6YFPv3DLFo8zT"),
+        ("XEL", "xel:gt8m2j4al22k8ecp99uducy84vnhn2nlx6ftxjgw2rfr0hg5n47sqkec7n4"),
+        ("WART", "4701843e274a2a4dfbac59678cb693233274bf5fefcc4e46"),
+    };
     private static readonly AdminApiCredentialProvider adminApiCredentialProvider =
         new();
     private static readonly HashSet<string> RecoveryConfigurationProperties =
@@ -109,6 +127,50 @@ public class Program : ProcessStatusBackgroundService
 
     public static async Task<int> Main(string[] args)
     {
+        // Keep the entire diagnostic command (including parse errors) outside
+        // normal startup reporting, which can include input values and paths.
+        if(args.Any(LooksLikeDumpConfigOption))
+        {
+            var stage = ConfigDiagnosticStage.Arguments;
+            return await RunStartupBoundaryAsync(() =>
+            {
+                var app = ParseCommandLine(args, suppressDiagnostics: true);
+                // Parse quietly first; only generated information may escape the
+                // boundary. Never replay parser output containing argument text.
+                app.Out = Console.Out;
+                if(app.OptionHelp?.HasValue() == true)
+                {
+                    stage = ConfigDiagnosticStage.Output;
+                    app.ShowHelp(usePager: false);
+                    return Task.CompletedTask;
+                }
+                if(versionOption.HasValue())
+                {
+                    stage = ConfigDiagnosticStage.Output;
+                    app.ShowVersion();
+                    return Task.CompletedTask;
+                }
+                if(!configFileOption.HasValue())
+                    throw new InvalidOperationException();
+                stage = ConfigDiagnosticStage.Read;
+                var config = ReadConfig(configFileOption.Value(), ConfigurationReadOptions.Quiet);
+                stage = ConfigDiagnosticStage.Project;
+                var diagnostics = SerializeConfigDiagnostics(config);
+                stage = ConfigDiagnosticStage.Output;
+                Console.WriteLine(diagnostics);
+                return Task.CompletedTask;
+            }, error =>
+            {
+                var category = GetConfigDiagnosticFailureCategory(stage, error);
+                Console.Error.WriteLine(category == "output-unavailable"
+                    ? "Configuration dump failed (output-unavailable). Check the stdout destination or pipeline. Input details are withheld."
+                    : category == "internal"
+                    ? "Configuration dump failed (internal). Check the Miningcore installation and diagnostic tooling. Input details are withheld."
+                    : $"Configuration dump failed ({category}). Supply -c <configfile> with a readable, valid configuration. Input details are withheld. Validate the file privately against config.schema.json and the documented examples; normal startup may reveal detailed errors and start services. Do not publish those logs unreviewed.");
+                return Task.CompletedTask;
+            }, () => 0);
+        }
+
         IProcessStatus processStatus = null;
 
         return await RunStartupBoundaryAsync(async () =>
@@ -120,12 +182,6 @@ public class Program : ProcessStatusBackgroundService
             if(versionOption.HasValue())
             {
                 app.ShowVersion();
-                return;
-            }
-
-            if(dumpConfigOption.HasValue())
-            {
-                DumpParsedConfig(clusterConfig);
                 return;
             }
 
@@ -433,7 +489,6 @@ public class Program : ProcessStatusBackgroundService
     private static ILogger logger;
     private static CommandOption versionOption;
     private static CommandOption configFileOption;
-    private static CommandOption dumpConfigOption;
     private static CommandOption shareRecoveryOption;
     private static CommandOption verifyShareRecoveryStateOption;
     private static CommandOption acknowledgeShareRecoveryStateOption;
@@ -525,6 +580,18 @@ public class Program : ProcessStatusBackgroundService
             AssignPoolTemplatesAndLogPaymentExtraOmissions(enabledPools,
                 coinTemplates, PaymentProcessingExtraDiagnostics.
                     CreateLogger());
+            // Configuration parsing runs before coin templates are loaded. Recheck the
+            // template-dependent PPS family contract here, after production has assigned the
+            // templates but before any Stratum listener is reserved or pool is started.
+            // PpsTemplateFamily_IsCheckedAfterProductionAssignment pins this ordering.
+            ValidatePpsDeployment(clusterConfig, requireAssignedTemplates: true);
+            // This check intentionally has no earlier ValidateConfig pass: its only
+            // additional contract is the resolved runtime-template identity, which
+            // is unavailable until AssignPoolTemplates completes.
+            ValidateBitcoinBip54CoinbaseDeployment(clusterConfig,
+                requireAssignedTemplates: true);
+            ValidateBitcoinDirectSoloDeployment(clusterConfig,
+                requireAssignedTemplates: true);
             var listenerCoordinator = new StratumListenerReservationCoordinator(
                 logger);
             using var listenerReservations = await listenerCoordinator.ReserveAllAsync(
@@ -1070,7 +1137,30 @@ public class Program : ProcessStatusBackgroundService
         pools[poolConfig.Id] = pool;
 
         // go
-        await pool.RunAsync(ct);
+        try
+        {
+            await pool.RunAsync(ct);
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch(RpcConsumerStartupException)
+        {
+            throw;
+        }
+        catch(TrustedPoolStartupException)
+        {
+            throw;
+        }
+        catch(Exception ex)
+        {
+            // A first-job await/runtime pool failure can originate in a daemon
+            // parser after JobManager.StartAsync returned. Host logging must not
+            // render that remote text either; fail-stop semantics are unchanged.
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "Program.RunPool", failure: ex);
+            throw new RpcConsumerStartupException(poolConfig.Id, ex);
+        }
     }
 
     private Task RecoverSharesAsync(string recoveryFilename)
@@ -1154,7 +1244,11 @@ public class Program : ProcessStatusBackgroundService
 
             config.Validate(recoveryMode);
             if(!recoveryMode)
+            {
                 ValidateMergedMiningDeployment(config);
+                ValidatePpsDeployment(config);
+                ValidateBitcoinDirectSoloDeployment(config);
+            }
 
             var listenerConflict = FindApiListenerStratumPortConflict(
                 config, recoveryMode);
@@ -1189,15 +1283,39 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
-    private static void DumpParsedConfig(ClusterConfig config)
-    {
-        Console.WriteLine("\nCurrent configuration as parsed from config file:");
-        Console.WriteLine(SerializeParsedConfig(config));
-    }
+    internal static string SerializeConfigDiagnostics(ClusterConfig config) =>
+        ConfigurationDiagnosticProjection.Serialize(config);
 
-    internal static string SerializeParsedConfig(ClusterConfig config) =>
-        JsonConvert.SerializeObject(config,
-            ConfigurationJson.CreateSerializerSettings(Formatting.Indented));
+    internal enum ConfigDiagnosticStage { Arguments, Read, Project, Output }
+
+    internal static string GetConfigDiagnosticFailureCategory(ConfigDiagnosticStage stage, Exception error) =>
+        stage switch
+        {
+            ConfigDiagnosticStage.Arguments => "usage",
+            ConfigDiagnosticStage.Output when error is IOException or ObjectDisposedException or UnauthorizedAccessException => "output-unavailable",
+            ConfigDiagnosticStage.Read => error switch
+            {
+                JSchemaValidationException => "schema-invalid",
+                JsonReaderException => "invalid-json",
+                JsonException or PoolStartupException => "invalid-configuration",
+                IOException or UnauthorizedAccessException => "unreadable",
+                _ => "internal",
+            },
+            _ => "internal",
+        };
+
+    private static readonly char[] OptionNameValueSeparators = { ' ', ':', '=' };
+
+    internal static bool LooksLikeDumpConfigOption(string argument)
+    {
+        // CommandLineUtils 4.0.2 recognizes space, ':' and '=' within tokens.
+        // Mirror all three, not just '='; malformed NoValue arguments can hold
+        // secrets. This conservative pre-scan also catches '-rs -dc' (a value)
+        // and tokens after '--': false positives fail closed, never run recovery.
+        var separator = argument.IndexOfAny(OptionNameValueSeparators);
+        var option = separator < 0 ? argument : argument[..separator];
+        return option is "-dc" or "--dumpconfig";
+    }
 
     private static void GenerateJsonConfigSchema()
     {
@@ -1293,22 +1411,34 @@ public class Program : ProcessStatusBackgroundService
             }
         };
 
-        return JObject.Parse(generator.Generate(typeof(ClusterConfig))
-            .ToString());
+        var document = JObject.Parse(generator.Generate(typeof(ClusterConfig)).ToString());
+        PostgresConnectionPolicy.AddSchemaRules(document);
+        return document;
     }
 
-    private static CommandLineApplication ParseCommandLine(string[] args)
+    private static CommandLineApplication ParseCommandLine(string[] args,
+        bool suppressDiagnostics = false)
     {
         var app = new CommandLineApplication
         {
             FullName = "Miningcore",
+            OptionNameValueSeparators = OptionNameValueSeparators.ToArray(),
             ShortVersionGetter = GetVersion,
             LongVersionGetter = GetVersion
         };
 
+        if(suppressDiagnostics)
+        {
+            // The CLI library may print an invalid argument before throwing.
+            // Do not allow that text to bypass the dump's safe error boundary.
+            app.Out = TextWriter.Null;
+            app.Error = TextWriter.Null;
+        }
+
         versionOption = app.Option("-v|--version", "Version Information", CommandOptionType.NoValue);
         configFileOption = app.Option("-c|--config <configfile>", "Configuration File", CommandOptionType.SingleValue);
-        dumpConfigOption = app.Option("-dc|--dumpconfig", "Dump the configuration (useful for trouble-shooting typos in the config file)",CommandOptionType.NoValue);
+        // Handled early in Main; registered here for help text and parse acceptance.
+        app.Option("-dc|--dumpconfig", "Dump a safe, lossy diagnostic projection of -c <configfile>; omits credential values, paths and extension data (not a configuration export)", CommandOptionType.NoValue);
         shareRecoveryOption = app.Option("-rs", "Import lost shares using existing recovery file", CommandOptionType.SingleValue);
         verifyShareRecoveryStateOption = app.Option("--verify-share-recovery-state",
             "Read-only verification of fatal share-recovery incidents and exact-share sidecars",
@@ -1320,18 +1450,38 @@ public class Program : ProcessStatusBackgroundService
         generateSchemaOption = app.Option("-gcs|--generate-config-schema <outputfile>", "Generate JSON schema from configuration options", CommandOptionType.SingleValue);
         app.HelpOption("-? | -h | --help");
 
-        app.Execute(args);
+        if(suppressDiagnostics)
+            app.Parse(args);
+        else
+            app.Execute(args);
 
         return app;
     }
 
-    internal static ClusterConfig ReadConfig(string file,
-        bool skipApiListenerSettings = false)
+    [Flags]
+    internal enum ConfigurationReadOptions
     {
+        None = 0,
+        Recovery = 1,
+        Quiet = 2,
+    }
+
+    // Preserve existing recovery callers without adding adjacent Boolean options.
+    internal static ClusterConfig ReadConfig(string file, bool skipApiListenerSettings = false) =>
+        ReadConfig(file, skipApiListenerSettings ? ConfigurationReadOptions.Recovery : ConfigurationReadOptions.None);
+
+    internal static ClusterConfig ReadConfig(string file, ConfigurationReadOptions options)
+    {
+        // Quiet is consumed by the guarded diagnostic command: retain user-file
+        // exception types and distinguish bundled-schema failures, never their text.
+        // Ordinary/recovery callers keep the existing startup error contract.
+        var skipApiListenerSettings = options.HasFlag(ConfigurationReadOptions.Recovery);
+        var quiet = options.HasFlag(ConfigurationReadOptions.Quiet);
         try
         {
-            Console.WriteLine($"Using configuration file '{file}'");
-            if(skipApiListenerSettings)
+            if(!quiet)
+                Console.WriteLine($"Using configuration file '{file}'");
+            if(skipApiListenerSettings && !quiet)
                 Console.WriteLine(
                     "Recovery mode: unused live cluster and pool configuration discarded " +
                     "(no API, Stratum, payout, or daemon services are started)");
@@ -1349,6 +1499,13 @@ public class Program : ProcessStatusBackgroundService
                         skipApiListenerSettings);
 
                     RejectCaseInsensitivePropertyDuplicates(document);
+                    PostgresConnectionPolicy.ValidateSyntax(document);
+                    // Recovery mode discards live pool settings, but the same
+                    // source document must never make malformed or ambiguous
+                    // security-sensitive switches appear acceptable in one
+                    // startup mode and invalid in another.
+                    ValidateBitcoinDirectSoloSyntax(document);
+                    ValidateBitcoinBip54CoinbaseSyntax(document);
                     if(skipApiListenerSettings)
                     {
                         // Recovery configuration policy:
@@ -1368,7 +1525,7 @@ public class Program : ProcessStatusBackgroundService
                     using(var documentReader = document.CreateReader())
                     using(var validatingReader = new JSchemaValidatingReader(documentReader)
                     {
-                        Schema =  LoadSchema()
+                        Schema = LoadSchema(quiet)
                     })
                     {
                         return serializer.Deserialize<ClusterConfig>(
@@ -1378,22 +1535,22 @@ public class Program : ProcessStatusBackgroundService
             }
         }
 
-        catch(JSchemaValidationException ex)
+        catch(JSchemaValidationException ex) when(!quiet)
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }
 
-        catch(JsonSerializationException ex)
+        catch(JsonSerializationException ex) when(!quiet)
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }
 
-        catch(JsonException ex)
+        catch(JsonException ex) when(!quiet)
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }
 
-        catch(IOException ex)
+        catch(IOException ex) when(!quiet)
         {
             throw new PoolStartupException($"Configuration file error: {ex.Message}");
         }
@@ -1439,6 +1596,90 @@ public class Program : ProcessStatusBackgroundService
         current.Ancestors().OfType<JProperty>().Any(property =>
             property.Name.Equals("payoutSchemeConfig",
                 StringComparison.OrdinalIgnoreCase));
+
+    internal static void ValidateBitcoinDirectSoloSyntax(JObject document)
+    {
+        foreach(var pool in document?["pools"]?.Children<JObject>() ??
+                    Enumerable.Empty<JObject>())
+        {
+            var property = pool.Properties().FirstOrDefault(candidate =>
+                candidate.Name.Equals("soloCoinbasePayout",
+                    StringComparison.OrdinalIgnoreCase));
+            if(property == null)
+                continue;
+
+            if(!string.Equals(property.Name, "soloCoinbasePayout",
+                   StringComparison.Ordinal))
+                throw new JsonSerializationException(
+                    $"Property '{property.Name}' must use canonical casing 'soloCoinbasePayout'." +
+                    GetJsonLocationSuffix(property as IJsonLineInfo,
+                        property.Path));
+            if(property.Value.Type != JTokenType.Boolean)
+                throw new JsonSerializationException(
+                    "Property 'soloCoinbasePayout' must be a JSON Boolean." +
+                    GetJsonLocationSuffix(property.Value as IJsonLineInfo,
+                        property.Path));
+        }
+    }
+
+    internal static void ValidateBitcoinBip54CoinbaseSyntax(JObject document)
+    {
+        foreach(var pool in document?["pools"]?.Children<JObject>() ??
+                    Enumerable.Empty<JObject>())
+        {
+            var property = pool.Properties().FirstOrDefault(candidate =>
+                candidate.Name.Equals("bip54Coinbase",
+                    StringComparison.OrdinalIgnoreCase));
+            if(property == null)
+                continue;
+
+            if(!string.Equals(property.Name, "bip54Coinbase",
+                   StringComparison.Ordinal))
+                throw new JsonSerializationException(
+                    $"Property '{property.Name}' must use canonical casing 'bip54Coinbase'." +
+                    GetJsonLocationSuffix(property as IJsonLineInfo,
+                        property.Path));
+            if(property.Value.Type != JTokenType.Boolean)
+                throw new JsonSerializationException(
+                    "Property 'bip54Coinbase' must be a JSON Boolean." +
+                    GetJsonLocationSuffix(property.Value as IJsonLineInfo,
+                        property.Path));
+            var coinToken = pool["coin"];
+            if(coinToken?.Type != JTokenType.String ||
+               !string.Equals(coinToken.Value<string>(), "bitcoin",
+                   StringComparison.Ordinal))
+                throw new JsonSerializationException(
+                    "Property 'bip54Coinbase' requires property 'coin' to be the exact JSON string 'bitcoin'." +
+                    GetJsonLocationSuffix(property as IJsonLineInfo,
+                        property.Path));
+        }
+    }
+
+    internal static void ValidateBitcoinBip54CoinbaseDeployment(
+        ClusterConfig config, bool requireAssignedTemplates = false)
+    {
+        var configuredPools = config?.Pools?.Where(pool => pool.Enabled &&
+            pool.Extra?.ContainsKey("bip54Coinbase") == true).ToArray() ??
+            Array.Empty<PoolConfig>();
+
+        foreach(var pool in configuredPools)
+        {
+            if(pool.Template == null)
+            {
+                if(requireAssignedTemplates)
+                    throw new PoolStartupException(
+                        $"Pool '{pool.Id}' configures bip54Coinbase but its coin template was not assigned before the runtime identity was checked",
+                        pool.Id);
+
+                continue;
+            }
+
+            if(!BitcoinJob.IsCanonicalBitcoin(pool, pool.Template))
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' configures bip54Coinbase, which requires the canonical BTC runtime template",
+                    pool.Id);
+        }
+    }
 
     private static string GetJsonLocationSuffix(IJsonLineInfo source,
         string path = null)
@@ -1648,14 +1889,25 @@ public class Program : ProcessStatusBackgroundService
             property.Remove();
     }
 
-    private static JSchema LoadSchema()
+    private sealed class ConfigurationSchemaException(Exception innerException)
+        : Exception("Unable to load the bundled configuration schema.", innerException);
+
+    private static JSchema LoadSchema(bool quiet)
     {
         var basePath = Path.GetDirectoryName(Assembly.GetEntryAssembly().Location);
         var path = Path.Combine(basePath, "config.schema.json");
 
-        using(var reader = new JsonTextReader(new StreamReader(File.OpenRead(path))))
+        try
         {
+            using var reader = new JsonTextReader(new StreamReader(File.OpenRead(path)));
             return JSchema.Load(reader);
+        }
+        catch(Exception ex) when(quiet && ex is IOException or UnauthorizedAccessException or JsonException or JSchemaException)
+        {
+            // These failures belong to the installation, not the user's file.
+            // Preserve ordinary/recovery exceptions; diagnostics classify this
+            // private wrapper as internal without exposing its cause or path.
+            throw new ConfigurationSchemaException(ex);
         }
     }
 
@@ -1680,22 +1932,28 @@ public class Program : ProcessStatusBackgroundService
  ██║ ╚═╝ ██║██║██║ ╚████║██║██║ ╚████║╚██████╔╝╚██████╗╚██████╔╝██║  ██║███████╗
 ");
         Console.WriteLine(" https://github.com/NINJAK1DD/miningcore\n");
-        Console.WriteLine(" Upstream Miningcore donation addresses:\n");
-        Console.WriteLine(" ETH   - 0xbC059e88A4dD11c2E882Fc6B83F8Ec12E4CCCFad");
-        Console.WriteLine(" BTC   - 16xvkGfG9nrJSKKo5nGWphP8w4hr2ZzVuw");
-        Console.WriteLine(" LTC   - LLs76baYT7iMqQhizxtBC96Cy48iX3Eh1p");
-        Console.WriteLine(" DOGE  - DFuvDSFh4N3SiXGDnye2Vbc8kqvMHbyQE1");
-        Console.WriteLine(" KAS   - kaspa:qpmf0wyu7c5z4l82ax9cfc5ughwk2f9lgu8uckkqrrpjqkxuk7yrga5nntvgn");
-        Console.WriteLine(" CCX   - ccx7S4B3gBeH1SGWCfqZp3NM7Vavg7H3S8ovJn8fU4bwC4vU7ChWfHtbNzifhrpbJ74bMDxj4KZFTcznTfsucCEg1Kgv7zbNgs");
-        Console.WriteLine(" FIRO  - a5AsoTSkfPHQ3SUmR6binG1XW7oQQoFNU1");
-        Console.WriteLine(" ERGO  - 9gYyuZzaSw3TiCtUkSRuS3XVDUv41EFs3dtNCFGqiEwHqpb7gkF");
-        Console.WriteLine(" WART  - 7795fc0fe93e7e4e232a212f00bdc8885c580a5666d39a0d");
-        Console.WriteLine(" XMR   - 483zaHtMRfM7rw1dXgebhWaRR8QLgAF6w4BomAV319FVVHfdbYTLVuBRc4pQgRAnRpfy6CXvvwngK4Lo3mRKE29RRx3Jb5c");
-        Console.WriteLine(" XEL   - xel:ajnsfv065qusndt0hfsngecrnf5690drmqmc0uq0etlx8zjlcyzqq2slgvt");
-        Console.WriteLine(" CTXC  - 0xbb60200d5151a4a0f9a75014e04cf61a0a9f0daf");
-        Console.WriteLine(" ZANO  - ZxDKT1aqiEXPA5cDADtYEfMR1oXsRd68bby4nzUvVmnjHzzrfvjwhNdQ9yiWNeGutzg9LZdwsbP2FGB1gNpZXiYY1fCfpw33c");
-        Console.WriteLine(" SCASH - scash1qe6dhv8kncz08jtqukyps4l2n83z2umewanlmas");
+        Console.WriteLine(FormatDonationAddresses());
         Console.WriteLine();
+    }
+
+    internal static string FormatDonationAddresses()
+    {
+        var result = new StringBuilder();
+
+        result.AppendLine(
+            " Donations to support development and maintenance of this NINJAK1DD Miningcore fork:");
+        result.AppendLine();
+
+        for(var i = 0; i < DonationAddresses.Length; i++)
+        {
+            var (symbol, address) = DonationAddresses[i];
+            result.Append($" {symbol,-4} - {address}");
+
+            if(i < DonationAddresses.Length - 1)
+                result.AppendLine();
+        }
+
+        return result.ToString();
     }
 
     private static void ConfigureLogging()
@@ -1869,12 +2127,20 @@ public class Program : ProcessStatusBackgroundService
         if(isShareRecoveryMode)
             return;
 
-        if(RequiresMergedMiningPersistence(clusterConfig))
+        if(RequiresSynchronousBlockCandidatePersistence(clusterConfig))
         {
             await EnsureMergedMiningSchemaAsync(clusterConfig,
                 services.GetService<IConnectionFactory>(),
                 services.GetService<IBlockRepository>(), CancellationToken.None);
         }
+
+        await EnsureShareAccountingSchemaAsync(clusterConfig,
+            services.GetService<IConnectionFactory>(),
+            services.GetService<IShareRepository>(), CancellationToken.None);
+
+        await EnsureBitcoinDirectSoloSchemaAsync(clusterConfig,
+            services.GetService<IConnectionFactory>(),
+            services.GetService<IBlockRepository>(), CancellationToken.None);
 
         ZcashNetworks.Instance.EnsureRegistered();
 
@@ -1968,7 +2234,7 @@ public class Program : ProcessStatusBackgroundService
     {
         ArgumentNullException.ThrowIfNull(config);
         return recoveryMode || config.ShareRelay == null ||
-            RequiresMergedMiningPersistence(config);
+            RequiresSynchronousBlockCandidatePersistence(config);
     }
 
     internal static async Task EnsureSharePartitionsAsync(bool recoveryMode,
@@ -2075,6 +2341,260 @@ public class Program : ProcessStatusBackgroundService
         return mergedMiningEnabled;
     }
 
+    internal static bool RequiresSynchronousBlockCandidatePersistence(
+        ClusterConfig config) => RequiresMergedMiningPersistence(config) ||
+        RequiresBitcoinDirectSoloPersistence(config) ||
+        config?.Pools?.Any(pool => pool.Enabled &&
+            pool.PaymentProcessing?.Enabled == true &&
+            pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS) == true;
+
+    internal static bool RequiresShareAccountingPersistence(ClusterConfig config)
+    {
+        if(config?.Pools?.Any(pool => pool.Enabled &&
+               pool.PaymentProcessing?.Enabled == true &&
+               pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS) == true)
+            return true;
+
+        if(config?.ShareRelay != null)
+            return false;
+
+        return config.Pools?.Any(pool => pool.Enabled &&
+            (MergedMiningUsesPooledAccounting(config, pool) ||
+             pool.PaymentProcessing?.Enabled == true &&
+             pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS)) == true;
+    }
+
+    private static bool MergedMiningUsesPooledAccounting(ClusterConfig config,
+        PoolConfig parent)
+    {
+        var merged = MergedMiningConfigLoader.GetNormalizedConfig(parent);
+        if(merged?.Enabled != true)
+            return false;
+
+        var auxiliary = config.Pools?.FirstOrDefault(pool =>
+            string.Equals(pool.Id, merged.AuxPoolId,
+                StringComparison.OrdinalIgnoreCase));
+
+        return parent.PaymentProcessing?.PayoutScheme != PayoutScheme.SOLO ||
+            auxiliary?.PaymentProcessing?.PayoutScheme != PayoutScheme.SOLO;
+    }
+
+    internal static void ValidatePpsDeployment(ClusterConfig config,
+        bool requireAssignedTemplates = false)
+    {
+        var ppsPools = config?.Pools?.Where(pool => pool.Enabled &&
+            pool.PaymentProcessing?.PayoutScheme == PayoutScheme.PPS).ToArray() ??
+            Array.Empty<PoolConfig>();
+
+        var paymentDisabledPool = ppsPools.FirstOrDefault(pool =>
+            pool.PaymentProcessing.Enabled != true);
+        if(paymentDisabledPool != null)
+            throw new PoolStartupException(
+                $"Pool '{paymentDisabledPool.Id}' uses PPS and must enable pool-level payment " +
+                "processing before it can accept shares",
+                paymentDisabledPool.Id);
+
+        if(ppsPools.Length > 0 && config.PaymentProcessing?.Enabled != true)
+            throw new PoolStartupException(
+                "PPS requires cluster-level payment processing so committed liabilities are paid " +
+                "and share-accounting retention is maintained.");
+
+        foreach(var pool in ppsPools)
+        {
+            if(pool.Template == null)
+            {
+                if(requireAssignedTemplates)
+                    throw new PoolStartupException(
+                        $"Pool '{pool.Id}' uses PPS but its coin template was not assigned " +
+                        "before the PPS runtime contract was checked",
+                        pool.Id);
+            }
+            else if(pool.Template.Family is not (CoinFamily.Bitcoin or
+                    CoinFamily.BitcoinBlake2b))
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' uses PPS, which is currently supported only by the " +
+                    "audited Bitcoin-family share and reward contract",
+                    pool.Id);
+
+            var recipients = pool.RewardRecipients ?? Array.Empty<RewardRecipient>();
+            if(recipients.Any(x => x == null || x.Percentage < 0))
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' uses PPS but contains a null or negative reward-recipient percentage",
+                    pool.Id);
+
+            decimal recipientPercent;
+            try
+            {
+                recipientPercent = recipients.Where(x => x.Percentage > 0)
+                    .Sum(x => x.Percentage);
+            }
+            catch(OverflowException ex)
+            {
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' uses PPS but its reward-recipient percentages exceed the supported accounting range",
+                    pool.Id, ex);
+            }
+
+            if(recipientPercent >= 100)
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' uses PPS but reward recipients leave no positive operator-funded reward basis",
+                    pool.Id);
+        }
+
+        if(ppsPools.Length > 0 && config.Persistence?.Postgres == null)
+            throw new PoolStartupException(
+                "Every PPS accepting node requires PostgreSQL so accepted block candidates persist synchronously and the share receipt, liability ledger, precision remainder and miner balance commit atomically.");
+    }
+
+    internal static bool RequiresBitcoinDirectSoloPersistence(
+        ClusterConfig config) => config?.Pools?
+        .Where(pool => pool.Enabled)
+        .Any(pool =>
+        {
+            pool.Extra.TryExtensionDataAs(out BitcoinPoolConfigExtra extra,
+                out var bindingError);
+            return BitcoinPoolConfigPolicy.ResolveSoloCoinbasePayout(pool,
+                extra, bindingError);
+        }) == true;
+
+    internal static void ValidateBitcoinDirectSoloDeployment(
+        ClusterConfig config, bool requireAssignedTemplates = false)
+    {
+        var directPools = (config?.Pools ?? Array.Empty<PoolConfig>())
+            .Where(pool => pool.Enabled)
+            .Select(pool =>
+            {
+                pool.Extra.TryExtensionDataAs(
+                    out BitcoinPoolConfigExtra extra,
+                    out var bindingError);
+                return new
+                {
+                    Pool = pool,
+                    Mode = BitcoinPoolConfigPolicy
+                        .ResolveSoloCoinbasePayoutMode(pool, extra,
+                            bindingError),
+                };
+            })
+            .Where(item => item.Mode !=
+                BitcoinDirectSoloPayoutMode.Disabled)
+            .ToArray();
+        if(directPools.Length == 0)
+            return;
+
+        var implicitDefaultHint = directPools.Any(item => item.Mode ==
+            BitcoinDirectSoloPayoutMode.Implicit)
+            ? " One or more canonical Bitcoin SOLO pools defaulted to " +
+              "direct settlement in v0.3.0 because soloCoinbasePayout " +
+              "was omitted; set soloCoinbasePayout to false on those " +
+              "pools to retain custodial settlement."
+            : string.Empty;
+
+        if(config.Persistence?.Postgres == null)
+            throw new PoolStartupException(
+                "Bitcoin direct SOLO coinbase payout requires PostgreSQL " +
+                "for synchronous accepted-block audit persistence." +
+                implicitDefaultHint);
+        if(config.PaymentProcessing?.Enabled != true)
+            throw new PoolStartupException(
+                "Bitcoin direct SOLO coinbase payout requires cluster-level " +
+                "payment processing for maturity, reorg and notification tracking." +
+                implicitDefaultHint);
+        if(config.ShareRelay != null || config.ShareRelays?.Length > 0)
+            throw new PoolStartupException(
+                "Bitcoin direct SOLO coinbase payout does not support " +
+                "share-relay sender, receiver or recorder topologies in its " +
+                "initial BTC-only contract." +
+                implicitDefaultHint);
+
+        foreach(var directPool in directPools)
+        {
+            var pool = directPool.Pool;
+            var implicitPoolHint = directPool.Mode ==
+                BitcoinDirectSoloPayoutMode.Implicit
+                ? " This pool defaulted to direct settlement in v0.3.0 " +
+                  "because soloCoinbasePayout was omitted; set " +
+                  "soloCoinbasePayout to false to retain custodial " +
+                  "settlement."
+                : string.Empty;
+
+            if(!string.Equals(pool.Coin, "bitcoin",
+                   StringComparison.Ordinal))
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' enables direct SOLO coinbase payout, " +
+                    "which is supported only by the canonical 'bitcoin' template" +
+                    implicitPoolHint,
+                    pool.Id);
+            if(pool.EnableInternalStratum != true)
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct SOLO coinbase payout requires the internal Stratum server" +
+                    implicitPoolHint,
+                    pool.Id);
+            if(pool.PaymentProcessing?.Enabled != true ||
+               pool.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO)
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct coinbase payout requires enabled " +
+                    "pool-level payment processing with payoutScheme 'SOLO'" +
+                    implicitPoolHint,
+                    pool.Id);
+            if(MergedMiningConfigLoader.GetNormalizedConfig(pool)?.Enabled ==
+               true)
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct SOLO coinbase payout does not support merged-mining topology" +
+                    implicitPoolHint,
+                    pool.Id);
+
+            if(pool.Template == null)
+            {
+                if(requireAssignedTemplates)
+                    throw new PoolStartupException(
+                        $"Pool '{pool.Id}' direct SOLO coinbase payout template " +
+                        "was not assigned before its runtime contract was checked" +
+                        implicitPoolHint,
+                        pool.Id);
+            }
+            else if(pool.Template.Family != CoinFamily.Bitcoin ||
+                    !string.Equals(pool.Template.Symbol, "BTC",
+                        StringComparison.Ordinal) ||
+                    !string.Equals(pool.Template.CanonicalName, "Bitcoin",
+                        StringComparison.Ordinal))
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct SOLO coinbase payout requires the canonical BTC runtime template" +
+                    implicitPoolHint,
+                    pool.Id);
+
+            var recipients = pool.RewardRecipients ??
+                Array.Empty<RewardRecipient>();
+            if(recipients.Any(x => x == null || x.Percentage < 0 ||
+                    x.Percentage > 0 &&
+                    string.IsNullOrWhiteSpace(x.Address)))
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct SOLO coinbase payout contains a " +
+                    "null, negative or addressless positive reward recipient" +
+                    implicitPoolHint,
+                    pool.Id);
+
+            decimal total;
+            try
+            {
+                total = recipients.Where(x => x.Percentage > 0)
+                    .Sum(x => x.Percentage);
+            }
+            catch(OverflowException ex)
+            {
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct SOLO recipient percentages exceed the supported range" +
+                    implicitPoolHint,
+                    pool.Id, ex);
+            }
+
+            if(total >= 100m)
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}' direct SOLO recipient percentages must total less than 100%" +
+                    implicitPoolHint,
+                    pool.Id);
+        }
+    }
+
     internal static bool ShouldRunPaymentProcessor(ClusterConfig config)
     {
         var paymentEnabled = config?.PaymentProcessing?.Enabled == true &&
@@ -2103,7 +2623,7 @@ public class Program : ProcessStatusBackgroundService
     internal static async Task EnsureMergedMiningSchemaAsync(ClusterConfig config,
         IConnectionFactory cf, IBlockRepository blockRepo, CancellationToken ct)
     {
-        if(!RequiresMergedMiningPersistence(config))
+        if(!RequiresSynchronousBlockCandidatePersistence(config))
             return;
 
         var schemaReady = await cf.Run(con =>
@@ -2111,7 +2631,41 @@ public class Program : ProcessStatusBackgroundService
 
         if(!schemaReady)
             throw new PoolStartupException(
-                "Merged mining requires the AuxPoW block idempotency migration. Apply add_auxpow_block_idempotency.sql before enabling Litecoin-Dogecoin merged mining.");
+                "Synchronous merged-mining and direct-PPS block persistence requires the block idempotency migration. Apply add_auxpow_block_idempotency.sql before enabling Litecoin-Dogecoin merged mining or direct Bitcoin-family PPS.");
+    }
+
+    internal static async Task EnsureShareAccountingSchemaAsync(ClusterConfig config,
+        IConnectionFactory cf, IShareRepository shareRepo, CancellationToken ct)
+    {
+        if(!RequiresShareAccountingPersistence(config))
+            return;
+
+        if(config.Persistence?.Postgres == null || cf == null || shareRepo == null)
+            throw new PoolStartupException(
+                "PPS and merged-mining pooled payouts require PostgreSQL share-accounting persistence.");
+
+        var schemaReady = await cf.Run(con =>
+            shareRepo.HasShareAccountingSchemaAsync(con, ct));
+        if(!schemaReady)
+            throw new PoolStartupException(
+                "PPS and merged-mining pooled payouts require the transactional share-accounting schema. Apply add_share_accounting.sql before enabling them.");
+    }
+
+    internal static async Task EnsureBitcoinDirectSoloSchemaAsync(
+        ClusterConfig config, IConnectionFactory cf,
+        IBlockRepository blockRepo, CancellationToken ct)
+    {
+        if(!RequiresBitcoinDirectSoloPersistence(config))
+            return;
+        if(cf == null || blockRepo == null)
+            throw new PoolStartupException(
+                "Bitcoin direct SOLO coinbase payout requires PostgreSQL block persistence.");
+
+        var ready = await cf.Run(con =>
+            blockRepo.HasBitcoinDirectSoloSchemaAsync(con, ct));
+        if(!ready)
+            throw new PoolStartupException(
+                "Bitcoin direct SOLO coinbase payout requires the direct-settlement block schema. Apply add_bitcoin_direct_solo.sql before starting canonical Bitcoin SOLO, or explicitly set soloCoinbasePayout to false to retain custodial settlement.");
     }
 
     private static async Task<string> GetPostgresColumnType(IConnectionFactory cf, string table, string column)
@@ -2136,42 +2690,13 @@ public class Program : ProcessStatusBackgroundService
 
     private static void ConfigurePostgres(PostgresConfig pgConfig, ContainerBuilder builder)
     {
-        // validate config
-        if(string.IsNullOrEmpty(pgConfig.Host))
-            throw new PoolStartupException("Postgres configuration: invalid or missing 'host'");
-
-        if(pgConfig.Port == 0)
-            throw new PoolStartupException("Postgres configuration: invalid or missing 'port'");
-
-        if(string.IsNullOrEmpty(pgConfig.Database))
-            throw new PoolStartupException("Postgres configuration: invalid or missing 'database'");
-
-        if(string.IsNullOrEmpty(pgConfig.User))
-            throw new PoolStartupException("Postgres configuration: invalid or missing 'user'");
-
-        // build connection string
-        var connectionString = new StringBuilder($"Server={pgConfig.Host};Port={pgConfig.Port};Database={pgConfig.Database};User Id={pgConfig.User};Password={pgConfig.Password};");
-
-        if(pgConfig.Tls)
-        {
-            connectionString.Append("SSL Mode=Require;");
-
-            if(pgConfig.TlsNoValidate)
-                connectionString.Append("Trust Server Certificate=true;");
-
-            if(!string.IsNullOrEmpty(pgConfig.TlsCert?.Trim()))
-                connectionString.Append($"SSL Certificate={pgConfig.TlsCert.Trim()};");
-
-            if(!string.IsNullOrEmpty(pgConfig.TlsKey?.Trim()))
-                connectionString.Append($"SSL Key={pgConfig.TlsKey.Trim()};");
-
-            if(!string.IsNullOrEmpty(pgConfig.TlsPassword))
-                connectionString.Append($"SSL Password={pgConfig.TlsPassword};");
-        }
-
-        connectionString.Append($"CommandTimeout={pgConfig.CommandTimeout ?? 300};");
-
-        logger.Debug(()=> $"Using postgres connection string: {connectionString}");
+        var connectionString = PostgresConnectionPolicy.Build(pgConfig, out var diagnostic);
+        logger.Debug(() => "Using PostgreSQL persistence " +
+            PostgresConnectionPolicy.Diagnostic(diagnostic));
+        if(PostgresConnectionPolicy.UsesAmbientTrust(diagnostic))
+            logger.Warn("PostgreSQL certificate verification has no root path in the connection string; " +
+                "Npgsql may use environment, default certificate files or system trust. " +
+                "Check the service account's trust configuration.");
 
         // register connection factory
         builder.RegisterInstance(new PgConnectionFactory(connectionString.ToString()))

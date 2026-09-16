@@ -1,27 +1,30 @@
 ﻿{
+    // Starter configuration: replace every CHANGE_ME value and review it before use.
+    // See README.md and ../config.example.json for topology and field guidance.
     "logging": {
         "level": "info",
         "enableConsoleLog": true,
         "enableConsoleColors": true,
-        "logFile": "",
-        "apiLogFile": "",
-        "logBaseDirectory": "",
+        "logFile": "miningcore.log",
+        "apiLogFile": "miningcore-api.log",
+        "logBaseDirectory": "logs",
         "perPoolLogFile": false
     },
     "banning": {
         "manager": "Integrated",
         "banOnJunkReceive": true,
-        "banOnInvalidShares": false
+        "banOnInvalidShares": true,
+        "banOnLoginFailure": true
     },
     "notifications": {
         "enabled": false,
         "email": {
             "host": "smtp.example.com",
             "port": 587,
-            "user": "user",
-            "password": "password",
-            "fromAddress": "info@yourpool.org",
-            "fromName": "support"
+            "user": "CHANGE_ME_SMTP_USER",
+            "password": "CHANGE_ME_SMTP_PASSWORD",
+            "fromAddress": "pool@example.com",
+            "fromName": "Miningcore operator"
         },
         "admin": {
             "enabled": false,
@@ -34,32 +37,27 @@
             "host": "127.0.0.1",
             "port": 5432,
             "user": "miningcore",
-            "password": "password",
+            "password": "CHANGE_ME_POSTGRES_PASSWORD",
             "database": "miningcore"
         }
     },
     "paymentProcessing": {
         "enabled": true,
         "interval": 600,
-        "shareRecoveryFile": "recovered-shares.txt"
+        "coinbaseString": "Miningcore"
     },
+    "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
     "api": {
         "enabled": true,
-        "listenAddress": "*",
+        "listenAddress": "127.0.0.1",
         "port": 4000,
-        "metricsIpWhitelist": [],
+        "adminPort": 4001,
+        "metricsPort": 4002,
+        "adminIpWhitelist": [ "127.0.0.1" ],
+        "metricsIpWhitelist": [ "127.0.0.1" ],
+        "legacyNullValueHandling": false,
         "rateLimiting": {
-            "disabled": true,
-            "rules": [
-                {
-                    "Endpoint": "*",
-                    "Period": "1s",
-                    "Limit": 5
-                }
-            ],
-            "ipWhitelist": [
-                ""
-            ]
+            "disabled": true
         }
     },
     "pools": [{
@@ -67,15 +65,19 @@
         "enabled": true,
         "coin": "beam",
         "maxActiveJobs": 4,
-        "address": "28c65edf7a9907ad28ca628087dea7f8e228ab6cb15009cebf9114a945605daefd0",
+        "address": "CHANGE_ME_BEAM_POOL_WALLET_ADDRESS",
         "rewardRecipients": [
             {
                 "type": "op",
-                "address": "28c65edf7a9907ad28ca628087dea7f8e228ab6cb15009cebf9114a945605daefd0",
-                "percentage": 1.5
+                "address": "CHANGE_ME_BEAM_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
+                "percentage": 0
             }
         ],
+        "enableInternalStratum": true,
+        "blockRefreshInterval": 0,
+        "jobRebroadcastTimeout": 0,
         "clientConnectionTimeout": 600,
+        "vardiffIdleSweepInterval": 30,
         "banning": {
             "enabled": true,
             "time": 600,
@@ -84,40 +86,42 @@
         },
         "ports": {
             "3092": {
-                "listenAddress": "0.0.0.0",
+                "name": "BEAM-LOW-DIFF",
+                "listenAddress": "*",
                 "difficulty": 200,
                 "varDiff": {
-                    "minDiff": 200,
+                    "minDiff": 100,
                     "maxDiff": null,
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30,
-                    "maxDelta": 500
+                    "maxDelta": 200
                 }
             },
             "3093": {
-                "listenAddress": "0.0.0.0",
-                "difficulty": 700,
-                "tls": true,
-                "tlsPfxFile": "<Your directory for the pfx file>",
-                "tlsPfxPassword": "password",
+                "name": "BEAM-HIGH-DIFF",
+                "listenAddress": "*",
+                "difficulty": 12800,
+                "tls": false,
+                // To enable TLS, add tlsPfxFile and tlsPfxPassword with a readable PFX.
                 "varDiff": {
-                    "minDiff": 200,
+                    "minDiff": 6400,
                     "maxDiff": null,
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30,
-                    "maxDelta": 500
+                    "maxDelta": 12800
                 }
             }
         },
         "daemons": [
             {
                 "host": "127.0.0.1",
-                "port": <stratum_port>,
+                // Must match beam-node's configured stratum_port.
+                "port": 10005,
                 "user": null,
                 "password": null,
-                "apiKey": "<Miner registration key <api_key>"
+                "apiKey": "CHANGE_ME_BEAM_NODE_API_KEY"
             },
             {
                 "host": "127.0.0.1",
