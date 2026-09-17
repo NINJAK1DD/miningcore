@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using Miningcore.Blockchain;
 using Miningcore.Notifications;
 using Miningcore.Notifications.Messages;
@@ -52,8 +53,7 @@ public sealed class CandidatePersistenceFailureHandler :
 
         var candidateDetails = string.Join("; ", candidates.Select(candidate =>
             $"pool={candidate.PoolId}, miner={candidate.Miner}, height={candidate.BlockHeight}, " +
-            $"hash={candidate.BlockHash ?? "(none)"}, type={candidate.BlockType ?? "(none)"}, " +
-            $"marker={candidate.TransactionConfirmationData ?? "(none)"}"));
+            $"type={candidate.BlockType ?? "(none)"}, hash={RpcConsumerDiagnostics.BlockHash(candidate.BlockHash)}"));
         var durability = journalSucceeded
             ? "The candidate was written to the recovery journal, but the unexpected database failure makes the live persistence pipeline unsafe."
             : "Neither PostgreSQL nor the recovery journal durably stored the candidate.";
@@ -61,17 +61,15 @@ public sealed class CandidatePersistenceFailureHandler :
             new IOException("Unknown candidate-persistence failure");
 
         if(databaseError != null)
-            logger.Fatal(databaseError,
-                "PostgreSQL failed while persisting a block candidate");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "CandidatePersistenceFailureHandler.StopClusterAsync", failure: databaseError);
 
         if(journalError != null)
-            logger.Fatal(journalError,
-                "The recovery journal failed while persisting a block candidate");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "CandidatePersistenceFailureHandler.StopClusterAsync", failure: journalError);
 
-        logger.Fatal(failure,
-            "Stopping cluster after financially significant block-candidate persistence failure. {0} Candidates: {1}. Database error: {2}. Journal error: {3}",
-            durability, candidateDetails, databaseError?.Message ?? "(none)",
-            journalError?.Message ?? "(none)");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "CandidatePersistenceFailureHandler.StopClusterAsync", failure: failure);
+
+        logger.Fatal("Stopping cluster with exit status {0} after block-candidate persistence failure. {1} Candidate count: {2}. Preserve PostgreSQL and recovery evidence.",
+            exitCode, durability, candidates.Count);
 
         if(!journalSucceeded)
         {
@@ -82,9 +80,7 @@ public sealed class CandidatePersistenceFailureHandler :
             }
             catch(Exception ex)
             {
-                logger.Fatal(ex,
-                    "Unable to persist block-candidate fatal-state marker {0}; exit status {1} remains active",
-                    fatalState.FatalStateFilename, exitCode);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "CandidatePersistenceFailureHandler.StopClusterAsync", failure: ex);
             }
         }
 
@@ -118,9 +114,7 @@ public sealed class CandidatePersistenceFailureHandler :
         }
         catch(Exception ex)
         {
-            logger.Error(ex,
-                "Critical block-candidate notification was not delivered within {0}; shutdown will continue",
-                CriticalNotificationTimeout);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "CandidatePersistenceFailureHandler.StopClusterAsync", failure: ex);
         }
     }
 

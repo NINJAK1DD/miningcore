@@ -1,15 +1,21 @@
 # Installing a prebuilt Miningcore release
 
-GitHub Releases provide a tested, framework-dependent build for **Ubuntu 22.04 x64** and a container
-image built from that same archive. The archive saves compilation time, but it still requires the
-.NET 10 ASP.NET Core runtime and Miningcore's native runtime libraries. Windows and other Linux
-distributions are not represented as binary-compatible by this package; use the source-build guide
-in the root README for those environments.
+GitHub Releases provide two tested, framework-dependent Linux x64 builds: a primary **Ubuntu 26.04**
+archive and a separately compiled **Ubuntu 22.04 compatibility** archive. The release container is
+built from the Ubuntu 26.04 archive. Each archive saves compilation time, but still requires the
+.NET 10 ASP.NET Core runtime and Miningcore's native runtime libraries.
 
-Ubuntu 26.04 LTS x64 is supported as a source-build target through `build-ubuntu-26.04.sh`. That
-script uses Canonical's native .NET 10 packages and does not add Microsoft's APT feed or the Ubuntu
-22.04 `dotnet/backports` PPA. This does not extend the Ubuntu 22.04 prebuilt archive's tested binary
-target to Ubuntu 26.04.
+Use only the archive matching the host release. Native libraries built on Ubuntu 26.04 can require
+a newer glibc and are not represented as compatible with Ubuntu 22.04 or 24.04. Ubuntu 24.04 remains
+a tested source-build target through `build-ubuntu-24.04.sh`. Windows and other Linux distributions
+are likewise not represented as binary-compatible by these archives; use the source-build guide in
+the root README for those environments.
+
+| Ubuntu host | Supported deployment path |
+| --- | --- |
+| 26.04 LTS x64 | Primary release archive, primary container, or source build |
+| 24.04 LTS x64 | Tested source build; do not use either prebuilt archive |
+| 22.04 LTS x64 | Compatibility release archive or source build |
 
 > **Runtime requirement:** install a supported, serviced .NET 10 ASP.NET Core runtime from the
 > documented Ubuntu package source and keep it updated with normal security maintenance.
@@ -21,64 +27,884 @@ If this replaces an existing .NET 6 deployment, first follow the dedicated
 [.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). Do not treat the clean-install
 commands below as an instruction to overwrite a live configuration or database.
 
-New installations can continue at [Choose a version](#choose-a-version). Existing operators should
-first read [Logging and disk recovery](#logging-and-disk-recovery) and
-[Payout and WebSocket compatibility](#payout-and-websocket-compatibility) for behavior changes that
-may require monitoring, migration or front-end work.
+Use this guide by task:
+
+| Task | Start here |
+| --- | --- |
+| New installation | [Choose a version](#choose-a-version) |
+| Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
+| Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
+| Install or upgrade to v0.3.0 | [v0.3.0 highlights](#v030-highlights) |
+| Existing v0.1.0 operator | [v0.2.0 highlights](#v020-highlights) |
+| v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |
+| Enable Bitcoin-family PPS | [PPS operator guide](pps.md) |
+| Prepare an existing database for default Bitcoin direct-coinbase SOLO | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
+| Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
+| Review or rotate credentials exposed by earlier debug logs | [PostgreSQL credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics) |
+| Review historical RPC Trace/WebSocket Debug exposure | [Credential-safe RPC diagnostics](#unreleased-credential-safe-rpc-transport-diagnostics) |
+| Review historical full configuration dumps and the null-output bug | [Credential-safe configuration dumps](#unreleased-credential-safe-configuration-dumps) |
+| Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
+| Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
+
+For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
+copying a recovery command from the maintainer section.
+
+## Unreleased: Bitcoin-family verified job gate
+
+[#141](https://github.com/NINJAK1DD/miningcore/issues/141) prevents a forced
+rebroadcast from publishing a null job while the first Litecoin–Dogecoin merged
+template is still unavailable. Parent RPC failures, missing initial auxiliary
+templates and caught refresh exceptions now preserve the force signal only after
+a verified job exists. Stratum listeners remain inactive through initial failure
+and start after recovery publishes the first usable combined job. Existing jobs
+still rebroadcast during transient parent failures, and cached Dogecoin fallback
+retains its existing degraded-state reporting.
+
+The shared Bitcoin-family job pipeline now enforces the same verified-job gate as
+defence in depth for Bitcoin, Equihash, Handshake, Nexa, ProgPoW and Satoshicash
+pools. A fixed warning reports the waiting state once per pool start, and shutdown
+cancellation cannot race a final forced publication.
+
+Error-free RPC envelopes with no template payload are now handled as unavailable
+at warning level across these managers instead of reaching job construction and
+producing an error-level exception.
+
+## Unreleased: independent Bitcoin-family job notifications
+
+Bitcoin-family `mining.notify` messages now retain the `clean_jobs` flag supplied
+for each notification, even when another call occurs before queued work is
+serialized. Returned outer and Merkle-branch arrays are independent, so caller
+mutation cannot corrupt another notification or the cached job. Field order,
+wire values, coinbase construction and cached immutable strings are preserved.
+This covers custodial Bitcoin-family, direct Bitcoin SOLO, merged-mining and
+Satoshicash jobs that use `BitcoinJob.GetJobParams`. See the
+[caller audit and regression contract](bitcoin-job-notifications.md) for issue #153.
+
+The review follow-up extends snapshot ownership to Equihash/Veruscoin, Xelis,
+Warthog, Ergo and ProgPoW. ProgPoW now uses virtual dispatch for its typed
+notification and captures each broadcast's flag before miner fan-out. Existing
+wire layouts, including Veruscoin's trailing solution, are preserved. The generic
+Bitcoin copier handles string arrays by type, and deterministic parallel and real
+send-queue regressions cover the ownership boundary.
+
+Difficulty-only updates in all affected pools explicitly preserve existing work
+without reading a previous broadcast. Ergo fills each worker's target directly
+in its owned snapshot, eliminating the redundant array copy before queueing.
+
+**ProgPoW subscription behavior changes:** initial `mining.notify` now always sends
+`clean_jobs=true`. Previously it reused the last broadcast's flag, including
+`false`, and could throw before the first broadcast. The seven-field layout is
+unchanged. Subsequent difficulty-only updates still send `clean_jobs=false`;
+their simplification preserves the previous wire behavior.
+
+**Custom-subclass source compatibility:** the protected `currentJobParams` fields
+in BitcoinPool, EquihashPool, ErgoPool, KaspaPool and SatoshicashPool were removed.
+Custom subclasses that accessed those fields must use the `OnNewJobAsync` argument
+for the relevant broadcast. BitcoinBlake2bPool's obsolete assignment was removed;
+MergedMiningBitcoinPool did not use the field. Both compile in CI, but neither has
+a dedicated regression test for this field removal.
+
+## Unreleased: bounded PostgreSQL command timeout
+
+[#147](https://github.com/NINJAK1DD/miningcore/issues/147) defines
+`persistence.postgres.commandTimeout` as an integer from **1 to 86,400 seconds**.
+Omitted/null retains the **300-second** default. Explicit **zero**, formerly
+unlimited in Npgsql, now fails startup with a named diagnostic; it is never
+silently replaced. Negative, oversized and malformed values also fail normal and
+`-rs` recovery startup, with matching schema bounds.
+
+Before upgrading, replace zero with a reviewed finite duration or omit the field
+to use 300 seconds. Positive settings through 86,400 are unchanged; larger values
+must be reduced. The main and TLS examples retain their explicit **60-second**
+limit. Check your configuration with the **new release's binary** before
+replacing the running service:
+
+```sh
+dotnet Miningcore.dll -c /etc/miningcore/config.json --dumpconfig
+```
+
+A nonzero exit status means the check failed. This command parses, schema-validates
+and binds configuration, including the raw timeout policy. Normal startup performs
+additional deployment, FluentValidation and cross-field checks and may still fail.
+The command starts no mining, database or wallet services and does not verify live
+connectivity. Its safe diagnostic output is not a reusable configuration export.
+Correct legacy zero values before an incident, because they also block emergency
+`-rs` startup.
+Read-stage PostgreSQL syntax failures, including invalid TLS combinations as well
+as timeout values, now report `invalid-configuration` instead of `internal` in
+`--dumpconfig`; the fixed diagnostic continues to omit supplied values and paths.
+Connection and cancellation timeouts retain their driver defaults. Review
+[the policy, maintenance guidance and live financial rollback/recovery checks](postgres-command-timeout.md)
+before changing a timeout. It is not a deadline for an entire transaction, and a
+timeout does not establish the outcome of an in-flight COMMIT or wallet payment.
+
+## Unreleased: credential-safe Stratum diagnostics
+
+[#157](https://github.com/NINJAK1DD/miningcore/issues/157) closes the unbounded
+Stratum request-method telemetry-label path: distinct miner-supplied method names
+could create continually growing Prometheus series, consuming memory and inflating
+metrics scrapes. A fixed method vocabulary now bounds that cardinality, with unknown
+methods grouped as `other`. This does not replace request-rate or resource limits.
+
+The same change removes raw miner JSON,
+response payloads, request IDs, PROXY headers and exception text from the audited
+Stratum transport/error logs. Diagnostics retain fixed event/rejection categories,
+numeric error codes, byte counts and server-assigned connection correlation.
+Listener/certificate failures also identify the configured port, and certificate
+errors distinguish missing/inaccessible files from invalid certificates or passwords
+without exposing filesystem paths or exception text. TLS/cryptographic categories
+are shared with RPC consumers. Banned-client messages honor the existing IP-censor flag.
+Stratum JSON omits unavailable optional fields instead of emitting null padding;
+consumers must accept absent properties. RPC/payment alert filters that previously
+matched `failure=other` must account for the shared `tls-handshake` and `cryptographic`
+categories; their record shape and payment behavior are unchanged.
+Authorization, stale-job and block-acceptance diagnostics no longer echo miner
+identity/user-agent text. Unknown request-method telemetry labels become `other`;
+known protocol methods retain their labels.
+
+Wire replies, authorization/share decisions, counters, bans and connection lifecycle
+are unchanged. Update monitoring that relied on raw messages, and review retained
+Debug logs or error fragments for historical credential exposure. This is not global
+redaction of databases, statistics, APIs, notifications or third-party logs. See the
+[complete inventory, retained metadata and verification contract](stratum-diagnostics.md).
+
+## Unreleased: credential-safe configuration dumps
+
+[PR #159](https://github.com/NINJAK1DD/miningcore/pull/159) restores useful `-dc`/`--dumpconfig`
+output and hardens it with an exact-type/member allowlist. The command reads `-c <configfile>`
+without starting services, resolving environment credentials or loading coin-template files.
+There is no database, daemon, payout or runtime serialization change.
+
+The unreleased diagnostic format is **version 2** (superseding PR #159's initial, unreleased
+version 1). Reviewed numeric settings and Boolean switches remain visible. Bounded enum names
+such as `PPLNS` and `Integrated` replace the old serializer's numeric enum values. Reviewed
+strings become null/`[blank]`/`[set]`, logging level uses a closed vocabulary, API and Stratum addresses become
+categories, and reviewed string arrays become counts. Actual credentials, paths, addresses,
+extension names/payloads and arbitrary strings never appear. `[blank]` distinguishes empty or
+whitespace-only input from nonblank `[set]`; markers do not assert runtime effectiveness. For
+example, PostgreSQL ignores empty client certificate paths, rejects whitespace-only paths,
+and can consume whitespace passwords. They
+do not prove a value is usable, a file exists, or credentials work. Listener categories likewise
+distinguish absent/blank input without claiming what startup will bind. Closed-output failures
+report `output-unavailable`, not an unreadable configuration file.
+See [safe configuration dumps](configuration.md#safe-configuration-dumps) for the full policy.
+
+### Historical behavior and exposure boundary
+
+The boundary is source-based, not an assumed vulnerability affecting every fork release:
+
+- At upstream [e17b7cf3 (2018-10-07)](https://github.com/NINJAK1DD/miningcore/commit/e17b7cf376efc55fde58361aa4d033d3c49bef6e),
+  the CLI read the configuration before serializing it in full. Dumps from this implementation
+  could contain configured credentials.
+- Upstream [350d05fc (2022-01-02)](https://github.com/NINJAK1DD/miningcore/commit/350d05fc973c0a3f8912b3be062d4235821c9384)
+  moved dump dispatch before configuration loading. The ordinary fresh-process CLI then printed
+  `null`, not configuration credentials. The reviewed fork lineage through v0.3.0 inherited this
+  broken ordering. This PR is a functionality fix plus hardening, not evidence that those fork
+  releases leaked configuration-file credentials through ordinary `-dc` invocation.
+- PR #159 loads the file and emits the safe diagnostic envelope. Custom patches, embedded callers
+  and separately invoked full-object serializers must be assessed by their actual behavior; a
+  calendar date or version label alone cannot establish their safety.
+
+Operators who retained **full configuration dumps** from the older upstream implementation or
+custom builds should restrict access to logs, journals and support attachments. If credentials
+were exposed to unauthorized recipients, remove/restrict retained copies where possible and rotate
+the affected credentials through normal operational procedures. A retained literal `null` does
+not justify credential rotation by itself. No live exposure incident is claimed here.
+
+The new output is a lossy summary, not a backup/export or an extension-field spelling checker.
+Tools consuming the previously broken command should explicitly check `diagnosticFormatVersion`.
+No unsafe export option is provided. Topology, presence, counts and feature switches remain
+sensitive operational metadata; normal startup logs and other commands are outside this boundary.
+
+## Unreleased: credential-safe RPC consumer diagnostics
+
+Audited job managers, payout handlers and shared recovery/notification consumers
+no longer render daemon error messages or parsing exceptions directly. Bounded
+`RPC consumer diagnostic` records identify operations, failure categories and
+numeric daemon codes where available. Update monitoring filters for this prefix.
+Shared payout errors retain pool identity, and share rejections retain bounded
+reason codes and server-assigned connection identity. Audited local startup errors
+and critical recovery/ownership instructions remain actionable without remote text.
+Beam explorer diagnostics omit URLs and socket diagnostics omit request/response
+payloads; CryptoNote transfer logs omit secret keys.
+Xelis template diagnostics omit raw `miner_work`. Non-hex work and work that is not
+exactly 112 bytes are rejected before job or chain-height publication, matching the
+[XELIS MinerWork contract](https://docs.xelis.io/developers-api/stratum).
+Valid work and its optional `0x` prefix remain supported.
+Alephium share errors retain their own numeric codes and fixed rejection categories.
+
+Payment alerts withhold free-form error/reconciliation detail and malformed
+transaction identifiers while preserving outcomes, amounts and reconciliation
+groups. Original RPC results and private evidence remain unchanged. Alerts
+distinguish conclusive failures from uncertain outcomes: only uncertain
+payments require reconciliation before retrying or releasing ownership. Safe typed
+failure metadata can identify a missing wallet-unlock configuration without echoing
+the original error. Host-facing daemon startup and pool-run failures also use safe
+diagnostics. No database
+migration, wallet decision, TLS policy or timeout change is introduced.
+
+See the [consumer audit and operator guide](rpc-consumer-diagnostics.md) for
+covered families, historical exposure guidance and explicit scope limits. This
+complements transport hardening; it is not a global log/configuration redactor.
+
+## Unreleased: credential-safe RPC transport diagnostics
+
+**Monitoring change:** Prometheus/Grafana dashboards using joined RPC batch-method labels
+must switch to `batch`; custom/unrecognized single-method labels now become `other`.
+
+HTTP single/batch Trace logs and WebSocket Debug logs now use a bounded `RPC diagnostic`
+JSON record instead of requests, responses, subscription payloads or endpoint URLs.
+WebSocket/ZMQ reconnect failures report a fixed failure category, never exception messages
+or objects. All four ZMQ and three WebSocket job-manager startup announcements report daemon
+indices, not URLs, topics or host/port details. Both transports use the same `endpointIndex`:
+the one-based position in the full `pools[].daemons` array, including entries without push
+notifications. ZMQ indices are resolved before subscription and survive RefCount resubscription,
+independently of filtered-map enumeration order. Thread names use the same index. An unknown
+endpoint is represented by JSON null (or `unknown` in announcements/thread names), never a
+guessed first endpoint or a startup failure.
+Built-in RPC command constants populate a finite allowlist, including Bitcoin/AuxPoW, Xelis,
+Cryptonote, Zano and the built-in Ethereum/Cortex prefixes; custom methods/prefixes become
+`other`. A missing method (batch/ZMQ) is JSON null. Batch telemetry now uses `batch`, and
+single-request telemetry uses the same safe method labels. Update monitoring filters that
+depended on the old free-form messages or joined batch method names.
+
+The fields are transport, stage, allowlisted method, batch count, HTTP status, WebSocket byte
+count, HTTP decoded UTF-16 character count (`httpResponseChars`), elapsed milliseconds,
+`endpointIndex`, failure category and numeric failure code. Character counts require no extra
+response scan. Null fields mean not applicable or unknown;
+HTTP status is not a claim that the daemon operation succeeded. Logging performs no payload
+redaction or serialization: request authentication, wire bodies, response/error data, timeouts
+and payout decisions remain unchanged. There is no database migration or TLS-policy change.
+Failures distinguish timeouts with a structural `TimeoutException` cause from cancellations.
+Numeric codes identify .NET `WebSocketError` / `HttpRequestError`, native socket errors or ZMQ
+errno, according to the failure category. WebSocket handshake failures retain HTTP status (for
+example 401/403) without logging response headers. A null WebSocket `httpStatus` means no
+HTTP status was captured, not that the connection or TLS succeeded. Unknown exception types
+remain `other`; arbitrary type names and exception text are not a safe diagnostic vocabulary.
+Subscription cancellation and source disposal now have coordinated ownership: cleanup runs even
+when already cancelled, and disposal waits for worker exit and in-progress cancellation calls.
+Async WebSocket cleanup awaits cancellation-registration removal instead of blocking a worker
+thread. Throwing callbacks on RPC subscription tokens cannot interrupt unsubscribe or propagate
+into parent shutdown; all callbacks on that token still run. A fixed `CancellationCallbackFailure`
+diagnostic reports the problem without exception text. Reporting is best-effort if the logging
+target itself fails.
+Cancellation/disposal exceptions unrelated to subscription shutdown follow the normal
+retry path. Terminal worker faults produce a safe Error-level diagnostic without sending
+`OnError` into subscribers: polling merged with push notifications must continue when the push
+worker stops. This preserves the fallback, not automatic recovery of a terminal push worker;
+operators should investigate the diagnostic. Catalogue construction failures degrade method labels
+to `other` rather than breaking RPC error handling. Native ZMQ regression tests require the native
+runtime staged by the build; they have been exercised on Windows locally and in Linux CI, not
+validated on macOS.
+
+**Historical exposure:** releases through v0.3.0 and builds before this fix can record wallet
+passwords and sensitive RPC results at Trace, and subscription secrets/URIs at Debug.
+Restrict access to retained logs, support bundles, backups and telemetry exports. If exposure
+is suspected, rotate affected RPC credentials, subscription tokens and wallet passphrases
+using the daemon's procedure. A disclosed private key cannot be made safe by changing a
+password; arrange a secure wallet replacement and transfer through the wallet's supported
+procedure. Do not paste old payload traces into public issues. Disabling logging does not
+remove copies already collected.
+
+This is an **RpcClient-owned diagnostic boundary**, not a global log sanitizer. Returned
+daemon error messages, error data and exception causes stay available to callers for
+compatibility. Coin-specific caller logs and parsing errors are covered by the
+[separate consumer boundary](rpc-consumer-diagnostics.md); original error objects
+and private reconciliation evidence remain sensitive.
+Configuration dumps remain covered by
+[#144](https://github.com/NINJAK1DD/miningcore/issues/144). TLS certificate validation is not
+established by safe logging. The design follows the
+[OWASP logging guidance](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html)
+by excluding payloads and endpoint data entirely rather than enumerating secret-bearing RPC
+methods. Method labels are separately allowlisted from source-controlled protocol constants.
+
+## Unreleased: Bitcoin BLAKE2b header-v2
+
+The separate `bitcoin-blake2b` template and runtime target the reviewed Bitcoin Knots
+29.4.1.knots20260508 hard-fork chain. They do not replace SHA-256d `bitcoin`, enable BTC
+direct-coinbase settlement on another chain, or implement the DATUM pool protocol.
+The [operator guide](bitcoin-blake2b.md) describes the pinned consensus and miner contract,
+isolated wallet/node setup, accounting, startup refusal conditions and validation limitations.
+Existing schema migrations remain applicable; no new schema is introduced by this feature.
+Do not use the v0.3.0 binaries with this new example: support requires a build containing this change.
+**Failure isolation:** multi-pool configurations remain supported. A terminal BLAKE2b pool
+failure (including a changed reviewed daemon version or missing mandatory GBT rule) closes
+only that pool's listeners and new work/payment admission. Healthy sibling pools continue.
+Already-owned submissions and payments finish without pool-local cancellation so accepted
+blocks and liabilities can still be persisted. Daemon classifications completing after isolation
+are discarded before any block/reward/balance commit; database transitions admitted before
+isolation may finish, but do not authorize a new wallet payout. The pool API exposes its
+`miningState`, including `draining` and `stopping`, plus a `miningFaulted` flag that preserves
+the local fault signal during shutdown. Drain warnings count outstanding admission leases
+(including nested leases), starting after 30 seconds rather than during fast drains. The
+first three secondary failures remain visible at Info; later failures use Debug without
+repeating the primary notification.
+A faulted pool requires an operator restart, not an automatic compatibility bypass. Transport
+outages instead withhold fresh work and retry. Shared financial-durability and cluster-wide
+startup failures retain their existing process-wide shutdown safeguards. See the
+[isolation boundary](bitcoin-blake2b.md#multi-pool-failure-isolation) before deployment.
+The reviewed activation parameters now share one code contract, checked against the JSON
+catalogue and again at runtime. Unexpected nonempty `coinbaseaux.flags` are rejected explicitly
+before coinbase construction. Header byte order and the supported miner profile are unchanged.
+
+Full-process GPU validation also exposed shared startup issues fixed independently in
+PRs #142 and #143. Their current behavior and compatibility boundaries are documented under
+[optional notification startup](#unreleased-optional-notification-startup) and
+[PostgreSQL credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics).
+
+## Unreleased: Bitcoin-family initial work refresh
+
+The shared Bitcoin-family refresh loop no longer forces a null-job rebroadcast before
+its first valid job when a template RPC fails. Existing verified work can still be rebroadcast;
+generic-Bitcoin and BLAKE2b lifecycle regressions cover error-return and exception paths.
+This also affects canonical SHA-256d Bitcoin, not only the new BLAKE2b family.
+The separate generic notification-array snapshot concern is tracked in
+[#153](https://github.com/NINJAK1DD/miningcore/issues/153); it is not changed here.
+
+## Unreleased: optional notification startup
+
+Omitting the optional `notifications` section no longer causes a constructor null reference
+in the email/Pushover service graph. Omitted or empty sections and disabled admin notifications
+remain optional.
+Enabled admin notifications without `notifications.email` now raise an explicit
+`PoolStartupException` before hosted-service subscriptions or readiness, even when the recipient
+is missing or whitespace. Construction remains safe for dependency-injection resolution.
+
+**Compatibility:** normal, non-recovery startup already rejects this incomplete email configuration
+in `Program.ValidateConfig`. Custom hosts that bypass that pass now fail when the notification
+service starts instead of at later delivery. Recovery mode skips these configuration checks and
+does not start this hosted service; its lazy critical sender remains constructible. The critical
+sender is a separate, unhosted singleton in normal operation too. An attempted email without a
+provider produces an `InvalidOperationException` naming the missing delivery configuration within
+the existing critical-delivery aggregate, not a startup exception. Failure handlers catch and log
+that aggregate. Other configured critical transports can still be attempted. Configure the email
+sender or disable admin notifications; do not rely on
+undeliverable critical alerts. No coin-family, accounting or schema change is made.
+
+The existing top-level/admin/channel switch semantics are unchanged. Their validation and
+documentation mismatch is tracked separately in [issue #148](https://github.com/NINJAK1DD/miningcore/issues/148).
+
+## Unreleased: PostgreSQL certificate validation (issue #146)
+
+PostgreSQL configuration now supports explicit `sslMode` values, including
+`VerifyCA` and recommended `VerifyFull`, and `tlsRootCert` for a trusted CA file.
+Legacy `tls: true` retains encryption-only `Require`; false/omitted retains
+opportunistic `Prefer`. `tlsNoValidate: false` does not authenticate the server.
+Remove both legacy flags before setting an explicit mode. Conflicting settings
+and previously ignored nonempty client TLS settings now fail startup validation.
+**Remove stale client TLS settings when TLS is disabled, and remove
+`tlsNoValidate: true` unless legacy `tls: true` is also set.** Whitespace-only
+`tlsCert`/`tlsKey` paths now fail validation instead of being silently ignored.
+Connection values are passed through `NpgsqlConnectionStringBuilder`, preserving
+literal credentials instead of interpreting them as options. Startup diagnostics
+use a fixed allowlist without credentials or certificate paths. The root presence
+field is `RootCertificatePathConfigured`: it describes a path encoded in the
+connection string, not all driver fallback sources. Connection errors include
+safe failure categories that distinguish local file access (including PostgreSQL
+passfiles), cryptographic material, missing databases, connection limits and server
+availability. Generic I/O failures do not imply network or TLS faults. Verifying
+modes without an encoded CA path emit a fixed ambient-trust warning. Failed cleanup
+cannot leak provider errors or replace
+cancellation. Omitted/empty passwords retain environment/passfile fallback.
+CA paths do not freeze file contents, and an unset root permits Npgsql to consult
+environment/default trust sources at later physical opens. Review the
+[migration and trust-source rules](postgres-tls.md) before upgrading.
+
+## Unreleased: PostgreSQL credential-safe diagnostics
+
+The next two paragraphs describe the original PR #142 logging-only change. Its mode and
+field contracts are superseded by the [certificate-validation update](#unreleased-postgresql-certificate-validation-issue-146):
+the current diagnostic reports the effective mode, omits host/database/user strings and adds
+root-certificate presence. Connection-open exception details are now omitted as well.
+
+PostgreSQL startup debug logging no longer prints the connection string, which could expose
+database and client-certificate passwords. The explicit allowlist contains host, port, database,
+user, configured SSL mode, `TlsNoValidate`, command timeout (default: 300 seconds), and four
+Boolean presence flags for the password, certificate, key and certificate password.
+No credential values or certificate/key paths are included, and control characters are escaped.
+
+These fields describe configuration, not negotiated connection security. `<unset>` means no
+SSL mode override was supplied, not that encryption is disabled. Npgsql 9 defaults to `Prefer`:
+it allows opportunistic TLS without server-certificate validation, or a plaintext connection.
+The `TlsNoValidate` log field reflects the `tlsNoValidate` configuration setting.
+Presence flags describe explicit configuration, not file existence or driver/environment credentials.
+Certificate/key paths containing only whitespace count as absent. TLS-specific settings are
+applied only when `tls` is enabled. In the bundled Npgsql 9 driver, `Require` requires encryption
+but **does not validate the server certificate**, regardless of `tlsNoValidate`; see the
+[Npgsql SSL mode documentation](https://www.npgsql.org/doc/security.html#encryption-ssltls).
+This fix changes neither connection behavior nor schema.
+
+All releases up to and including **v0.3.0** contain the old PostgreSQL startup debug log.
+Operators who enabled debug logging should treat retained logs as potentially sensitive,
+restrict access, and rotate exposed database or certificate credentials through their normal
+credential-management procedure. This fix is limited to that startup diagnostic: configuration
+dumps (`-dc`/`--dumpconfig`) and JSON-RPC trace logging can still expose secrets and must not be
+treated as safe to publish or collect indiscriminately. Separate hardening is tracked in
+[configuration-dump issue #144](https://github.com/NINJAK1DD/miningcore/issues/144) and
+[RPC-trace issue #145](https://github.com/NINJAK1DD/miningcore/issues/145).
+That historical scope warning is superseded for the dump command by
+[credential-safe configuration dumps](#unreleased-credential-safe-configuration-dumps) and
+[PR #159](https://github.com/NINJAK1DD/miningcore/pull/159); the section also clarifies which older
+implementations emitted full dumps versus literal `null`. RPC changes are documented separately
+in the unreleased transport/consumer sections above.
+Connection-policy follow-ups are tracked separately in
+[TLS verification #146](https://github.com/NINJAK1DD/miningcore/issues/146)
+and [command-timeout policy #147](https://github.com/NINJAK1DD/miningcore/issues/147).
+
+## v0.3.0 highlights
+
+`v0.3.0` promotes the two v0.3.0 release candidates to the stable minor release. It adds current
+DigiByte Odocrypt mining, default Bitcoin direct-coinbase SOLO settlement and a BIP
+54-forward-compatible canonical Bitcoin coinbase shape. The release candidates completed the full
+automated build, database, packaging, container and portability suites; controlled live-soak
+testing also confirmed synchronized daemons, normal miner authorization and accepted-share flow,
+direct-SOLO operation, expected BIP 54 presentation and clean accounting logs.
+
+`v0.3.0` changes the default for the exact canonical `bitcoin` template when it uses
+`payoutScheme: "SOLO"`: omitting `soloCoinbasePayout` now enables direct settlement. Before
+upgrading, every existing Bitcoin SOLO operator must choose one fail-closed path:
+
+- Apply `add_bitcoin_direct_solo.sql`, satisfy the direct-SOLO prerequisites and accept the new
+  default. Operators already running direct settlement on RC.2 need no further migration.
+- Add `soloCoinbasePayout: false` before starting `v0.3.0` to retain the previous custodial flow;
+  no direct-settlement migration is required for that explicit fallback.
+
+The default does not apply to any other coin or payout scheme. Existing Bitcoin relay deployments
+must use the explicit `false` fallback because direct settlement does not support relay topologies.
+Startup checks payment processing, topology and the complete database contract before reserving
+Stratum listeners, so an unprepared upgrade fails closed instead of silently reverting to custody.
+
+Operators upgrading from `v0.3.0-rc.1` should also review the RC.2 Bitcoin coinbase compatibility
+change below. Operators upgrading directly from `v0.2.1` or earlier must complete the RC.1 upgrade
+boundary and all cumulative migrations.
+
+The cumulative operational changes remain documented in the
+[RC.2](#v030-rc2-highlights) and [RC.1](#v030-rc1-highlights) sections. `bip54Coinbase` remains
+default-on only for canonical Bitcoin and is independent of the direct-settlement choice.
+
+## v0.3.0-rc.2 highlights
+
+`v0.3.0-rc.2` is the second release candidate for the next minor release. It adds a
+BIP 54-forward-compatible canonical Bitcoin coinbase shape for custodial and direct-SOLO pools.
+No database migration is required when upgrading from `v0.3.0-rc.1`; retain the existing
+configuration unless the temporary compatibility fallback below is needed. Continue treating this
+candidate as staging software and complete controlled miner, proxy and daemon testing before using
+it for real funds. Operators upgrading directly from `v0.2.1` or earlier must also complete the
+`v0.3.0-rc.1` upgrade boundary below, including the optional direct-SOLO migration before enabling
+that feature.
+
+Canonical Bitcoin coinbases now use BIP 54-forward-compatible fields by default:
+`nLockTime = block height - 1` and `nSequence = 0xfffffffe`. Value-bearing outputs are serialized
+before the BIP 141 witness commitment, matching CKPool's operator-facing order. This applies to
+existing custodial Bitcoin pools as well as direct-SOLO pools, changes the serialized coinbase
+transaction ID and resulting merkle root, and requires no database migration. Other Bitcoin-family
+coins retain their previous fields and output order.
+
+The default-on `bip54Coinbase` pool setting may be set to `false` as a temporary compatibility
+fallback if a miner or Stratum proxy cannot process the new shape. The fallback restores the full
+earlier form: zero locktime and sequence, with the witness commitment before value-bearing outputs.
+Startup logs the effective policy. Prefer upgrading the incompatible component and re-enabling the
+forward-compatible shape.
+
+The legacy Anokas and Ravencash special case now serializes the complete witness-commitment script
+provided by the daemon verbatim. This removes a malformed reconstruction that omitted the required
+`OP_RETURN` and push opcode. No configuration or database migration is required.
+
+## v0.3.0-rc.1 highlights
+
+`v0.3.0-rc.1` is the first release candidate for the next minor release. It adds current DigiByte
+Odocrypt mining and opt-in Bitcoin direct-coinbase SOLO settlement. Existing Bitcoin SOLO pools
+remain custodial unless `soloCoinbasePayout` is explicitly set to `true`; existing DigiByte
+operators must review the intentionally breaking template replacement below. Treat this candidate
+as staging software, complete the feature-specific commissioning checks, and preserve a tested
+database/configuration backup before evaluating it with real daemons or miners.
+
+### Upgrade boundary from v0.2.1
+
+- **Existing pools that leave direct coinbase settlement disabled:** follow the canonical release
+  upgrade procedure. No new v0.3.0 database migration is required solely to keep their existing
+  payout behavior.
+- **Existing Bitcoin databases enabling direct coinbase settlement:** after staging the verified
+  candidate and stopping every writer, apply
+  `add_bitcoin_direct_solo.sql` from that immutable candidate directory before setting
+  `soloCoinbasePayout: true`. Follow the
+  [direct-SOLO database migration](bitcoin-direct-solo.md#database-migration).
+- **Existing DigiByte configurations:** `digibyte-groestl` is intentionally removed. Select
+  `digibyte-odocrypt` only after completing the current-daemon and miner commissioning checks in
+  the [DigiByte guide](digibyte.md); the other supported DigiByte algorithms are unchanged.
+
+Once direct work has been accepted, its database and journal evidence creates the forward-only
+application boundary described below. Do not test rollback with production direct-settlement
+evidence.
+
+### Feature detail
+
+**Opt-in Bitcoin direct-coinbase SOLO:** canonical BTC SOLO pools can set
+`soloCoinbasePayout: true` so the block coinbase pays the authorized miner address and each positive
+fee/donation recipient directly. Destination-specific jobs bind submission to the exact announced
+coinbase; exact integer rounding preserves GBT `coinbasevalue`; final serialized weight is checked
+against Bitcoin's consensus limit before work is announced; and every locally validated candidate
+stores its exact serialized block and immutable evidence in a durable submission outbox before
+daemon submission. Prepared or uncertain entries are replayed idempotently on startup and during
+reconciliation, remain silent and non-terminal until observed, and use a bounded three-miss/30-minute
+rejection policy. The propagation-critical prepare path performs one bounded database attempt before
+immediate fsync recovery-journal fallback rather than delaying `submitblock` through the normal retry
+ladder. Known-committed cleanup failures and uncertain commits also retain replay-safe evidence and
+defer their database-health fail-stop until after the daemon propagation attempt. An exact
+active-chain duplicate with matching coinbase evidence commits `observed-active` and is not replayed
+again. Malformed replayable evidence moves to an explicit terminal `quarantined` submission state,
+so it remains auditable without poisoning later pool classification, blocking startup or falsely
+claiming acceptance. Transient malformed daemon block data is deferred rather than quarantined.
+An exact on-chain coinbase transaction or output mismatch remains unsettled and triggers one
+administrative alert after a continuous 30-minute grace period; a later exact verification clears
+the episode.
+Destination-specific jobs keep independent duplicate-share sets. Reusing one solution across
+multiple still-valid jobs with identical coinbase data can affect displayed hashrate and VarDiff
+statistics, plus display-only pool and miner effort, but cannot create a balance or duplicate
+direct-SOLO settlement.
+Routine API and terminal-reconciliation projections exclude the large serialized payload,
+and the pending classifier returns it only for replayable states; immature observed rows remain
+metadata-only. Public block pages now include quarantined rows by default, cap requests at 100 rows,
+and reject larger page sizes instead of allowing an unbounded query. Bounded post-maturity block-RPC
+reconciliation tracks terminal rows for two difficulty periods without creating a Miningcore
+balance or second payment. Existing custodial SOLO remains the default. See the
+[Bitcoin direct-SOLO guide](bitcoin-direct-solo.md).
+
+Fresh `createdb.sql` installations and upgraded databases share the same five-state direct-outbox
+constraint. A source-contract regression and live PostgreSQL preflight prevent the fresh schema and
+idempotent migration from drifting apart.
+
+This is a forward-only application compatibility boundary once direct work has been accepted. Do
+not roll the binary back below the release containing this feature when PostgreSQL contains a direct
+settlement row **or** any recovery/emergency journal or quarantine may contain an accepted direct
+candidate. A zero result from
+`SELECT count(*) FROM blocks WHERE settlementmode = 'coinbase-direct'` is not sufficient after a
+database-write failure. The dedicated `bitcoin-coinbase-direct` recovery identity and migration's
+statement-scoped database guard fail closed against an older importer/updater, but they are not a
+substitute for the documented recovery procedure.
+
+**Breaking DigiByte template rename:** current-mainnet support removes `digibyte-groestl` rather
+than redirecting it to a different proof of work and replaces that retired Myriad-Groestl catalogue
+entry with activation- and schedule-aware `digibyte-odocrypt`. Operators must stop the old pool and
+explicitly select and commission a supported current algorithm. The Odocrypt cipher is pinned to
+DigiByte Core v9.26.5;
+network-specific activation and schedule metadata is validated before startup, template `odokey`
+is checked against template time, submitted shares derive their key from submitted header time,
+and native known-answer, symbol, relocation and source-built Windows checks protect the packaged
+implementation. Windows source builds compile Odocrypt from the reviewed pinned inputs instead of
+loading an opaque repository binary. Existing DigiByte SHA-256d, Scrypt, Skein and Qubit templates
+remain available. See the [DigiByte operator guide](digibyte.md).
+
+## v0.2.1 hotfix
+
+`v0.2.1` corrects a `v0.2.0` regression affecting Litecoin/Dogecoin merged mining when both pools
+use `SOLO`. The merged job calculated a parent reward basis before the manager applied the configured
+payout policy, then published that value without the accounting identifier required for pooled
+accounting. The recorder failed closed with `Unidentified shares must not carry partial accounting
+data`, quarantined the rejected statistical share and stopped the cluster. The hotfix attaches the
+parent reward basis only when pooled accounting is selected and defensively clears all accounting
+evidence before a `SOLO`/`SOLO` proof crosses the persistence boundary; PPS, PROP and PPLNS
+accounting evidence is unchanged. No schema migration or configuration change is required from
+`v0.2.0`. Operators running `v0.2.0` with `SOLO`/`SOLO` merged mining should stop the restart loop,
+preserve every recovery and quarantine artifact, and deploy `v0.2.1` before resuming merged mining.
+Never import a quarantine file with `-rs`.
+
+## v0.2.0 highlights
+
+`v0.2.0` adds transactional Bitcoin-family PPS, independently selected pooled LTC/DOGE
+merged-mining schemes, source-verified version-rolling policy, and fail-closed removal of the inert
+coin-template `blockSerializer` setting. Review this section before replacing a v0.1.0 binary.
+
+### Upgrade boundary from v0.1.0
+
+- **Existing non-PPS pools and unchanged LTC/DOGE `SOLO`/`SOLO`:** no pooled-accounting feature is
+  required, but the canonical v0.2.0 upgrade still applies all three additive, idempotent migrations
+  so every upgraded database has the same reviewed schema. Preserve the backup and review custom
+  template compatibility.
+- **Direct Bitcoin-family PPS or pooled LTC/DOGE accounting:** stop all writers and payout managers,
+  verify a backup, and apply the candidate-idempotency, payout-ownership and share-accounting
+  migrations.
+- **PPS or pooled-accounting relay topology:** upgrade and migrate receivers/recorders before
+  senders; do not run mixed accounting wire versions.
+- **Custom Bitcoin-family coin templates:** remove inert `blockSerializer` fields and review any
+  version-rolling mask against authoritative daemon source.
+
+The new accounting migration is additive, but its liabilities and replay receipts are not
+reconstructible from blocks. Do not test rollback by dropping tables. Restore the verified
+pre-migration database in an isolated replacement and reconcile post-backup balances and payments
+before directing miners or wallets to an older application. Follow the
+[PPS guide](pps.md), [database upgrade runbook](database.md#upgrade-an-existing-database), and
+[release rollback procedure](#upgrade-or-roll-back).
+
+### Pooled Litecoin–Dogecoin merged-mining accounting and PPS
+
+Litecoin/Dogecoin merged mining now supports independently selected `SOLO`, `PPS`, `PROP` and
+`PPLNS` schemes. One accepted proof is carried as a correlated parent/auxiliary envelope and
+committed transactionally, so cancellation, relay, recovery or database failure cannot credit only
+one chain. Unsupported `PPBS` and `PPLNSBF` combinations still fail before Stratum listeners open.
+An enabled PPS pool requires both pool-level and cluster-level payment processing; startup fails
+before listeners open when either contract is disabled. Runtime administrative toggles cannot
+disable processing for an active PPS pool or activate PPS without the scheduler created at startup;
+make those changes through a reviewed configuration and controlled restart.
+
+A production Bitcoin-family PPS implementation creates `(1 - fee) * difficulty / networkDifficulty
+* spendableTemplateReward` liability at valid-share commit time. Exact 24-decimal credits,
+12-decimal posted balances and per-miner remainders are idempotent across retry and recovery.
+Confirmed blocks never double-credit PPS, while stale/orphaned blocks never reverse it; operators
+therefore assume block variance, reorg, wallet, liquidity and insolvency risk.
+
+PPS liability evidence is embedded in the accepted envelope so sanitized `-rs` recovery recreates
+the exact credits, remainders, balance changes and balances. Accounting persistence is set-based for
+normal 250-share batches; legacy ordinary-share COPY remains compatible before the optional
+accounting migration. PPS statistical shares and exactly-once receipts now have independent,
+documented time-based retention. Block settlement does not truncate the PPS statistical window;
+indexed evidence pruning is batch-bounded and retains receipts for one day beyond the accepted
+replay horizon. PostgreSQL independently rejects an expired new accounting ID at registration,
+closing the relay-queue/pruning race. Candidate selection is partition-safe and a persistent keyset
+cursor advances each bounded accounting-group anti-join window past still-referenced receipts, so
+one pool's retained shares cannot starve eligible cleanup for another. PPS liabilities are rejected
+before admission at PostgreSQL's exact `NUMERIC(38,24)` upper boundary instead of failing later in
+the recorder. Sanitized recovery validates the embedded liability against that boundary while
+allowing its independently derived zero-fee comparison ceiling to exceed the storage limit.
+The cursor is locked and read separately so its bound values produce a composite-index seek rather
+than repeatedly filtering the already visited prefix. Startup now verifies the mandatory cursor row
+and the exact ascending B-tree index contract, rejecting same-named indexes with an incompatible
+access method, ordering, expression, predicate, included column or operator class. The migration
+repairs either contract while Miningcore is stopped; repairing the index rebuilds it and can require
+a substantial maintenance window on a large accounting table. The configurable, bounded retention
+batch defaults to 50,000 rows per table and cycle, keeping ahead of the documented
+two-PPS-projection workload at the default payout interval without turning cleanup into an unlimited
+transaction. Operators with multiple PPS pools must account for that multiplier before increasing
+the batch because the complete maintenance pass is one transaction. Invalid accounting records are
+isolated from valid batch siblings and written to a checksum-chained quarantine file for manual
+reconciliation instead of
+poisoning the recoverable journal; critical notifications distinguish importable and quarantined
+evidence and explicitly forbid `-rs` import of quarantine files. Relay receivers validate auxiliary
+projections against configured pools during asynchronous startup and expose unsupported wire formats
+as a bounded Prometheus counter. Every daemon-accepted direct PPS candidate is synchronously
+persisted as an idempotent block-only record before liability construction or relay publication;
+direct and merged candidate durability therefore remains independent of accounting success.
+
+Existing databases must apply `add_share_accounting.sql` in addition to the prior AuxPoW and payout
+ownership migrations before starting pooled merged mining or direct PPS. Existing SOLO/SOLO
+topologies retain their established one-share record and do not require this new migration.
+Receiver/recorder nodes must be
+upgraded and migrated before relay senders because paired accounting uses a new fail-closed wire
+format. See the [merged-mining guide](merged-mining-litecoin-dogecoin.md),
+[database runbook](database.md#upgrade-an-existing-database), and updated mixed-scheme example.
+
+### Source-verified Bitcoin-family version rolling
+
+Bitcoin-family templates can now declare an explicit source-reviewed `versionRollingMask` and a
+disjoint `versionRollingConsensusMask`. Template loading rejects malformed, zero, oversized,
+contradictory and overlapping masks before listeners open; miner requests can only narrow the
+pool-owned mask. Lucky Bit joins the strict-chain-ID disabled set, PepePow excludes its two
+consensus algorithm bits. Verge, ButKoin, Veles, Litecoin Cash, Maza and PlexHive exclude overlapping
+multi-algorithm selectors. DigiByte, Auroracoin, Smileycoin and Pyrk record selectors that remain
+entirely below the standard mask. PACcoin remains conservatively disabled because authoritative
+source is unavailable. Malformed or disjoint miner masks now receive a fail-closed boolean BIP310
+decline, with the specific reason recorded in the pool log rather than returned as a truthy string.
+A Bitcoin Core regtest integration test preserves a restricted consensus bit while mining and
+submitting a rolled header through the real daemon boundary. See the
+[version-rolling audit](version-rolling.md).
+
+### Coin-template `blockSerializer` compatibility
+
+The public `BitcoinTemplate.BlockSerializer` property has been removed because no production code
+or supported extension used it to select block serialization. Operator-supplied coin-template files
+that contain `blockSerializer`, including case variants, now fail startup with a targeted diagnostic
+instead of appearing to configure behavior that Miningcore ignores.
+
+This is a source-compatibility change for external code compiled directly against that property and
+a configuration-compatibility change for custom template files containing the stale key. Remove the
+field only when the coin uses Miningcore's standard family serializer. A coin that requires
+non-standard block framing needs a typed implementation with construction, submission and
+daemon-backed serialization tests; renaming or discarding the field is not a substitute.
+
+## v0.1.0 highlights
+
+`v0.1.0` is the first stable release of this fork. It includes the complete RC.13 baseline below,
+plus the audited Scrypt catalogue and chain-ID safeguards added during the final soak cycle.
+
+- Eleven researched Bitcoin-family Scrypt definitions add direct and hybrid daemon contracts.
+  Independent vectors pin Scrypt and XCCX block identity; serialization tests cover MWEB and the
+  timestamp/signature layout of hybrid chains. The
+  [Scrypt provenance guide](scrypt-coin-definitions.md) records immutable source revisions and the
+  deliberately withheld definitions. Non-Dogecoin AuxPoW support is tracked in
+  [issue #113](https://github.com/NINJAK1DD/miningcore/issues/113), while Quai Scrypt remains
+  excluded because it requires Quai's WorkObject/SOAP protocol rather than Bitcoin RPC; that work is
+  tracked in [issue #111](https://github.com/NINJAK1DD/miningcore/issues/111).
+
+- Dogecoin, Cyberyen, Bells and Namecoin now decline Stratum version-rolling negotiation so miners
+  cannot alter consensus-owned chain-ID bits. Existing Dogecoin and Namecoin operators may see
+  BIP310 clients fall back to ordinary non-rolling submissions; block-template versions remain
+  daemon-owned.
+
+## RC.13 highlights
+
+`v0.1.0-rc.13` expands the audited configuration catalogue and restores concise source-build
+progress without adding a database migration.
+
+- Standalone Bitcoin Cash and combined Bitcoin/Bitcoin Cash SOLO examples include isolated RPC,
+  P2P and onion-service ports, canonical CashAddr wallets and a BCHN configuration verified against
+  the daemon's `getblocktemplate` behavior.
+- Every miner-facing example now provides named low- and high-difficulty VarDiff tiers as
+  commissioning baselines, alongside reviewed polling, rebroadcast, timeout, payout and banning
+  defaults.
+- All shipped configurations pass the real schema reader, CLR binding and normal-startup validation;
+  additional contracts reject unknown, mis-cased, wrong-family, wrong-scope and wrong-typed
+  coin-family extension fields.
+- Bitcoin-family `minimumConfirmations` is bound at pool scope, while ZeroMQ notification settings
+  remain daemon-scoped. Regression tests reject the ineffective inverse placements.
+- Bitcoin Cash address conversion now honors the address supplied to the conversion method instead
+  of reusing the pool's configured address.
+- Interactive Ubuntu and Debian source builds again show .NET's concise progress and elapsed time.
+  A separate private MSBuild log preserves fail-closed warning enforcement and respects the standard
+  `MSBUILDTERMINALLOGGER=off` opt-out.
+
+The release-pipeline items are maintainer-facing. Operators should still verify the selected
+archive, provenance and host compatibility, and should read the cumulative operational changes
+before upgrading from an older release candidate.
 
 ## Choose a version
 
-Versions containing a suffix such as `v0.1.0-rc.1` are release candidates. Test them before relying
-on them for real funds. A version without a suffix, such as `v0.1.0`, is a stable release and updates
+Versions containing a suffix such as `v0.3.0-rc.2` are release candidates. Test them before relying
+on them for real funds. A version without a suffix, such as `v0.3.0`, is a stable release and updates
 the `latest` container tag.
 
 Open the [releases page](https://github.com/NINJAK1DD/miningcore/releases), choose a version, and
-download these two files:
+download the archive matching the host and the checksum manifest:
 
-- `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz`
+- `miningcore-VERSION-linux-x64-ubuntu-26.04.tar.gz` (choose this on Ubuntu 26.04)
+- `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
-The examples below use the current `v0.1.0-rc.9`. Substitute the version you selected.
+The examples below use `v0.3.0`. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.1.0-rc.9
-curl -fLO "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04.tar.gz"
-curl -fLO "https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}/SHA256SUMS"
-sha256sum --check SHA256SUMS
+export MININGCORE_VERSION=v0.3.0
+MININGCORE_UBUNTU=
+MININGCORE_RELEASE_READY=
+MININGCORE_INSTALL_READY=
+MININGCORE_DOWNLOAD_DIR=
+archive=
+if [ -r /etc/os-release ]; then
+  MININGCORE_HOST_RELEASE="$(
+    (. /etc/os-release; printf '%s:%s' "$ID" "$VERSION_ID")
+  )"
+else
+  MININGCORE_HOST_RELEASE=unknown
+fi
+if [ "$(uname -m)" != x86_64 ]; then
+  echo "STOP: prebuilt release archives require x86_64" >&2
+else
+  case "$MININGCORE_HOST_RELEASE" in
+    ubuntu:22.04|ubuntu:26.04)
+      export MININGCORE_UBUNTU="${MININGCORE_HOST_RELEASE#ubuntu:}"
+      ;;
+    *)
+      echo "STOP: use the documented source-build path on $MININGCORE_HOST_RELEASE" >&2
+      ;;
+  esac
+fi
+if [ -n "$MININGCORE_UBUNTU" ]; then
+  archive_name="miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}.tar.gz"
+  if MININGCORE_DOWNLOAD_DIR="$(
+    mktemp -d "${TMPDIR:-/tmp}/miningcore-release.XXXXXXXX"
+  )"; then
+    archive="$MININGCORE_DOWNLOAD_DIR/$archive_name"
+    archive_part="${archive}.part"
+    checksum_file="$MININGCORE_DOWNLOAD_DIR/SHA256SUMS"
+    checksum_part="${checksum_file}.part"
+    release_url="https://github.com/NINJAK1DD/miningcore/releases/download/${MININGCORE_VERSION}"
+    if curl --fail --location --output "$archive_part" "$release_url/$archive_name" &&
+      curl --fail --location --output "$checksum_part" "$release_url/SHA256SUMS" &&
+      mv -- "$archive_part" "$archive" &&
+      mv -- "$checksum_part" "$checksum_file" &&
+      (cd "$MININGCORE_DOWNLOAD_DIR" &&
+        sha256sum --ignore-missing --check --strict SHA256SUMS); then
+      export MININGCORE_RELEASE_READY=1
+      echo "READY: $archive is verified and ready to install"
+    else
+      echo "STOP: release download or checksum verification failed" >&2
+      rm -f -- "$archive" "$archive_part" "$checksum_file" "$checksum_part"
+      rmdir -- "$MININGCORE_DOWNLOAD_DIR"
+      MININGCORE_DOWNLOAD_DIR=
+      MININGCORE_UBUNTU=
+      archive=
+    fi
+  else
+    echo "STOP: unable to create private release download directory" >&2
+    MININGCORE_DOWNLOAD_DIR=
+    MININGCORE_UBUNTU=
+    archive=
+  fi
+fi
 ```
 
-`SHA256SUMS` covers the release archive. GitHub also publishes build provenance for the archive. If
-the [GitHub CLI](https://cli.github.com/) is installed, verify it with:
+The host-release check prevents accidental cross-distribution installation. Downloads use unique,
+private temporary storage and are renamed from `.part` files only after curl succeeds. This avoids
+overwriting unrelated files in the operator's current directory and remains compatible with the
+curl version supplied by Ubuntu 22.04. `SHA256SUMS` covers both archives; `--ignore-missing` limits
+verification to the selected archive, while `--strict` rejects a malformed checksum line.
+Do not continue to the runtime and installation steps unless the block selected an archive and its
+checksum verification succeeded. The block deliberately returns to an interactive shell after a
+`STOP` message instead of closing an SSH session.
+
+GitHub also publishes build provenance for each archive. If the
+[GitHub CLI](https://cli.github.com/) is installed, verify it with:
 
 ```console
-gh attestation verify "miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04.tar.gz" \
-  --repo NINJAK1DD/miningcore
+if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
+  gh attestation verify "$archive" --repo NINJAK1DD/miningcore
+else
+  echo "STOP: no release archive passed the download and checksum gate" >&2
+fi
 ```
-
-After extraction, compare the packaged metadata with the binary before changing the live service:
-
-```console
-cat "/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04/BUILD-INFO"
-LD_LIBRARY_PATH="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04" \
-  "/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04/Miningcore" --version
-```
-
-`BUILD-INFO` must name the selected release and source commit. Releases published after the
-version-reporting validation was introduced must report the same semantic version (without the
-tag's leading `v`) and full commit SHA. Older releases, including `v0.1.0-rc.2`, can show the legacy
-`0.1.0.0-BRANCH` format; match their full embedded SHA to `BUILD-INFO` instead. A branch label such
-as `dev` is not sufficient release provenance by itself.
 
 ## Install runtime dependencies
 
-Enable Canonical's supported .NET backports PPA, then install the framework and native libraries:
+On the primary Ubuntu 26.04 target, install Canonical's framework and native runtime packages:
+
+```console
+sudo apt-get update
+sudo apt-get install -y \
+  aspnetcore-runtime-10.0 \
+  libboost-locale1.90.0 \
+  libboost-regex1.90.0 \
+  libboost-serialization1.90.0 \
+  libgmp10 \
+  libsodium23 \
+  libzmq3-dev
+```
+
+`libsodium23` and the versioned Boost/GMP packages are direct runtime-provider declarations.
+`libzmq3-dev` is a deliberate exception: the vendored `ZeroMQ.dll` imports `libzmq`, so Linux needs
+the unversioned `libzmq.so` symlink supplied by that package; `libzmq5` alone supplies only
+`libzmq.so.5`. On supported Ubuntu releases, `libzmq3-dev` also pulls development dependencies,
+including `libsodium-dev`, into the final image. This accepted size tradeoff keeps the loader name
+distro-managed instead of creating an application-owned symlink; the package list must not be read
+as guaranteeing that final images contain no development headers. Every release-affecting pull
+request builds both the source and packaged Dockerfiles, validates the current apt package names and
+`ldd -r` provider closure, and performs a managed ZeroMQ load inside each final image. Apt package
+names are not OCI image references and therefore remain outside the digest-based release image-pin
+monitor.
+
+On the Ubuntu 22.04 compatibility target, enable Canonical's supported .NET backports PPA first:
 
 ```console
 sudo apt-get update
 sudo apt-get install -y software-properties-common
 sudo add-apt-repository -y ppa:dotnet/backports
 sudo apt-get update
-sudo apt-get install -y aspnetcore-runtime-10.0 libgmp10 libsodium-dev libzmq3-dev
+sudo apt-get install -y \
+  aspnetcore-runtime-10.0 \
+  libboost-locale1.74.0 \
+  libboost-regex1.74.0 \
+  libboost-serialization1.74.0 \
+  libgmp10 \
+  libsodium23 \
+  libzmq3-dev
 ```
 
 ## Install the archive
@@ -87,18 +913,74 @@ Create a dedicated service account, unpack the versioned directory, and point a 
 it:
 
 ```console
-id -u miningcore >/dev/null 2>&1 || \
-  sudo useradd --system --home /var/lib/miningcore --shell /usr/sbin/nologin miningcore
-sudo mkdir -p /opt /etc/miningcore /var/lib/miningcore /var/log/miningcore
-sudo tar -xzf "miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04.tar.gz" -C /opt
-sudo ln -sfn "/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-22.04" /opt/miningcore
-sudo cp /opt/miningcore/config.example.json /etc/miningcore/config.json
-sudo chown -R miningcore:miningcore /var/lib/miningcore /var/log/miningcore
-sudo chown root:miningcore /etc/miningcore
-sudo chown root:miningcore /etc/miningcore/config.json
-sudo chmod 0750 /etc/miningcore
-sudo chmod 0640 /etc/miningcore/config.json
+MININGCORE_INSTALL_READY=
+if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
+  release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
+  install_miningcore_release() {
+    { id -u miningcore >/dev/null 2>&1 ||
+      sudo useradd --system --home-dir /var/lib/miningcore \
+        --shell /usr/sbin/nologin miningcore; } || return
+    sudo mkdir -p /opt /etc/miningcore /var/lib/miningcore /var/log/miningcore || return
+    sudo tar -xzf "$archive" -C /opt || return
+    test -d "$release_dir" || return
+    if [ ! -e /etc/miningcore/config.json ]; then
+      sudo cp "$release_dir/config.example.json" /etc/miningcore/config.json || return
+    fi
+    sudo chown -R miningcore:miningcore /var/lib/miningcore /var/log/miningcore || return
+    sudo chown root:miningcore /etc/miningcore || return
+    sudo chown root:miningcore /etc/miningcore/config.json || return
+    sudo chmod 0750 /etc/miningcore || return
+    sudo chmod 0640 /etc/miningcore/config.json || return
+    sudo ln -sfnT "$release_dir" /opt/miningcore || return
+  }
+
+  if install_miningcore_release; then
+    MININGCORE_RELEASE_READY=
+    if rm -f -- "$archive" "$checksum_file" &&
+        rmdir -- "$MININGCORE_DOWNLOAD_DIR"; then
+      MININGCORE_DOWNLOAD_DIR=
+      archive=
+      checksum_file=
+    else
+      echo "WARN: remove the verified release files from $MININGCORE_DOWNLOAD_DIR" >&2
+    fi
+    export MININGCORE_INSTALL_READY=1
+    echo "READY: installed $release_dir and updated /opt/miningcore"
+  else
+    echo "STOP: installation failed; /opt/miningcore was not changed" >&2
+  fi
+else
+  echo "STOP: no release archive passed the download and checksum gate" >&2
+fi
 ```
+
+The stable symlink is changed only after extraction and filesystem setup succeed. On upgrades, the
+existing `/etc/miningcore/config.json` is retained; compare it with the new example and apply changes
+deliberately. A successful installation also removes the verified archive and checksum workspace;
+an explicit warning names the directory if cleanup cannot complete.
+
+The archive's `examples/` directory contains CI-validated direct, multi-coin, merged-mining and
+distributed-recorder starting points. They do not replace the live configuration automatically;
+choose a topology from `examples/README.md`, stage it separately, and apply local secrets and
+network settings deliberately.
+
+Compare the extracted metadata with the binary before changing the live service:
+
+```console
+if [ "${MININGCORE_INSTALL_READY:-}" = 1 ] &&
+    [ -n "${release_dir:-}" ] && [ -d "$release_dir" ]; then
+  cat "$release_dir/BUILD-INFO"
+  LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version
+else
+  echo "STOP: no release from this installation run is available to verify" >&2
+fi
+```
+
+`BUILD-INFO` must name the selected release, matching Ubuntu target, and source commit. Releases
+published after the version-reporting validation was introduced must report the same semantic
+version (without the tag's leading `v`) and full commit SHA. Older releases, including
+`v0.1.0-rc.2`, can show the legacy `0.1.0.0-BRANCH` format; match their full embedded SHA to
+`BUILD-INFO` instead. A branch label such as `dev` is not sufficient release provenance by itself.
 
 Edit `/etc/miningcore/config.json`. Replace every `CHANGE_ME` value and use absolute writable paths
 for service state:
@@ -118,9 +1000,35 @@ of source control.
 For a new database, use the packaged schema:
 
 ```console
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f /opt/miningcore/migrations/createdb.sql
+MININGCORE_DATABASE_READY=
+role_exists=
+database_exists=
+if role_exists="$(sudo -u postgres psql -X -A -t -v ON_ERROR_STOP=1 \
+     -d postgres -c "SELECT 1 FROM pg_roles WHERE rolname = 'miningcore';")" &&
+   database_exists="$(sudo -u postgres psql -X -A -t -v ON_ERROR_STOP=1 \
+     -d postgres -c "SELECT 1 FROM pg_database WHERE datname = 'miningcore';")"; then
+  if [ "$role_exists" = 1 ] || [ "$database_exists" = 1 ]; then
+    echo "STOP: the miningcore role or database already exists; use the upgrade runbook" >&2
+  elif sudo -u postgres createuser --pwprompt miningcore &&
+       sudo -u postgres createdb --owner=miningcore miningcore &&
+       sudo -u postgres psql --single-transaction -v ON_ERROR_STOP=1 \
+         -d miningcore -f /opt/miningcore/migrations/createdb.sql &&
+       psql -h 127.0.0.1 -U miningcore -d miningcore \
+         -c 'SELECT current_database(), current_user;'; then
+    export MININGCORE_DATABASE_READY=1
+    echo "READY: created and verified the miningcore database"
+  else
+    echo "STOP: database provisioning failed; inspect PostgreSQL before retrying" >&2
+  fi
+else
+  echo "STOP: unable to inspect existing PostgreSQL roles and databases" >&2
+fi
 ```
+
+On a successful fresh provision, the commands prompt for a new role password without placing it on
+the command line, the final query must report database and user `miningcore`, and the block exports
+`MININGCORE_DATABASE_READY=1`. If either object already exists, the block stops before creation or
+schema import; use the existing-database procedure below instead.
 
 For an existing database, stop all Miningcore writers and payout managers, take a tested backup,
 and apply the migrations required by the release before starting the new binary. Read the packaged
@@ -134,13 +1042,36 @@ allows 90 seconds for the application's bounded clean shutdown and durable recov
 ```console
 sudo cp /opt/miningcore/systemd/miningcore.service /etc/systemd/system/miningcore.service
 sudo mkdir -p /etc/miningcore
+sudo install -m 0600 -o root -g root /dev/null \
+  /etc/miningcore/miningcore.env
 token="$(openssl rand -hex 32)"
 printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
   sudo tee /etc/miningcore/miningcore.env >/dev/null
 unset token
-sudo chown root:root /etc/miningcore/miningcore.env
-sudo chmod 0600 /etc/miningcore/miningcore.env
 sudo systemctl daemon-reload
+```
+
+Before enabling Miningcore with a local database, configure
+[PostgreSQL startup/shutdown ordering](systemd-postgresql-ordering.md). The v0.3.0 archives predate
+the helper; use the [manual setup](systemd-postgresql-ordering.md#manual-setup-including-v030) for
+that release. Archives from the release containing this change onward include the helper, which
+must run after installing/reloading the unit and before enabling Miningcore:
+
+```console
+sudo /opt/miningcore/systemd/configure-postgresql-ordering.sh
+```
+
+Resolve any error or multiple-cluster ambiguity and verify the selected unit serves Miningcore's
+database before continuing. Once a unit is selected, use `--dry-run` to inspect current dependencies;
+for reviewed intentional extras such as an exporter, see the ordering guide's exact-name
+`--allow-remaining UNIT` option. Remove obsolete cluster references instead of acknowledging them.
+For remote databases, follow the guide's remote setup and explicit
+removal guidance instead. Rerun the helper whenever the PostgreSQL major version or cluster unit
+name changes; on v0.3.0, update the manual drop-in and reload systemd.
+
+After the applicable ordering setup and verification succeed:
+
+```console
 sudo systemctl enable --now miningcore
 sudo systemctl status miningcore
 sudo journalctl -u miningcore -f
@@ -155,16 +1086,86 @@ loss, use the guarded [payout-manager recovery runbook](database.md#recover-payo
 
 ## Upgrade or roll back
 
+If this maintenance changes the PostgreSQL major version or cluster unit name, follow the
+[ordering upgrade procedure](systemd-postgresql-ordering.md#postgresql-upgrades-and-removal) before
+starting Miningcore. Start/select the replacement database service and rerun the helper with its
+explicit `--unit` (or update the manual v0.3.0 drop-in), then verify both dependencies. For a
+confirmed local-to-remote migration, use `--remove` and verify the remaining drop-ins.
+
 For a major-runtime upgrade from .NET 6, use the more detailed
 [.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). The sequence below is the shorter
 procedure for routine upgrades after the deployment layout and runtime are already suitable.
 
-1. Back up PostgreSQL, the configuration, and recovery journal.
-2. Download and verify the new archive.
-3. Stop Miningcore and confirm no other payout manager owns the same pools/database.
-4. Apply release-specific database migrations.
-5. Extract the new version and change `/opt/miningcore` with `ln -sfn`.
-6. Start Miningcore and inspect its startup, daemon-sync, recorder, and payout-manager logs.
+1. Back up the configuration and recovery journal.
+2. Download and verify the new archive using [Choose a version](#choose-a-version).
+3. Extract and verify the candidate in its immutable versioned directory without changing
+   `/opt/miningcore`.
+4. Stop every Miningcore writer using the database, including share-relay senders, receivers,
+   recorders and recovery importers on every node, and confirm no other payout manager owns the same
+   pools/database.
+5. Back up PostgreSQL and prove the backup inventory is readable.
+6. Apply release-specific migrations from the candidate's `migrations` directory.
+7. Change `/opt/miningcore` only after every migration succeeds.
+8. Start Miningcore and inspect its startup, daemon-sync, recorder, and payout-manager logs.
+
+The `systemctl` command below stops only the supplied local `miningcore.service`. Before running the
+block, stop any differently named service or remote node that writes the same database, especially
+share-relay senders, receivers and recorders, recovery importers and payout managers. The block
+cannot verify or stop those external writers for you.
+
+Run this block in the same shell as the successful download-and-verification block. It consumes that
+block's readiness latch and archive path. Replace the migration list only when the target release
+notes explicitly require a different ordered set:
+
+```console
+umask 077
+MININGCORE_UPGRADE_READY=
+if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
+  release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
+  upgrade_backup="$HOME/miningcore-before-${MININGCORE_VERSION}.dump"
+
+  stage_miningcore_candidate() {
+    if sudo test -e "$release_dir"; then
+      echo "STOP: candidate directory already exists; inspect it before retrying" >&2
+      return 1
+    fi
+    sudo mkdir -p /opt || return
+    sudo tar -xzf "$archive" -C /opt || return
+    test -d "$release_dir/migrations" || return
+    cat "$release_dir/BUILD-INFO" || return
+    LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return
+  }
+
+  if stage_miningcore_candidate; then
+    if sudo systemctl stop miningcore &&
+       sudo -u postgres pg_dump -Fc -d miningcore > "$upgrade_backup" &&
+       pg_restore --list "$upgrade_backup" > /dev/null &&
+       sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+         -f "$release_dir/migrations/add_auxpow_block_idempotency.sql" &&
+       sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+         -f "$release_dir/migrations/add_payout_manager_ownership.sql" &&
+       sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+         -f "$release_dir/migrations/add_share_accounting.sql" &&
+       sudo ln -sfnT "$release_dir" /opt/miningcore; then
+      MININGCORE_RELEASE_READY=
+      export MININGCORE_UPGRADE_READY=1
+      echo "READY: migrated the database and activated $release_dir"
+    else
+      echo "STOP: upgrade failed; /opt/miningcore was not changed" >&2
+      echo "Keep Miningcore stopped until the database and candidate are reconciled" >&2
+    fi
+  else
+    echo "STOP: candidate staging failed; /opt/miningcore was not changed" >&2
+  fi
+else
+  echo "STOP: no verified release archive is available to upgrade" >&2
+fi
+```
+
+Start the service only when the block prints `READY` and exports
+`MININGCORE_UPGRADE_READY=1`. The old symlink remains intact after a staging, backup or migration
+failure. If a migration committed before a later step failed, do not restart the old binary merely
+because its symlink remains; follow the rollback boundary below or complete the reviewed upgrade.
 
 If application rollback is necessary, stop the service and repoint the symlink to the previous
 directory. Database migrations may not be reversible; restore the matching backup when the release
@@ -176,19 +1177,19 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
-export MININGCORE_VERSION=v0.1.0-rc.9  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.3.0  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
   -o /etc/miningcore/config.json
 sudo chown root:10001 /etc/miningcore/config.json
 sudo chmod 0640 /etc/miningcore/config.json
+sudo install -m 0600 -o root -g root /dev/null \
+  /etc/miningcore/miningcore.env
 token="$(openssl rand -hex 32)"
 printf 'MININGCORE_ADMIN_API_TOKEN=%s\n' "$token" |
   sudo tee /etc/miningcore/miningcore.env >/dev/null
 unset token
-sudo chown root:root /etc/miningcore/miningcore.env
-sudo chmod 0600 /etc/miningcore/miningcore.env
 sudo chown 10001:10001 /var/lib/miningcore
 sudo docker pull "ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}"
 sudo docker run -d \
@@ -212,10 +1213,15 @@ from the container network.
 Review these release-specific changes before upgrading an existing pool. New installations can
 return to them after completing the deployment steps above.
 
-### Ubuntu 26.04 x64 source-build support
+PostgreSQL startup debug-log filters must now match `Using PostgreSQL persistence ` instead of
+`Using postgres connection string:`. The new single-line JSON diagnostic intentionally omits
+credential values; see [credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics).
+
+### Ubuntu 26.04 primary release and source-build support
 
 The repository now includes `build-ubuntu-26.04.sh` and a dedicated Ubuntu 26.04 source-build CI
-lane. The native sources build with GCC 15 and Boost 1.90: the CryptoNight interfaces use explicit
+lane. Ubuntu 26.04 is now also the primary prebuilt archive, container base, and Linux development
+target. The native sources build with GCC 15 and Boost 1.90: the CryptoNight interfaces use explicit
 byte-output conversions and POSIX declarations, the CryptoNote library uses C++14 with its direct
 Boost MPL dependency, and obsolete Boost.System linkage has been removed from CryptoNote and
 ZanoNote. ZanoNote also uses the current Boost.Asio `io_context` and Boost.UUID initialization
@@ -223,11 +1229,113 @@ forms.
 
 The Linux native build driver now propagates each component failure explicitly and stops before a
 later component can hide an incomplete build. The Ubuntu 26.04 validation publishes the shared
-24-library inventory also required by release packaging, checks x86-64 architecture, dependencies
-and required ZanoNote exports, and runs targeted CryptoNote, Flex, yescrypt and ZanoNote load tests
-against the freshly built libraries. It also exercises version/help/schema paths and reaches a
-controlled startup safety boundary. Official prebuilt release archives remain built and tested on
-Ubuntu 22.04 x64.
+24-library inventory also required by release packaging, checks x86-64 architecture, managed
+exports and dynamic relocation providers, and runs targeted CryptoNote, Flex, yescrypt and ZanoNote
+load tests against the freshly built libraries. It also exercises version/help/schema paths and
+reaches a controlled startup safety boundary. Ubuntu 24.04 retains required source-build
+validation, and an official compatibility archive remains independently built and fully tested on
+Ubuntu 22.04 x64. Do not deploy the 26.04 archive on an older host; select the matching archive or
+build from source.
+
+Supported source-build helpers force stable English diagnostics and fail if the compiler or build
+system emits a warning. The normal pull-request build and source-container build enforce the same
+contract, while managed warnings are also promoted structurally to errors. The warning cleanup
+repairs the reported managed-code and native-library findings instead of hiding them globally,
+including undefined behavior in CryptoNight, Argon2, Ethash, Xelis, Verus and libkeccak code. The
+CryptoNight soft-shell buffer defect was in a currently unregistered algorithm path, but is fixed
+to keep that native implementation memory-safe if it is enabled later.
+
+In an interactive terminal, the source-build helpers show .NET's concise progress and elapsed-time
+display. Warning enforcement uses a separate private normal-verbosity MSBuild log, which is audited
+after a successful build and removed when the helper exits. Redirected and non-interactive runs use
+.NET's conventional output automatically. Operators may also set `MSBUILDTERMINALLOGGER=off`
+without the helpers overriding that standard opt-out. A missing or empty audit log fails the build
+closed.
+
+Three Linux hashing defects are corrected and deserve particular attention from operators:
+
+- Argon2d previously left `blake2b_long` unresolved in `libmultihash.so`. Calling `argon2d250`,
+  `argon2d500`, `argon2d1000` or `argon2d16000` could therefore terminate Miningcore on the first
+  hash. The implementation is now linked into the library, uses a collision-resistant internal
+  symbol name, clears its working state and is pinned by a known-answer test independently checked
+  against a reference Argon2 implementation.
+- Allium was registered and exported, but its implementation object was absent from
+  `libmultihash.so`. An Allium share could therefore terminate Miningcore on the first hash. The
+  implementation is now linked and pinned by a vector independently cross-checked against the
+  Garlicoin project's published `allium-hash` package.
+- Xelis v1 on a CPU without AES-NI previously called unavailable OpenSSL symbols and implemented a
+  full AES block encryption where the mining algorithm requires one AES round. The portable path
+  now uses the same single-round operation as Xelis v2. A no-AES build and known-answer test run on
+  every supported Linux lane; AES-capable lanes additionally compare it directly with AES-NI.
+
+All 24 packaged Linux hashing libraries now link with `-Wl,--no-undefined`. CryptoNote explicitly
+links its Boost.Regex, OpenSSL and libsodium providers and includes its parsing-only Miningcore
+stubs; Dero includes HighwayHash's runtime instruction-set resolver; and ZanoNote includes the
+cryptographic and proof objects its parsing exports reference. This closes latent load-time failures
+that were previously outside the strict `libmultihash.so` boundary. CryptoNote's Bulletproof and
+Bulletproof+ sizing helpers now reject malformed proof shapes without throwing, every exported C ABI
+entry point catches native exceptions, and isolated hostile miner-transaction vectors prevent a
+daemon-supplied block template from unwinding C++ through P/Invoke. The managed fast-hash declaration
+also returns `void`, matching `cn_fast_hash_export` exactly instead of ignoring a synthetic integer.
+
+Release and source-build validation derives every `DllImport` and `LibraryImport` from all managed
+native-wrapper sources, tolerating formatting changes while failing if any attribute cannot be
+parsed unambiguously. Each wrapper must map to exactly one library in
+`scripts/release/linux-native-libraries.txt`, every listed library must have exactly one wrapper,
+and every managed entry point must be a callable function in that library's dynamic export table.
+Nonliteral library or entry-point expressions and conditional imports inside the reviewed `Native`
+directory fail structurally instead of being guessed. A separate lightweight scan rejects direct
+literal imports of packaged libraries elsewhere in source-controlled application code without
+applying the wrapper grammar to unrelated operating-system P/Invokes. The shared attribute grammar
+recognizes qualified and aliased `DllImport`/`LibraryImport` names, attribute targets and lists,
+positional or correctly named constructor arguments (including C# verbatim identifiers), and both
+extensionless and exact `.so` library names regardless of line layout. The Unix loader variations
+`libname`, `libname.so`, `name` and `name.so` map to one canonical inventory entry; an ambiguous
+mapping fails structurally. Outside the reviewed directory, a relative or absolute path is rejected
+when its basename matches any of those forms.
+Reviewed wrappers may not use paths. Generated `bin` and `obj` trees are excluded so a future
+`LibraryImport` source generator cannot create a false duplicate contract.
+
+Provider-aware `ldd -r` and weak-import inspection then reject missing dependencies and unresolved
+native-to-native relocations for every artifact. ELF version suffixes are normalized before matching
+the narrow standard-toolchain weak-symbol allowlist and the exception manifest, whose entries must
+use canonical unversioned symbol names. Missing, symlinked or otherwise non-regular inputs, malformed
+tool output and failed inspection tools also fail closed. Contract mismatches use status 1; defects
+in the validator input or inspection process use status 70. The validator supports a precise,
+per-library JSON exception manifest for a future genuinely optional provider, but the current release
+has no exceptions; any configured exception must be observed or validation rejects it as stale.
+
+When adding a Linux native library, add its sorted filename to the inventory, give it one managed
+wrapper with literal library and entry-point names, export every imported symbol, and link the
+shared object with `-Wl,--no-undefined`. Add all direct provider libraries and implementation
+objects to its Makefile rather than relying on another plugin to have been loaded first. The
+previous sibling-plugin assumption is deliberately reversed: each packaged shared object must now
+prove its provider closure independently, regardless of library load order. The
+hermetic symbol-contract suite automatically discovers new wrappers and tests missing exports,
+unresolved providers, malformed inputs, exact exception scoping and stale exceptions. The Ubuntu
+22.04 and 26.04 release artifacts and Ubuntu 24.04 and 26.04 source builds run the same real-artifact
+contract before packaging or smoke testing.
+
+The four Ethash-family libraries run synthetic light-cache vectors that exercise the corrected
+temporary-node lifetime without allocating a production-size DAG. Those vectors pin stability;
+separate development-versus-corrected-build comparison found the digests identical, confirming
+that the lifetime repair is output-neutral. The Ubuntu native-vector lanes also run RandomX and
+RandomARQ known-answer tests against the exact patched release artifacts. The pinned RandomX-family
+sources are verified by SHA-256 before patches are applied. Raising their CMake policy floor to 3.10
+selects CMake's newer policy defaults through that version; the native vectors protect the hashing
+contract.
+
+The Equihash memory-cleanse helper now compiles correctly on Windows and uses guaranteed volatile
+byte stores on non-Windows targets. This removes its undeclared OpenSSL dependency without relying
+on taking the address of a C++ standard-library function.
+
+For diagnosis on a future, unsupported compiler only, an operator may set
+`MININGCORE_ALLOW_BUILD_WARNINGS=1` when invoking a user-facing source-build helper. The warnings
+remain visible and the helper labels the result unsuitable for release. This override cannot bypass
+an unreadable audit log and applies only to the post-build native/compiler/build-system diagnostic
+audit. Managed compiler warnings and NuGet security advisories remain errors and cannot be bypassed
+with this variable. The override is never enabled by CI or release packaging; resolve every warning
+before deploying the artifact.
 
 ### Security: administrative API bearer authentication and safe verbs
 
@@ -276,12 +1384,15 @@ Source-IP whitelist rejection logs for `/api/admin` and `/metrics` are now bound
 amplification. Each route family owns an independent, fixed-size limiter: its first rejection is
 written at `Info`, intervening rejections are counted, and the next informational entry after the
 one-minute monotonic interval includes the suppressed count. Per-request details remain available
-at `Debug`; enabling that level during hostile traffic can substantially increase log volume. A
-summary remains pending until another rejection arrives after the interval, and the source shown
+at `Debug`; enabling that level during hostile traffic can substantially increase log volume.
+
+A summary remains pending until another rejection arrives after the interval, and the source shown
 on it belongs to that current request rather than the potentially different suppressed sources.
 Varying attacker addresses does not increase limiter state, and a metrics flood cannot suppress
 the first administrative rejection. Bearer-authentication rejection logging retains its separate
-per-pipeline limiter. New Prometheus counter `miningcore_api_ip_whitelist_rejections_total`
+per-pipeline limiter.
+
+New Prometheus counter `miningcore_api_ip_whitelist_rejections_total`
 increments for every whitelist rejection regardless of log suppression. Its `route_family` label
 is restricted to the fixed values `admin`, `metrics` or `other` and never contains a source address
 or request path, preserving bounded metric cardinality under hostile traffic.
@@ -348,13 +1459,17 @@ public listener for backwards compatibility. If `adminPort` is omitted, explicit
 `/api/admin` at the reverse proxy unless the admin whitelist and firewall are the intended
 protection. If `metricsPort` is omitted, likewise deny `/metrics` unless public metric exposure is
 intentional. A same-host reverse proxy normally reaches Miningcore from trusted loopback, so the
-application whitelist alone does not block a route forwarded by that proxy. Explicit API ports must
+application whitelist alone does not block a route forwarded by that proxy.
+
+Explicit API ports must
 be unique and in the range 1–65535. Enabled internal Stratum ports must also be in that range;
 port `0` is now rejected instead of creating an unpredictable ephemeral mining endpoint.
 TLS-enabled deployments use the same configured certificate on every listener. An API listener
 that uses the same port and an overlapping bind address as an enabled local Stratum endpoint now
 stops startup with the conflicting port identified; different specific bind addresses may reuse a
-port. Enabled Stratum endpoints follow the same address-aware rule: two pools may share a numeric
+port.
+
+Enabled Stratum endpoints follow the same address-aware rule: two pools may share a numeric
 port on distinct specific IPv4 or IPv6 addresses, while identical addresses, wildcards and
 IPv4-mapped equivalents fail startup with both pool and endpoint identities. All overlapping pairs
 are reported together so operators can correct the complete configuration before restart. See
@@ -363,18 +1478,22 @@ are reported together so operators can correct the complete configuration before
 Every enabled internal Stratum port must map to an endpoint object. A JSON `null` endpoint now
 stops normal startup with the affected pool and numeric port identified instead of being treated as
 an omitted loopback address. Disabled and relay-only pools retain deferred listener validation, and
-`-rs` recovery continues to discard listener settings because it opens no Stratum sockets. An enabled
-relay-only pool remains available through the public API, but unusable null endpoint entries are omitted
-from its public `ports` map instead of causing the complete pool response to fail. Miningcore warns at
-startup when an enabled relay-only pool retains such an entry. API reads now project listener settings
-into dedicated public endpoint DTOs rather than mapping or mutating the live configuration type. The
-public DTOs have no TLS credential fields or trusted PROXY-protocol peer allow-list, preventing those
-runtime-only values from entering the response even when legacy null serialization is enabled.
+`-rs` recovery continues to discard listener settings because it opens no Stratum sockets.
+
+An enabled relay-only pool remains available through the public API, but unusable null endpoint
+entries are omitted from its public `ports` map instead of causing the complete pool response to
+fail. Miningcore warns at startup when an enabled relay-only pool retains such an entry. API reads
+now project listener settings into dedicated public endpoint DTOs rather than mapping or mutating
+the live configuration type. The public DTOs have no TLS credential fields or trusted
+PROXY-protocol peer allow-list, preventing those runtime-only values from entering the response
+even when legacy null serialization is enabled.
+
 Consequently, `ports[*].tlsPfxFile` and `ports[*].tlsPfxPassword` change from `null` to absent.
 `ports[*].tcpProxyProtocol.proxyAddresses` was previously returned with the configured trusted-proxy
 allow-list and is now absent entirely. This is an intentional information-disclosure hardening change.
 REST clients must remove references to those private fields; the remaining endpoint keys retain their
 existing names and values.
+
 Consumers compiling directly against Miningcore response classes must also update the generic value
 type of `PoolInfo.Ports` from `PoolEndpoint` to `ApiPoolEndpoint`.
 
@@ -401,8 +1520,10 @@ wallet-password and wallet-private-key settings from the untyped `paymentProcess
 bag. Earlier builds could return one live credential through `/api/pools` and `/api/pools/{id}` when
 the configuration contained the same sensitive setting more than once with case-variant names, such
 as both `WalletPassword` and `walletPassword`. The affected redaction paths are Alephium, Bitcoin,
-Ergo, Handshake and Kaspa wallet passwords plus Warthog wallet private keys. Operators can assess
-exposure by inspecting their configuration locally for duplicate sensitive names after ignoring case.
+Ergo, Handshake and Kaspa wallet passwords plus Warthog wallet private keys.
+
+Operators can assess exposure by inspecting their configuration locally for duplicate sensitive
+names after ignoring case.
 If checking `/api/pools`, use a trusted local connection, avoid saving or sharing the response and
 treat any key under `paymentProcessing.extra` matching `walletPassword` or `walletPrivateKey`
 without regard to letter case as exposed. Operators who used such a configuration should upgrade,
@@ -442,8 +1563,10 @@ never log values, replace every sensitive-looking omitted key name with
 `<redacted-sensitive-key>`, escape unsafe characters in ordinary names within a fixed output-length
 bound and emit at most ten key warnings per pool plus one reason-grouped remainder summary. A
 redacted unknown-key warning can list the family's recognised private field names as safe spelling
-hints without echoing the supplied name. Disabled pools, share recovery and API requests do not emit
-these warnings. They use the dedicated `PaymentExtraDiagnostics` NLog category for independent
+hints without echoing the supplied name.
+
+Disabled pools, share recovery and API requests do not emit these warnings. They use the dedicated
+`PaymentExtraDiagnostics` NLog category for independent
 routing or filtering through the standard console and main log. Per-pool files remain limited to
 their pool-id logger. A private entry can still be active runtime configuration when the coin
 family's binder accepts it; operators should correct or remove a warning-producing setting only
@@ -454,14 +1577,18 @@ ISO-looking date-time strings as dates. UTC, offset and unsuffixed date-time val
 normal startup, recovery-mode configuration loading, typed payment-extension projection,
 parsed-configuration output and approved REST responses. Date-only strings were already preserved
 and remain covered by regression tests. This intentionally corrects earlier builds that could
-replace configured text with a normalized, culture-dependent date representation. It affects
+replace configured text with a normalized, culture-dependent date representation.
+
+It affects
 extension values such as Handshake `walletName` or `walletAccount`, Kaspa
 `versionEnablingMaxFee`, custom
 coin-template extension values, and any other configured string that resembles a full date-time.
 System.Text.Json and Newtonsoft deserialization of the public payment DTO from JSON text now
 preserve the same typed string value. Newtonsoft clients that first materialize a `JObject` must use
 `DateParseHandling.None`; the DTO rejects an already-coerced `JTokenType.Date` because its exact
-lexical value can no longer be recovered. Operators or API clients that relied on the normalized
+lexical value can no longer be recovered.
+
+Operators or API clients that relied on the normalized
 value must instead configure the literal they require and update that dependency before upgrading.
 RPC, Stratum, recovery-journal and schema-file readers retain their existing parsing behavior.
 
@@ -471,7 +1598,9 @@ startup before any pool is announced online and releases all sockets already acq
 attempt. The failure identifies the pool, effective endpoint and operating-system socket error.
 Broadcast and multicast listener addresses are rejected during configuration validation, while
 IPv4 loopback and link-local ranges remain eligible for the authoritative host bind. Existing valid
-listener configurations require no migration. Reserved sockets remain bound but do not call
+listener configurations require no migration.
+
+Reserved sockets remain bound but do not call
 `Listen` until their pool finishes initialization; activation must succeed before the pool announces
 `Online`. Reserved listeners are exclusive rather than `SO_REUSEADDR`-enabled, and all server-
 initiated accepted-socket closes—including ordinary host shutdown, malformed requests, TLS handshake
@@ -479,7 +1608,9 @@ failures, request-handler faults and independent send-timeout cancellation—use
 Accepted sockets are protected against
 unclean process termination by default, while only genuine peer-initiated EOF switches to graceful
 close. This permits bytes already written to the network to drain but does not drain Miningcore's
-application send queue during shutdown. Startup retries `AddressAlreadyInUse` with one cluster-wide
+application send queue during shutdown.
+
+Startup retries `AddressAlreadyInUse` with one cluster-wide
 bounded retry-delay budget totalling up to 90 seconds when residual `TIME_WAIT` survives an unclean
 stop; scheduled waits do not multiply with the number of endpoints. Bind-call duration and scheduler
 overshoot remain outside that delay budget, so it is not a hard wall-clock deadline.
@@ -496,6 +1627,7 @@ would silently restore the unsafe per-pool bind path. The protected surface now 
 `CreateConnectionId` and `BeforeConnectionTaskRemovalAsync` lifecycle hooks, while
 `UnregisterConnection` fails fast when the identity is absent instead of relying on a Debug-only
 assertion. Out-of-tree subclasses must not call it defensively for an already-removed connection.
+
 After a terminal completion or error callback has been invoked, an exception from that callback or
 subsequent stream teardown is logged and absorbed: `DispatchAsync` completes without issuing a
 second terminal callback. Operators diagnosing lifecycle-callback programming errors must therefore
@@ -656,7 +1788,7 @@ closed. Journal and owner-file symlinks, hard links and non-regular objects are 
 blocking on FIFOs. The acknowledgement command acquires the same native owner before changing fatal
 evidence.
 
-On supported Ubuntu 22.04 hosts, no-replacement publication uses
+On supported Ubuntu Linux hosts, no-replacement publication uses
 `renameat2(..., RENAME_NOREPLACE)` plus retained-directory `fsync`. Unsupported libc, kernel or
 filesystem responses use a no-replace `linkat`/`unlinkat` fallback. A crash between those calls can
 leave two names for one inode; single-link checks reject that state. Filesystems supporting neither
@@ -759,6 +1891,11 @@ balance deduction; any residual remains on the balance for a later payout. Revie
 [configuration guidance](configuration.md#bitcoin-family-payout-precision), particularly when a
 template relies on the four-decimal fallback.
 
+Only positive-percentage `rewardRecipients` are omitted from public payment history. A configured
+zero-percent recipient is inactive: if that address also mines, its ordinary payout remains visible
+in the `payments` table and API. This makes the zero-percent examples behaviorally inert while
+preserving the established privacy treatment for active pool-fee and donation recipients.
+
 Before enabling Bitcoin-family payments, confirm whether the pool or miners pay transaction fees.
 Pool-paid fees require a confirmed spendable reserve because a matured coinbase may cover the
 recipient outputs but not the additional fee, causing `sendmany` to return `Insufficient funds`
@@ -793,6 +1930,60 @@ financial outcome. Handshake now requires successful wallet discovery or selecti
 Handshake and Equihash treat cancellation during `walletpassphrase` as ordinary pre-submission
 shutdown and conservatively attempt bounded relock when the unlock result is unknown.
 
+### Example configuration baselines
+
+The packaged catalogue includes standalone Bitcoin Cash and combined Bitcoin/Bitcoin Cash SOLO
+examples. Bitcoin Cash uses the bundled `bitcoin-cash` template, `BCash` address decoding and
+mainnet P2PKH CashAddr wallet fields. P2SH CashAddr values are not supported by the current payout
+path. The same-host combined topology keeps Bitcoin Core on its mainnet defaults and requires a
+separate BCH data directory plus these Bitcoin Cash Node settings. The BCHN service must select it
+with `-datadir=/var/lib/bitcoin-cash` (or use an equivalently isolated `-conf` path) before reading
+the node configuration:
+
+```ini
+datadir=/var/lib/bitcoin-cash
+rpcport=8432
+port=8433
+listenonion=0
+```
+
+This also prevents BCHN's automatic onion listener from competing for loopback port `8334`;
+operators that need a BCH onion service must configure a separate non-conflicting onion bind and
+Tor target.
+
+The exact `getblocktemplate` request emitted by Miningcore, including `rules: ["segwit"]`, was
+accepted during a smoke test against the official x86-64 Bitcoin Cash Node v29.1.0 release. The BCH
+examples therefore do not need a `gbtArgs` override for that supported daemon version.
+
+Every example that exposes internal Stratum now has named low- and high-difficulty tiers with
+VarDiff. Receiver-only share recorders and auxiliary-only pools remain single dormant endpoint
+descriptions because they do not accept miners. Active examples explicitly record their listener
+mode, polling and rebroadcast behavior, reviewed inactive-client timeout, explicit 30-second
+idle-VarDiff sweep, payout threshold and payout scheme. The difficulty values use a consistent
+relative spread on existing per-family scales; they are commissioning baselines rather than an
+audit of every miner model. CI requires exactly one positive, distinct low/high pair, permits the
+low tier to retarget below its starting value and pins the 15-second target, 90-second retarget and
+30% variance baseline. `maxDelta`, where configured, remains an absolute difficulty-step cap.
+
+The Dash ZMQ-only example now places `zmqBlockNotifySocket` and its topic on the daemon endpoint read
+by the Bitcoin-family job manager. Its zero `blockRefreshInterval` therefore means genuine
+notification-only template updates instead of silently discarding the configured socket.
+
+Example CI now derives exact-casing pool, daemon and payment extension contracts from each coin
+family's runtime types. Unknown, mis-cased, wrong-family, wrong-scope and wrong-typed values fail the
+suite. This closes the class of fixture error in which a misplaced or ineffective extension remains
+structurally valid but is ignored after extension-data binding.
+
+Bitcoin-derived configuration now represents the established runtime scopes explicitly:
+pool-level `minimumConfirmations` controls payout reconciliation, while daemon-level
+`zmqBlockNotifySocket` and `zmqBlockNotifyTopic` control template notifications. The previous public
+`BitcoinDaemonEndpointConfigExtra` aggregate remains available for external .NET compatibility, but
+Miningcore binds the two runtime paths through scope-specific contracts.
+
+`config.example.json` demonstrates inactive zero-percent reward-recipient placeholders instead of
+empty arrays. These placeholders do not collect rewards and must be replaced or removed with every
+other `CHANGE_ME` value before production.
+
 ### Coin definition accuracy
 
 The bundled definitions now select StakeCubeCoin's current SCCPow implementation instead of a
@@ -804,28 +1995,176 @@ deliberate fail-closed compatibility change; explicit redefinitions across separ
 remain supported.
 
 The stale HelpTheHomeless X16R definition has been removed because the maintained chain uses X25X,
-which is not included in the packaged native runtimes. DigiByte Odocrypt is likewise not advertised:
-Miningcore's historical Odocrypt implementation was removed as non-working. MeowCoin's existing
-MeowPow definition remains valid; its newer Scrypt mode is AuxPoW-only and requires generalized
+which is not included in the packaged native runtimes. Miningcore's historical non-working
+DigiByte Odocrypt implementation was also removed at that boundary; `v0.3.0-rc.1` restores a
+source-verified current-mainnet implementation under the new `digibyte-odocrypt` template described
+in its highlights above. MeowCoin's existing MeowPow definition remains valid; its newer Scrypt
+mode is AuxPoW-only and requires generalized
 merged-mining support before it can be offered as a Miningcore template.
 
 ## Maintainer release procedure
 
-The release workflow accepts SemVer tags reachable from `dev`, for example `v0.1.0-rc.10` or
-`v0.1.0`. It first builds and smoke-tests the source `Dockerfile`, then rebuilds on Ubuntu 22.04,
-runs the complete PostgreSQL-backed and ZeroMQ test suite, validates native runtime links,
-checks that the binary reports the release version and source commit, packages the result,
-smoke-tests the packaged image, and publishes both artifacts with provenance.
+This section is for repository maintainers. Operators installing or recovering a service should use
+the task links at the top of this guide and the [troubleshooting guide](troubleshooting.md).
+
+### Build and package contract
+
+The release workflow accepts SemVer tags reachable from `dev`, for example `v0.3.0-rc.2` or
+`v0.3.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
+fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
+is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
+not depend on GitHub retaining the retiring `ubuntu-22.04` runner image. Both release lanes use a
+stable hosted runner and an immutable, digest-pinned Docker Official Image.
+
+The workflow-declared
+build-image reference is recorded in each archive's `BUILD-INFO` and checked against the shared
+release-target contract during collection; the in-container `VERSION_ID` check independently
+confirms the selected Ubuntu release. Each lane runs the complete PostgreSQL-backed and ZeroMQ test
+suite, validates native runtime links, and checks that the binary reports the release version and
+source commit.
+
+The workflow then verifies the two-archive set, creates one checksum manifest, smoke-tests the
+26.04 packaged image, and publishes both archives and the container with provenance. Publication
+uses an explicit, recoverable sequence: an unpublished draft receives and verifies the archive set,
+a version-scoped staging tag records the container digest, the draft records that digest in
+`CONTAINER-IMAGE.json`, and only a verified, published GitHub Release permits the public version
+tags and mutable aliases to move.
+
+The published container intentionally follows the serviced .NET Resolute runtime tag so rebuilt
+images receive upstream security fixes. BuildKit attaches maximum provenance and an SBOM to record
+the resolved build materials without freezing that runtime tag indefinitely. A weekly workflow
+compares the archive-build tags with their reviewed manifest-list digests and fails visibly when a
+pin needs review; updating a pin still requires the complete release validation. That scheduled
+monitor runs independently of lint tooling, while the always-running .NET pull-request workflow
+enforces ShellCheck for the release scripts.
+
+### Workflow dependency contract
+
+External GitHub Actions and reusable workflows must use a full upstream commit SHA with a bare
+same-line `# vX.Y.Z` release comment. Resolve the release with `git ls-remote --tags`, dereference
+annotated tags to commits when necessary, and inspect the pinned `action.yml` runtime and inputs.
+The version comment identifies the release; it does not replace verification of the SHA. Put
+runtime or migration notes on separate lines so Dependabot can update the version comment.
+If upstream publishes only major tags, do not invent a three-part release comment: first review
+an explicit exception and extend the guard's contract/tests to represent that upstream accurately.
+Local `./` actions are source-controlled; `docker://` actions must use a SHA-256 image digest.
+`scripts/release/test-workflow-action-pins.py` checks workflow YAML and tracked composite-action
+definitions in the .NET job, including reusable workflows and quoted references. It rejects
+floating/short pins, missing version comments, duplicate keys and YAML aliases. It checks syntax,
+not upstream provenance; release-to-SHA verification remains part of dependency review.
+The checker requires a Git checkout with Git installed so tracked composite actions cannot be
+silently omitted; extracted release trees receive a named error. Use spaces in YAML pin annotations.
+`--self-test` uses synthetic fixtures only. The normal check separately validates the live Docker
+publisher, reporting policy failures as `Invalid workflow contract` even when action pins are
+invalid; malformed YAML, duplicate keys and aliases still block publisher inspection. The gate accepts
+the simple event-name equality with optional expression delimiters, parentheses and whitespace;
+action `push` inputs require expression delimiters. More complex gates require a contract review.
+Secret detection covers both dot and bracket access, including workflow/job environment values.
+
+All checkout steps disable persistent Git credentials. Public repository fetches remain anonymous;
+release publication uses its existing explicitly supplied API tokens rather than checkout state.
+Specifically, `Validate release tag` in `.github/workflows/release.yml` runs
+`git fetch --no-tags origin dev` anonymously on tag builds. Before making this repository private,
+provide narrowly scoped, ephemeral authentication for that fetch and validate a tag build; otherwise
+it will fail authentication because checkout no longer retains Git credentials. Do not restore
+persistent credentials to PR checkouts to accommodate a private release fetch.
+
+GitHub Actions version updates run weekly as one Dependabot group, with `ci(actions):` titles.
+Both Actions and NuGet omit `target-branch` and follow the default branch (currently `dev`), allowing
+their configuration to apply to security updates too. NuGet keeps individual monthly version updates
+with `chore(deps):` titles so application-dependency changes can be reviewed separately.
+Security updates are advisory-driven and also require the repository security-update
+setting. Removing a branch override does not enable that setting. SHA-based Actions do not receive
+the same Dependabot alert coverage as semantic-version references, so maintainers must also track
+upstream advisories and review urgent fixes without waiting for the weekly run. See GitHub's
+[Dependabot options](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference)
+and [alert limitations](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependabot-alerts#limitations).
+
+This update deliberately retains Checkout v6.1.0 and setup-dotnet v5.4.0, the existing major lines
+used by the tested workflows, while migrating retired Docker and MSBuild runtimes. Checkout v7
+and setup-dotnet v6 introduce separate ESM/dependency migrations; Dependabot may propose those
+major upgrades for independent review. There is no major-version ignore rule.
+
+The legacy Docker Hub publisher retains its manual destination and credentials. Pull requests
+changing that workflow build with the same metadata/Buildx actions but cannot log in or push;
+only `workflow_dispatch` enables those steps. Published images include BuildKit provenance and
+an SBOM, and the run summary records the immutable image digest. This does not attest that Docker
+Hub credentials or registry publication work during a PR build; those require an authorized
+manual publication. GHCR release publication remains the canonical release path.
+The Docker PR check is path-filtered and must not be required by branch protection. Its Buildx
+docker-container driver supports the attestation inputs; PR builds exercise those inputs even
+though their cache-only output does not export the image or attestations.
+
+The PostgreSQL 17 service containers deliberately retain serviced major tags for disposable
+integration-test databases. They are outside the archive-build pin/monitor contract; test jobs
+therefore exercise current PostgreSQL 17 maintenance releases rather than a reproducible database
+image. The serviced .NET runtime tags likewise retain their documented policy.
+
+### Image-pin monitor contract
+
+Pin drift exits with status 1. A registry failure uses advisory status 69 only when its diagnostic
+matches a known transient network, service or rate-limit condition. Missing tags and every
+unclassified inspection failure use status 70 and fail closed. The checker inspects every target
+before deciding its final status, so a transient failure on one target cannot hide confirmed drift
+on another. An advisory workflow warning names only the image tags for which no drift decision could
+be made. Authentication failures remain fatal unless the registry diagnostic independently
+identifies rate limiting. Missing Docker, Buildx or `imagetools inspect`, and unparseable resolver
+output, also use status 70 because the monitor itself needs repair.
+
+In GitHub Actions, untrusted registry and proxy diagnostics are printed only while
+workflow-command processing is suspended, preventing their contents from creating annotations or
+changing runner state. Each safe header, its evidence and the subsequent advisory warning share
+stdout with confirmed-drift and monitor-validation diagnostics, making multi-target execution order
+deterministic. This ordering guarantee covers messages emitted by the scripts; Bash runtime warnings
+bypass their output helpers and may still appear on stderr. If a random guard token cannot be
+created, the diagnostic remains one prefixed, shell-escaped physical line. Both Actions command
+sentinels are rewritten. Source evidence is capped at 4,096 characters. Its encoded representation
+is capped at 8,192 characters, with explicit truncation markers. Embedded CR/LF and command-shaped
+data are therefore encoded rather than emitted as runner input. Malformed resolver evidence uses the
+same guarded output path.
+
+The wrapper supplies `MININGCORE_IMAGE_PIN_RESULT_FILE` as a private machine-readable handoff so
+checker diagnostics remain live. The checker uses the central contract and writes exactly one
+unresolved canonical image tag per line in central release-target order.
+
+The wrapper limits each read to the configured target count plus one line. It then
+accepts only a non-empty, unique, in-order subset of the configured tags before constructing a
+warning from matched contract values. Invalid-line diagnostics identify only the safe,
+locally derived line number; they never repeat handoff content. Result-file failures also use a
+generic diagnostic rather than exposing the private path.
+
+Empty or overlong files, blank lines,
+whitespace or carriage-return variants, unknown, duplicate or out-of-order tags, and result-file
+creation, read or write failures use structural status 70 and never produce a workflow warning. A
+final byte comparison against the canonical serialization also rejects binary contamination and a
+missing terminal newline. A standalone checker with no private result file retains its single
+readable, comma-separated summary on stderr. Confirmed pin drift remains status 1; only recognized
+transient resolution failures use status 69.
+
+> **Branch-protection note:** `Verify reviewed Ubuntu image pins` is deliberately path-filtered and
+> does not report a status on unrelated pull requests. Do not configure it as a required status
+> check; require the always-running build and release checks instead.
+
+Before tagging a new release, update every release-locked quick-start sentence as well as the
+`MININGCORE_VERSION`, `NEXT_VERSION` and `TAG` assignments. In particular, replace the README's
+named stable-version substitution boundary and its release-documentation assertion when the stable
+baseline changes.
+
 The tagged build injects the validated tag and commit as assembly metadata because development
 branches intentionally retain GitVersion's prerelease calculation; the runtime check requires an
 exact match before packaging can begin.
 This additional source-container gate makes release runs longer but catches Dockerfile-only build
 failures before publication. Prefer a signed annotated tag:
 
+> **Release retry rule:** if any Release workflow job fails, select **Re-run all jobs**.
+> Do not use **Re-run failed jobs**. GitHub Actions artifacts are scoped to a run attempt, so the
+> collector may be rerun without a successful sibling archive from the earlier attempt and will
+> correctly reject the incomplete set.
+
 ```console
 git switch dev
 git pull --ff-only origin dev
-NEXT_VERSION=v0.1.0-rc.10  # Replace with the next unused SemVer version.
+NEXT_VERSION=v0.3.0  # Replace with the next unused SemVer version.
 git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
 git push origin "$NEXT_VERSION"
 ```
@@ -833,3 +2172,170 @@ git push origin "$NEXT_VERSION"
 If signed tags are not configured, use an annotated tag (`git tag -a`) rather than a lightweight
 tag. After the first GHCR publication, confirm the package is public and inherits access from this
 repository. Do not move or reuse a published version tag; publish a new version instead.
+
+#### Reviewed pins: 2026-09-15
+
+The shared release-target contract pins the **rolling tags** `ubuntu:26.04` and `ubuntu:22.04`.
+The corresponding dated tags identify the builds published by the
+[official Ubuntu update](https://github.com/docker-library/official-images/commit/811a6c4a94bb0dbb18adbfb290520b6c780eb3b0),
+but have different index digests. Each rolling/dated pair resolves to the same Linux amd64 manifest
+and configuration. Do not compare a dated tag's index with the rolling-tag pin.
+
+Docker Hub response bytes were SHA-256 verified at all three levels (index, manifest, configuration):
+
+| Ubuntu 26.04 reference | SHA-256 digest |
+| --- | --- |
+| `ubuntu:26.04` index (pinned) | SHA-256 `513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d` |
+| `ubuntu:resolute-20260901` index | SHA-256 `5212ec9732bb047ef5aed8f477787a11b079527f9f4045e7dd509c282af74b84` |
+| Shared Linux amd64 manifest | SHA-256 `e5a4d6262ab5dbc25a85e60550dd7c87fd41a74fe43881534ed8288b2a7a3f8d` |
+| Shared Linux amd64 configuration | SHA-256 `e2e49769ecc7948a72b28e9748f2dc881a13f5cea02fc0faa99a7a5607e457f6` |
+
+| Ubuntu 22.04 reference | SHA-256 digest |
+| --- | --- |
+| `ubuntu:22.04` index (pinned) | SHA-256 `829f6df217bcbae2b371026e81711d1a787c61b2967ad09d015063663ebafbf7` |
+| `ubuntu:jammy-20260901.2` index | SHA-256 `ee61c25c29326511cc86dbf6479935edfd62533a14604d1befc69169a5f96255` |
+| Shared Linux amd64 manifest | SHA-256 `281c5745f657873d78e5531fc5ba8575f46ab7769b94550ac99543f122679986` |
+| Shared Linux amd64 configuration | SHA-256 `bf7f4568d95723d2148bb19c688526d1404ef3302ef024bc1513ad8f533d46c8` |
+
+Ubuntu version labels and runtime configuration remain unchanged apart from creation labels and
+legacy build-parent metadata. This comparison does not claim identical root filesystems or packages.
+The prior SHA-256 index pins were `2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b` (26.04)
+and SHA-256 `2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc` (22.04); their source record
+remains in the [pre-update contract](https://github.com/NINJAK1DD/miningcore/blob/7c3ecff475a4b3a66300e1884cdaa921184cdbac/scripts/release/linux-release-targets.sh).
+Keep dated review records when advancing the pins. Every advance requires the complete release matrix.
+
+### Recover an interrupted publication
+
+GitHub Releases and GHCR are separate services and do not provide a shared transaction. The workflow
+therefore treats publication as four observable states:
+
+1. **No publication:** no release or version-scoped staging tag exists. Create an unpublished draft
+   and upload the tested archives.
+2. **Staged container:** the draft has `publication-staging-vX.Y.Z` and, once recorded,
+   `CONTAINER-IMAGE.json`. Reuse that digest; never rebuild over it.
+3. **Durable release:** the published archives and container record are cryptographically verified.
+   Create or verify the immutable full-version tags.
+4. **Promoted version:** `vX.Y.Z` and `X.Y.Z` match the recorded digest. When eligible, the newest
+   stable release also owns `X.Y`, GHCR `latest` and GitHub's latest-release pointer.
+
+The staging tag is deliberately retained as audit and retry evidence. Before the release becomes
+durable, the workflow does not create either full-version container tag and does not move `X.Y` or
+`latest`. Every draft is created with GitHub latest disabled. The repository-wide publication job
+queues up to 100 release tags, processes one at a time and never cancels an active publication. This
+keeps release freshness inspection and mutation inside one serialized boundary. A 60-minute job
+timeout bounds head-of-line blocking while preserving all durable state for a full rerun.
+
+Before uploading anything to an existing draft, the workflow requires its exact generated title and
+a deterministic collision marker containing the repository, release tag and source commit. This
+detects a stale or unrelated same-tag draft that this workflow did not create; it is not an
+authorization control because a maintainer with release-write access can reproduce the marker. A
+mismatch stops for human review before trusted assets are uploaded. This check applies only while
+the release is a draft.
+
+GitHub's release list may briefly lag a successful draft creation, asset upload or publication.
+The workflow retries those visibility checks for a bounded period, always pins the retained numeric
+release ID during asset work, and fails closed when authoritative state does not converge. Archive
+uploads are streamed, use bounded connection, retry and total-time budgets, do not follow redirects,
+and preserve GitHub's bounded error response in the failed-job log.
+
+Actions installation tokens are opaque and may use GitHub's stateless `ghs_APPID_JWT` format. The
+publisher rejects control characters and escapes curl's private configuration syntax, but does not
+validate a token alphabet or parse its contents. Do not add token-format regexes or print a token
+while troubleshooting authentication.
+
+When a stable draft is published, the workflow compares it with every other published stable
+release and explicitly chooses whether GitHub may mark it latest. After publication, each GHCR
+destination is created from the recorded digest and inspected again. An older rerun leaves `X.Y`
+unchanged when a higher patch exists in that line and leaves both GHCR and GitHub `latest` unchanged
+when any higher stable version exists. A pre-existing immutable version tag with another digest, a
+release asset with different bytes, missing recorded state, duplicate or unexpected assets, and any
+non-authoritative GitHub or registry response stop with `HUMAN ACTION REQUIRED`; the workflow does
+not overwrite the conflict. Registry absence is accepted only from an explicit manifest/name-unknown
+or reference-bound not-found response. Authentication and permission errors deliberately fail closed.
+
+For an interrupted tag, inspect both services without changing them. Replace the example values but
+do not move the Git tag:
+
+```console
+export REPOSITORY=NINJAK1DD/miningcore
+export TAG=v0.3.0
+export IMAGE=ghcr.io/ninjak1dd/miningcore
+export STAGING_TAG="publication-staging-$TAG"
+
+release_pages=$(mktemp)
+release_json=$(mktemp)
+trap 'rm -f -- "$release_pages" "$release_json"' EXIT
+
+gh api --paginate --slurp \
+  "repos/$REPOSITORY/releases?per_page=100" > "$release_pages"
+jq -e --arg tag "$TAG" \
+  '[.[][] | select(.tag_name == $tag)] |
+   if length == 1 then .[0]
+   else error("expected exactly one matching draft or published release") end' \
+  "$release_pages" > "$release_json"
+jq '{id,tag_name,draft,prerelease,assets:[.assets[].name]}' "$release_json"
+docker buildx imagetools inspect "$IMAGE:$STAGING_TAG"
+docker buildx imagetools inspect "$IMAGE:$TAG"
+docker buildx imagetools inspect "$IMAGE:${TAG#v}"
+```
+
+For a stable release, also inspect `${TAG#v}` with its final `.patch` component removed and inspect
+`$IMAGE:latest`. Continue in the same shell. To inspect the recorded digest without relying on
+`gh release download` draft handling, download the asset through its authenticated API identifier:
+
+```console
+container_record=$(mktemp)
+trap 'rm -f -- "$release_pages" "$release_json" "$container_record"' EXIT
+
+asset_id=$(jq -er \
+  '[.assets[] | select(.name == "CONTAINER-IMAGE.json")] |
+   if length == 1 then .[0].id else error("container record is absent or ambiguous") end' \
+  "$release_json")
+gh api -H 'Accept: application/octet-stream' \
+  "repos/$REPOSITORY/releases/assets/$asset_id" > "$container_record"
+jq . "$container_record"
+docker buildx imagetools inspect \
+  "$(jq -r '.image' "$container_record")@$(jq -r '.digest' "$container_record")"
+```
+
+The tag endpoint is not a draft inspection command: GitHub documents it as returning a published
+release. The authenticated, paginated list above includes drafts for callers with push access and
+the exact-one check prevents an ambiguous tag from being selected. Publication requires GitHub CLI
+2.51 or newer because draft discovery uses `gh api --slurp`. Once the list establishes a numeric
+release ID, repeated checks within that command use the authenticated ID endpoint instead of
+sweeping every release again. Release title and notes may be edited after publication; recovery
+identity then comes from the tag, release ID, state and immutable asset/container evidence.
+
+Do not manually edit the generated title or remove the collision marker while publication remains a
+draft. If the workflow stops on either check, first compare the draft ID, author and audit history
+with the failed workflow run and confirm that the Git tag still resolves to the recorded source
+commit. When that evidence proves the draft belongs to this workflow and only its presentation was
+edited, restore the exact generated title (for example, `Miningcore vX.Y.Z`) and original marker
+before using **Re-run all jobs**. If ownership cannot be established, preserve the draft, assets and
+run logs for review; only after confirming that it is unrelated should a maintainer delete the
+draft. If a staging tag remains, complete the orphan-tag evidence and cleanup procedure below before
+rerunning all jobs to create fresh workflow-owned state. Never make an unrelated draft pass by
+copying the public marker.
+
+If a retention policy prunes the staging tag after publication has completed, a rerun remains safe
+when the release record and at least one immutable GHCR version tag still matches the recorded
+digest. Any other immutable tag that is present must also match; conflicts fail closed. The
+matching tag proves the digest remains live, and promotion safely recreates a missing sibling from
+that digest. A missing staging tag while the release is still a draft remains a hard stop because no
+durable promoted tag can prove the recorded content.
+
+An orphaned staging tag with no matching draft or published release is also a hard stop. Preserve
+its digest, registry metadata and failed-run logs first. After establishing that no release record or
+public version tag ever referenced it, a maintainer may delete only that orphaned staging tag and use
+**Re-run all jobs** to restart publication. Never delete a staging tag merely to bypass a digest or
+asset conflict.
+
+If the evidence is internally consistent, open the failed Release workflow run and select
+**Re-run all jobs**. Do not use **Re-run failed jobs**, because the tested archives belong to one run
+attempt. The rerun verifies existing assets, reuses the exact staged digest, and continues from the
+first incomplete state. GitHub's server-computed SHA-256 and size avoid repeated
+archive downloads when available; older records fall back to download-and-compare verification. If
+a command above fails for a reason other than an
+authoritative not-found response, or any digest/asset differs, stop: preserve the tag, draft, assets,
+container tags and failed-run logs for review. Never delete, move, rebuild over, or manually replace
+publication evidence to force the services to agree.

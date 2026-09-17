@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Reactive;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
@@ -38,7 +39,6 @@ public class HandshakePool : PoolBase
     {
     }
 
-    private object currentJobParams;
     private HandshakeJobManager manager;
     private BitcoinTemplate coin;
     
@@ -86,7 +86,7 @@ public class HandshakePool : PoolBase
             await connection.RespondAsync(response);
 
             // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
 
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
@@ -110,7 +110,7 @@ public class HandshakePool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
@@ -265,7 +265,7 @@ public class HandshakePool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            logger.Info(() => $"[{connection.ConnectionId}] Share rejected: {ex.Message} [{context.UserAgent}]");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "HandshakePool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);
@@ -314,7 +314,7 @@ public class HandshakePool : PoolBase
 
         catch(StratumException ex)
         {
-            logger.Info(() => $"[{connection.ConnectionId}] GetTransactions failed: {ex.Message} [{context.UserAgent}]");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "HandshakePool.OnGetTransactionsAsync", failure: ex);
 
             throw;
         }
@@ -322,8 +322,6 @@ public class HandshakePool : PoolBase
 
     protected virtual async Task OnNewJobAsync(object jobParams)
     {
-        currentJobParams = jobParams;
-
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>
@@ -376,11 +374,11 @@ public class HandshakePool : PoolBase
             disposables.Add(manager.Jobs
                 .Select(job => Observable.FromAsync(() =>
                     Guard(()=> OnNewJobAsync(job),
-                        ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"))))
+                        ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "HandshakePool.SetupJobManager", failure: ex))))
                 .Concat()
                 .Subscribe(_ => { }, ex =>
                 {
-                    logger.Debug(ex, nameof(OnNewJobAsync));
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "HandshakePool.SetupJobManager", failure: ex);
                 }));
 
             // start with initial blocktemplate
@@ -432,7 +430,7 @@ public class HandshakePool : PoolBase
                     break;
 
                 default:
-                    logger.Debug(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "HandshakePool.OnRequestAsync");
 
                     await connection.RespondErrorAsync(StratumError.Other, $"Unsupported request {request.Method}", request.Id);
                     break;

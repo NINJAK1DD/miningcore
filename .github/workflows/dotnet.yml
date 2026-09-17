@@ -1,5 +1,8 @@
 name: .NET
 
+# Pin external actions to full upstream commits; keep version comments for review.
+# Dependabot proposes updates for the github-actions ecosystem.
+
 on:
   push:
     branches: [ master, dev, ravencoin-rollback ]
@@ -9,7 +12,10 @@ on:
 jobs:
   build:
 
-    runs-on: ubuntu-latest
+    # This uncontainerized job intentionally exercises the primary development host itself.
+    # Ubuntu 24.04 source compatibility and the independently built Ubuntu 22.04 archive
+    # remain covered by dedicated lanes below/in release.yml.
+    runs-on: ubuntu-26.04
 
     services:
       postgres:
@@ -28,8 +34,9 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
+        persist-credentials: false
         fetch-depth: 0
 
     - name: Validate administrative API documentation
@@ -40,17 +47,103 @@ jobs:
       shell: bash
       run: bash scripts/release/test-wallet-backup-docs.sh
 
+    - name: Validate release installation documentation
+      shell: bash
+      run: bash scripts/release/test-release-install-docs.sh
+
+    - name: Test PostgreSQL systemd ordering helper
+      shell: bash
+      run: sudo bash scripts/release/test-systemd-postgresql-ordering.sh
+
+    - name: Test real systemd PostgreSQL ordering on disposable runner
+      shell: bash
+      run: sudo bash scripts/release/test-systemd-postgresql-ordering-integration.sh --disposable-host
+
     - name: Validate documentation links
       shell: bash
       run: python3 scripts/release/test-doc-links.py
+
+    - name: Enforce workflow action pins
+      shell: bash
+      run: |
+        python3 -c 'import yaml' 2>/dev/null || {
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y python3-yaml
+        }
+        python3 scripts/release/test-workflow-action-pins.py --self-test
+        python3 scripts/release/test-workflow-action-pins.py
+
+    - name: Guard Stratum direct logging boundaries
+      shell: bash
+      run: python3 scripts/release/test-stratum-diagnostic-sources.py
+
+    - name: Test Bash and PowerShell configuration diagnostic snapshot helpers
+      shell: bash
+      run: python3 scripts/release/test-config-diagnostics-snapshot.py
 
     - name: Test Linux native build failure propagation
       shell: bash
       run: bash scripts/release/test-linux-native-build-fail-fast.sh
 
+    - name: Validate Odocrypt native source inventory
+      shell: bash
+      run: bash scripts/release/test-odocrypt-source-inventory.sh
+
+    - name: Lint Linux native and build-audit scripts
+      shell: bash
+      run: >-
+        shellcheck -x
+        scripts/release/assert-warning-free-build.sh
+        scripts/release/audit-source-build-warnings.sh
+        scripts/release/linux-release-targets.sh
+        scripts/release/package-linux-x64.sh
+        packaging/systemd/configure-postgresql-ordering.sh
+        scripts/release/test-systemd-postgresql-ordering.sh
+        scripts/release/test-systemd-postgresql-ordering-integration.sh
+        scripts/release/run-warning-audited-dotnet.sh
+        scripts/release/test-cryptonote-abi-safety.sh
+        scripts/release/test-linux-native-inventory.sh
+        scripts/release/test-linux-native-symbol-contracts.sh
+        scripts/release/test-linux-package-targets.sh
+        scripts/release/test-msbuild-warning-file-logger.sh
+        scripts/release/test-odocrypt-source-inventory.sh
+        scripts/release/test-odocrypt-source-verifiers.sh
+        scripts/release/test-release-install-docs.sh
+        scripts/release/test-ubuntu-source-build.sh
+        scripts/release/update-config-diagnostics-snapshot.sh
+
+    - name: Test Linux native symbol contracts
+      shell: bash
+      run: bash scripts/release/test-linux-native-symbol-contracts.sh
+
+    - name: Test warning-free build audit
+      shell: bash
+      run: bash scripts/release/test-warning-free-build.sh
+
+    - name: Test Xelis v1 portable AES path
+      shell: bash
+      run: bash scripts/release/test-xelis-portable-aes.sh
+
     - name: Test source-build helper fail-closed behavior
       shell: bash
       run: bash scripts/release/test-source-build-helpers.sh
+
+    - name: Test Linux release package target contract
+      shell: bash
+      run: bash scripts/release/test-linux-package-targets.sh
+
+    - name: Lint Linux release image-pin scripts
+      shell: bash
+      run: >-
+        shellcheck -x
+        scripts/release/linux-release-targets.sh
+        scripts/release/check-linux-release-image-pins.sh
+        scripts/release/run-linux-release-image-pin-monitor.sh
+        scripts/release/test-linux-release-image-pins.sh
+
+    - name: Test Linux release image-pin freshness checks
+      shell: bash
+      run: bash scripts/release/test-linux-release-image-pins.sh
 
     - name: Install Build dependencies
       # The ZeroMQ .NET binding loads the unversioned libzmq.so name. The runtime-only
@@ -61,6 +154,29 @@ jobs:
         sudo apt-get -o Acquire::Retries=3 install -y \
           cmake ninja-build build-essential libssl-dev pkg-config \
           libboost-all-dev libsodium-dev libzmq3-dev libgmp-dev
+
+    - name: Install isolated PostgreSQL TLS test dependency
+      shell: bash
+      env:
+        POSTGRES_TLS_MAJOR: '18'
+      run: |
+        set -euo pipefail
+        # The accounting service already owns 5432. Only install server binaries;
+        # the TLS fixture creates and removes its own cluster on a random port.
+        sudo mkdir -p /etc/postgresql-common
+        # Append the override so packaged settings remain intact. PostgreSQL 18 is the
+        # reviewed Ubuntu 26.04 major; continue receiving distro security patch updates.
+        printf '\ncreate_main_cluster = false\n' | sudo tee -a /etc/postgresql-common/createcluster.conf
+        sudo apt-get -o Acquire::Retries=3 install -y "postgresql-${POSTGRES_TLS_MAJOR}"
+        pg_bin="/usr/lib/postgresql/${POSTGRES_TLS_MAJOR}/bin"
+        for executable in initdb pg_ctl postgres; do
+          if [[ ! -x "${pg_bin}/${executable}" ]]; then
+            echo "::error::Missing PostgreSQL ${POSTGRES_TLS_MAJOR} test binary: ${executable}"
+            exit 1
+          fi
+        done
+        "${pg_bin}/postgres" --version
+        echo "MININGCORE_TEST_POSTGRES_BIN=${pg_bin}" >> "$GITHUB_ENV"
 
     - name: Install pinned Bitcoin Core regtest dependency
       shell: bash
@@ -82,16 +198,81 @@ jobs:
 
         echo "MININGCORE_TEST_BITCOIND=$install_root/bin/bitcoind" >> "$GITHUB_ENV"
 
+    - name: Install pinned Bitcoin BLAKE2b Knots regtest dependency
+      shell: bash
+      env:
+        KNOTS_VERSION: 29.4.1.knots20260508
+        KNOTS_SHA256: 0d0b435ae67dd38d150c048a388be821ad0ca8b46d6dcace5c34d4ba2977801b
+      run: |
+        set -euo pipefail
+        archive="bitcoin-${KNOTS_VERSION}-x86_64-linux-gnu.tar.gz"
+        archive_path="$RUNNER_TEMP/$archive"
+        install_root="$RUNNER_TEMP/bitcoin-blake2b-regtest"
+        curl --fail --location --retry 3 --retry-all-errors --retry-max-time 180 \
+          --connect-timeout 15 --max-time 180 --output "$archive_path" \
+          "https://bitcoinknots.org/files/29.x/${KNOTS_VERSION}/$archive"
+        echo "$KNOTS_SHA256  $archive_path" | sha256sum --check --strict
+        mkdir "$install_root"
+        tar -xzf "$archive_path" --strip-components=1 -C "$install_root"
+        test -x "$install_root/bin/bitcoind"
+        echo "MININGCORE_TEST_BLAKE2B_BITCOIND=$install_root/bin/bitcoind" >> "$GITHUB_ENV"
+
+    - name: Install pinned Litecoin and Dogecoin regtest dependencies
+      shell: bash
+      env:
+        LITECOIN_CORE_VERSION: 0.21.5.5
+        LITECOIN_CORE_SHA256: 623410d4f2695a68aa71332ae0672fee19276f41c1c63a531f97e24a50edde14
+        DOGECOIN_CORE_VERSION: 1.14.9
+        DOGECOIN_CORE_SHA256: 4f227117b411a7c98622c970986e27bcfc3f547a72bef65e7d9e82989175d4f8
+      run: |
+        set -euo pipefail
+
+        litecoin_archive="litecoin-${LITECOIN_CORE_VERSION}-x86_64-linux-gnu.tar.gz"
+        dogecoin_archive="dogecoin-${DOGECOIN_CORE_VERSION}-x86_64-linux-gnu.tar.gz"
+        litecoin_path="$RUNNER_TEMP/$litecoin_archive"
+        dogecoin_path="$RUNNER_TEMP/$dogecoin_archive"
+
+        curl --fail --location --retry 3 --output "$litecoin_path" \
+          "https://download.litecoin.org/litecoin-${LITECOIN_CORE_VERSION}/linux/$litecoin_archive"
+        curl --fail --location --retry 3 --output "$dogecoin_path" \
+          "https://github.com/dogecoin/dogecoin/releases/download/v${DOGECOIN_CORE_VERSION}/$dogecoin_archive"
+        echo "$LITECOIN_CORE_SHA256  $litecoin_path" | sha256sum --check --strict
+        echo "$DOGECOIN_CORE_SHA256  $dogecoin_path" | sha256sum --check --strict
+        tar -xzf "$litecoin_path" -C "$RUNNER_TEMP"
+        tar -xzf "$dogecoin_path" -C "$RUNNER_TEMP"
+
+        litecoind="$RUNNER_TEMP/litecoin-${LITECOIN_CORE_VERSION}/bin/litecoind"
+        dogecoind="$RUNNER_TEMP/dogecoin-${DOGECOIN_CORE_VERSION}/bin/dogecoind"
+        test -x "$litecoind"
+        test -x "$dogecoind"
+        echo "MININGCORE_TEST_LITECOIND=$litecoind" >> "$GITHUB_ENV"
+        echo "MININGCORE_TEST_DOGECOIND=$dogecoind" >> "$GITHUB_ENV"
+
     - name: Setup .NET
-      uses: actions/setup-dotnet@v5
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
       with:
         dotnet-version: 10.0.x
+
+    - name: Test MSBuild warning file logger
+      shell: bash
+      run: bash scripts/release/test-msbuild-warning-file-logger.sh
 
     - name: Restore dependencies
       run: dotnet restore src
 
     - name: Build
-      run: dotnet build --no-restore src
+      shell: bash
+      env:
+        DOTNET_CLI_UI_LANGUAGE: en
+        LC_ALL: C
+      run: |
+        set -euo pipefail
+
+        build_log=$(mktemp)
+        trap 'rm -f -- "$build_log"' EXIT
+
+        dotnet build --no-restore src 2>&1 | tee "$build_log"
+        bash scripts/release/assert-warning-free-build.sh "$build_log"
 
     - name: Stage Linux native libs for tests
       if: runner.os == 'Linux'
@@ -165,35 +346,51 @@ jobs:
         MININGCORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
       run: dotnet test --logger:"console;verbosity=detailed" --no-build --verbosity normal src
 
-  build-ubuntu-2604:
-    name: Build Ubuntu 26.04 source
-    # This hosted image is currently a public preview. The lane validates the supported
-    # source-build path; it does not change the Ubuntu 22.04 prebuilt archive target.
-    # Keep it required deliberately: a regression in a claimed supported target must be visible.
-    runs-on: ubuntu-26.04
+  build-ubuntu-source:
+    name: Build Ubuntu ${{ matrix.ubuntu }} source
+    # The 26.04 hosted image is currently a public preview. Keep both claimed source-build
+    # targets required so a regression cannot be hidden by success on the primary lane.
+    runs-on: ubuntu-${{ matrix.ubuntu }}
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: [ '24.04', '26.04' ]
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
+        persist-credentials: false
         fetch-depth: 0
+
+    - name: Verify source-build runner identity
+      shell: bash
+      run: |
+        set -euo pipefail
+        . /etc/os-release
+        test "$ID" = ubuntu
+        test "$VERSION_ID" = "${{ matrix.ubuntu }}"
+        test "$(uname -m)" = x86_64
 
     - name: Build with Canonical packages
       shell: bash
-      run: ./build-ubuntu-26.04.sh "$GITHUB_WORKSPACE/build/ubuntu-26.04"
+      run: >-
+        ./build-ubuntu-${{ matrix.ubuntu }}.sh
+        "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
 
     - name: Validate published native libraries and runtime paths
       shell: bash
       run: >-
-        bash scripts/release/test-ubuntu-2604-source-build.sh
-        "$GITHUB_WORKSPACE/build/ubuntu-26.04"
+        bash scripts/release/test-ubuntu-source-build.sh
+        "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
+        "${{ matrix.ubuntu }}"
 
-    - name: Run GCC 15 native known-answer tests
+    - name: Run native known-answer tests
       shell: bash
       run: >-
-        bash scripts/release/test-ubuntu-2604-native-vectors.sh
-        "$GITHUB_WORKSPACE/build/ubuntu-26.04"
+        bash scripts/release/test-ubuntu-native-vectors.sh
+        "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
 
   build-windows:
     name: Build Windows x64
@@ -201,14 +398,115 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
+        persist-credentials: false
         fetch-depth: 0
 
     - name: Setup .NET
-      uses: actions/setup-dotnet@v5
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
       with:
         dotnet-version: 10.0.x
+
+    - name: Test PowerShell configuration diagnostic snapshot helper on Windows
+      shell: pwsh
+      run: python scripts/release/test-config-diagnostics-snapshot.py PowerShellSnapshotHelperTests -v
+
+    # v3 upgrades the action runtime from Node.js 20 to Node.js 24.
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+      with:
+        msbuild-architecture: x64
+
+    - name: Verify pinned Odocrypt sources
+      shell: bash
+      run: >-
+        bash scripts/release/verify-pinned-source-files.sh
+        src/Native
+        src/Native/libodocrypt/upstream.sha256
+
+    - name: Test Odocrypt source-verifier parity
+      shell: bash
+      run: bash scripts/release/test-odocrypt-source-verifiers.sh
+
+    - name: Restore Windows native tests
+      run: dotnet restore src/Miningcore.Tests/Miningcore.Tests.csproj
+
+    - name: Reject opaque checked-in Windows Odocrypt runtime
+      shell: pwsh
+      run: |
+        if(Test-Path 'libs\runtimes\win-x64\libodocrypt.dll') {
+          throw 'Windows Odocrypt must be built from reviewed source, not checked in'
+        }
+
+    - name: Test source-built Windows Odocrypt runtime
+      shell: pwsh
+      run: |
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj `
+          --no-restore `
+          --configuration Release `
+          --framework net10.0 `
+          --filter "FullyQualifiedName~Miningcore.Tests.Crypto.HashingTests.OdoCrypt_"
+
+    - name: Test Windows Odocrypt toolset override boundary
+      shell: pwsh
+      run: |
+        $PSNativeCommandUseErrorActionPreference = $false
+        try {
+          $env:MININGCORE_WINDOWS_PLATFORM_TOOLSET = 'v143'
+          $toolsetOutput = dotnet build src/Miningcore/Miningcore.csproj `
+            --no-restore `
+            --configuration Release `
+            --framework net10.0 2>&1
+          if($LASTEXITCODE -ne 0) {
+            $toolsetStatus = $LASTEXITCODE
+            $toolsetOutput | Write-Host
+            throw "Windows Odocrypt toolset-override build failed with exit status $toolsetStatus"
+          }
+          if(($toolsetOutput | Out-String) -notmatch `
+              'Building reviewed Windows Odocrypt runtime') {
+            $toolsetOutput | Write-Host
+            throw 'Windows Odocrypt toolset override did not force the native build target'
+          }
+        }
+        finally {
+          Remove-Item Env:MININGCORE_WINDOWS_PLATFORM_TOOLSET -ErrorAction SilentlyContinue
+          $global:LASTEXITCODE = 0
+        }
+
+    - name: Test managed-only Windows opt-out boundaries
+      shell: pwsh
+      run: |
+        $PSNativeCommandUseErrorActionPreference = $false
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj `
+          --no-restore `
+          --configuration Release `
+          --framework net10.0 `
+          -p:BuildOdoCryptWindows=false `
+          --filter "FullyQualifiedName~Miningcore.Tests.Coins.CurrentCoinDefinitionTests"
+        if($LASTEXITCODE -ne 0) {
+          exit $LASTEXITCODE
+        }
+        if((Test-Path 'src\Miningcore\bin\Release\net10.0\libodocrypt.dll') -or `
+            (Test-Path 'src\Miningcore.Tests\bin\Release\net10.0\libodocrypt.dll')) {
+          throw 'Managed-only build retained a stale Odocrypt runtime'
+        }
+
+        $publishOutput = dotnet publish src/Miningcore/Miningcore.csproj `
+          --no-restore `
+          --configuration Release `
+          --framework net10.0 `
+          --output build/windows-managed-only-publish `
+          -p:BuildOdoCryptWindows=false 2>&1
+        if($LASTEXITCODE -eq 0) {
+          throw 'Windows publish unexpectedly accepted BuildOdoCryptWindows=false'
+        }
+        if(($publishOutput | Out-String) -notmatch `
+            'Windows publish requires BuildOdoCryptWindows=true') {
+          $publishOutput | Write-Host
+          throw 'Windows publish opt-out failed without its targeted diagnostic'
+        }
+        $global:LASTEXITCODE = 0
 
     - name: Restore dependencies
       run: dotnet restore src/Miningcore/Miningcore.csproj --runtime win-x64
@@ -224,10 +522,12 @@ jobs:
         --output build/windows-x64
 
     - name: Smoke-test Windows build
-      run: .\build\windows-x64\Miningcore.exe --version
-
-    - name: Restore Windows native smoke test
-      run: dotnet restore src/Miningcore.Tests/Miningcore.Tests.csproj
+      shell: pwsh
+      run: |
+        if(!(Test-Path 'build\windows-x64\libodocrypt.dll' -PathType Leaf)) {
+          throw 'Published Windows build is missing the source-built Odocrypt runtime'
+        }
+        .\build\windows-x64\Miningcore.exe --version
 
     - name: Test Windows share recovery safety
       run: >-
@@ -244,6 +544,14 @@ jobs:
         --configuration Release
         --framework net10.0
         --filter "FullyQualifiedName~Miningcore.Tests.ProgramLoggingTests"
+
+    - name: Test Windows Stratum diagnostic boundary
+      run: >-
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
+        --no-restore
+        --configuration Release
+        --framework net10.0
+        --filter "FullyQualifiedName~Miningcore.Tests.Stratum.StratumDiagnosticTests"
 
     - name: Test Windows Stratum listener lifecycle
       run: >-

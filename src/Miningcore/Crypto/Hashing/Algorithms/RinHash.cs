@@ -28,7 +28,7 @@ public unsafe class RinHash : IHashAlgorithm
 
         // 1. BLAKE3
         var hash = Blake3.Hasher.Hash(data);
-        var blake3 = hash.AsSpanUnsafe().ToArray();
+        var blake3 = hash.AsSpan().ToArray();
 
         // 2. Argon2d
         var config = new Argon2Config

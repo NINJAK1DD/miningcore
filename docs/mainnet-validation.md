@@ -12,14 +12,33 @@ addresses, or private host and process identities with an audit.
 One production Dogecoin auxiliary block completed the full financial cycle on
 `v0.1.0-rc.8` (`047c07884e45c50aed01118b80ad42aca91c4bb4`) on 7–8 August 2026.
 
-| Evidence | Observed result |
-| --- | --- |
-| Candidate and confirmation | Pool `doge1-solo` found height `6321518`. PostgreSQL retained exactly one confirmed `auxpow` row with reward `10005.341398600000 DOGE`, block hash `ad6142a4...173c6` and coinbase transaction `a2c8b4f6...35f83`. |
-| Initial payout attempt | After maturity, the wallet rejected the scheduled `sendmany` with `Insufficient funds` code `-6`. The wallet held the reward but no separate confirmed input from which to pay the transaction fee. Miningcore retained the balance and retried on its normal schedule; no manual payment or database edit was made. |
-| Accepted payout | After the operator funded the same payout wallet with a confirmed fee reserve, Miningcore submitted transaction `6d5ab821...1a423c` once. The audited wallet response showed two outputs totaling `10005.3413 DOGE`, a `0.00408 DOGE` fee, 706 confirmations and no wallet conflicts. |
-| Accounting | The miner was credited `9905.287984614 DOGE`; Miningcore persisted and reset `9905.2879 DOGE`, leaving the expected miner-side precision residual of `0.000084614 DOGE`. The complete wallet request was `0.0000986 DOGE` below the block reward because both outputs were truncated to configured payout precision. Configured reward recipients are deliberately excluded from public `payments` rows. |
-| Idempotency | PostgreSQL contained one block row and one payment-batch row for the transaction. The public miner payment appeared once. A scan of 75,779 service-journal lines after batch persistence found no later matching payout failure, while scheduled cycles reported no balance over the configured minimum. |
-| Restart and ownership | A later controlled daemon and Miningcore restart loaded the payout wallets, reacquired payout ownership as generation 28, and recorded the active Miningcore PID as owner. Subsequent block reconciliation and payment cycles remained healthy. |
+**Candidate and confirmation.** Pool `doge1-solo` found height `6321518`. PostgreSQL retained exactly
+one confirmed `auxpow` row with reward `10005.341398600000 DOGE`, block hash
+`ad6142a4...173c6` and coinbase transaction `a2c8b4f6...35f83`.
+
+**Initial payout attempt.** After maturity, the wallet rejected scheduled `sendmany` with
+`Insufficient funds` code `-6`. The reward was present, but the wallet had no separate confirmed
+input for the transaction fee. Miningcore retained the balance and retried normally; no manual
+payment or database edit was made.
+
+**Accepted payout.** After the same wallet received a confirmed fee reserve, Miningcore submitted
+transaction `6d5ab821...1a423c` once. The audited response showed two outputs totalling
+`10005.3413 DOGE`, a `0.00408 DOGE` fee, 706 confirmations and no wallet conflicts.
+
+**Accounting.** The miner was credited `9905.287984614 DOGE`. Miningcore persisted and reset
+`9905.2879 DOGE`, leaving the expected miner-side precision residual of `0.000084614 DOGE`. The
+complete wallet request was `0.0000986 DOGE` below the block reward because both outputs were
+truncated to configured payout precision. Configured reward recipients are deliberately excluded
+from public `payments` rows.
+
+**Idempotency.** PostgreSQL contained one block row and one payment-batch row for the transaction.
+The public miner payment appeared once. A scan of 75,779 service-journal lines after batch
+persistence found no later matching payout failure, while scheduled cycles reported no balance
+over the configured minimum.
+
+**Restart and ownership.** A controlled daemon and Miningcore restart loaded the payout wallets,
+reacquired payout ownership as generation 28, and recorded the active Miningcore PID as owner.
+Subsequent block reconciliation and payment cycles remained healthy.
 
 This closes the live Dogecoin merged-mining and Bitcoin-family payout-cycle gate for RC.8: candidate
 attribution, maturity, balance credit, conclusive wallet rejection, scheduled retry, durable

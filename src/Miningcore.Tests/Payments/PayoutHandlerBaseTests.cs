@@ -70,6 +70,77 @@ public class PayoutHandlerBaseTests
     }
 
     [Fact]
+    public async Task PersistPayments_ZeroPercentRecipientRemainsInPaymentHistory()
+    {
+        var fixture = CreateFixture();
+        fixture.Pool.RewardRecipients = new[]
+        {
+            new RewardRecipient { Address = "zero-fee-miner", Percentage = 0 },
+            new RewardRecipient { Address = "active-fee", Percentage = 1 },
+        };
+        fixture.PaymentRepo.TryBeginPaymentBatchAsync(fixture.Connection,
+                fixture.Transaction, fixture.Pool.Id, "tx-1", fixture.Now)
+            .Returns(true);
+        var zeroFeeMiner = Balance("zero-fee-miner", 12.5m);
+        var activeFee = Balance("active-fee", 0.5m);
+
+        await fixture.Handler.PersistAsync(new[] { zeroFeeMiner, activeFee }, "tx-1");
+
+        await fixture.PaymentRepo.Received(1).InsertAsync(fixture.Connection,
+            fixture.Transaction, Arg.Is<Payment>(x =>
+                x.Address == zeroFeeMiner.Address &&
+                x.Amount == zeroFeeMiner.Amount));
+        await fixture.PaymentRepo.DidNotReceive().InsertAsync(fixture.Connection,
+            fixture.Transaction, Arg.Is<Payment>(x =>
+                x.Address == activeFee.Address));
+        await fixture.BalanceRepo.Received(1).AddAmountAsync(fixture.Connection,
+            fixture.Transaction, fixture.Pool.Id, zeroFeeMiner.Address,
+            -zeroFeeMiner.Amount, "Balance reset after payment");
+        await fixture.BalanceRepo.Received(1).AddAmountAsync(fixture.Connection,
+            fixture.Transaction, fixture.Pool.Id, activeFee.Address,
+            -activeFee.Amount, "Balance reset after payment");
+    }
+
+    [Fact]
+    public async Task PersistPerRecipientPayments_ZeroPercentRecipientRemainsInHistory()
+    {
+        var fixture = CreateFixture();
+        fixture.Pool.RewardRecipients = new[]
+        {
+            new RewardRecipient { Address = "zero-fee-miner", Percentage = 0 },
+            new RewardRecipient { Address = "active-fee", Percentage = 1 },
+        };
+        var zeroFeeMiner = Balance("zero-fee-miner", 12.5m);
+        var activeFee = Balance("active-fee", 0.5m);
+        fixture.PaymentRepo.TryBeginPaymentBatchAsync(fixture.Connection,
+                fixture.Transaction, fixture.Pool.Id, "tx-miner", fixture.Now)
+            .Returns(true);
+        fixture.PaymentRepo.TryBeginPaymentBatchAsync(fixture.Connection,
+                fixture.Transaction, fixture.Pool.Id, "tx-fee", fixture.Now)
+            .Returns(true);
+
+        await fixture.Handler.PersistAsync(new Dictionary<Balance, string>
+        {
+            [zeroFeeMiner] = "tx-miner",
+            [activeFee] = "tx-fee",
+        });
+
+        await fixture.PaymentRepo.Received(1).InsertAsync(fixture.Connection,
+            fixture.Transaction, Arg.Is<Payment>(x =>
+                x.Address == zeroFeeMiner.Address &&
+                x.TransactionConfirmationData == "tx-miner"));
+        await fixture.PaymentRepo.DidNotReceive().InsertAsync(fixture.Connection,
+            fixture.Transaction, Arg.Is<Payment>(x =>
+                x.Address == activeFee.Address));
+        await fixture.BalanceRepo.Received(1).AddAmountAsync(fixture.Connection,
+            fixture.Transaction, fixture.Pool.Id, zeroFeeMiner.Address,
+            -zeroFeeMiner.Amount, "Balance reset after payment");
+        await fixture.BalanceRepo.Received(1).AddAmountAsync(fixture.Connection,
+            fixture.Transaction, fixture.Pool.Id, activeFee.Address,
+            -activeFee.Amount, "Balance reset after payment");
+    }
+
+    [Fact]
     public async Task TrackPayout_MixedPagedOutcomePreservesEveryRecipientState()
     {
         var fixture = CreateFixture();
@@ -321,6 +392,9 @@ public class PayoutHandlerBaseTests
 
         public Task PersistAsync(Balance[] balances, string transactionConfirmation) =>
             PersistPaymentsAsync(balances, transactionConfirmation);
+
+        public Task PersistAsync(Dictionary<Balance, string> balances) =>
+            PersistPaymentsAsync(balances);
 
         public Task RunTrackedAsync(Balance[] balances, Func<Task> action) =>
             TrackPayoutAsync(balances, action);

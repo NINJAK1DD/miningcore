@@ -1,7 +1,7 @@
 CFLAGS = -g -Wall -c -fPIC -O2 -fno-strict-aliasing -Wno-pointer-sign -Wno-char-subscripts -Wno-unused-variable -Wno-unused-function -Wno-strict-aliasing -Wno-discarded-qualifiers -Wno-unused-const-variable $(CPU_FLAGS) $(HAVE_FEATURE)
 CXXFLAGS = -g -Wall -fPIC -fpermissive -O2 -Wno-char-subscripts -Wno-unused-variable -Wno-unused-function -Wno-strict-aliasing -Wno-sign-compare -std=c++11 $(CPU_FLAGS) $(HAVE_FEATURE)
-LDFLAGS = -shared
-LDLIBS = -lsodium
+LDFLAGS = -shared -Wl,--no-undefined
+LDLIBS = -lsodium -lm -pthread
 TARGET  = libmultihash.so
 
 OBJECTS = bcrypt.o blake.o c11.o dcrypt.o fresh.o lane.o \
@@ -21,7 +21,7 @@ OBJECTS = bcrypt.o blake.o c11.o dcrypt.o fresh.o lane.o \
         Lyra2.o Lyra2RE.o Sponge.o geek.o  \
         heavyhash/heavyhash.o heavyhash/keccak_tiny.o \
         verthash/tiny_sha3/sha3.o verthash/h2.o \
-        equi/util.o equi/support/cleanse.o equi/random.o \
+        equi/util.o equi/utilstrencodings.o equi/support/cleanse.o equi/random.o \
         equi/uint256.o equi/arith_uint256.o equi/crypto/hmac_sha512.o \
         equi/crypto/sha1.o equi/crypto/sha512.o equi/crypto/sha256.o \
         equi/crypto/hmac_sha256.o equi/crypto/equihash.o equi/crypto/ripemd160.o \
@@ -35,7 +35,7 @@ OBJECTS = bcrypt.o blake.o c11.o dcrypt.o fresh.o lane.o \
         flex/cryptonote/cryptonight.o flex/cryptonote/cryptonight_dark.o flex/cryptonote/cryptonight_dark_lite.o flex/cryptonote/cryptonight_fast.o \
         flex/cryptonote/cryptonight_lite.o flex/cryptonote/cryptonight_soft_shell.o flex/cryptonote/cryptonight_turtle.o flex/cryptonote/cryptonight_turtle_lite.o \
         flex/flex.o \
-        chacha20/chacha20.o xelishash/xelishashv1.o xelishash/xelishashv2.o xelisv2.o \
+        chacha20/chacha20.o allium.o xelishash/xelishashv1.o xelishash/xelishashv2.o xelisv2.o \
         argon2d.o argon2d/argon2.o argon2d/thread.o argon2d/core.o argon2d/encoding.o argon2d/opt.o
 
 xelisv2.o: CFLAGS += -maes

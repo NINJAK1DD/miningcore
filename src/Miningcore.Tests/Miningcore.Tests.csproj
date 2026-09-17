@@ -42,6 +42,9 @@
     <PackageReference Include="NSubstitute" Version="4.4.0" />
     <!-- ConfigurationContractTests requires the public
          XunitException(message, innerException) constructor added in xUnit 2.4.2. -->
+    <!-- When upgrading xUnit or its runner, verify cross-collection DisableParallelization
+         scheduling: PostgresConfigurationLoggingTests relies on it while temporarily
+         changing Program.logger and JsonConvert.DefaultSettings. -->
     <PackageReference Include="xunit" Version="2.4.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.4.5">
       <PrivateAssets>all</PrivateAssets>
@@ -51,17 +54,30 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Miningcore\Miningcore.csproj" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" PrivateAssets="all" />
+    <Reference Include="ZeroMQ">
+      <HintPath>..\..\libs\ZeroMQ.dll</HintPath>
+    </Reference>
     <ProjectReference Include="..\Miningcore.Tests.ProcessHost\Miningcore.Tests.ProcessHost.csproj" />
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="../../README.md" Link="README.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="../../config.example.json" Link="config.example.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Include="../../examples/*_pool.json"
+    <None Include="../../examples/*.json"
           Link="examples/%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Include="../../examples/README.md" Link="examples/README.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="../../docs/releases.md" Link="docs/releases.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="test.runsettings">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
@@ -69,7 +85,16 @@
     <None Update="xunit.runner.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="Fixtures/config-diagnostics-v2.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
+
+  <!-- Do not let a previous source-built runtime mask the explicit managed-only opt-out. -->
+  <Target Name="RemoveOdoCryptFromManagedOnlyTestOutput" BeforeTargets="PrepareForBuild"
+          Condition="'$(IsWindows)' == 'true' and '$(BuildOdoCryptWindows)' == 'false'">
+    <Delete Files="$(TargetDir)libodocrypt.dll" />
+  </Target>
 
   <!-- Copy Linux native libs from Miningcore output into test output -->
   <Target Name="CopyLibsLinux" AfterTargets="Build" Condition="'$(IsLinux)' == 'true'">

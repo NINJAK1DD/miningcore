@@ -8,7 +8,7 @@ public class PushoverClient
 {
     public PushoverClient(ClusterConfig clusterConfig, IHttpClientFactory httpClientFactory)
     {
-        config = clusterConfig?.Notifications.Pushover;
+        config = clusterConfig?.Notifications?.Pushover;
         client = new SimpleRestClient(httpClientFactory, PushoverConstants.ApiBaseUrl);
     }
 

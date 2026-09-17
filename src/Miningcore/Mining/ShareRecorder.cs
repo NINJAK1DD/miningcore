@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Data;
@@ -10,6 +11,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
 using AutoMapper;
+using Miningcore.Blockchain;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
@@ -17,6 +20,7 @@ using Miningcore.Notifications.Messages;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
+using Miningcore.Time;
 using Newtonsoft.Json;
 using NLog;
 using Polly;
@@ -32,6 +36,9 @@ namespace Miningcore.Mining;
 public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecorder,
     ISharePersistenceQueueMetricsProvider
 {
+    private const string InvalidQueuedShareIdsKey = "Miningcore.InvalidQueuedShareIds";
+    private const string AccountingQuarantinePathKey = "Miningcore.AccountingQuarantinePath";
+
     // Test-only compatibility constructor. Production DI must provide the fail-stop handler;
     // this sentinel throws if a test unexpectedly reaches the dual-durability-loss path.
     internal ShareRecorder(IConnectionFactory cf,
@@ -115,7 +122,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         IShareRecoveryFailureHandler recoveryFailureHandler,
         IMiningFailStopCoordinator failStopCoordinator,
         IShareRecoveryPathOwnership recoveryPathOwnership,
-        ICandidatePersistenceFailureHandler candidateFailureHandler = null)
+        ICandidatePersistenceFailureHandler candidateFailureHandler = null,
+        IMasterClock clock = null)
     {
         Contract.RequiresNonNull(cf);
         Contract.RequiresNonNull(mapper);
@@ -137,6 +145,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         this.failStopCoordinator = failStopCoordinator;
         this.recoveryPathOwnership = recoveryPathOwnership;
         this.clusterConfig = clusterConfig;
+        this.clock = clock ?? new StandardClock();
 
         this.shareRepo = shareRepo;
         this.blockRepo = blockRepo;
@@ -166,6 +175,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private readonly IMiningFailStopCoordinator failStopCoordinator;
     private readonly IShareRecoveryPathOwnership recoveryPathOwnership;
     private readonly ClusterConfig clusterConfig;
+    private readonly IMasterClock clock;
     private readonly Dictionary<string, PoolConfig> pools;
     private readonly IMapper mapper;
 
@@ -187,7 +197,11 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         "# miningcore-recovery-journal-v1";
     internal const string RecoveryJournalMagic =
         "# miningcore-recovery-journal-v2";
-    internal const int MaxRecoveryRecordLineLength = 1024 * 1024;
+    internal const int MaxOrdinaryRecoveryRecordLineLength =
+        1024 * 1024;
+    // A Bitcoin direct-submission recovery record can contain the complete maximum-weight
+    // serialized block as hexadecimal plus its immutable settlement evidence.
+    internal const int MaxRecoveryRecordLineLength = 16 * 1024 * 1024;
     private const string EmptyFrameDigest =
         "0000000000000000000000000000000000000000000000000000000000000000";
     private bool notifiedAdminOnPolicyFallback = false;
@@ -284,6 +298,15 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         "parent-uncertain",
         "merged-parent-uncertain",
     };
+    // This is intentionally a propagation bound, not an overloaded-database
+    // tolerance. After it expires the exact candidate is fsynced to the
+    // recovery journal, submitted to the daemon, and the late database attempt
+    // is observed in the background. The retryable timeout alone does not
+    // schedule a deferred fail-stop. It is deliberately not configurable:
+    // operators cannot trade away this propagation boundary while direct
+    // settlement is enabled.
+    private static readonly TimeSpan DirectSubmissionDatabasePropagationBound =
+        TimeSpan.FromSeconds(2);
 
     internal async Task PersistSharesAsync(IList<Share> shares,
         CancellationToken ct = default)
@@ -310,6 +333,187 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         return PersistBlockCandidateDurablyAsync(new[] { share });
     }
+
+    public async Task<DirectBlockSubmissionPreparation>
+        PersistDirectBlockSubmissionAsync(Share share)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+        if(!share.BlockOnly || !share.IsBlockCandidate ||
+           !string.Equals(share.BlockType,
+               BitcoinDirectCoinbaseSettlement.BlockType,
+               StringComparison.Ordinal))
+            throw new ArgumentException(
+                "Direct submission persistence requires a direct block-only candidate",
+                nameof(share));
+
+        BlockOnlyCandidatePersistenceRules.EnsureDeclared(share);
+        BitcoinDirectSubmission.ValidatePreparedShare(share);
+
+        Exception databaseError = null;
+        Exception journalError = null;
+        var failStopReason =
+            DirectBlockSubmissionFailStopReason.UnexpectedDatabaseFailure;
+        var databaseAttempt = PersistSharesCoreAsync(new[] { share });
+
+        try
+        {
+            await databaseAttempt.WaitAsync(
+                DirectSubmissionDatabasePropagationBound);
+            return new DirectBlockSubmissionPreparation();
+        }
+        catch(Exception ex) when(ex is not TransactionCommittedCleanupException and
+            not TransactionCommitOutcomeUncertainException)
+        {
+            databaseError = ex;
+            if(!databaseAttempt.IsCompleted)
+                _ = ObserveLateCandidateDatabaseAttemptAsync(databaseAttempt);
+        }
+        catch(TransactionCommittedCleanupException cleanupError)
+        {
+            databaseError = cleanupError;
+            failStopReason =
+                DirectBlockSubmissionFailStopReason.CommittedCleanupFailure;
+        }
+        catch(TransactionCommitOutcomeUncertainException commitError)
+        {
+            databaseError = commitError;
+            failStopReason =
+                DirectBlockSubmissionFailStopReason.CommitOutcomeUncertain;
+        }
+
+        try
+        {
+            // The exact serialized block is now fsync-backed before submitblock. This fallback
+            // intentionally avoids the ordinary 2/4/8-second retry ladder on Bitcoin's
+            // propagation-critical path. A late database commit remains idempotent.
+            await WriteRecoveryJournalAsync(new[] { share });
+            NotifyAdminOnPolicyFallbackSafely();
+        }
+        catch(Exception journalFailure)
+        {
+            journalError = journalFailure;
+            if(failStopReason ==
+               DirectBlockSubmissionFailStopReason.CommittedCleanupFailure)
+            {
+                // PostgreSQL is known to have committed the authoritative outbox.
+                // Preserve propagation priority and report the secondary journal
+                // failure after submitblock.
+                return new DirectBlockSubmissionPreparation(databaseError,
+                    failStopReason, journalError);
+            }
+
+            await candidateFailureHandler.StopClusterAsync(new[] { share },
+                databaseError, journalFailure, false);
+            RethrowCandidatePersistenceFailure(databaseError, journalFailure);
+        }
+
+        var deferredError = failStopReason is
+            DirectBlockSubmissionFailStopReason.CommittedCleanupFailure or
+            DirectBlockSubmissionFailStopReason.CommitOutcomeUncertain
+            ? databaseError
+            : IsRetryablePersistenceException(databaseError)
+                ? null
+                : databaseError;
+        return new DirectBlockSubmissionPreparation(deferredError,
+            failStopReason, journalError);
+    }
+
+    public async Task CompleteDirectBlockSubmissionPreparationAsync(
+        Share share, DirectBlockSubmissionPreparation preparation)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+        if(preparation?.DeferredFailStopError == null)
+            return;
+
+        // Submission was allowed to run because the exact block was durable in
+        // PostgreSQL, the recovery journal, or both. Execute the database-health
+        // fail-stop only after the propagation attempt.
+        switch(preparation.DeferredFailStopReason)
+        {
+            case DirectBlockSubmissionFailStopReason.CommittedCleanupFailure:
+                await recoveryFailureHandler
+                    .StopClusterAfterReplaySafeCommittedCleanupAsync(
+                        new[] { share }, recoveryFilename,
+                        preparation.DeferredFailStopError,
+                        preparation.JournalError);
+                break;
+
+            case DirectBlockSubmissionFailStopReason.CommitOutcomeUncertain:
+                await recoveryFailureHandler
+                    .StopClusterForReplaySafeUncertainCommitAsync(
+                        new[] { share }, recoveryFilename,
+                        preparation.DeferredFailStopError);
+                break;
+
+            case DirectBlockSubmissionFailStopReason.UnexpectedDatabaseFailure:
+                await candidateFailureHandler.StopClusterAsync(new[] { share },
+                    preparation.DeferredFailStopError,
+                    preparation.JournalError, true);
+                break;
+
+            case DirectBlockSubmissionFailStopReason.None:
+            default:
+                await candidateFailureHandler.StopClusterAsync(new[] { share },
+                    preparation.DeferredFailStopError,
+                    preparation.JournalError, true);
+                throw new InvalidOperationException(
+                    $"Unsupported deferred direct-submission fail-stop reason " +
+                    $"'{preparation.DeferredFailStopReason}'",
+                    preparation.DeferredFailStopError);
+        }
+
+        RethrowCandidatePersistenceFailure(
+            preparation.DeferredFailStopError, preparation.JournalError);
+    }
+
+    public async Task<Block> RecordDirectBlockSubmissionAttemptAsync(
+        Share share, BitcoinDirectSubmissionOutcome outcome,
+        DateTime attemptedAt)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+        var updated = await cf.RunTx((con, tx) =>
+            blockRepo.RecordBitcoinDirectSubmissionAttemptAsync(con, tx,
+                share.PoolId, share.BlockHash, outcome, attemptedAt,
+                BitcoinDirectSubmission.MinimumDefinitiveMisses,
+                attemptedAt - BitcoinDirectSubmission.UncertainLifetime));
+
+        if(updated != null && string.Equals(updated.DirectSubmissionState,
+               BitcoinDirectSubmission.ObservedActive,
+               StringComparison.Ordinal))
+            NotifyPersistedBlocks(new[] { (share.PoolId, updated) });
+
+        return updated;
+    }
+
+    public Task<Block[]> GetDirectBlockSubmissionsForReplayAsync(string poolId,
+        long afterId, int pageSize, CancellationToken ct) => cf.Run(con =>
+        blockRepo.GetBitcoinDirectSubmissionsForReplayAsync(con, poolId,
+            afterId, pageSize, ct));
+
+    public Task<Block> QuarantineDirectBlockSubmissionAsync(long blockId,
+        CancellationToken ct) => cf.RunTx(async (con, tx) =>
+    {
+        ct.ThrowIfCancellationRequested();
+        var block = await blockRepo.GetBlockByIdForUpdateAsync(con, tx,
+            blockId);
+
+        if(block == null ||
+           !BitcoinPayoutHandler.IsDirectCoinbaseSettlement(block) ||
+           !BitcoinDirectSubmission.RequiresReplay(
+               block.DirectSubmissionState))
+            return block;
+
+        block.Status = BlockStatus.Quarantined;
+        block.DirectSubmissionState = BitcoinDirectSubmission.Quarantined;
+        block.DirectSettlementLastChecked = clock.Now;
+
+        if(!await blockRepo.UpdateBlockAsync(con, tx, block))
+            throw new InvalidOperationException(
+                $"Unable to persist quarantine for direct-SOLO block " +
+                $"{block.BlockHeight} [{block.Hash}]");
+
+        return block;
+    });
 
     public void BeginShutdown()
     {
@@ -396,7 +600,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
             if(!hasLoggedPolicyFallbackFailure)
             {
-                logger.Fatal(ex, "Fatal error during candidate recovery fallback. Block candidate will be lost!");
+                logger.Fatal("Fatal error during candidate recovery fallback. Block candidate durability is at risk; preserve evidence and investigate before restarting.");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecorder.PersistBlockCandidateDurablyAsync", failure: ex);
                 hasLoggedPolicyFallbackFailure = true;
             }
         }
@@ -462,7 +667,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
         catch(Exception ex)
         {
-            logger.Warn(ex, () => "Late PostgreSQL candidate attempt failed after recovery-journal fallback");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ShareRecorder.ObserveLateCandidateDatabaseAttemptAsync", failure: ex);
         }
     }
 
@@ -472,28 +677,89 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private async Task PersistSharesCoreAsync(IList<Share> shares,
         CancellationToken ct)
     {
-        var insertedBlocks = await cf.RunTx((con, tx) =>
+        var persistence = await cf.RunTx((con, tx) =>
             PersistSharesBatchAsync(con, tx, shares, ct), ct: ct,
             classifyCommitOutcome: true);
 
-        NotifyPersistedBlocks(insertedBlocks);
+        NotifyPersistedBlocks(persistence.Blocks);
+        PublishAccountingTelemetry(persistence.Accounting);
     }
 
-    private async Task<List<(string PoolId, Block Block)>> PersistSharesBatchAsync(
+    private async Task<ShareBatchPersistenceResult> PersistSharesBatchAsync(
         IDbConnection con, IDbTransaction tx, IList<Share> shares,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool allowMissingPpsConfiguration = false)
     {
-        var result = new List<(string PoolId, Block Block)>();
+        var blocks = new List<(string PoolId, Block Block)>();
+        var accounting = new List<ShareAccountingTelemetryEvent>();
 
         // Block-only candidates are sent through the share message pipeline so they can reuse
         // normal block persistence and notifications without creating a duplicate standalone
         // share row or distorting hashrate, effort, and share statistics.
-        var mapped = GetSharesForPersistence(shares)
-            .Select(mapper.Map<Persistence.Model.Share>)
-            .ToArray();
+        var ordinary = new List<Persistence.Model.Share>();
+        var accounted = new List<ShareAccountingBatch>();
 
-        if(mapped.Length > 0)
-            await shareRepo.BatchInsertAsync(con, tx, mapped, ct);
+        foreach(var envelope in shares.Where(x => !x.BlockOnly))
+        {
+            var projections = ShareAccounting.ValidateAndFlatten(envelope, pools);
+            if(string.IsNullOrEmpty(envelope.AccountingId))
+            {
+                ordinary.AddRange(projections.Select(
+                    mapper.Map<Persistence.Model.Share>));
+                continue;
+            }
+
+            var mapped = projections.Select(ShareAccounting.ToPersistenceShare)
+                .ToArray();
+            var credits = projections
+                .Select(x => ShareAccounting.CreatePpsCredit(pools[x.PoolId], x,
+                    allowMissingPpsConfiguration))
+                .Where(x => x != null)
+                .ToArray();
+            var accountingId = ShareAccounting.ParseCanonicalId(
+                envelope.AccountingId);
+            accounted.Add(new ShareAccountingBatch
+            {
+                AccountingId = accountingId,
+                PayloadHash = ShareAccounting.ComputePayloadHash(accountingId,
+                    mapped, credits),
+                Shares = mapped,
+                PpsCredits = credits,
+                Created = envelope.Created,
+                NewReceiptNotBefore = clock.Now.AddDays(-(
+                    clusterConfig.PaymentProcessing?
+                        .ShareAccountingRetentionDays ?? 30)),
+            });
+        }
+
+        if(ordinary.Count > 0)
+            await shareRepo.BatchInsertAsync(con, tx, ordinary, ct);
+
+        var outcomes = accounted.Count switch
+        {
+            0 => Array.Empty<ShareAccountingInsertResult>(),
+            1 => new[]
+            {
+                await shareRepo.InsertAccountingBatchAsync(con, tx,
+                    accounted[0], ct),
+            },
+            _ => await shareRepo.InsertAccountingBatchesAsync(con, tx,
+                accounted, ct),
+        };
+
+        for(var index = 0; index < accounted.Count; index++)
+        {
+            var batch = accounted[index];
+            var outcome = outcomes[index];
+            accounting.Add(new ShareAccountingTelemetryEvent(
+                batch.AccountingId,
+                outcome,
+                batch.Shares.Select(x => new ShareAccountingProjectionTelemetry(
+                    x.PoolId, (ShareAccountingRole) x.AccountingRole.Value))
+                    .ToArray(),
+                batch.PpsCredits.Select(x => new ShareAccountingPpsTelemetry(
+                    x.PoolId, x.CalculatedAmount)).ToArray()));
+        }
 
         // Insert blocks
         foreach(var share in shares)
@@ -508,14 +774,39 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             if(!inserted)
                 continue;
 
-            if(IsUncertainBlockType(blockEntity.Type))
+            if(IsUncertainBlockType(blockEntity.Type) ||
+               BitcoinDirectSubmission.RequiresReplay(
+                   blockEntity.DirectSubmissionState))
                 continue;
 
-            result.Add((share.PoolId, blockEntity));
+            blocks.Add((share.PoolId, blockEntity));
         }
 
-        return result;
+        return new ShareBatchPersistenceResult(blocks, accounting);
     }
+
+    private void PublishAccountingTelemetry(
+        IReadOnlyList<ShareAccountingTelemetryEvent> events)
+    {
+        foreach(var evt in events)
+        {
+            messageBus.SendMessage(evt);
+
+            var pools = string.Join(",", evt.Projections
+                .Select(x => x.PoolId)
+                .OrderBy(x => x, StringComparer.Ordinal));
+            if(evt.Outcome == ShareAccountingInsertResult.AlreadyCommitted)
+                logger.Info(() =>
+                    $"Suppressed replay of share-accounting group {evt.AccountingId:N} for pools {pools}");
+            else
+                logger.Debug(() =>
+                    $"Committed share-accounting group {evt.AccountingId:N} for pools {pools}");
+        }
+    }
+
+    private sealed record ShareBatchPersistenceResult(
+        List<(string PoolId, Block Block)> Blocks,
+        List<ShareAccountingTelemetryEvent> Accounting);
 
     private void NotifyPersistedBlocks(
         IEnumerable<(string PoolId, Block Block)> insertedBlocks)
@@ -536,7 +827,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
             catch(Exception ex)
             {
-                logger.Error(ex, () => $"Unable to emit block-found notification for pool {poolId}, block {block.BlockHeight} [{block.Hash}] after persistence committed");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ShareRecorder.NotifyPersistedBlocks", failure: ex);
             }
         }
     }
@@ -546,22 +837,15 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         return !string.IsNullOrEmpty(type) && UncertainBlockTypes.Contains(type);
     }
 
-    internal static IEnumerable<Share> GetSharesForPersistence(IEnumerable<Share> shares)
-    {
-        ArgumentNullException.ThrowIfNull(shares);
-
-        return shares.Where(x => !x.BlockOnly);
-    }
-
     private static void OnPolicyRetry(Exception ex, TimeSpan timeSpan, int retry, object context)
     {
-        logger.Warn(() => $"Retry {retry} in {timeSpan} due to {ex.Source}: {ex.GetType().Name} ({ex.Message})");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ShareRecorder.OnPolicyRetry", failure: ex);
     }
 
     private Task OnPolicyFallbackAsync(Exception ex, Context context)
     {
         context[PolicyContextKeyDatabaseError] = ex;
-        logger.Warn(() => $"Fallback due to {ex.Source}: {ex.GetType().Name} ({ex.Message})");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ShareRecorder.OnPolicyFallbackAsync", failure: ex);
         return Task.CompletedTask;
     }
 
@@ -1166,8 +1450,14 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         string previous)
     {
         var shareRecords = shares
-            .Select(share => JsonConvert.SerializeObject(share,
-                jsonSerializerSettings))
+            .Select(share =>
+            {
+                var record = JsonConvert.SerializeObject(share,
+                    jsonSerializerSettings);
+                ValidateRecoveryRecordLength(share, record,
+                    "Recovery journal record");
+                return record;
+            })
             .ToArray();
         var records = shareRecords.Length > 0
             ? string.Join("\n", shareRecords) + "\n"
@@ -1319,6 +1609,13 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             throw new InvalidOperationException(
                 "A required share-recovery failure handler was not supplied");
 
+        public Task StopClusterAfterJournalAsync(
+            IReadOnlyCollection<Share> recoverableShares, string recoveryFilename,
+            IReadOnlyCollection<Share> quarantinedShares,
+            string quarantineFilename, Exception pipelineError) =>
+            throw new InvalidOperationException(
+                "A required share-recovery failure handler was not supplied");
+
         public Task StopClusterAfterCommittedCleanupAsync(
             IReadOnlyCollection<Share> shares, string recoveryFilename,
             Exception cleanupError) =>
@@ -1326,6 +1623,18 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 "A required share-recovery failure handler was not supplied");
 
         public Task StopClusterForUncertainCommitAsync(
+            IReadOnlyCollection<Share> shares, string recoveryFilename,
+            Exception commitError) =>
+            throw new InvalidOperationException(
+                "A required share-recovery failure handler was not supplied");
+
+        public Task StopClusterAfterReplaySafeCommittedCleanupAsync(
+            IReadOnlyCollection<Share> shares, string recoveryFilename,
+            Exception cleanupError, Exception journalError) =>
+            throw new InvalidOperationException(
+                "A required share-recovery failure handler was not supplied");
+
+        public Task StopClusterForReplaySafeUncertainCommitAsync(
             IReadOnlyCollection<Share> shares, string recoveryFilename,
             Exception commitError) =>
             throw new InvalidOperationException(
@@ -1535,11 +1844,15 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 // Pass one validates every record before a database transaction is opened.
                 var validationHash = new RecoveryContentHasher(jsonSerializerSettings);
                 var requiresBlockIdempotencyIndexes = false;
+                var requiresBitcoinDirectSoloSchema = false;
                 validatedCount = await ProcessRecoveryRecordsAsync(reader, shares =>
                 {
                     validationHash.Append(shares);
                     requiresBlockIdempotencyIndexes |= shares.Any(
                         BlockOnlyCandidatePersistenceRules.RequiresIdempotencyIndexes);
+                    requiresBitcoinDirectSoloSchema |= shares.Any(
+                        BlockOnlyCandidatePersistenceRules
+                            .RequiresBitcoinDirectSoloSchema);
                     return Task.CompletedTask;
                 }, !pendingImportAlreadyCommitted);
                 fileHash = validationHash.GetHash();
@@ -1578,6 +1891,21 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                         operationOwnership.EnsureJournalPathIsExclusive();
                     }
 
+                    if(requiresBitcoinDirectSoloSchema)
+                    {
+                        var schemaReady = await cf.Run(con =>
+                            blockRepo.HasBitcoinDirectSoloSchemaAsync(con,
+                                CancellationToken.None));
+                        if(!schemaReady)
+                            throw new PoolStartupException(
+                                "Bitcoin direct-SOLO recovery records require the complete " +
+                                "add_bitcoin_direct_solo.sql schema contract. Apply that " +
+                                "candidate-version migration before importing the recovery " +
+                                "journal; the journal has not been imported.");
+
+                        operationOwnership.EnsureJournalPathIsExclusive();
+                    }
+
                     // Publish an independent pending marker before the database transaction.
                     // A crash after commit can then be identified through its manifest without
                     // allowing normal mining to append to the already-imported source.
@@ -1604,15 +1932,20 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
                         if(!registered)
                             return (Blocks: new List<(string PoolId, Block Block)>(),
+                                Accounting: new List<ShareAccountingTelemetryEvent>(),
                                 Inserted: false);
 
                         var result = new List<(string PoolId, Block Block)>();
+                        var accounting = new List<ShareAccountingTelemetryEvent>();
                         var importHash = new RecoveryContentHasher(jsonSerializerSettings);
                         var importedCount = await ProcessRecoveryRecordsAsync(reader,
                             async shares =>
                             {
                                 importHash.Append(shares);
-                                result.AddRange(await PersistSharesBatchAsync(con, tx, shares));
+                                var persisted = await PersistSharesBatchAsync(con, tx,
+                                    shares, allowMissingPpsConfiguration: true);
+                                result.AddRange(persisted.Blocks);
+                                accounting.AddRange(persisted.Accounting);
                             });
                         var importedHash = importHash.GetHash();
 
@@ -1622,10 +1955,12 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                             throw new InvalidDataException(
                                 "Recovery source changed between validation and import");
 
-                        return (Blocks: result, Inserted: true);
+                        return (Blocks: result, Accounting: accounting,
+                            Inserted: true);
                     });
                     insertedBlocks = importResult.Blocks;
                     insertedNewContent = importResult.Inserted;
+                    PublishAccountingTelemetry(importResult.Accounting);
 
                     // This write occurs only after RunTx commits. If the process dies between the
                     // commit and this update, the pending marker remains and the manifest makes
@@ -1989,6 +2324,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 throw new InvalidDataException(
                     $"Recovery record at line {lineNumber} is null");
 
+            ValidateRecoveryRecordLength(share, line,
+                $"Recovery record at line {lineNumber}");
+
             if(requireConfiguredPool &&
                (share.PoolId == null || !pools.ContainsKey(share.PoolId)))
             {
@@ -1997,6 +2335,24 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     $"Recovery record at line {lineNumber} references unconfigured pool ID {poolId}. " +
                     "Add the exact historical pool ID to the recovery configuration and review " +
                     "the journal before retrying; no recovery records were imported.");
+            }
+
+            if(requireConfiguredPool)
+            {
+                try
+                {
+                    ShareAccounting.ValidateReplayHorizon(share,
+                        clock.Now, clusterConfig.PaymentProcessing?
+                            .ShareAccountingRetentionDays ?? 30);
+                    ShareAccounting.ValidateAndFlatten(share, pools);
+                }
+                catch(Exception ex) when(ex is InvalidDataException or
+                    ArgumentException)
+                {
+                    throw new InvalidDataException(
+                        $"Recovery record at line {lineNumber} has invalid or incomplete share-accounting evidence; preserve the journal and correct the deployment before retrying",
+                        ex);
+                }
             }
 
             shares.Add(share);
@@ -2016,6 +2372,26 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
 
         return recordCount;
+    }
+
+    private static void ValidateRecoveryRecordLength(Share share,
+        string record, string description)
+    {
+        ArgumentNullException.ThrowIfNull(share);
+        ArgumentNullException.ThrowIfNull(record);
+
+        var maximum = string.Equals(share.BlockType,
+                BitcoinDirectCoinbaseSettlement.BlockType,
+                StringComparison.Ordinal) &&
+            string.Equals(share.SettlementMode,
+                BitcoinDirectCoinbaseSettlement.Mode,
+                StringComparison.Ordinal)
+            ? MaxRecoveryRecordLineLength
+            : MaxOrdinaryRecoveryRecordLineLength;
+
+        if(record.Length > maximum)
+            throw new InvalidDataException(
+                $"{description} exceeds the {maximum}-character limit for its record type");
     }
 
     private void NotifyAdminOnPolicyFallback()
@@ -2039,8 +2415,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
         catch(Exception ex)
         {
-            logger.Error(ex,
-                "Unable to emit share-recorder fallback notification after the recovery journal was durably flushed");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ShareRecorder.NotifyAdminOnPolicyFallbackSafely", failure: ex);
         }
     }
 
@@ -2179,8 +2554,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 // Releasing ownership here would permit a replacement process to race it, so
                 // retain the native lock explicitly until this failed process exits.
                 retainOwnershipUntilProcessExit = true;
-                logger.Fatal(ex,
-                    "Deferred share-recovery evidence did not finish within the shared shutdown deadline; retaining recovery ownership until process exit");
+                logger.Fatal("Deferred share-recovery evidence did not finish within the shared shutdown deadline; retaining recovery ownership until process exit.");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecorder.StopCoreAsync", failure: ex);
                 throw new TimeoutException(
                     "Deferred share-recovery evidence exceeded the shared shutdown deadline", ex);
             }
@@ -2188,7 +2563,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             {
                 // A faulted task is complete and no longer mutating the directory. Log the evidence
                 // failure, release the recorder-owned lease in finally, and preserve the stop failure.
-                logger.Fatal(ex, "Deferred share-recovery evidence failed during shutdown");
+                logger.Fatal("Deferred share-recovery evidence failed during shutdown; preserve the recovery directory for operator investigation.");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecorder.StopCoreAsync", failure: ex);
                 throw;
             }
         }
@@ -2261,7 +2637,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
         catch(Exception ex)
         {
-            logger.Fatal(ex, "Share persistence queues terminated due to error");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Fatal, "ShareRecorder.ObservePersistenceQueuesAsync", failure: ex);
+            logger.Fatal("Share persistence queues terminated due to error; mining is stopping. Preserve PostgreSQL and recovery evidence.");
             throw;
         }
     }
@@ -2511,6 +2888,46 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         {
             await PersistSharesAsync(queued.Select(x => x.Share).ToArray(), ct);
         }
+        catch(InvalidDataException ex)
+        {
+            if(queued.Count == 1)
+            {
+                ex.Data[InvalidQueuedShareIdsKey] = new[] { queued.Single().Id };
+                throw;
+            }
+
+            // Isolate deterministic accounting/configuration failures so one hostile or corrupt
+            // record cannot strand the other records in a valid persistence batch. Successful
+            // siblings are committed and removed normally; only rejected evidence is quarantined.
+            var rejected = new List<long>();
+            var failures = new List<Exception>();
+            foreach(var item in queued.OrderBy(x => x.Id))
+            {
+                try
+                {
+                    await PersistQueuedSharesAsync(new[] { item }, ct);
+                }
+                catch(InvalidDataException itemError)
+                {
+                    rejected.Add(item.Id);
+                    failures.Add(itemError);
+                }
+            }
+
+            // A batch-level constraint can disappear after deterministic one-record replay
+            // (for example, ordering around a concurrently committed idempotency receipt). If
+            // every record then commits successfully, the original batch error is resolved and
+            // must not trigger a false fail-stop with nothing left to journal.
+            if(rejected.Count == 0)
+                return;
+
+            var isolated = new InvalidDataException(
+                $"Rejected {rejected.Count} invalid share-accounting record(s); " +
+                "valid siblings were committed independently",
+                new AggregateException(failures));
+            isolated.Data[InvalidQueuedShareIdsKey] = rejected.ToArray();
+            throw isolated;
+        }
         catch(TransactionCommittedCleanupException)
         {
             // Commit completed before provider cleanup failed. Remove this exact batch before
@@ -2554,6 +2971,57 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         }
     }
 
+    private async Task<string> WriteAccountingQuarantineAsync(IList<Share> shares)
+    {
+        if(shares.Count == 0)
+            throw new ArgumentException("A quarantine must contain evidence", nameof(shares));
+
+        var directory = Path.GetDirectoryName(recoveryFilename)!;
+        var quarantine = Path.Combine(directory,
+            $"{Path.GetFileName(recoveryFilename)}.quarantine-" +
+            $"{DateTime.UtcNow:yyyyMMddTHHmmssfffffffZ}-{Guid.NewGuid():N}");
+        var temporary = $"{quarantine}.tmp";
+
+        try
+        {
+            await using(var stream = recoveryPathOwnership.OpenRecoveryEntry(
+                temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None,
+                FileOptions.Asynchronous | FileOptions.WriteThrough,
+                "Share-accounting quarantine temporary"))
+            {
+                var payload = BuildRecoveryJournalPayload(shares, true, 1,
+                    EmptyFrameDigest);
+                await AppendRecoveryJournalAsync(stream, payload.Bytes,
+                    RecoveryJournalFlush);
+                stream.Position = 0;
+                _ = ValidateRecoveryJournalDetailed(stream, temporary);
+            }
+
+            MoveRecoveryEntry(recoveryPathOwnership, temporary, quarantine);
+            SyncRecoveryDirectory(recoveryPathOwnership, directory);
+            return quarantine;
+        }
+        finally
+        {
+            try
+            {
+                recoveryPathOwnership.DeleteRecoveryEntry(temporary);
+            }
+            catch
+            {
+                // Preserve the original durability failure.
+            }
+        }
+    }
+
+    private static HashSet<long> GetInvalidQueuedShareIds(Exception error)
+    {
+        if(error.Data[InvalidQueuedShareIdsKey] is IEnumerable<long> values)
+            return values.ToHashSet();
+
+        return new HashSet<long>();
+    }
+
     private async Task JournalUnresolvedSharesAfterPipelineFailureAsync(
         Exception pipelineError)
     {
@@ -2567,7 +3035,38 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
         try
         {
-            await WriteRecoveryJournalAsync(unresolved);
+            var rejectedIds = GetInvalidQueuedShareIds(pipelineError);
+            Share[] quarantinedShares = Array.Empty<Share>();
+            string quarantineFilename = null;
+            if(rejectedIds.Count > 0)
+            {
+                var rejected = unresolvedShares.Values
+                    .Where(x => rejectedIds.Contains(x.Id))
+                    .OrderBy(x => x.Id)
+                    .ToArray();
+                if(rejected.Length > 0)
+                {
+                    quarantinedShares = rejected.Select(x => x.Share).ToArray();
+                    quarantineFilename = await WriteAccountingQuarantineAsync(
+                        quarantinedShares);
+                    pipelineError.Data[AccountingQuarantinePathKey] =
+                        quarantineFilename;
+                    logger.Error(() =>
+                        $"Quarantined {rejected.Length} invalid share-accounting " +
+                        $"record(s) in {quarantineFilename}; preserve this evidence for " +
+                        "manual reconciliation");
+
+                    foreach(var item in rejected)
+                    {
+                        unresolvedShares.TryRemove(item.Id, out _);
+                        item.JournalCompletion?.TrySetResult();
+                    }
+                }
+            }
+
+            var recoverable = SnapshotUnresolvedShares();
+            if(recoverable.Length > 0)
+                await WriteRecoveryJournalAsync(recoverable);
             NotifyAdminOnPolicyFallbackSafely();
 
             foreach(var item in unresolvedShares.ToArray())
@@ -2576,8 +3075,13 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     removed.JournalCompletion?.TrySetResult();
             }
 
-            await recoveryFailureHandler.StopClusterAfterJournalAsync(
-                unresolved, recoveryFilename, pipelineError);
+            if(quarantinedShares.Length > 0)
+                await recoveryFailureHandler.StopClusterAfterJournalAsync(
+                    recoverable, recoveryFilename, quarantinedShares,
+                    quarantineFilename, pipelineError);
+            else
+                await recoveryFailureHandler.StopClusterAfterJournalAsync(
+                    recoverable, recoveryFilename, pipelineError);
         }
         catch(Exception journalError)
         {

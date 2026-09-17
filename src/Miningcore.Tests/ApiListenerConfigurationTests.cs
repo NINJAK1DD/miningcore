@@ -2263,6 +2263,10 @@ public class ApiListenerConfigurationTests
                         Enabled = false,
                         PayoutScheme = PayoutScheme.SOLO,
                     },
+                    Extra = new Dictionary<string, object>
+                    {
+                        ["soloCoinbasePayout"] = false,
+                    },
                     Daemons = new[]
                     {
                         new DaemonEndpointConfig

@@ -1,0 +1,22 @@
+diff --git a/algo/odo/odo.cpp b/algo/odo/odo.cpp
+index a5179ca..919bdff 100644
+--- a/algo/odo/odo.cpp
++++ b/algo/odo/odo.cpp
+@@ -18,8 +18,15 @@
++#if (defined(DGB_ODO_MAINNET) + defined(DGB_ODO_REGTEST) + \
++     defined(DGB_ODO_TESTNET) + defined(DGB_ODO_SIGNET)) != 1
++#error "Select exactly one DigiByte Odocrypt network schedule"
++#elif defined(DGB_ODO_MAINNET) || defined(DGB_ODO_REGTEST)
++static constexpr uint32_t OdoShapechangeInterval = 10*24*60*60;
++#elif defined(DGB_ODO_TESTNET) || defined(DGB_ODO_SIGNET)
++static constexpr uint32_t OdoShapechangeInterval = 1*24*60*60;
++#endif
++
+ extern "C" int scanhash_odo( struct work *work, uint32_t max_nonce,
+                            uint64_t *hashes_done, struct thr_info *mythr )
+ {
+-  static constexpr uint32_t OdoShapechangeInterval = 1*24*60*60;
+-
+   uint32_t throughput = 1;
+   int thr_id = mythr->id;
+   uint32_t *pdata = work->data;

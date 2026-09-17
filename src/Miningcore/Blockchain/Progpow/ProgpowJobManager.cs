@@ -1,6 +1,5 @@
 using Autofac;
 using Miningcore.Blockchain.Bitcoin;
-using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Progpow.Custom.Firo;
 using Miningcore.Blockchain.Progpow.Custom.Kiiro;
@@ -118,10 +117,10 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
                 GetBlockTemplateFromJson(json);
 
             // may happen if daemon is currently not connected to peers
-            if(response.Error != null)
+            if(response.Error != null || response.Response == null)
             {
-                logger.Warn(() => $"Unable to update job. Daemon responded with: {response.Error.Message} Code {response.Error.Code}");
-                return (false, forceUpdate);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "ProgpowJobManager.UpdateJob", code: response.Error?.Code);
+                return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
             }
 
             var blockTemplate = response.Response;
@@ -183,10 +182,10 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ProgpowJobManager.UpdateJob", failure: ex);
         }
 
-        return (false, forceUpdate);
+        return (false, PreserveForceForVerifiedJob(forceUpdate, ct));
     }
 
     protected override object GetJobParamsForStratum(bool isNew)
@@ -206,13 +205,6 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         coin = pc.Template.As<ProgpowCoinTemplate>();
-        extraPoolConfig = pc.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>();
-        extraPoolPaymentProcessingConfig = pc.PaymentProcessing?.Extra?.SafeExtensionDataAs<BitcoinPoolPaymentProcessingConfigExtra>();
-
-        if(extraPoolConfig?.MaxActiveJobs.HasValue == true)
-            maxActiveJobs = extraPoolConfig.MaxActiveJobs.Value;
-
-        hasLegacyDaemon = extraPoolConfig?.HasLegacyDaemon == true;
 
         if(pc.EnableInternalStratum == true)
         {
@@ -307,7 +299,7 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
 
             if(share.IsBlockCandidate)
             {
-                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] submitted by {context.Miner}");
+                logger.Info(() => $"Daemon accepted block {share.BlockHeight} [{share.BlockHash}] (miner identity withheld)");
 
                 OnBlockFound();
 

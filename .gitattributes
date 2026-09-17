@@ -13,7 +13,14 @@
 
 ##### Linux
 *.sh text eol=lf
+*.sha256 text eol=lf
 *.so binary
+
+# Byte-pinned Odocrypt inputs must hash identically on Windows and Unix.
+src/Native/libmultihash/odocrypt.cpp text eol=lf
+src/Native/libmultihash/odocrypt.h text eol=lf
+src/Native/libmultihash/KeccakP-800-reference.c text eol=lf
+src/Native/libmultihash/KeccakP-800-SnP.h text eol=lf
 
 ##### Global
 # Documents

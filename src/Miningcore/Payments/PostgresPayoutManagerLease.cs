@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Data;
 using Dapper;
 using Miningcore.Persistence;
@@ -252,7 +253,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
             if(candidate is NpgsqlConnection npgsqlConnection)
                 NpgsqlConnection.ClearPool(npgsqlConnection);
 
-            logger.Error(ex, () => "Unable to release the PostgreSQL payout-manager advisory lock; the guard connection will not be reused");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PostgresPayoutManagerLease.ReleaseAdvisoryLockAsync", failure: ex);
         }
     }
 
@@ -266,7 +267,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 
         catch(Exception ex) when(ex is not OperationCanceledException)
         {
-            logger.Debug(ex, () => "Unable to read the durable payout-manager owner while reporting an advisory-lock conflict");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "PostgresPayoutManagerLease.TryReadOwnershipAsync", failure: ex);
             return null;
         }
     }
@@ -392,7 +393,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                     {
                         // Fail closed. Leaving the durable row owned prevents an unsafe
                         // replacement process from starting after an uncertain shutdown.
-                        logger.Error(ex, () => "Unable to clear durable payout-manager ownership; manual release is required after confirming this process is stopped");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PostgresPayoutManagerLease.DisposeAsync", failure: ex);
                     }
                 }
 

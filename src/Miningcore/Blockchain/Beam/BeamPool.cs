@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Globalization;
 using System.Numerics;
 using System.Reactive;
@@ -119,7 +120,7 @@ public class BeamPool : PoolBase
             await connection.NotifyAsync(loginResponse);
             
             // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
             
             var minerJobParams = CreateWorkerJob(connection);
             logger.Info(() => $"Broadcasting job {minerJobParams[0]}");
@@ -151,7 +152,7 @@ public class BeamPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
@@ -352,7 +353,7 @@ public class BeamPool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            logger.Info(() => $"[{connection.ConnectionId}] Share rejected: {ex.Message} [{context.UserAgent}]");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "BeamPool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);
@@ -408,11 +409,11 @@ public class BeamPool : PoolBase
             disposables.Add(manager.Jobs
                 .Select(job => Observable.FromAsync(() =>
                     Guard(()=> OnNewJobAsync(job),
-                        ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"))))
+                        ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamPool.SetupJobManager", failure: ex))))
                 .Concat()
                 .Subscribe(_ => { }, ex =>
                 {
-                    logger.Debug(ex, nameof(OnNewJobAsync));
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamPool.SetupJobManager", failure: ex);
                 }));
 
             // start with initial blocktemplate
@@ -451,7 +452,7 @@ public class BeamPool : PoolBase
                     break;
                 
                 default:
-                    logger.Debug(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamPool.OnRequestAsync");
 
                     await connection.RespondErrorAsync(StratumError.Other, $"Unsupported request {request.Method}", request.Id);
                     break;

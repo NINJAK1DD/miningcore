@@ -180,8 +180,11 @@ public class ErgoJob
 
     public object[] GetJobParams(bool isNew)
     {
-        jobParams[^1] = isNew;
-        return jobParams;
+        // ErgoPool's later target projection cannot repair a flag overwritten
+        // between issuance and that projection. Snapshot it at the source.
+        var result = (object[]) jobParams.Clone();
+        result[^1] = isNew;
+        return result;
     }
 
     public virtual Share ProcessShare(StratumConnection worker, string extraNonce2, string nTime, string nonce)

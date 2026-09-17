@@ -269,8 +269,8 @@ public class StratumConnection
                 // The terminal event has already been consumed. Log and absorb callback or
                 // teardown failures so DispatchAsync completes without issuing a second terminal
                 // event; a faulted task here would not restore the consumed lifecycle transition.
-                logger.Error(ex, () =>
-                    $"[{ConnectionId}] Terminal connection callback or subsequent teardown failed; refusing a second callback");
+                StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.TerminalCallback,
+                    ConnectionId, ex);
             }
         }
 
@@ -367,7 +367,7 @@ public class StratumConnection
     {
         while(!ct.IsCancellationRequested)
         {
-            logger.Debug(() => $"[{ConnectionId}] [NET] Waiting for data ...");
+            StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.ReceiveWait, ConnectionId);
 
             var memory = receivePipe.Writer.GetMemory(MaxInboundRequestLength + 1);
 
@@ -376,7 +376,7 @@ public class StratumConnection
             if(cb == 0)
                 break; // EOF
 
-            logger.Debug(() => $"[{ConnectionId}] [NET] Received data: {Encoding.GetString(memory.Slice(0, cb).Span)}");
+            StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.Receive, ConnectionId, bytes: cb);
 
             LastReceive = clock.Now;
 
@@ -395,7 +395,7 @@ public class StratumConnection
     {
         while(!ct.IsCancellationRequested)
         {
-            logger.Debug(() => $"[{ConnectionId}] [PIPE] Waiting for data ...");
+            StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.BufferWait, ConnectionId);
 
             var result = await receivePipe.Reader.ReadAsync(ct);
 
@@ -405,7 +405,7 @@ public class StratumConnection
             if(buffer.Length > MaxInboundRequestLength)
                 throw new InvalidDataException($"Incoming data exceeds maximum of {MaxInboundRequestLength}");
 
-            logger.Debug(() => $"[{ConnectionId}] [PIPE] Received data: {result.Buffer.AsString(Encoding)}");
+            StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.Buffer, ConnectionId, bytes: buffer.Length);
 
             do
             {
@@ -495,7 +495,7 @@ public class StratumConnection
             serializer.Serialize(writer, msg);
         }
 
-        logger.Debug(() => $"[{ConnectionId}] Sending: {Encoding.GetString(stream.GetReadOnlySequence())}");
+        StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.Send, ConnectionId, bytes: stream.Length);
 
         // append newline
         stream.WriteByte((byte) '\n');
@@ -543,7 +543,7 @@ public class StratumConnection
 
             if(proxyAddresses.Any(x => x.Equals(peerAddress)))
             {
-                logger.Debug(() => $"[{ConnectionId}] Received Proxy-Protocol header: {line}");
+                StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.ProxyHeader, ConnectionId, bytes: seq.Length);
 
                 // split header parts
                 var parts = line.Split(" ");

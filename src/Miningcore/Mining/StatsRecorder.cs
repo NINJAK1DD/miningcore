@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
@@ -330,7 +331,7 @@ public class StatsRecorder : BackgroundService
 
             catch(Exception ex)
             {
-                logger.Error(ex);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "StatsRecorder.UpdateAsync", failure: ex);
             }
         } while(await timer.WaitForNextTickAsync(ct));
     }
@@ -353,7 +354,7 @@ public class StatsRecorder : BackgroundService
 
             catch(Exception ex)
             {
-                logger.Error(ex);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "StatsRecorder.GcAsync", failure: ex);
             }
         } while(await timer.WaitForNextTickAsync(ct));
     }
@@ -371,7 +372,7 @@ public class StatsRecorder : BackgroundService
 
     private static void OnPolicyRetry(Exception ex, int retry, object context)
     {
-        logger.Warn(() => $"Retry {retry} due to {ex.Source}: {ex.GetType().Name} ({ex.Message})");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "StatsRecorder.OnPolicyRetry", failure: ex);
     }
 
     public override async Task StartAsync(CancellationToken ct)
