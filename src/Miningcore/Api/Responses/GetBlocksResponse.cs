@@ -1,3 +1,5 @@
+using Miningcore.Blockchain.Bitcoin;
+
 namespace Miningcore.Api.Responses;
 
 public class Block
@@ -17,4 +19,9 @@ public class Block
     public string Miner { get; set; }
     public string Source { get; set; }
     public DateTime Created { get; set; }
+    public string SettlementMode { get; set; }
+    public long? GrossRewardSatoshis { get; set; }
+    public long? DirectMinerRewardSatoshis { get; set; }
+    public string DirectMinerScriptPubKey { get; set; }
+    public BitcoinDirectCoinbaseOutput[] DirectRecipientOutputs { get; set; }
 }

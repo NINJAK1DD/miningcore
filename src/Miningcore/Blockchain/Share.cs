@@ -2,9 +2,32 @@ using ProtoBuf;
 
 namespace Miningcore.Blockchain;
 
+public enum ShareAccountingRole
+{
+    None = 0,
+    Single = 1,
+    Parent = 2,
+    Auxiliary = 3,
+}
+
 [ProtoContract]
 public class Share
 {
+    private Task persistenceAdmission = Task.CompletedTask;
+
+    /// <summary>
+    /// Runtime-only completion used by the local Stratum admission path when a saturated
+    /// persistence queue diverts this share to the bounded emergency journal writer.
+    /// </summary>
+    [ProtoIgnore]
+    internal Task PersistenceAdmission => Volatile.Read(ref persistenceAdmission);
+
+    internal void SetPersistenceAdmission(Task completion)
+    {
+        ArgumentNullException.ThrowIfNull(completion);
+        Volatile.Write(ref persistenceAdmission, completion);
+    }
+
     /// <summary>
     /// The pool originating this share from
     /// </summary>
@@ -65,6 +88,110 @@ public class Share
     /// </summary>
     [ProtoMember(19)]
     public string SessionId { get; set; }
+
+    /// <summary>
+    /// Persist this message as a block candidate without inserting it into the shares table.
+    /// Used for independently durable merged-mining block records that must not create a second
+    /// standalone share row.
+    /// </summary>
+    [ProtoMember(20)]
+    public bool BlockOnly { get; set; }
+
+    /// <summary>
+    /// The block record was emitted independently as a block-only message. The original share is
+    /// still persisted for statistics, but must not create a duplicate block row.
+    /// </summary>
+    [ProtoMember(21)]
+    public bool BlockRecordEmitted { get; set; }
+
+    /// <summary>
+    /// Preserve the sender timestamp when this ordinary share crosses a relay. Merged mining
+    /// publishes the statistical proof before its independent block-submission paths so the
+    /// winning proof remains on the correct effort boundary even if a peer chain is slow.
+    /// </summary>
+    [ProtoMember(22)]
+    public bool PreserveCreated { get; set; }
+
+    /// <summary>
+    /// Stable, lowercase UUID (without separators) for exactly-once financial accounting.
+    /// A merged-mining proof uses the same identifier for both chain projections.
+    /// </summary>
+    [ProtoMember(23)]
+    public string AccountingId { get; set; }
+
+    [ProtoMember(24)]
+    public ShareAccountingRole AccountingRole { get; set; }
+
+    /// <summary>
+    /// Chain-specific amount available to the pool before configured reward-recipient
+    /// percentages, expressed in satoshis. Integer wire representation avoids floating-point
+    /// changes between a submitting node, relay receiver and recovery import.
+    /// </summary>
+    [ProtoMember(25)]
+    public long RewardBasisSatoshis { get; set; }
+
+    /// <summary>
+    /// Auxiliary-chain projection of the same accepted proof. Only a parent projection may
+    /// contain this member; nesting beyond one level is rejected by the recorder and receiver.
+    /// </summary>
+    [ProtoMember(26)]
+    public Share PairedShare { get; set; }
+
+    /// <summary>
+    /// Immutable PPS liability calculated by the accepting pool before the share can enter a
+    /// relay or recovery journal. Recovery deliberately does not load live payout settings, so
+    /// this evidence must travel with the accepted proof rather than be reconstructed later.
+    /// </summary>
+    [ProtoMember(27)]
+    public decimal? PpsCalculatedAmount { get; set; }
+
+    /// <summary>
+    /// Immutable settlement marker for an accepted block whose coinbase pays
+    /// the SOLO miner directly.
+    /// </summary>
+    [ProtoMember(28)]
+    public string SettlementMode { get; set; }
+
+    [ProtoMember(29)]
+    public long? GrossRewardSatoshis { get; set; }
+
+    [ProtoMember(30)]
+    public long? DirectMinerRewardSatoshis { get; set; }
+
+    [ProtoMember(31)]
+    public string DirectMinerScriptPubKey { get; set; }
+
+    /// <summary>
+    /// Canonical JSON array of direct positive fee/donation outputs.
+    /// </summary>
+    [ProtoMember(32)]
+    public string DirectRecipientOutputs { get; set; }
+
+    /// <summary>
+    /// Local durable-submission outbox fields. Direct block-only records are never sent over
+    /// the share-relay protocol, but JSON recovery journals retain these public properties.
+    /// </summary>
+    [ProtoIgnore]
+    public string DirectSubmissionState { get; set; }
+
+    [ProtoIgnore]
+    public string DirectSubmissionBlock { get; set; }
+
+    [ProtoIgnore]
+    public int? DirectSubmissionAttempts { get; set; }
+
+    [ProtoIgnore]
+    public int? DirectSubmissionDefinitiveMisses { get; set; }
+
+    [ProtoIgnore]
+    public DateTime? DirectSubmissionLastAttempt { get; set; }
+
+    /// <summary>
+    /// Runtime-only guard used when a job manager has already published the ordinary statistical
+    /// copy. This is deliberately not serialized on the relay wire.
+    /// </summary>
+    [ProtoIgnore]
+    public bool StatisticalRecordEmitted { get; set; }
 
     /// <summary>
     /// Block this share refers to

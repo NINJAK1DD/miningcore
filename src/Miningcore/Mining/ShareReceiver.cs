@@ -29,7 +29,17 @@ public class ShareReceiver : BackgroundService
     public ShareReceiver(
         ClusterConfig clusterConfig,
         IMasterClock clock,
-        IMessageBus messageBus)
+        IMessageBus messageBus) : this(clusterConfig, clock, messageBus,
+        TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(60))
+    {
+    }
+
+    internal ShareReceiver(
+        ClusterConfig clusterConfig,
+        IMasterClock clock,
+        IMessageBus messageBus,
+        TimeSpan receiveTimeout,
+        TimeSpan reconnectTimeout)
     {
         Contract.RequiresNonNull(clock);
         Contract.RequiresNonNull(messageBus);
@@ -37,15 +47,25 @@ public class ShareReceiver : BackgroundService
         this.clusterConfig = clusterConfig;
         this.clock = clock;
         this.messageBus = messageBus;
+        accountingPools = (clusterConfig.Pools ?? Array.Empty<PoolConfig>())
+            .ToDictionary(x => x.Id, StringComparer.Ordinal);
+        this.receiveTimeout = receiveTimeout;
+        this.reconnectTimeout = reconnectTimeout;
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private readonly IMasterClock clock;
     private readonly IMessageBus messageBus;
     private readonly ClusterConfig clusterConfig;
+    private readonly IReadOnlyDictionary<string, PoolConfig> accountingPools;
+    private readonly TimeSpan receiveTimeout;
+    private readonly TimeSpan reconnectTimeout;
     private readonly CompositeDisposable disposables = new();
     private readonly ConcurrentDictionary<string, PoolContext> pools = new();
+    private readonly ConcurrentDictionary<string, byte> offlineAccountingWarnings =
+        new(StringComparer.Ordinal);
     private readonly BufferBlock<(string Url, ZMessage Message)> queue = new();
+    internal int AttachedPoolCount => pools.Count;
 
     readonly JsonSerializer serializer = new()
     {
@@ -78,14 +98,51 @@ public class ShareReceiver : BackgroundService
             AttachPool(notification.Pool);
     }
 
+    public override async Task StartAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if(clusterConfig.ShareRelays != null)
+        {
+            // .NET 10 runs BackgroundService.ExecuteAsync entirely on a background thread.
+            // Subscribe before StartAsync returns so pool-online notifications cannot be lost
+            // while the socket and message-processing loops are being scheduled.
+            disposables.Add(messageBus.Listen<PoolStatusNotification>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Subscribe(OnPoolStatusNotification));
+        }
+
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            await base.StartAsync(ct);
+        }
+
+        catch
+        {
+            disposables.Dispose();
+            throw;
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken ct)
+    {
+        try
+        {
+            await base.StopAsync(ct);
+        }
+
+        finally
+        {
+            disposables.Dispose();
+        }
+    }
+
     private Task StartMessageReceiver(CancellationToken ct)
     {
         return Task.Run(() =>
         {
             Thread.CurrentThread.Name = "ShareReceiver Socket Poller";
-            var timeout = TimeSpan.FromMilliseconds(5000);
-            var reconnectTimeout = TimeSpan.FromSeconds(60);
-
             var relays = clusterConfig.ShareRelays
                 .DistinctBy(x => $"{x.Url}:{x.SharedEncryptionKey}")
                 .ToArray();
@@ -100,13 +157,13 @@ public class ShareReceiver : BackgroundService
                     // setup sockets
                     var sockets = relays.Select(x=> SetupSubSocket(x)).ToArray();
 
-                    using(new CompositeDisposable(sockets))
+                    try
                     {
                         var pollItems = sockets.Select(_ => ZPollItem.CreateReceiver()).ToArray();
 
                         while(!ct.IsCancellationRequested)
                         {
-                            if(sockets.PollIn(pollItems, out var messages, out var error, timeout))
+                            if(sockets.PollIn(pollItems, out var messages, out var error, receiveTimeout))
                             {
                                 for(var i = 0; i < messages.Length; i++)
                                 {
@@ -155,6 +212,12 @@ public class ShareReceiver : BackgroundService
                                 }
                             }
                         }
+                    }
+
+                    finally
+                    {
+                        foreach(var socket in sockets)
+                            socket?.Dispose();
                     }
                 }
 
@@ -269,8 +332,25 @@ public class ShareReceiver : BackgroundService
 
                 break;
 
+            case ShareRelay.WireFormat.ProtocolBuffersAccounting:
+                using(var stream = new MemoryStream(data))
+                {
+                    share = Serializer.Deserialize<Share>(stream);
+                    share.BlockReward = (decimal) share.BlockRewardDouble;
+                    if(share.PairedShare != null)
+                    {
+                        share.PairedShare.BlockReward =
+                            (decimal) share.PairedShare.BlockRewardDouble;
+                    }
+                }
+
+                break;
+
             default:
                 logger.Error(() => $"Unsupported wire format {wireFormat} of share received from {url}/{topic} ");
+                messageBus.SendMessage(
+                    new UnsupportedShareRelayWireFormatTelemetryEvent(url,
+                        (int) wireFormat));
                 break;
         }
 
@@ -280,10 +360,60 @@ public class ShareReceiver : BackgroundService
             return;
         }
 
+        if(wireFormat == ShareRelay.WireFormat.ProtocolBuffersAccounting)
+        {
+            if(!string.Equals(share.PoolId, topic, StringComparison.Ordinal) ||
+               string.IsNullOrEmpty(share.AccountingId))
+            {
+                logger.Error(() => $"Accounting share from {url}/{topic} has a mismatched topic or no accounting id");
+                return;
+            }
+
+            NormalizeCreatedTimestamp(share, clock.Now);
+            if(share.PairedShare != null)
+                NormalizeCreatedTimestamp(share.PairedShare, share.Created);
+
+            try
+            {
+                ShareAccounting.ValidateReplayHorizon(share, clock.Now,
+                    clusterConfig.PaymentProcessing?
+                        .ShareAccountingRetentionDays ?? 30);
+                var projections = ShareAccounting.ValidateAndFlatten(share,
+                    accountingPools);
+
+                foreach(var projection in projections)
+                {
+                    if(pools.ContainsKey(projection.PoolId) ||
+                       !offlineAccountingWarnings.TryAdd(projection.PoolId, 0))
+                        continue;
+
+                    logger.Warn(() =>
+                        $"Accounting projection for configured pool '{projection.PoolId}' arrived before that pool was online; preserving its financial evidence while share telemetry remains gated by the online topic pool");
+                }
+            }
+            catch(Exception ex) when(ex is InvalidDataException or ArgumentException)
+            {
+                logger.Error(ex, () =>
+                    $"Rejected malformed accounting share from {url}/{topic}");
+                return;
+            }
+        }
+        else if(!string.IsNullOrEmpty(share.AccountingId) || share.PairedShare != null)
+        {
+            logger.Error(() =>
+                $"Accounting share from {url}/{topic} used a legacy wire format");
+            return;
+        }
+
         // store
         share.PoolId = topic;
-        share.Created = clock.Now;
+        NormalizeCreatedTimestamp(share, clock.Now);
         messageBus.SendMessage(share);
+
+        // Block-only relay messages persist independently accepted or uncertain block records.
+        // They are not ordinary shares and must not affect share telemetry or network statistics.
+        if(!IsShareTelemetryEligible(share))
+            return;
 
         // update poolstats from shares
         if(poolContext != null)
@@ -316,17 +446,40 @@ public class ShareReceiver : BackgroundService
             logger.Info(() => $"External {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}share accepted: D={Math.Round(share.Difficulty, 4)}");
     }
 
+    internal static bool IsShareTelemetryEligible(Share share)
+    {
+        return share?.BlockOnly != true;
+    }
+
+    internal static void NormalizeCreatedTimestamp(Share share, DateTime receivedAt)
+    {
+        if(share == null)
+            return;
+
+        // Ordinary shares normally retain the receiver-local timestamp used by existing
+        // hashrate accounting. A merged-parent statistical share or a share whose block record
+        // was persisted independently must keep the sender timestamp so it remains on the
+        // correct side of the block-effort boundary even if relay/recorder delivery is later.
+        var preserveCreated = share.BlockOnly || share.BlockRecordEmitted || share.PreserveCreated;
+        var created = preserveCreated ? share.Created : receivedAt;
+
+        // protobuf-net reconstructs DateTime values without preserving DateTimeKind. The relay
+        // wire contract carries UTC timestamps, so an unspecified value must be marked as UTC
+        // without shifting its ticks. Npgsql rejects non-UTC DateTimes for timestamptz columns.
+        share.Created = created.Kind switch
+        {
+            DateTimeKind.Utc => created,
+            DateTimeKind.Local => created.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(created, DateTimeKind.Utc),
+        };
+    }
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         if(clusterConfig.ShareRelays != null)
         {
             try
             {
-                // monitor pool lifetime
-                disposables.Add(messageBus.Listen<PoolStatusNotification>()
-                    .ObserveOn(TaskPoolScheduler.Default)
-                    .Subscribe(OnPoolStatusNotification));
-
                 // process messages
                 await Task.WhenAll(
                     StartMessageReceiver(ct),

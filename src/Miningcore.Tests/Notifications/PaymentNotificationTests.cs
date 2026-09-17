@@ -1,0 +1,394 @@
+using Miningcore.Api;
+using Miningcore.Api.WebSocketNotifications;
+using Miningcore.Notifications;
+using Miningcore.Notifications.Messages;
+using Miningcore.Payments;
+using Miningcore.Tests.Util;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using Xunit;
+
+namespace Miningcore.Tests.Notifications;
+
+public class PaymentNotificationTests
+{
+    [Theory]
+    [InlineData(PaymentNotificationOutcome.Failure)]
+    [InlineData(PaymentNotificationOutcome.Uncertain)]
+    public void FailureAlerts_ShowTypedCategoryAndCodeWithoutRemoteText(PaymentNotificationOutcome outcome)
+    {
+        const string secret = "synthetic-secret-password";
+        var notification = new PaymentNotification("test", secret, 1, "BTC")
+        {
+            Outcome = outcome,
+            FailureDiagnostic = PaymentFailureDiagnostic.Create(new System.Net.Http.HttpRequestException(secret), -13),
+        };
+        var rendered = NotificationService.FormatPaymentNotification(notification, "BTC", null);
+        foreach(var text in new[] { rendered.EmailMessage, rendered.PushoverMessage })
+        {
+            Assert.Contains("Failure category: http", text);
+            Assert.Contains("daemon code: -13", text);
+            Assert.DoesNotContain(secret, text);
+        }
+        Assert.Equal(secret, notification.Error);
+        Assert.DoesNotContain("failureDiagnostic", SerializePayment(notification).ToString(), System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MissingWalletPassword_ProvidesSafeConfigurationAction()
+    {
+        var notification = new PaymentNotification("test", "private daemon text", 1, "BTC")
+        {
+            FailureDiagnostic = PaymentFailureDiagnostic.Create(reason: PaymentFailureReason.WalletPasswordMissing),
+        };
+        var rendered = NotificationService.FormatPaymentNotification(notification, "BTC", null);
+        foreach(var text in new[] { rendered.EmailMessage, rendered.PushoverMessage })
+        {
+            Assert.Contains("walletPassword was not configured", text);
+            Assert.DoesNotContain("private daemon text", text);
+        }
+    }
+
+    [Theory]
+    [InlineData(PaymentNotificationOutcome.Failure)]
+    [InlineData(PaymentNotificationOutcome.Success)] // Legacy Error-only initializer.
+    [InlineData(PaymentNotificationOutcome.Uncertain)]
+    public void FailureAlerts_KeepConclusiveAndUncertainGuidanceDistinct(
+        PaymentNotificationOutcome outcome)
+    {
+        const string error = "synthetic-secret https://user:password@invalid/?key=secret\r\nforged-line";
+        var notification = new PaymentNotification
+        {
+            PoolId = "test", Symbol = "BTC", Amount = 1,
+            Error = error, Outcome = outcome,
+        };
+        var rendered = NotificationService.FormatPaymentNotification(notification, "BTC", null);
+
+        Assert.False(rendered.IsSuccess);
+        Assert.Equal(error, notification.Error);
+        Assert.Equal(outcome, notification.Outcome);
+        foreach(var message in new[] { rendered.EmailMessage, rendered.PushoverMessage })
+        {
+            Assert.DoesNotContain("synthetic-secret", message);
+            Assert.DoesNotContain("user:password", message);
+            Assert.DoesNotContain("forged-line", message);
+            if(outcome == PaymentNotificationOutcome.Uncertain)
+            {
+                Assert.Contains("uncertain", message);
+                Assert.Contains("reconcile", message, System.StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("error details.", message.Replace("withheld error details.", string.Empty));
+                Assert.DoesNotContain("failed conclusively", message);
+            }
+            else
+            {
+                Assert.Contains("failed conclusively", message);
+                Assert.Contains("correct the cause before retrying", message);
+                Assert.DoesNotContain("uncertain", message);
+                Assert.DoesNotContain("reconcil", message);
+                Assert.DoesNotContain("ownership", message);
+            }
+        }
+    }
+
+    [Fact]
+    public void WebSocketSerialization_NormalSuccessUsesOutcomeAwareAggregates()
+    {
+        var notification = new PaymentNotification("doge-test", null, 10, "DOGE", 4,
+            new[] { "txid" }, null, null);
+        var payload = SerializePayment(notification);
+
+        Assert.Equal("success", payload.Value<string>("outcome"));
+        Assert.Equal(4, payload.Value<int>("acceptedCount"));
+        Assert.Equal(10, payload.Value<decimal>("acceptedAmount"));
+        Assert.Null(payload["failedCount"]);
+        Assert.Null(payload["failedAmount"]);
+        Assert.Null(payload["uncertainCount"]);
+        Assert.Null(payload["notAttemptedCount"]);
+        Assert.Null(payload["recipientTransactionChains"]);
+    }
+
+    [Fact]
+    public void WebSocketSerialization_SuccessExposesOptionalRecipientTransactionChains()
+    {
+        var notification = new PaymentNotification("kas-test", null, 3, "KAS", 2,
+            new[] { "split-a", "recipient-a", "split-b", "recipient-b" },
+            null, null)
+        {
+            RecipientTransactionChains = new[]
+            {
+                new PaymentRecipientTransactionChain
+                {
+                    Address = "kaspa:recipient-a",
+                    CanonicalTransactionId = "recipient-a",
+                    TransactionIds = new[] { "split-a", "recipient-a" },
+                },
+                new PaymentRecipientTransactionChain
+                {
+                    Address = "kaspa:recipient-b",
+                    CanonicalTransactionId = "recipient-b",
+                    TransactionIds = new[] { "split-b", "recipient-b" },
+                },
+            },
+        };
+
+        var payload = SerializePayment(notification);
+        var chains = Assert.IsType<JArray>(payload["recipientTransactionChains"]);
+
+        Assert.Equal(2, chains.Count);
+        Assert.Equal("kaspa:recipient-a", chains[0].Value<string>("address"));
+        Assert.Equal("recipient-a",
+            chains[0].Value<string>("canonicalTransactionId"));
+        Assert.Equal(new[] { "split-a", "recipient-a" },
+            chains[0]["transactionIds"].Values<string>());
+        Assert.Equal("kaspa:recipient-b", chains[1].Value<string>("address"));
+        Assert.Equal("recipient-b",
+            chains[1].Value<string>("canonicalTransactionId"));
+        Assert.Equal(new[] { "split-b", "recipient-b" },
+            chains[1]["transactionIds"].Values<string>());
+    }
+
+    [Fact]
+    public void WebSocketSerialization_NormalFailureUsesOutcomeAwareAggregates()
+    {
+        var notification = new PaymentNotification("doge-test", "rejected", 10,
+            "DOGE", 4, null, null, null);
+        var payload = SerializePayment(notification);
+
+        Assert.Equal("failure", payload.Value<string>("outcome"));
+        Assert.Equal(4, payload.Value<int>("failedCount"));
+        Assert.Equal(10, payload.Value<decimal>("failedAmount"));
+        Assert.Null(payload["acceptedCount"]);
+        Assert.Null(payload["acceptedAmount"]);
+        Assert.Null(payload["uncertainCount"]);
+        Assert.Null(payload["notAttemptedCount"]);
+    }
+
+    [Fact]
+    public void WebSocketSerialization_ExposesOnlySafeReconciliationSummary()
+    {
+        var notification = new PaymentNotification("doge-test", "rpc secret", 10,
+            "DOGE")
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            SubmittedAmount = 9.9999m,
+            PrecisionAdjustment = -0.0001m,
+            Reconciliation = new PayoutReconciliation
+            {
+                Accepted = new[]
+                {
+                    Entry("DSecretAccepted", 1, "accepted-txid", "accepted detail"),
+                },
+                Failed = new[]
+                {
+                    Entry("DSecretFailed", 2, null, "wallet rejection"),
+                },
+                Uncertain = new[]
+                {
+                    Entry("DSecretUncertain", 3, "uncertain-txid", "rpc timeout"),
+                },
+                NotAttempted = new[]
+                {
+                    Entry("DSecretNotAttempted", 4, null, "cancelled"),
+                },
+            },
+        };
+        var payload = SerializePayment(notification);
+        var json = payload.ToString(Formatting.None);
+
+        Assert.Equal("payment", payload.Value<string>("type"));
+        Assert.Equal("uncertain", payload.Value<string>("outcome"));
+        Assert.Equal(10, payload.Value<decimal>("amount"));
+        Assert.Equal(9.9999m, payload.Value<decimal>("submittedAmount"));
+        Assert.Equal(-0.0001m, payload.Value<decimal>("precisionAdjustment"));
+        Assert.Null(payload["roundingAdjustment"]);
+        Assert.Equal(1, payload.Value<int>("acceptedCount"));
+        Assert.Equal(1, payload.Value<decimal>("acceptedAmount"));
+        Assert.Equal(1, payload.Value<int>("failedCount"));
+        Assert.Equal(2, payload.Value<decimal>("failedAmount"));
+        Assert.Equal(1, payload.Value<int>("uncertainCount"));
+        Assert.Equal(3, payload.Value<decimal>("uncertainAmount"));
+        Assert.Equal(1, payload.Value<int>("notAttemptedCount"));
+        Assert.Equal(4, payload.Value<decimal>("notAttemptedAmount"));
+        Assert.Null(payload["reconciliation"]);
+        Assert.Null(payload["error"]);
+        Assert.DoesNotContain("DSecret", json);
+        Assert.DoesNotContain("txid", json);
+        Assert.DoesNotContain("rpc secret", json);
+        Assert.DoesNotContain("wallet rejection", json);
+    }
+
+    [Fact]
+    public void EmailFormatting_EncodesMetadataAndWithholdsUntrustedReconciliationText()
+    {
+        var notification = new PaymentNotification("pool<b>fake</b>&value",
+            "reason<b>fake</b>&value", 1, "COIN<b>fake</b>&value")
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            Reconciliation = new PayoutReconciliation
+            {
+                Uncertain = new[]
+                {
+                    Entry("address<b>fake</b>&value", 1,
+                        "tx<b>fake</b>&value", "detail<b>fake</b>&value"),
+                },
+            },
+        };
+
+        var rendered = NotificationService.FormatPaymentNotification(notification,
+            notification.Symbol, null);
+
+        Assert.Contains("pool&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
+        Assert.Contains("COIN&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
+        Assert.Contains("address&lt;b&gt;fake&lt;/b&gt;&amp;value", rendered.EmailMessage);
+        Assert.Contains("unverified transaction identifier withheld", rendered.EmailMessage);
+        Assert.DoesNotContain("detail&lt;b&gt;", rendered.EmailMessage);
+        Assert.DoesNotContain("reason&lt;b&gt;", rendered.EmailMessage);
+        Assert.DoesNotContain("<b>fake</b>", rendered.EmailMessage);
+        Assert.Contains("<br/>", rendered.EmailMessage);
+    }
+
+    [Fact]
+    public void EmailFormatting_LabelsRequestedAndTruncatedWalletTotals()
+    {
+        var notification = new PaymentNotification("doge-test", "unknown", 3.58020m,
+            "DOGE")
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            SubmittedAmount = 3.5801m,
+            PrecisionAdjustment = -0.00010m,
+            Reconciliation = new PayoutReconciliation
+            {
+                Uncertain = new[]
+                {
+                    new PayoutReconciliationEntry
+                    {
+                        Address = "DTestBelow",
+                        Amount = 1.23454m,
+                        SubmittedAmount = 1.2345m,
+                    },
+                    new PayoutReconciliationEntry
+                    {
+                        Address = "DTestAbove",
+                        Amount = 2.34566m,
+                        SubmittedAmount = 2.3456m,
+                    },
+                },
+            },
+        };
+
+        var rendered = NotificationService.FormatPaymentNotification(notification,
+            "DOGE", null);
+
+        Assert.Contains("Payout batch totalling 3.5802 DOGE requested",
+            rendered.EmailMessage);
+        Assert.Contains("Wallet request total across attempted recipients: 3.5801 DOGE",
+            rendered.EmailMessage);
+        Assert.Contains("precision adjustment: -0.0001 DOGE", rendered.EmailMessage);
+        Assert.Contains("1.23454 DOGE to DTestBelow, wallet request 1.2345 DOGE",
+            rendered.EmailMessage);
+        Assert.Contains("2.34566 DOGE to DTestAbove, wallet request 2.3456 DOGE",
+            rendered.EmailMessage);
+    }
+
+    [Fact]
+    public void FailureFormatting_ReportsWalletRequestWithoutRepeatingAmountOwed()
+    {
+        var notification = new PaymentNotification("doge-test", "rejected", 3.58020m,
+            "DOGE", 2, null, null, null)
+        {
+            SubmittedAmount = 3.5801m,
+            PrecisionAdjustment = -0.00010m,
+        };
+
+        var rendered = NotificationService.FormatPaymentNotification(notification,
+            "DOGE", null);
+
+        Assert.Contains("Wallet request for 3.5801 DOGE failed", rendered.EmailMessage);
+        Assert.Contains("amount owed 3.5802 DOGE", rendered.EmailMessage);
+        Assert.Contains("precision adjustment -0.0001 DOGE", rendered.EmailMessage);
+        Assert.Equal(1, rendered.EmailMessage.Split("amount owed").Length - 1);
+    }
+
+    [Fact]
+    public void UncertainFormatting_ZeroAdjustmentDoesNotRepeatSubmittedTotal()
+    {
+        var notification = new PaymentNotification("doge-test", "unknown", 1.23450m,
+            "DOGE")
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            SubmittedAmount = 1.23450m,
+            PrecisionAdjustment = 0,
+            Reconciliation = new PayoutReconciliation
+            {
+                Uncertain = new[]
+                {
+                    new PayoutReconciliationEntry
+                    {
+                        Address = "DTest",
+                        Amount = 1.23450m,
+                        SubmittedAmount = 1.23450m,
+                    },
+                },
+            },
+        };
+
+        var rendered = NotificationService.FormatPaymentNotification(notification,
+            "DOGE", null);
+
+        Assert.Contains("Payout batch totalling 1.2345 DOGE requested",
+            rendered.EmailMessage);
+        Assert.Contains("Uncertain: 1.2345 DOGE to DTest", rendered.EmailMessage);
+        Assert.DoesNotContain("Wallet request total across attempted recipients",
+            rendered.EmailMessage);
+    }
+
+    [Fact]
+    public void UncertainReconciliation_MultipleTransactionIdsRendersCompleteChain()
+    {
+        var notification = new PaymentNotification("kas-test", "response malformed",
+            1m, "KAS", 1, null, null, null)
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            Reconciliation = new PayoutReconciliation
+            {
+                Uncertain = new[]
+                {
+                    new PayoutReconciliationEntry
+                    {
+                        Address = "kaspa:recipient",
+                        Amount = 1m,
+                        TransactionId = new string('b', 64),
+                        TransactionIds = new[] { new string('a', 64), new string('b', 64) },
+                    },
+                },
+            },
+        };
+
+        var rendered = NotificationService.FormatPaymentNotification(notification,
+            "KAS", "https://explorer.test/{0}");
+
+        Assert.Contains($"transactions {new string('a', 64)}, {new string('b', 64)} " +
+            $"(canonical {new string('b', 64)})", rendered.EmailMessage);
+    }
+
+    private static PayoutReconciliationEntry Entry(string address, decimal amount,
+        string transactionId, string detail)
+    {
+        return new PayoutReconciliationEntry
+        {
+            Address = address,
+            Amount = amount,
+            TransactionId = transactionId,
+            Detail = detail,
+        };
+    }
+
+    private static JObject SerializePayment(PaymentNotification notification)
+    {
+        var serializer = JsonSerializer.Create(Globals.JsonSerializerSettings);
+        var json = WebSocketNotificationSerializer.Serialize(
+            WsNotificationType.Payment, notification, serializer);
+
+        return JObject.Parse(json);
+    }
+}

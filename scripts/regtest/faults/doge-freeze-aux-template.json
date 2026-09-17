@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {
+      "method": "createauxblock",
+      "action": "freeze_response",
+      "key": "doge-aux-template"
+    }
+  ]
+}

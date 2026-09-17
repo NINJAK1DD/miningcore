@@ -57,7 +57,8 @@ public class BeamPayoutHandler : PayoutHandlerBase,
 
     protected override string LogCategory => "Beam Payout Handler";
     
-    private async Task<(bool IsValid, bool IsOffline)> ValidateAddress(string address, CancellationToken ct)
+    protected virtual async Task<(bool IsValid, bool IsOffline)> ValidateAddress(
+        string address, CancellationToken ct)
     {
         if(string.IsNullOrEmpty(address))
             return (false, false);
@@ -98,7 +99,7 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         
         if(response.Error != null)
         {
-            logger.Error(() => $"[{LogCategory}] Daemon command '{BeamWalletCommands.GetBalance}' returned error: {response.Error.Message} code {response.Error.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BeamPayoutHandler.EnsureBalance", code: response.Error?.Code);
             return false;
         }
 
@@ -114,7 +115,8 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         return true;
     }
 
-    private async Task<string> PayoutAsync(Balance balance, CancellationToken ct)
+    protected async Task<string> PayoutBalanceAsync(Balance balance,
+        CancellationToken ct)
     {
         // send transaction
         logger.Info(() => $"[{LogCategory}] Sending {FormatAmount(balance.Amount)} to {balance.Address}");
@@ -132,12 +134,17 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         };
         
         // send command
-        var response = await rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger, BeamWalletCommands.SendTransaction, ct, request);
+        TrackPayoutSubmission(ct, balance);
+        var response = await SubmitTransactionAsync(request, ct);
         
+        WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
+            BeamWalletCommands.SendTransaction);
+
         if(response.Error != null)
             throw new Exception($"{BeamWalletCommands.SendTransaction} returned error: {response.Error.Message} code {response.Error.Code}");
         
-        var txHash = response.Response.TxId;
+        var txHash = WalletSubmissionOutcome.RequireTransactionId(
+            response.Response?.TxId, BeamWalletCommands.SendTransaction);
         logger.Info(() => $"[{LogCategory}] Payment transaction id: {txHash}");
 
         // update db
@@ -146,6 +153,11 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         // done
         return txHash;
     }
+
+    protected virtual Task<RpcResponse<SendTransactionResponse>> SubmitTransactionAsync(
+        SendTransactionRequest request, CancellationToken ct) =>
+        rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger,
+            BeamWalletCommands.SendTransaction, ct, request);
 
     #region IPayoutHandler
 
@@ -230,7 +242,7 @@ public class BeamPayoutHandler : PayoutHandlerBase,
 
                 if(rpcResult.Error != null)
                 {
-                    logger.Debug(() => $"[{LogCategory}] Daemon reports error '{rpcResult.Error.Message}' (Code {rpcResult.Error.Code}) for block {block.BlockHeight}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamPayoutHandler.ClassifyBlocksAsync", code: rpcResult.Error?.Code);
                     continue;
                 }
 
@@ -293,26 +305,52 @@ public class BeamPayoutHandler : PayoutHandlerBase,
         if(!await EnsureBalance(balances.Sum(x => x.Amount), coin, ct))
             return;
         
+        await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+    }
+
+    protected virtual async Task PayoutTrackedAsync(Balance[] balances,
+        CancellationToken ct)
+    {
+        var successfulBalances = new List<Balance>();
         var txHashes = new List<string>();
 
-        foreach(var balance in balances)
+        try
         {
-            try
+            foreach(var balance in balances)
             {
-                var txHash = await PayoutAsync(balance, ct);
-                txHashes.Add(txHash);
-            }
+                try
+                {
+                    var txHash = await PayoutBalanceAsync(balance, ct);
+                    successfulBalances.Add(balance);
+                    txHashes.Add(txHash);
+                }
 
-            catch(Exception ex)
-            {
-                logger.Error(ex);
+                catch(OperationCanceledException) when(ct.IsCancellationRequested)
+                {
+                    // TrackPayoutSubmission rejected cancellation before the wallet boundary.
+                    // RpcClient reports cancellation during the wallet call as transport error
+                    // -500, so a direct cancellation here is still pre-submission.
+                    throw;
+                }
+                catch(Exception ex)
+                {
+                    WalletSubmissionOutcome.RethrowIfUnknown(ex,
+                        BeamWalletCommands.SendTransaction);
 
-                NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, null);
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BeamPayoutHandler.PayoutTrackedAsync", failure: ex);
+
+                    NotifyPayoutFailure(poolConfig.Id, new[] { balance }, ex.Message, ex);
+                }
             }
         }
-
-        if(txHashes.Any())
-            NotifyPayoutSuccess(poolConfig.Id, balances, txHashes.ToArray(), null);
+        finally
+        {
+            // TrackPayoutAsync flushes this on conclusive completion or ordinary cancellation,
+            // and discards it if a later wallet outcome is genuinely uncertain.
+            if(txHashes.Any())
+                NotifyPayoutSuccess(poolConfig.Id, successfulBalances.ToArray(),
+                    txHashes.ToArray(), null);
+        }
     }
 
     public double AdjustBlockEffort(double effort)

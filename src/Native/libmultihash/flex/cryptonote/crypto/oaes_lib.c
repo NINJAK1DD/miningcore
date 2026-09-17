@@ -35,7 +35,6 @@ static const char _NR[] = {
  
 #include <stddef.h>
 #include <time.h> 
-#include <sys/timeb.h>
 #ifdef __APPLE__
 #include <malloc/malloc.h>
 #else 
@@ -466,17 +465,18 @@ OAES_RET oaes_sprintf(
 #ifdef OAES_HAVE_ISAAC
 static void oaes_get_seed( char buf[RANDSIZ + 1] )
 {
-	struct timeb timer;
+	struct timespec timer;
 	struct tm *gmTimer;
 	char * _test = NULL;
 	
-	ftime (&timer);
-	gmTimer = gmtime( &timer.time );
-	_test = (char *) calloc( sizeof( char ), timer.millitm );
+	timespec_get(&timer, TIME_UTC);
+	const long milliseconds = timer.tv_nsec / 1000000L;
+	gmTimer = gmtime( &timer.tv_sec );
+	_test = (char *) calloc( sizeof( char ), milliseconds );
 	sprintf( buf, "%04d%02d%02d%02d%02d%02d%03d%p%d",
 		gmTimer->tm_year + 1900, gmTimer->tm_mon + 1, gmTimer->tm_mday,
-		gmTimer->tm_hour, gmTimer->tm_min, gmTimer->tm_sec, timer.millitm,
-		_test + timer.millitm, getpid() );
+		gmTimer->tm_hour, gmTimer->tm_min, gmTimer->tm_sec, milliseconds,
+		_test + milliseconds, getpid() );
 	
 	if( _test )
 		free( _test );
@@ -484,17 +484,18 @@ static void oaes_get_seed( char buf[RANDSIZ + 1] )
 #else
 static uint32_t oaes_get_seed(void)
 {
-	struct timeb timer;
+	struct timespec timer;
 	struct tm *gmTimer;
 	char * _test = NULL;
 	uint32_t _ret = 0;
 	
-	ftime (&timer);
-	gmTimer = gmtime( &timer.time );
-	_test = (char *) calloc( sizeof( char ), timer.millitm );
+	timespec_get(&timer, TIME_UTC);
+	const long milliseconds = timer.tv_nsec / 1000000L;
+	gmTimer = gmtime( &timer.tv_sec );
+	_test = (char *) calloc( sizeof( char ), milliseconds );
 	_ret = (uint32_t)(gmTimer->tm_year + 1900 + gmTimer->tm_mon + 1 + gmTimer->tm_mday +
-			gmTimer->tm_hour + gmTimer->tm_min + gmTimer->tm_sec + timer.millitm +
-			(uintptr_t) ( _test + timer.millitm ) + getpid());
+			gmTimer->tm_hour + gmTimer->tm_min + gmTimer->tm_sec + milliseconds +
+			(uintptr_t) ( _test + milliseconds ) + getpid());
 
 	if( _test )
 		free( _test );

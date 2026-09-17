@@ -36,9 +36,7 @@ public static class ModuleInitializer
             builder.RegisterAssemblyModules(typeof(AutofacModule).GetTypeInfo().Assembly);
 
             // AutoMapper
-            var amConf = new MapperConfiguration(cfg => { cfg.AddProfile(new AutoMapperProfile()); });
-
-            builder.Register((ctx, parms) => amConf.CreateMapper());
+            builder.RegisterInstance(AutoMapperFactory.CreateMapper()).As<IMapper>();
 
             builder.RegisterType<MockMasterClock>().AsImplementedInterfaces();
 

@@ -1,3 +1,4 @@
+#include <stdint.h>
 // Copyright (c) 2006-2013, Andrey N. Sabelnikov, www.sabelnikov.net
 // All rights reserved.
 // 

@@ -5,6 +5,8 @@
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
+using Miningcore.Blockchain;
+using Miningcore.Mining;
 using Miningcore.Util;
 using NLog;
 
@@ -19,8 +21,14 @@ namespace Miningcore.Messaging;
 ///     unique string used to distinguish between messages of the same Type, and
 ///     is arbitrarily set by the client.
 /// </summary>
-public class MessageBus : IMessageBus
+public class MessageBus : IMessageBus, IMiningAdmissionMessageBus
 {
+    public MessageBus(IMiningFailStopCoordinator failStopCoordinator = null)
+    {
+        this.failStopCoordinator = failStopCoordinator;
+    }
+
+    private readonly IMiningFailStopCoordinator failStopCoordinator;
     private readonly Dictionary<Tuple<Type, string>, NotAWeakReference> messageBus =
         new();
 
@@ -151,7 +159,25 @@ public class MessageBus : IMessageBus
     ///     identical types (i.e. "MyCoolViewModel") - if the message type is
     ///     only used for one purpose, leave this as null.
     /// </param>
+    /// <remarks>
+    /// Share delivery is synchronous while Miningcore holds its admission read boundary. A Share
+    /// subscriber must not synchronously republish that Share; recursive publication is rejected
+    /// so the fail-stop writer boundary cannot deadlock or throw an opaque lock-recursion error.
+    /// </remarks>
     public void SendMessage<T>(T message, string contract = null)
+    {
+        if(message is Share && failStopCoordinator != null)
+        {
+            using var acceptance = failStopCoordinator.AcquireSubmissionAcceptance();
+            acceptance.PublishShare(this, (Share) (object) message, contract);
+            return;
+        }
+
+        setupSubjectIfNecessary<T>(contract).OnNext(message);
+    }
+
+    void IMiningAdmissionMessageBus.SendMessageWithinMiningAdmission<T>(T message,
+        string contract)
     {
         setupSubjectIfNecessary<T>(contract).OnNext(message);
     }

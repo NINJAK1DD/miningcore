@@ -98,6 +98,9 @@
     <ClInclude Include="x11.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="x11kvs.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="x13.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -210,6 +213,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="equi\utilstrencodings.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="evohash.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="equi\crypto\common.h">
@@ -467,6 +473,24 @@
     <ClInclude Include="xelishash\xelishash.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="xelisv2.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="argon2d.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="argon2d/argon2.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="argon2d/core.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="argon2d/encoding.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="argon2d/thread.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -545,6 +569,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="x11.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="x11kvs.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="x13.c">
@@ -656,6 +683,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="equi\utilstrencodings.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="evohash.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="equi\crypto\equihash.cpp">
@@ -881,6 +911,27 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="xelishash\xelishashv2.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="xelisv2.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="argon2d.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="argon2d/argon2.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="argon2d/core.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="argon2d/encoding.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="argon2d/opt.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="argon2d/thread.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

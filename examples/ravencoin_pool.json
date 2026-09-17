@@ -1,27 +1,30 @@
 ﻿{
+    // Starter configuration: replace every CHANGE_ME value and review it before use.
+    // See README.md and ../config.example.json for topology and field guidance.
     "logging": {
         "level": "info",
         "enableConsoleLog": true,
         "enableConsoleColors": true,
-        "logFile": "",
-        "apiLogFile": "",
-        "logBaseDirectory": "",
+        "logFile": "miningcore.log",
+        "apiLogFile": "miningcore-api.log",
+        "logBaseDirectory": "logs",
         "perPoolLogFile": false
     },
     "banning": {
         "manager": "Integrated",
         "banOnJunkReceive": true,
-        "banOnInvalidShares": false
+        "banOnInvalidShares": true,
+        "banOnLoginFailure": true
     },
     "notifications": {
         "enabled": false,
         "email": {
             "host": "smtp.example.com",
             "port": 587,
-            "user": "user",
-            "password": "password",
-            "fromAddress": "info@yourpool.org",
-            "fromName": "support"
+            "user": "CHANGE_ME_SMTP_USER",
+            "password": "CHANGE_ME_SMTP_PASSWORD",
+            "fromAddress": "pool@example.com",
+            "fromName": "Miningcore operator"
         },
         "admin": {
             "enabled": false,
@@ -34,40 +37,35 @@
             "host": "127.0.0.1",
             "port": 5432,
             "user": "miningcore",
-            "password": "password",
+            "password": "CHANGE_ME_POSTGRES_PASSWORD",
             "database": "miningcore"
         }
     },
     "paymentProcessing": {
         "enabled": true,
         "interval": 600,
-        "shareRecoveryFile": "recovered-shares.txt"
+        "coinbaseString": "Miningcore"
     },
+    "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
     "api": {
         "enabled": true,
-        "listenAddress": "*",
+        "listenAddress": "127.0.0.1",
         "port": 4000,
-        "metricsIpWhitelist": [],
+        "adminPort": 4001,
+        "metricsPort": 4002,
+        "adminIpWhitelist": [ "127.0.0.1" ],
+        "metricsIpWhitelist": [ "127.0.0.1" ],
+        "legacyNullValueHandling": false,
         "rateLimiting": {
-            "disabled": true,
-            "rules": [
-                {
-                    "Endpoint": "*",
-                    "Period": "1s",
-                    "Limit": 5
-                }
-            ],
-            "ipWhitelist": [
-                ""
-            ]
+            "disabled": true
         }
     },
     "pools": [{
         "id": "rvn1",
         "enabled": true,
         "coin": "ravencoin",
-        "address": "mxR4ic4Q32giqfcYqQGxDteGhzkjgA2eX6",
-        "GBTArgs": [{
+        "address": "CHANGE_ME_RAVENCOIN_POOL_WALLET_ADDRESS",
+        "gbtArgs": [{
             "capabilities": [
                 "coinbasetxn", 
                 "workid",
@@ -80,13 +78,15 @@
         "rewardRecipients": [
             {
                 "type": "op",
-                "address": "mxR4ic4Q32giqfcYqQGxDteGhzkjgA2eX6",
-                "percentage": 1
+                "address": "CHANGE_ME_RAVENCOIN_OPTIONAL_REWARD_RECIPIENT_ADDRESS",
+                "percentage": 0
             }
         ],
+        "enableInternalStratum": true,
         "blockRefreshInterval": 0,
         "jobRebroadcastTimeout": 0,
         "clientConnectionTimeout": 600,
+        "vardiffIdleSweepInterval": 30,
         "banning": {
             "enabled": true,
             "time": 600,
@@ -95,7 +95,8 @@
         },
         "ports": {
             "3094": {
-                "listenAddress": "0.0.0.0",
+                "name": "RVN-LOW-DIFF",
+                "listenAddress": "*",
                 "difficulty": 1,
                 "varDiff": {
                     "minDiff": 0.125,
@@ -103,22 +104,22 @@
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30,
-                    "maxDelta": 500
+                    "maxDelta": 1
                 }
             },
             "3095": {
-                "listenAddress": "0.0.0.0",
-                "difficulty": 1,
-                "tls": true,
-                "tlsPfxFile": "<Your directory for the pfx file>",
-                "tlsPfxPassword": "password",
+                "name": "RVN-HIGH-DIFF",
+                "listenAddress": "*",
+                "difficulty": 64,
+                "tls": false,
+                // To enable TLS, add tlsPfxFile and tlsPfxPassword with a readable PFX.
                 "varDiff": {
-                    "minDiff": 0.125,
+                    "minDiff": 32,
                     "maxDiff": null,
                     "targetTime": 15,
                     "retargetTime": 90,
                     "variancePercent": 30,
-                    "maxDelta": 500
+                    "maxDelta": 64
                 }
             }
         },
@@ -126,8 +127,8 @@
             {
                 "host": "127.0.0.1",
                 "port": 8766,
-                "user": "user",
-                "password": "pass",
+                "user": "CHANGE_ME_DAEMON_RPC_USER",
+                "password": "CHANGE_ME_DAEMON_RPC_PASSWORD",
                 "zmqBlockNotifySocket": "tcp://127.0.0.1:7772",
                 "zmqBlockNotifyTopic": "rawblock"
             }

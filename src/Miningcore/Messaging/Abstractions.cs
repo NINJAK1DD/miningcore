@@ -89,4 +89,15 @@ public interface IMessageBus
     /// identical types (i.e. "MyCoolViewModel") - if the message type is
     /// only used for one purpose, leave this as null.</param>
     void SendMessage<T>(T message, string contract = null);
+
+}
+
+/// <summary>
+/// Internal publication surface available only to code that already owns a mining admission.
+/// Keeping it off <see cref="IMessageBus"/> prevents ordinary callers from bypassing the
+/// fail-stop gate.
+/// </summary>
+internal interface IMiningAdmissionMessageBus
+{
+    void SendMessageWithinMiningAdmission<T>(T message, string contract = null);
 }

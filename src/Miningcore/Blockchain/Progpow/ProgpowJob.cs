@@ -27,7 +27,7 @@ public class ProgpowJobParams
 public class ProgpowJob : BitcoinJob
 {
     protected IProgpowCache progpowHasher;
-    private new ProgpowJobParams jobParams;
+    private ProgpowJobParams notificationTemplate;
 
     protected virtual byte[] SerializeHeader(Span<byte> coinbaseHash)
     {
@@ -252,17 +252,20 @@ public class ProgpowJob : BitcoinJob
         BuildMerkleBranches();
         BuildCoinbase();
 
-        this.jobParams = new ProgpowJobParams
+        notificationTemplate = new ProgpowJobParams
         {
             Height = BlockTemplate.Height,
             CleanJobs = false
         };
     }
 
-    public new object GetJobParams(bool isNew)
+    public override object GetJobParams(bool isNew)
     {
-        jobParams.CleanJobs = isNew;
-        return jobParams;
+        return new ProgpowJobParams
+        {
+            Height = notificationTemplate.Height,
+            CleanJobs = isNew,
+        };
     }
 
     public void PrepareWorkerJob(ProgpowWorkerJob workerJob, out string headerHash)

@@ -1,5 +1,7 @@
+using Miningcore.Rpc;
 using System.Data;
 using System.Data.Common;
+using System.Threading;
 using AutoMapper;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
@@ -58,14 +60,54 @@ public abstract class PayoutHandlerBase
     protected readonly IShareRepository shareRepo;
     protected readonly IMasterClock clock;
     protected readonly IMessageBus messageBus;
+    private readonly AsyncLocal<PayoutReconciliationTracker> activePayout = new();
     protected ClusterConfig clusterConfig;
     private IAsyncPolicy faultPolicy;
 
     protected ILogger logger;
     protected PoolConfig poolConfig;
     private const int RetryCount = 8;
+    private static readonly TimeSpan WalletRelockTimeout = TimeSpan.FromSeconds(10);
 
     protected abstract string LogCategory { get; }
+
+    /// <summary>
+    /// Relocks a payout wallet after processing without allowing cleanup or notification errors
+    /// to replace the already-determined financial outcome.
+    /// </summary>
+    protected async Task RelockPayoutWalletSafelyAsync(
+        Func<CancellationToken, Task> lockWallet)
+    {
+        Contract.RequiresNonNull(lockWallet);
+
+        try
+        {
+            using var cts = new CancellationTokenSource(WalletRelockTimeout);
+            await lockWallet(cts.Token);
+        }
+        catch(Exception ex)
+        {
+            var message = $"Pool {poolConfig?.Id ?? "unknown"} could not relock its " +
+                $"payout wallet after payment processing ({RpcConsumerDiagnostics.Failure(ex)}). Check wallet lock state immediately.";
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutHandlerBase.RelockPayoutWalletSafelyAsync", failure: ex);
+
+            try
+            {
+                messageBus.SendMessage(new AdminNotification(
+                    "Payout wallet relock failed", message));
+            }
+            catch(Exception notificationError)
+            {
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutHandlerBase.RelockPayoutWalletSafelyAsync", failure: notificationError);
+            }
+        }
+    }
+
+    private RewardRecipient[] RewardRecipients =>
+        poolConfig.RewardRecipients ?? Array.Empty<RewardRecipient>();
+
+    private bool IsActiveRewardRecipient(string address) =>
+        RewardRecipients.Any(x => x.Percentage > 0 && x.Address == address);
 
     protected void BuildFaultHandlingPolicy()
     {
@@ -79,7 +121,7 @@ public abstract class PayoutHandlerBase
 
     protected virtual void OnRetry(Exception ex, TimeSpan timeSpan, int retry, object context)
     {
-        logger.Warn(() => $"[{LogCategory}] Retry {1} in {timeSpan} due to: {ex}");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "PayoutHandlerBase.OnRetry", failure: ex);
     }
 
     public virtual async Task<decimal> UpdateBlockRewardBalancesAsync(IDbConnection con, IDbTransaction tx, IMiningPool pool, Block block, CancellationToken ct)
@@ -87,7 +129,7 @@ public abstract class PayoutHandlerBase
         var blockRewardRemaining = block.Reward;
 
         // Distribute funds to configured reward recipients
-        foreach(var recipient in poolConfig.RewardRecipients.Where(x => x.Percentage > 0))
+        foreach(var recipient in RewardRecipients.Where(x => x.Percentage > 0))
         {
             var amount = block.Reward * (recipient.Percentage / 100.0m);
             var address = recipient.Address;
@@ -110,6 +152,8 @@ public abstract class PayoutHandlerBase
         Contract.RequiresNonNull(balances);
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(transactionConfirmation));
 
+        activePayout.Value?.MarkSubmitted(balances, transactionConfirmation);
+
         var coin = poolConfig.Template.As<CoinTemplate>();
 
         try
@@ -118,9 +162,17 @@ public abstract class PayoutHandlerBase
             {
                 await cf.RunTx(async (con, tx) =>
                 {
+                    if(!await paymentRepo.TryBeginPaymentBatchAsync(con, tx, poolConfig.Id,
+                           transactionConfirmation, clock.Now))
+                    {
+                        logger.Warn(() => $"[{LogCategory}] Payment batch {transactionConfirmation} was already persisted; skipping duplicate balance reset");
+                        return;
+                    }
+
                     foreach(var balance in balances)
                     {
-                        if(!string.IsNullOrEmpty(transactionConfirmation) && poolConfig.RewardRecipients.All(x => x.Address != balance.Address))
+                        if(!string.IsNullOrEmpty(transactionConfirmation) &&
+                            !IsActiveRewardRecipient(balance.Address))
                         {
                             // record payment
                             var payment = new Payment
@@ -142,13 +194,15 @@ public abstract class PayoutHandlerBase
                     }
                 });
             });
+
+            activePayout.Value?.MarkAccepted(balances, transactionConfirmation);
         }
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"[{LogCategory}] Failed to persist the following payments: " +
-                $"{JsonConvert.SerializeObject(balances.Where(x => x.Amount > 0).ToDictionary(x => x.Address, x => x.Amount))}");
-            throw;
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutHandlerBase.PersistPaymentsAsync", failure: ex);
+            throw new PayoutOutcomeUncertainException(
+                "Wallet submission succeeded but its payment records could not be persisted", ex);
         }
     }
 
@@ -157,6 +211,9 @@ public abstract class PayoutHandlerBase
         Contract.RequiresNonNull(balances);
         Contract.Requires<ArgumentException>(balances.Count > 0);
 
+        foreach(var payment in balances)
+            activePayout.Value?.MarkSubmitted(new[] { payment.Key }, payment.Value);
+
         var coin = poolConfig.Template.As<CoinTemplate>();
 
         try
@@ -165,39 +222,59 @@ public abstract class PayoutHandlerBase
             {
                 await cf.RunTx(async (con, tx) =>
                 {
-                    foreach(var kvp in balances)
+                    foreach(var group in balances.GroupBy(x => x.Value))
                     {
-                        var (balance, transactionConfirmation) = kvp;
+                        var transactionConfirmation = group.Key;
 
-                        if(!string.IsNullOrEmpty(transactionConfirmation) && poolConfig.RewardRecipients.All(x => x.Address != balance.Address))
+                        if(string.IsNullOrEmpty(transactionConfirmation))
+                            throw new InvalidOperationException(
+                                "Refusing to persist a payment batch without a wallet transaction id");
+
+                        if(!await paymentRepo.TryBeginPaymentBatchAsync(con, tx, poolConfig.Id,
+                               transactionConfirmation, clock.Now))
                         {
-                            // record payment
-                            var payment = new Payment
-                            {
-                                PoolId = poolConfig.Id,
-                                Coin = coin.Symbol,
-                                Address = balance.Address,
-                                Amount = balance.Amount,
-                                Created = clock.Now,
-                                TransactionConfirmationData = transactionConfirmation
-                            };
-
-                            await paymentRepo.InsertAsync(con, tx, payment);
+                            logger.Warn(() => $"[{LogCategory}] Payment batch {transactionConfirmation} was already persisted; skipping duplicate balance reset");
+                            continue;
                         }
 
-                        // reset balance
-                        logger.Info(() => $"[{LogCategory}] Resetting balance of {balance.Address}");
-                        await balanceRepo.AddAmountAsync(con, tx, poolConfig.Id, balance.Address, -balance.Amount, "Balance reset after payment");
+                        foreach(var kvp in group)
+                        {
+                            var balance = kvp.Key;
+
+                            if(!string.IsNullOrEmpty(transactionConfirmation) &&
+                                !IsActiveRewardRecipient(balance.Address))
+                            {
+                                // record payment
+                                var payment = new Payment
+                                {
+                                    PoolId = poolConfig.Id,
+                                    Coin = coin.Symbol,
+                                    Address = balance.Address,
+                                    Amount = balance.Amount,
+                                    Created = clock.Now,
+                                    TransactionConfirmationData = transactionConfirmation
+                                };
+
+                                await paymentRepo.InsertAsync(con, tx, payment);
+                            }
+
+                            // reset balance
+                            logger.Info(() => $"[{LogCategory}] Resetting balance of {balance.Address}");
+                            await balanceRepo.AddAmountAsync(con, tx, poolConfig.Id, balance.Address, -balance.Amount, "Balance reset after payment");
+                        }
                     }
                 });
             });
+
+            foreach(var payment in balances)
+                activePayout.Value?.MarkAccepted(new[] { payment.Key }, payment.Value);
         }
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"[{LogCategory}] Failed to persist the following payments: " +
-                $"{JsonConvert.SerializeObject(balances.Where(x => x.Key.Amount > 0).ToDictionary(x => x.Key.Address, x => x.Key.Amount))}");
-            throw;
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutHandlerBase.PersistPaymentsAsync", failure: ex);
+            throw new PayoutOutcomeUncertainException(
+                "One or more wallet submissions succeeded but their payment records could not be persisted", ex);
         }
     }
 
@@ -212,7 +289,10 @@ public abstract class PayoutHandlerBase
         return $"{amount:0.#####} {coin.Symbol}";
     }
 
-    protected virtual void NotifyPayoutSuccess(string poolId, Balance[] balances, string[] txHashes, decimal? txFee)
+    protected virtual void NotifyPayoutSuccess(string poolId, Balance[] balances,
+        string[] txHashes, decimal? txFee, decimal? submittedAmount = null,
+        decimal? precisionAdjustment = null,
+        PaymentRecipientTransactionChain[] recipientTransactionChains = null)
     {
         var coin = poolConfig.Template.As<CoinTemplate>();
 
@@ -221,13 +301,169 @@ public abstract class PayoutHandlerBase
             txHashes.Select(x => string.Format(coin.ExplorerTxLink, x)).ToArray() :
             Array.Empty<string>();
 
-        messageBus.SendMessage(new PaymentNotification(poolId, null, balances.Sum(x => x.Amount), coin.Symbol, balances.Length, txHashes, explorerLinks, txFee));
+        PublishPayoutNotification(new PaymentNotification(poolId, null,
+            balances.Sum(x => x.Amount), coin.Symbol, balances.Length, txHashes,
+            explorerLinks, txFee)
+        {
+            SubmittedAmount = submittedAmount,
+            PrecisionAdjustment = precisionAdjustment,
+            RecipientTransactionChains = recipientTransactionChains,
+        });
     }
 
-    protected virtual void NotifyPayoutFailure(string poolId, Balance[] balances, string error, Exception ex)
+    /// <summary>
+    /// Tracks the complete selected payout batch while a handler processes pages or individual
+    /// wallet submissions. If a wallet outcome becomes uncertain, known persisted, failed,
+    /// in-flight and untouched recipients are attached to the exception for the manager-owned
+    /// uncertainty notification.
+    /// </summary>
+    protected async Task TrackPayoutAsync(Balance[] balances, Func<Task> action)
+    {
+        Contract.RequiresNonNull(balances);
+        Contract.RequiresNonNull(action);
+
+        var previous = activePayout.Value;
+        var tracker = new PayoutReconciliationTracker(balances);
+        activePayout.Value = tracker;
+
+        try
+        {
+            await action();
+            FlushPayoutNotifications(tracker);
+        }
+
+        catch(PayoutOutcomeUncertainException ex)
+        {
+            throw tracker.AttachReconciliation(ex);
+        }
+
+        catch(OperationCanceledException ex) when(tracker.HasInFlight)
+        {
+            throw tracker.AttachReconciliation(new PayoutOutcomeUncertainException(
+                "Payout processing was cancelled while one or more wallet submissions were in flight",
+                ex));
+        }
+
+        catch(OperationCanceledException)
+        {
+            // No submission remains in flight. Any queued subset notification therefore describes
+            // a conclusive, already-persisted result and is safe to publish during shutdown.
+            FlushPayoutNotifications(tracker);
+            throw;
+        }
+
+        catch(AggregateException ex) when(tracker.HasInFlight)
+        {
+            try
+            {
+                WalletSubmissionOutcome.RethrowIfUnknown(ex,
+                    "One or more payout wallet submissions");
+            }
+            catch(PayoutOutcomeUncertainException uncertain)
+            {
+                throw tracker.AttachReconciliation(uncertain);
+            }
+
+            throw;
+        }
+
+        finally
+        {
+            activePayout.Value = previous;
+        }
+    }
+
+    /// <summary>
+    /// Marks balances immediately before invoking a wallet submission RPC. An interrupted or
+    /// otherwise ambiguous call is therefore distinguishable from recipients not yet attempted.
+    /// </summary>
+    protected void TrackPayoutSubmission(CancellationToken ct, params Balance[] balances)
+    {
+        // Cancellation that was already requested before the wallet boundary is an ordinary
+        // shutdown. Only cancellation racing with a call after this check is financially
+        // ambiguous and may retain durable payout ownership for reconciliation.
+        ct.ThrowIfCancellationRequested();
+        activePayout.Value?.MarkAttempting(balances);
+    }
+
+    /// <summary>
+    /// Clears the in-flight state after the wallet conclusively rejects a call before submission,
+    /// for example when it requires an unlock followed by a retry.
+    /// </summary>
+    protected void TrackPayoutSubmissionNotStarted(params Balance[] balances)
+    {
+        activePayout.Value?.MarkNotInFlight(balances);
+    }
+
+    /// <summary>
+    /// Records a conclusive per-recipient wallet rejection before other parallel submissions
+    /// finish, preventing a later cancellation from reclassifying it as uncertain.
+    /// </summary>
+    protected void TrackPayoutFailure(Balance[] balances, string detail)
+    {
+        activePayout.Value?.MarkFailed(balances, detail);
+    }
+
+    /// <summary>
+    /// Retains a transaction identity as soon as the wallet returns it, before deferred batch
+    /// persistence. Separate per-recipient submissions must return distinct transaction ids.
+    /// </summary>
+    protected void TrackPayoutTransaction(Balance[] balances, string transactionId)
+    {
+        activePayout.Value?.MarkSubmitted(balances, transactionId);
+    }
+
+    /// <summary>
+    /// Retains every ordered transaction identity returned for a logical payout while selecting
+    /// the canonical identity used by payment persistence and idempotency.
+    /// </summary>
+    protected void TrackPayoutTransactions(Balance[] balances,
+        string canonicalTransactionId, string[] transactionIds)
+    {
+        activePayout.Value?.MarkSubmitted(balances, canonicalTransactionId,
+            transactionIds);
+    }
+
+    /// <summary>
+    /// Retains identities from a malformed response before fail-closed validation attaches the
+    /// reconciliation record.
+    /// </summary>
+    protected void TrackReturnedPayoutTransactions(Balance[] balances,
+        string[] transactionIds)
+    {
+        activePayout.Value?.MarkReturnedTransactionIds(balances, transactionIds);
+    }
+
+    private void FlushPayoutNotifications(PayoutReconciliationTracker tracker)
+    {
+        tracker.FlushNotifications(ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutHandlerBase.FlushPayoutNotifications", failure: ex));
+    }
+
+    protected virtual void NotifyPayoutFailure(string poolId, Balance[] balances,
+        string error, Exception ex, decimal? submittedAmount = null,
+        decimal? precisionAdjustment = null, int? daemonCode = null,
+        PaymentFailureReason reason = PaymentFailureReason.Unknown)
     {
         var coin = poolConfig.Template.As<CoinTemplate>();
 
-        messageBus.SendMessage(new PaymentNotification(poolId, error ?? ex?.Message, balances.Sum(x => x.Amount), coin.Symbol));
+        activePayout.Value?.MarkFailed(balances, error ?? ex?.Message);
+
+        PublishPayoutNotification(new PaymentNotification(poolId, error ?? ex?.Message,
+            balances.Sum(x => x.Amount), coin.Symbol, balances.Length, null, null, null)
+        {
+            SubmittedAmount = submittedAmount,
+            PrecisionAdjustment = precisionAdjustment,
+            FailureDiagnostic = PaymentFailureDiagnostic.Create(ex, daemonCode, reason),
+        });
+    }
+
+    private void PublishPayoutNotification(PaymentNotification notification)
+    {
+        var tracker = activePayout.Value;
+
+        if(tracker != null)
+            tracker.EnqueueNotification(() => messageBus.SendMessage(notification));
+        else
+            messageBus.SendMessage(notification);
     }
 }

@@ -137,7 +137,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
         var info = await rpcClient.ExecuteAsync<GetChainInfoResponse>(logger, XelisCommands.GetChainInfo, ct);
         if(info.Error != null)
         {
-            logger.Warn(() => $"[{LogCategory}] '{XelisCommands.GetChainInfo}': {info.Error.Message} (Code {info.Error.Code})");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisPayoutHandler.ClassifyBlocksAsync", code: info.Error?.Code);
             return blocks;
         }
 
@@ -166,7 +166,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
                 var response = await rpcClient.ExecuteAsync<GetBlockByHashResponse>(logger, XelisCommands.GetBlockByHash, ct, getBlockByHashRequest);
                 if(response.Error != null)
                 {
-                    logger.Warn(() => $"[{LogCategory}] '{XelisCommands.GetBlockByHash}': {response.Error.Message} (Code {response.Error.Code})");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisPayoutHandler.ClassifyBlocksAsync", code: response.Error?.Code);
 
                     // we lost that battle
                     if(response.Error.Code == (int)XelisRPCErrorCode.RPC_INVALID_PARAMS)
@@ -237,6 +237,11 @@ public class XelisPayoutHandler : PayoutHandlerBase,
     {
         Contract.RequiresNonNull(balances);
 
+        await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+    }
+
+    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    {
         // ensure we have enough peers
         var enoughPeers = await EnsureDaemonsSynchedAsync(ct);
         if(!enoughPeers)
@@ -265,13 +270,13 @@ public class XelisPayoutHandler : PayoutHandlerBase,
 
             var validateAddress = await rpcClient.ExecuteAsync<ValidateAddressResponse>(logger, XelisCommands.ValidateAddress, ct, validateAddressRequest);
             if(validateAddress.Error != null)
-                logger.Warn(()=> $"[{LogCategory}] Address {pair.Key} is not valid: {validateAddress.Error.Message} (Code {validateAddress.Error.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisPayoutHandler.PayoutTrackedAsync", code: validateAddress.Error?.Code);
         }
 
         var responseBalance = await rpcClientWallet.ExecuteAsync<object>(logger, XelisWalletCommands.GetBalance, ct);
         if(responseBalance.Error != null)
         {
-            logger.Warn(()=> $"[{LogCategory}] '{XelisWalletCommands.GetBalance}': {responseBalance.Error.Message} (Code {responseBalance.Error.Code})");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisPayoutHandler.PayoutTrackedAsync", code: responseBalance.Error?.Code);
             return;
         }
 
@@ -325,7 +330,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
                 var estimateFeesResponse = await rpcClientWallet.ExecuteAsync<object>(logger, XelisWalletCommands.EstimateFees, ct, estimateFeesRequest);
                 if(estimateFeesResponse.Error != null)
                 {
-                    logger.Warn(()=> $"[{LogCategory}] '{XelisWalletCommands.EstimateFees}': {estimateFeesResponse.Error.Message} (Code {estimateFeesResponse.Error.Code})");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisPayoutHandler.PayoutTrackedAsync", code: estimateFeesResponse.Error?.Code);
                     continue;
                 }
 
@@ -355,29 +360,28 @@ public class XelisPayoutHandler : PayoutHandlerBase,
                 };
             }
 
+            TrackPayoutSubmission(ct, page);
             var buildTransactionResponse = await rpcClientWallet.ExecuteAsync<BuildTransactionResponse>(logger, XelisWalletCommands.BuildTransaction, ct, buildTransactionRequest);
+            WalletSubmissionOutcome.ThrowIfUnknown(buildTransactionResponse.Error,
+                XelisWalletCommands.BuildTransaction);
+
             if(buildTransactionResponse.Error != null)
             {
-                logger.Error(()=> $"[{LogCategory}] '{XelisWalletCommands.BuildTransaction}': {buildTransactionResponse.Error.Message} (Code {buildTransactionResponse.Error.Code})");
-                NotifyPayoutFailure(poolConfig.Id, page, $"Daemon command '{XelisWalletCommands.BuildTransaction}' returned error: {buildTransactionResponse.Error.Message} code {buildTransactionResponse.Error.Code}", null);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "XelisPayoutHandler.PayoutTrackedAsync", code: buildTransactionResponse.Error?.Code);
+                NotifyPayoutFailure(poolConfig.Id, page, $"Daemon command '{XelisWalletCommands.BuildTransaction}' returned error: {buildTransactionResponse.Error.Message} code {buildTransactionResponse.Error.Code}", null, daemonCode: buildTransactionResponse.Error.Code);
                 continue;
             }
 
-            if(string.IsNullOrEmpty(buildTransactionResponse.Response.Hash))
-            {
-                logger.Warn(() => $"[{LogCategory}] Payment transaction failed to return a transaction id");
-                continue;
-            }
-            else
-            {
-                // payment successful
-                var finalTransactionFees = (decimal) buildTransactionResponse.Response.Fee / XelisConstants.SmallestUnit;
+            var txHash = WalletSubmissionOutcome.RequireTransactionId(
+                buildTransactionResponse.Response?.Hash, XelisWalletCommands.BuildTransaction);
 
-                logger.Info(() => $"[{LogCategory}] Payment transaction id: {buildTransactionResponse.Response.Hash} || Payment transaction fees: {FormatAmount(finalTransactionFees)}");
+            // payment successful
+            var finalTransactionFees = (decimal) buildTransactionResponse.Response.Fee / XelisConstants.SmallestUnit;
 
-                await PersistPaymentsAsync(page, buildTransactionResponse.Response.Hash);
-                NotifyPayoutSuccess(poolConfig.Id, page, new[] { buildTransactionResponse.Response.Hash }, finalTransactionFees);
-            }
+            logger.Info(() => $"[{LogCategory}] Payment transaction id: {txHash} || Payment transaction fees: {FormatAmount(finalTransactionFees)}");
+
+            await PersistPaymentsAsync(page, txHash);
+            NotifyPayoutSuccess(poolConfig.Id, page, new[] { txHash }, finalTransactionFees);
         }
     }
 
@@ -394,7 +398,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
         var status = await rpcClient.ExecuteAsync<GetStatusResponse>(logger, XelisCommands.GetStatus, ct);
         if(status.Error != null)
         {
-            logger.Warn(() => $"'{XelisCommands.GetStatus}': {status.Error.Message} (Code {status.Error.Code})");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "XelisPayoutHandler.EnsureDaemonsSynchedAsync", code: status.Error?.Code);
             return false;
         }
 

@@ -1,8 +1,6 @@
 using System.Text.Json.Serialization;
 using Miningcore.Blockchain;
-using Miningcore.Configuration;
 using Miningcore.Mining;
-using Newtonsoft.Json.Linq;
 
 namespace Miningcore.Api.Responses;
 
@@ -55,9 +53,8 @@ public class ApiPoolPaymentProcessingConfig
     public decimal MinimumPayment { get; set; } // in pool-base-currency (ie. Bitcoin, not Satoshis)
     public string PayoutScheme { get; set; }
     public ApiPoolPayoutSchemeConfig PayoutSchemeConfig { get; set; }
-
-    [Newtonsoft.Json.JsonExtensionData]
-    public IDictionary<string, object> Extra { get; set; }
+    public int PpsShareRetentionDays { get; set; }
+    public ApiPoolPaymentProcessingExtra Extra { get; set; }
 }
 
 public partial class PoolInfo
@@ -65,10 +62,21 @@ public partial class PoolInfo
     // Configuration Properties directly mapping to PoolConfig (omitting security relevant fields)
     public string Id { get; set; }
 
+    // Local mining availability, not a claim about payment completion or daemon health.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string MiningState { get; set; }
+
+    // Latched local isolation survives "stopping"; shutdown-only failures do not
+    // set this flag. No exception details.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? MiningFaulted { get; set; }
+
     public ApiCoinConfig Coin { get; set; }
-    public Dictionary<int, PoolEndpoint> Ports { get; set; }
+    public Dictionary<int, ApiPoolEndpoint> Ports { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ApiPoolPaymentProcessingConfig PaymentProcessing { get; set; }
-    public PoolShareBasedBanningConfig ShareBasedBanning { get; set; }
+    public ApiPoolShareBasedBanningConfig ShareBasedBanning { get; set; }
     public int ClientConnectionTimeout { get; set; }
     public int JobRebroadcastTimeout { get; set; }
     public int BlockRefreshInterval { get; set; }

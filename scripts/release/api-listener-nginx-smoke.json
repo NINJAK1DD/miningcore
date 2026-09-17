@@ -1,0 +1,12 @@
+{
+  "api": {
+    "enabled": true,
+    "listenAddress": "*",
+    "port": 4000,
+    "adminIpWhitelist": [ "172.30.56.1" ],
+    "metricsIpWhitelist": [ "172.30.56.1" ],
+    "rateLimiting": {
+      "disabled": true
+    }
+  }
+}

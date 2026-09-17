@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -7,6 +8,7 @@ using System.Threading.Tasks;
 using Autofac;
 using Microsoft.IO;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Stratum;
 using Miningcore.Time;
@@ -22,6 +24,7 @@ namespace Miningcore.Tests.Stratum;
 
 public class StratumConnectionTests : TestBase
 {
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
     private const string JsonRpcVersion = "2.0";
     private const string ConnectionId = "foo";
     private const string requestString = "{\"params\": [\"slush.miner1\", \"password\"], \"id\": 42, \"method\": \"mining.authorize\"}\\n";
@@ -30,6 +33,122 @@ public class StratumConnectionTests : TestBase
     private static readonly RecyclableMemoryStreamManager rmsm = ModuleInitializer.Container.Resolve<RecyclableMemoryStreamManager>();
     private static readonly IMasterClock clock = ModuleInitializer.Container.Resolve<IMasterClock>();
     private static readonly ILogger logger = new NullLogger(LogManager.LogFactory);
+
+    [Fact]
+    public void RespondAsync_FailStopTokenRejectsAcknowledgement()
+    {
+        using var failStop = new CancellationTokenSource();
+        failStop.Cancel();
+        var connection = new StratumConnection(logger, rmsm, clock,
+            ConnectionId, false, failStop.Token);
+
+        Assert.Throws<OperationCanceledException>(() =>
+        {
+            _ = connection.RespondAsync(true, 1);
+        });
+    }
+
+    [Fact]
+    public async Task ProcessSendQueue_FailStopCancelsQueuedResponseBeforeTransmissionCompletes()
+    {
+        using var failStop = new CancellationTokenSource();
+        var connection = new StratumConnection(logger, rmsm, clock,
+            ConnectionId, false, failStop.Token);
+        var sendStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var transmitted = false;
+        connection.SendMessageOverride = async (_, ct) =>
+        {
+            sendStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            transmitted = true;
+        };
+
+        var sendLoop = connection.ProcessSendQueueAsync(CancellationToken.None);
+        await connection.RespondAsync(true, 1);
+        await sendStarted.Task.WaitAsync(TestTimeout);
+
+        failStop.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            sendLoop.WaitAsync(TestTimeout));
+        Assert.False(transmitted);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_CompletionCallbackFailure_CompletesWithoutSignallingErrorAgain()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var endpoint = new StratumEndpoint(
+            (IPEndPoint) listener.LocalEndpoint, new PoolEndpoint());
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        var acceptTask = listener.AcceptSocketAsync();
+        await client.ConnectAsync(endpoint.IPEndPoint.Address,
+            endpoint.IPEndPoint.Port, CancellationToken.None);
+        using var accepted = await acceptTask;
+        var remoteEndpoint = (IPEndPoint) accepted.RemoteEndPoint;
+        var connection = new StratumConnection(logger, rmsm, clock,
+            ConnectionId, false);
+        var completionCalls = 0;
+        var errorCalls = 0;
+
+        var dispatch = connection.DispatchAsync(accepted,
+            CancellationToken.None, endpoint, remoteEndpoint, null,
+            (_, _, _) => Task.CompletedTask,
+            _ =>
+            {
+                completionCalls++;
+                throw new InvalidOperationException(
+                    "injected completion callback failure");
+            },
+            (_, _) => errorCalls++);
+
+        client.Dispose();
+        await dispatch.WaitAsync(TestTimeout);
+
+        Assert.Equal(1, completionCalls);
+        Assert.Equal(0, errorCalls);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_ErrorCallbackFailure_CompletesWithoutSignallingTerminalEventAgain()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var endpoint = new StratumEndpoint(
+            (IPEndPoint) listener.LocalEndpoint, new PoolEndpoint());
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        var acceptTask = listener.AcceptSocketAsync();
+        await client.ConnectAsync(endpoint.IPEndPoint.Address,
+            endpoint.IPEndPoint.Port, CancellationToken.None);
+        using var accepted = await acceptTask;
+        var remoteEndpoint = (IPEndPoint) accepted.RemoteEndPoint;
+        var connection = new StratumConnection(logger, rmsm, clock,
+            ConnectionId, false);
+        var completionCalls = 0;
+        var errorCalls = 0;
+
+        var dispatch = connection.DispatchAsync(accepted,
+            CancellationToken.None, endpoint, remoteEndpoint, null,
+            (_, _, _) => Task.CompletedTask,
+            _ => completionCalls++,
+            (_, _) =>
+            {
+                errorCalls++;
+                throw new InvalidOperationException(
+                    "injected error callback failure");
+            });
+        await using var stream = client.GetStream();
+        await stream.WriteAsync(StratumConnection.Encoding.GetBytes(
+            "not-json\n"));
+        await stream.FlushAsync();
+
+        await dispatch.WaitAsync(TestTimeout);
+
+        Assert.Equal(0, completionCalls);
+        Assert.Equal(1, errorCalls);
+    }
 
     [Fact]
     public async Task ProcessRequest_Handle_Valid_Request()

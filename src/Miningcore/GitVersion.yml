@@ -2,7 +2,11 @@ assembly-versioning-scheme: MajorMinorPatch
 mode: ContinuousDelivery
 branches:
   develop:
-    regex: ^dev(elop)?(ment)?|oliverw$
+    regex: ^(dev(elop)?(ment)?|oliverw)$
+  feature:
+    # Match GitFlow's inherited develop increment explicitly. This keeps local
+    # feature-branch builds independent of a synthetic pull-request merge ref.
+    increment: Minor
 ignore:
   sha: []
 merge-message-formats: {}

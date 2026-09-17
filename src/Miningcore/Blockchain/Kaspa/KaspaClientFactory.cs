@@ -9,13 +9,12 @@ using Miningcore.Extensions;
 using Miningcore.Mining;
 using NLog;
 using kaspaWalletd = Miningcore.Blockchain.Kaspa.KaspaWalletd;
-using kaspad = Miningcore.Blockchain.Kaspa.Kaspad;
 
 namespace Miningcore.Blockchain.Kaspa;
 
 public static class KaspaClientFactory
 {
-    public static kaspad.KaspadRPC.KaspadRPCClient CreateKaspadRPCClient(DaemonEndpointConfig[] daemonEndpoints, string protobufDaemonRpcServiceName)
+    public static Kaspad.KaspadRPC.KaspadRPCClient CreateKaspadRPCClient(DaemonEndpointConfig[] daemonEndpoints, string protobufDaemonRpcServiceName)
     {
         var daemonEndpoint = daemonEndpoints.First();
 
@@ -36,7 +35,7 @@ public static class KaspaClientFactory
             /*
              * The following options are not "perfectly" optimized, you can experiment but these values seem the more trouble free
              * Tweak at your own risk
-             * https://learn.microsoft.com/en-us/aspnet/core/grpc/configuration?view=aspnetcore-6.0
+             * https://learn.microsoft.com/en-us/aspnet/core/grpc/configuration?view=aspnetcore-10.0
              * https://grpc.github.io/grpc/csharp-dotnet/api/Grpc.Net.Client.GrpcChannelOptions.html
              */
             DisposeHttpClient = true,
@@ -44,7 +43,7 @@ public static class KaspaClientFactory
             MaxSendMessageSize = 2097152 // 2MB
         });
 
-        return new kaspad.KaspadRPC.KaspadRPCClient(new kaspad.KaspadRPC(protobufDaemonRpcServiceName), channel);
+        return new Kaspad.KaspadRPC.KaspadRPCClient(new Kaspad.KaspadRPC(protobufDaemonRpcServiceName), channel);
     }
 
         public static kaspaWalletd.KaspaWalletdRPC.KaspaWalletdRPCClient CreateKaspaWalletdRPCClient(DaemonEndpointConfig[] daemonEndpoints, string protobufWalletRpcServiceName)
@@ -68,7 +67,7 @@ public static class KaspaClientFactory
             /*
              * The following options are not "perfectly" optimized, you can experiment but these values seem the more trouble free
              * Tweak at your own risk
-             * https://learn.microsoft.com/en-us/aspnet/core/grpc/configuration?view=aspnetcore-6.0
+             * https://learn.microsoft.com/en-us/aspnet/core/grpc/configuration?view=aspnetcore-10.0
              * https://grpc.github.io/grpc/csharp-dotnet/api/Grpc.Net.Client.GrpcChannelOptions.html
              */
             DisposeHttpClient = true,

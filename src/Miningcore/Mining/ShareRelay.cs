@@ -27,6 +27,7 @@ public class ShareRelay : IHostedService
     private readonly ClusterConfig clusterConfig;
     private readonly BlockingCollection<Share> queue = new();
     private IDisposable queueSub;
+    private IDisposable messageBusSub;
     private readonly int QueueSizeWarningThreshold = 1024;
     private bool hasWarnedAboutBacklogSize;
     private ZSocket pubSocket;
@@ -37,7 +38,8 @@ public class ShareRelay : IHostedService
     public enum WireFormat
     {
         Json = 1,
-        ProtocolBuffers = 2
+        ProtocolBuffers = 2,
+        ProtocolBuffersAccounting = 3,
     }
 
     public const int WireFormatMask = 0xF;
@@ -51,10 +53,18 @@ public class ShareRelay : IHostedService
             {
                 share.Source = clusterConfig.ClusterName;
                 share.BlockRewardDouble = (double) share.BlockReward;
+                if(share.PairedShare != null)
+                {
+                    share.PairedShare.Source = clusterConfig.ClusterName;
+                    share.PairedShare.BlockRewardDouble =
+                        (double) share.PairedShare.BlockReward;
+                }
 
                 try
                 {
-                    const int flags = (int) WireFormat.ProtocolBuffers;
+                    var flags = (int) (string.IsNullOrEmpty(share.AccountingId)
+                        ? WireFormat.ProtocolBuffers
+                        : WireFormat.ProtocolBuffersAccounting);
 
                     using(var msg = new ZMessage())
                     {
@@ -101,7 +111,7 @@ public class ShareRelay : IHostedService
 
     public Task StartAsync(CancellationToken ct)
     {
-        messageBus.Listen<Share>().Subscribe(x => queue.Add(x, ct));
+        messageBusSub = messageBus.Listen<Share>().Subscribe(x => queue.Add(x, ct));
 
         pubSocket = new ZSocket(ZSocketType.PUB);
 
@@ -136,10 +146,14 @@ public class ShareRelay : IHostedService
 
     public Task StopAsync(CancellationToken ct)
     {
-        pubSocket.Dispose();
+        messageBusSub?.Dispose();
+        messageBusSub = null;
 
         queueSub?.Dispose();
         queueSub = null;
+
+        pubSocket?.Dispose();
+        pubSocket = null;
 
         return Task.CompletedTask;
     }

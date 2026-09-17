@@ -1,0 +1,14 @@
+{
+  "rules": [
+    {
+      "method": "submitblock",
+      "params_min_length": 1,
+      "action": "replace_response",
+      "count": 1,
+      "response": {
+        "result": null,
+        "error": null
+      }
+    }
+  ]
+}

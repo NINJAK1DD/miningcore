@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Reactive;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
@@ -40,7 +41,6 @@ public class ErgoPool : PoolBase
     {
     }
 
-    protected object[] currentJobParams;
     protected ErgoJobManager manager;
     private ErgoPoolConfigExtra extraPoolConfig;
     private ErgoCoinTemplate coin;
@@ -124,7 +124,7 @@ public class ErgoPool : PoolBase
             await connection.RespondAsync(response);
 
             // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
 
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
@@ -169,7 +169,7 @@ public class ErgoPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
@@ -237,10 +237,8 @@ public class ErgoPool : PoolBase
                 response.Extra["error"] = null;
             }
 
-            await connection.RespondAsync(response);
-
-            // publish
-            messageBus.SendMessage(share);
+            await PublishShareAndAcknowledgeAsync(share,
+                () => connection.RespondAsync(response));
 
             // telemetry
             PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, true);
@@ -264,7 +262,7 @@ public class ErgoPool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            logger.Info(() => $"[{connection.ConnectionId}] Share rejected: {ex.Message} [{context.UserAgent}]");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "ErgoPool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);
@@ -275,8 +273,6 @@ public class ErgoPool : PoolBase
 
     protected virtual async Task OnNewJobAsync(object[] jobParams)
     {
-        currentJobParams = jobParams;
-
         logger.Info(() => $"Broadcasting job {jobParams[0]}");
 
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>
@@ -290,14 +286,10 @@ public class ErgoPool : PoolBase
 
     private async Task SendJob(StratumConnection connection, ErgoWorkerContext context, object[] jobParams)
     {
-        // clone job params
-        var jobParamsActual = new object[jobParams.Length];
-
-        for(var i = 0; i < jobParamsActual.Length; i++)
-            jobParamsActual[i] = jobParams[i];
-
+        // CreateWorkerJob gives this connection its own snapshot. Fill its target
+        // before queueing; neither another worker nor the job cache shares it.
         var target = new BigRational(BitcoinConstants.Diff1 * (BigInteger) (1 / context.Difficulty * 0x10000), 0x10000).GetWholePart();
-        jobParamsActual[6] = target.ToString();
+        jobParams[6] = target.ToString();
 
         var notifyArgs = !context.IsNicehash ?
             new object[] { 1 } :  // send static diff of 1 since actual diff gets pre-multiplied to target
@@ -306,7 +298,7 @@ public class ErgoPool : PoolBase
         await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, notifyArgs);
 
         // send target
-        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, jobParamsActual);
+        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, jobParams);
     }
 
     public override double HashrateFromShares(double shares, double interval)
@@ -348,11 +340,11 @@ public class ErgoPool : PoolBase
             disposables.Add(manager.Jobs
                 .Select(job => Observable.FromAsync(() =>
                     Guard(()=> OnNewJobAsync(job),
-                        ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"))))
+                        ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ErgoPool.SetupJobManager", failure: ex))))
                 .Concat()
                 .Subscribe(_ => { }, ex =>
                 {
-                    logger.Debug(ex, nameof(OnNewJobAsync));
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ErgoPool.SetupJobManager", failure: ex);
                 }));
 
             // start with initial blocktemplate
@@ -400,7 +392,7 @@ public class ErgoPool : PoolBase
                     break;
 
                 default:
-                    logger.Debug(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ErgoPool.OnRequestAsync");
 
                     await connection.RespondErrorAsync(StratumError.Other, $"Unsupported request {request.Method}", request.Id);
                     break;
@@ -432,11 +424,8 @@ public class ErgoPool : PoolBase
 
         if(context.ApplyPendingDifficulty())
         {
-            var cleanJob = (bool) currentJobParams[^1];
-            if(cleanJob)
-                cleanJob = !cleanJob;
-
-            var minerJobParams = CreateWorkerJob(connection, cleanJob);
+            // A difficulty change preserves work from the current block.
+            var minerJobParams = CreateWorkerJob(connection, false);
 
             await SendJob(connection, context, minerJobParams);
         }

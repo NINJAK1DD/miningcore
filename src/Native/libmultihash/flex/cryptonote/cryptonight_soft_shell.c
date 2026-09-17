@@ -6,6 +6,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 #include "crypto/oaes_lib.h"
 #include "crypto/c_keccak.h"
 #include "crypto/c_groestl.h"
@@ -52,8 +55,8 @@
 #define U64(p) ((uint64_t*)(p))
 
 #define VARIANT2_INIT(b, state) \
-  uint64_t division_result; \
-  uint64_t sqrt_result; \
+  uint64_t division_result = 0; \
+  uint64_t sqrt_result = 0; \
   do if (variant >= 2) \
   { \
     U64(b)[2] = state.hs.w[8] ^ state.hs.w[10]; \
@@ -192,7 +195,7 @@ void cryptonight_soft_shell_hash(const char* input, char* output, uint32_t len, 
     union cn_slow_hash_state state;
     uint8_t text[INIT_SIZE_BYTE];
     uint8_t a[AES_BLOCK_SIZE];
-    uint8_t b[AES_BLOCK_SIZE];
+    uint8_t b[AES_BLOCK_SIZE * 2];
     uint8_t c[AES_BLOCK_SIZE];
     uint8_t aes_key[AES_KEY_SIZE];
     oaes_ctx* aes_ctx;

@@ -2,9 +2,11 @@ using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Runtime.Serialization;
 using AspNetCoreRateLimit;
+using Miningcore.Serialization;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json.Schema.Generation;
 // ReSharper disable UnusedAutoPropertyAccessor.Global
 // ReSharper disable PropertyCanBeMadeInitOnly.Global
 // ReSharper disable ClassNeverInstantiated.Global
@@ -63,6 +65,10 @@ public enum CoinFamily
 
     [EnumMember(Value = "zano")]
     Zano,
+
+    // Append new families to preserve existing public enum numeric values.
+    [EnumMember(Value = "bitcoin-blake2b")]
+    BitcoinBlake2b,
 }
 
 public abstract partial class CoinTemplate
@@ -168,6 +174,7 @@ public abstract partial class CoinTemplate
         {CoinFamily.Alephium, typeof(AlephiumCoinTemplate)},
         {CoinFamily.Beam, typeof(BeamCoinTemplate)},
         {CoinFamily.Bitcoin, typeof(BitcoinTemplate)},
+        {CoinFamily.BitcoinBlake2b, typeof(BitcoinBlake2bTemplate)},
         {CoinFamily.Conceal, typeof(ConcealCoinTemplate)},
         {CoinFamily.Cryptonote, typeof(CryptonoteCoinTemplate)},
         {CoinFamily.Equihash, typeof(EquihashCoinTemplate)},
@@ -205,6 +212,45 @@ public partial class BitcoinTemplate : CoinTemplate
 {
     public class BitcoinNetworkParams
     {
+        /// <summary>
+        /// Consensus height at which Odocrypt becomes available. The Odocrypt
+        /// hasher refuses pre-activation templates instead of relying on an
+        /// operator-selected coin definition to imply activation.
+        /// </summary>
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public uint? OdoCryptActivationHeight { get; set; }
+
+        /// <summary>
+        /// Consensus Odocrypt shape-change interval, in seconds. The active
+        /// schedule is network-specific and the Odocrypt hasher refuses to run
+        /// when this value is absent or zero.
+        /// </summary>
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public uint? OdoCryptShapeChangeInterval { get; set; }
+
+        /// <summary>
+        /// First height whose consensus header uses Bitcoin BLAKE2b header-v2.
+        /// This is required only by the isolated bitcoin-blake2b family.
+        /// </summary>
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public uint? Blake2bActivationHeight { get; set; }
+
+        /// <summary>
+        /// Consensus headline required in the activation block coinbase.
+        /// Empty is valid on test networks whose daemon was configured without
+        /// an activation headline.
+        /// </summary>
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public string Blake2bActivationHeadline { get; set; }
+
+        /// <summary>
+        /// One-off target shift applied by the daemon at activation. Miningcore
+        /// records and validates this source-derived value; the daemon remains
+        /// authoritative for the returned compact target.
+        /// </summary>
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public byte? Blake2bTargetShift { get; set; }
+
         /// <summary>
         /// Arbitrary extension data
         /// </summary>
@@ -281,8 +327,44 @@ public partial class BitcoinTemplate : CoinTemplate
     [DefaultValue(1.0d)]
     public double ShareMultiplier { get; set; } = 1.0d;
 
+    /// <summary>
+    /// Advertise MWEB client capability. Extension serialization is driven by
+    /// the daemon's returned block-template payload.
+    /// </summary>
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
     public bool HasMWEB { get; set; }
+
+    /// <summary>
+    /// Use the legacy Bitcoin RPC surface when the daemon predates
+    /// getblockchaininfo/getnetworkinfo.
+    /// </summary>
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+    public bool RequiresLegacyDaemon { get; set; }
+
+    /// <summary>
+    /// Refuse Stratum version-rolling negotiation when block-version bits are
+    /// consensus-owned by the coin.
+    /// </summary>
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)]
+    public bool DisableVersionRolling { get; set; }
+
+    /// <summary>
+    /// Source-reviewed block-version bits that miners may change through BIP310.
+    /// When omitted, ordinary Bitcoin-family templates retain Miningcore's
+    /// default mask.
+    /// </summary>
+    [JsonProperty("versionRollingMask",
+        NullValueHandling = NullValueHandling.Ignore)]
+    [JsonConverter(typeof(HexToIntegralTypeJsonConverter<uint?>))]
+    public uint? AllowedVersionRollingMask { get; set; }
+
+    /// <summary>
+    /// Block-version bits reserved by this coin's consensus implementation.
+    /// This documents and validates the boundary of AllowedVersionRollingMask.
+    /// </summary>
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    [JsonConverter(typeof(HexToIntegralTypeJsonConverter<uint?>))]
+    public uint? VersionRollingConsensusMask { get; set; }
 
     [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
     public double? HashrateMultiplier { get; set; }
@@ -302,9 +384,6 @@ public partial class BitcoinTemplate : CoinTemplate
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
     public int? CoinbaseMinConfimations { get; set; }
 
-    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
-    public string BlockSerializer { get; set; }
-
     /// <summary>
     /// Force the use of the raw public key of the specified poolAddress
     /// </summary>
@@ -316,6 +395,23 @@ public partial class BitcoinTemplate : CoinTemplate
     /// </summary>
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
     public int? PayoutDecimalPlaces { get; set; } = 4;
+}
+
+/// <summary>
+/// Typed template for the Bitcoin BLAKE2b header-v2 hard-fork chain. Keeping a
+/// separate CLR type and family prevents its wire protocol from being selected
+/// by canonical SHA-256d Bitcoin or another Bitcoin-derived template.
+/// </summary>
+public partial class BitcoinBlake2bTemplate : BitcoinTemplate
+{
+    public override string GetAlgorithmName() => "BLAKE2b header-v2";
+
+    /// <summary>
+    /// Immutable compatibility identifier for the reviewed header/miner wire
+    /// contract. A changed upstream protocol requires a code review and a new
+    /// supported identifier rather than silently inheriting this implementation.
+    /// </summary>
+    public string Blake2bProtocol { get; set; }
 }
 
 public enum ConcealSubfamily
@@ -964,9 +1060,21 @@ public class DatabaseConfig : AuthenticatedNetworkEndpointConfig
 public class PostgresConfig : DatabaseConfig
 {
     /// <summary>
-    /// Enable Transport layer security (TLS)
+    /// Explicit connection security policy. Omit legacy TLS flags when specifying this.
     /// </summary>
-    public bool Tls { get; set; }
+    [JsonConverter(typeof(PostgresSslModeConverter))]
+    public PostgresSslMode? SslMode { get; set; }
+
+    /// <summary>
+    /// PEM root CA file for VerifyCA/VerifyFull. Overrides PGSSLROOTCERT.
+    /// </summary>
+    public string TlsRootCert { get; set; }
+
+    /// <summary>
+    /// Legacy policy: true requires encryption without server authentication;
+    /// false/omitted uses opportunistic TLS. Omit when SslMode is configured.
+    /// </summary>
+    public bool? Tls { get; set; }
 
     /// <summary>
     /// Location of a client certificate to be sent to the server (.PFX or .PEM)
@@ -984,10 +1092,19 @@ public class PostgresConfig : DatabaseConfig
     public string TlsPassword { get; set; }
 
     /// <summary>
-    /// Trust (self-signed) server certificate
+    /// Legacy compatibility flag; false does not authenticate the server.
+    /// Omit when SslMode is configured.
     /// </summary>
-    public bool TlsNoValidate { get; set; }
+    public bool? TlsNoValidate { get; set; }
 
+    /// <summary>
+    /// Command execution timeout in seconds. Omitted/null uses 300; zero is rejected.
+    /// This is not a connection timeout or a deadline for an entire transaction.
+    /// </summary>
+    // Schema-generation metadata only; runtime validation uses PostgresConnectionPolicy
+    // through FluentValidation and the raw-JSON startup boundary.
+    [Range(1, PostgresConnectionPolicy.MaximumCommandTimeoutSeconds)]
+    [Description("Command timeout in seconds: 1-86400; omitted/null uses 300. Zero (unlimited) is rejected.")]
     public int? CommandTimeout { get; set; }
 
     /// <summary>
@@ -1011,6 +1128,7 @@ public class TcpProxyProtocolConfig
     /// <summary>
     /// List of IP addresses of valid proxy addresses. If absent, localhost is used
     /// </summary>
+    [JSchemaGenerationProvider(typeof(NonNullStringArrayGenerationProvider))]
     public string[] ProxyAddresses { get; set; }
 }
 
@@ -1123,6 +1241,14 @@ public partial class PoolPaymentProcessingConfig
     public JToken PayoutSchemeConfig { get; set; }
 
     /// <summary>
+    /// Time-based statistical-share retention for PPS pools. PPS liabilities are journaled at
+    /// acceptance and do not depend on finding a block, so cleanup must not depend on pool luck.
+    /// </summary>
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(7)]
+    public int PpsShareRetentionDays { get; set; } = 7;
+
+    /// <summary>
     /// Arbitrary extension data
     /// </summary>
     [JsonExtensionData]
@@ -1133,6 +1259,24 @@ public partial class ClusterPaymentProcessingConfig
 {
     public bool Enabled { get; set; }
     public int Interval { get; set; }
+
+    /// <summary>
+    /// Maximum rows examined or removed from each share-accounting table by one payout-manager
+    /// retention pass. Keep this bounded to limit transaction size while sizing it above the
+    /// number of records that can expire during one payment-processing interval.
+    /// </summary>
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(50_000)]
+    public int ShareAccountingPruneBatchSize { get; set; } = 50_000;
+
+    /// <summary>
+    /// Maximum supported relay/recovery replay age for share-accounting evidence. Older records
+    /// fail closed and may be pruned by the payout-manager maintenance pass after optional
+    /// operator archival.
+    /// </summary>
+    [JsonProperty(DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate)]
+    [DefaultValue(30)]
+    public int ShareAccountingRetentionDays { get; set; } = 30;
 
     /// <summary>
     /// Indentifier used in coinbase transactions to identify the pool
@@ -1191,6 +1335,7 @@ public class ApiRateLimitConfig
     public bool Disabled { get; set; }
 
     public RateLimitRule[] Rules { get; set; }
+    [JSchemaGenerationProvider(typeof(NonNullStringArrayGenerationProvider))]
     public string[] IpWhitelist { get; set; }
 }
 
@@ -1204,21 +1349,30 @@ public class ApiTlsConfig
 
 public partial class ApiConfig
 {
+    public const int DefaultPort = 4000;
+
     public bool Enabled { get; set; }
     public string ListenAddress { get; set; }
-    public int Port { get; set; }
+
+    /// <summary>
+    /// Public REST API and WebSocket listener port.
+    /// </summary>
+    [DefaultValue(DefaultPort)]
+    public int Port { get; set; } = DefaultPort;
 
     public ApiTlsConfig Tls { get; set; }
 
     public ApiRateLimitConfig RateLimiting { get; set; }
 
     /// <summary>
-    /// Port for admin-apis
+    /// Dedicated port for administrative APIs. When omitted, administrative
+    /// routes remain on Port for backwards compatibility.
     /// </summary>
     public int? AdminPort { get; set; }
 
     /// <summary>
-    /// Port for prometheus compatible metrics endpoint /metrics
+    /// Dedicated port for the Prometheus-compatible /metrics endpoint. When
+    /// omitted, metrics remain on Port for backwards compatibility.
     /// </summary>
     public int? MetricsPort { get; set; }
 
@@ -1226,12 +1380,14 @@ public partial class ApiConfig
     /// Restricts access to the admin API to these IP addresses
     /// If this list null or empty, the default is 127.0.0.1
     /// </summary>
+    [JSchemaGenerationProvider(typeof(NonNullStringArrayGenerationProvider))]
     public string[] AdminIpWhitelist { get; set; }
 
     /// <summary>
     /// Restricts access to the /metrics endpoint to these IP addresses
     /// If this list null or empty, the default is 127.0.0.1
     /// </summary>
+    [JSchemaGenerationProvider(typeof(NonNullStringArrayGenerationProvider))]
     public string[] MetricsIpWhitelist { get; set; }
 
     /// <summary>
@@ -1343,7 +1499,7 @@ public partial class PoolConfig
 
     public PoolPaymentProcessingConfig PaymentProcessing { get; set; }
     public PoolShareBasedBanningConfig Banning { get; set; }
-    public RewardRecipient[] RewardRecipients { get; set; }
+    public RewardRecipient[] RewardRecipients { get; set; } = Array.Empty<RewardRecipient>();
     public string Address { get; set; }
     public string PubKey { get; set; }  // POS coins only
     public int ClientConnectionTimeout { get; set; }
@@ -1386,6 +1542,7 @@ public partial class ClusterConfig
     /// <summary>
     /// One or more files containing coin definitions
     /// </summary>
+    [JSchemaGenerationProvider(typeof(NonNullStringArrayGenerationProvider))]
     public string[] CoinTemplates { get; set; }
 
     public string ClusterName { get; set; }
@@ -1422,7 +1579,11 @@ public partial class ClusterConfig
     /// </summary>
     public int? CryptonightMaxThreads { get; set; }
 
+    [Description("Write-through emergency share journal. In production use an absolute path on separately monitored or reserved storage when possible.")]
     public string ShareRecoveryFile { get; set; }
+
+    [Description("Independent service-owned directory for persistent share-recovery fatal latches, journal terminal anchors, and recovery-import retirement markers. Defaults to systemd StateDirectory or the platform application-data directory.")]
+    public string ShareRecoveryStateDirectory { get; set; }
 
     [Required]
     public PoolConfig[] Pools { get; set; }

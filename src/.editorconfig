@@ -23,6 +23,14 @@ indent_style = space
 indent_size = 4
 tab_width = 4
 
+# Protobuf-generated aliases follow protoc's lowercase naming. Keep compiler
+# suppression outside generated files so regeneration cannot discard it.
+[Miningcore/Blockchain/Kaspa/RPC/Kaspad/{Messages,P2P,Rpc}.cs]
+dotnet_diagnostic.CS8981.severity = none
+
+[Miningcore/Blockchain/Kaspa/RPC/KaspaWalletd/KaspaWalletd.cs]
+dotnet_diagnostic.CS8981.severity = none
+
 # Tab indentation (no size specified)
 [Makefile]
 indent_style = tab

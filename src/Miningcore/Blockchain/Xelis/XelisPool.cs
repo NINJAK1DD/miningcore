@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Reactive;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
@@ -39,7 +40,6 @@ public class XelisPool : PoolBase
     {
     }
 
-    private object currentJobParams;
     private XelisJobManager manager;
     private XelisPoolConfigExtra extraPoolConfig;
     private XelisCoinTemplate coin;
@@ -150,7 +150,7 @@ public class XelisPool : PoolBase
             await connection.RespondAsync(response);
 
             // log association
-            logger.Info(() => $"[{connection.ConnectionId}]{(!string.IsNullOrEmpty(context.UserAgent) ? $"[{context.UserAgent}]" : string.Empty)} Authorized worker {workerValue}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
 
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
@@ -180,7 +180,7 @@ public class XelisPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}]{(!string.IsNullOrEmpty(context.UserAgent) ? $"[{context.UserAgent}]" : string.Empty)} Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
@@ -248,11 +248,8 @@ public class XelisPool : PoolBase
                 response.Extra["error"] = null;
             }
 
-            // respond
-            await connection.RespondAsync(response);
-
-            // publish
-            messageBus.SendMessage(share);
+            await PublishShareAndAcknowledgeAsync(share,
+                () => connection.RespondAsync(response));
 
             // telemetry
             PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, true);
@@ -276,7 +273,7 @@ public class XelisPool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            logger.Info(() => $"[{connection.ConnectionId}] Share rejected: {ex.Message} [{context.UserAgent}]");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "XelisPool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);
@@ -287,8 +284,6 @@ public class XelisPool : PoolBase
 
     protected virtual async Task OnNewJobAsync(object jobParams)
     {
-        currentJobParams = jobParams;
-
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>
@@ -340,11 +335,11 @@ public class XelisPool : PoolBase
             disposables.Add(manager.Jobs
                 .Select(job => Observable.FromAsync(() =>
                     Guard(()=> OnNewJobAsync(job),
-                        ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"))))
+                        ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "XelisPool.SetupJobManager", failure: ex))))
                 .Concat()
                 .Subscribe(_ => { }, ex =>
                 {
-                    logger.Debug(ex, nameof(OnNewJobAsync));
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "XelisPool.SetupJobManager", failure: ex);
                 }));
 
             // start with initial blocktemplate
@@ -403,7 +398,7 @@ public class XelisPool : PoolBase
                     break;
 
                 default:
-                    logger.Debug(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "XelisPool.OnRequestAsync");
 
                     await connection.RespondErrorAsync(StratumError.Other, $"Unsupported request {request.Method}", request.Id);
                     break;
@@ -422,11 +417,8 @@ public class XelisPool : PoolBase
 
         if(connection.Context.ApplyPendingDifficulty())
         {
-            var cleanJob = (bool) ((object[]) currentJobParams)[^1];
-            if(cleanJob)
-                cleanJob = !cleanJob;
-
-            var minerJobParams = CreateWorkerJob(connection, cleanJob);
+            // A difficulty change preserves work from the current block.
+            var minerJobParams = CreateWorkerJob(connection, false);
 
             // send varDiff update
             await connection.NotifyAsync(XelisStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });

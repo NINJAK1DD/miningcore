@@ -7,6 +7,7 @@ using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
 using Miningcore.Extensions;
+using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
@@ -44,14 +45,69 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     public int maxActiveJobs { get; protected set; } = 4;
     protected bool hasLegacyDaemon;
     protected BitcoinPoolConfigExtra extraPoolConfig;
+    // Preserve binding failures for derived managers that protect financial or
+    // consensus-sensitive settings. Other callers retain best-effort behavior.
+    protected Exception extraPoolConfigBindingError;
     protected BitcoinPoolPaymentProcessingConfigExtra extraPoolPaymentProcessingConfig;
     protected DateTime? lastJobRebroadcast;
     protected bool hasSubmitBlockMethod;
+    protected string daemonChain;
     protected bool isPoS;
     protected bool forcePoolAddressDestinationWithPubKey;
     protected TimeSpan jobRebroadcastTimeout;
     protected Network network;
     protected IDestination poolAddressDestination;
+    private int missingVerifiedJobWarningEmitted;
+    internal const string MissingVerifiedJobWarning =
+        "Job publication suppressed because no verified job is available yet";
+
+    /// <summary>
+    /// A failed forced refresh may rebroadcast previously verified work, but it
+    /// must never manufacture a publishable update before the first job exists.
+    /// </summary>
+    protected bool PreserveForceForVerifiedJob(bool forceUpdate,
+        CancellationToken ct)
+    {
+        if(!forceUpdate || ct.IsCancellationRequested)
+            return false;
+
+        if(currentJob is not null)
+            return true;
+
+        WarnMissingVerifiedJobOnce();
+        return false;
+    }
+
+    private void WarnMissingVerifiedJobOnce()
+    {
+        // Consume the attempt before logging: a broken target must not be
+        // retried on every refresh. Protect both manager and pipeline callers.
+        if(Interlocked.CompareExchange(ref missingVerifiedJobWarningEmitted,
+               1, 0) == 0)
+        {
+            Guard(() => logger.Warn(() => MissingVerifiedJobWarning));
+        }
+    }
+
+    private void ReportMissingVerifiedJob((bool IsNew, bool Force) update,
+        CancellationToken ct)
+    {
+        if(ct.IsCancellationRequested || (!update.IsNew && !update.Force))
+            return;
+
+        if(currentJob is null)
+        {
+            // This is a final family-wide boundary for specialized managers.
+            // Keep the wait visible without repeating it on every timer.
+            WarnMissingVerifiedJobOnce();
+        }
+    }
+
+    private bool IsPublishableJobUpdate((bool IsNew, bool Force) update,
+        CancellationToken ct) =>
+        !ct.IsCancellationRequested &&
+        (update.IsNew || update.Force) &&
+        currentJob is not null;
 
     protected virtual object[] GetBlockTemplateParams()
     {
@@ -64,11 +120,24 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         };
     }
 
+    /// <summary>
+    /// Enables daemon polling even when jobs are normally supplied by a Bitcoin Template Stream.
+    /// Specialized managers can use this when they depend on another chain whose updates are not
+    /// represented by the parent-chain stream.
+    /// </summary>
+    protected virtual bool PollJobsWithBlockTemplateStream => false;
+
     protected virtual void SetupJobUpdates(CancellationToken ct)
     {
         jobRebroadcastTimeout = TimeSpan.FromSeconds(Math.Max(1, poolConfig.JobRebroadcastTimeout));
         var blockFound = blockFoundSubject.Synchronize();
         var pollTimerRestart = blockFoundSubject.Synchronize();
+        var shutdown = Observable.Create<Unit>(observer =>
+            ct.Register(() =>
+            {
+                observer.OnNext(Unit.Default);
+                observer.OnCompleted();
+            }));
 
         var triggers = new List<IObservable<(bool Force, string Via, string Data)>>
         {
@@ -79,10 +148,13 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         {
             // collect ports
             var zmq = poolConfig.Daemons
-                .Where(x => !string.IsNullOrEmpty(x.Extra.SafeExtensionDataAs<BitcoinDaemonEndpointConfigExtra>()?.ZmqBlockNotifySocket))
+                .Where(x => !string.IsNullOrEmpty(x.Extra
+                    .SafeExtensionDataAs<BitcoinDaemonNotificationConfigExtra>()?
+                    .ZmqBlockNotifySocket))
                 .ToDictionary(x => x, x =>
                 {
-                    var extra = x.Extra.SafeExtensionDataAs<BitcoinDaemonEndpointConfigExtra>();
+                    var extra = x.Extra
+                        .SafeExtensionDataAs<BitcoinDaemonNotificationConfigExtra>();
                     var topic = !string.IsNullOrEmpty(extra.ZmqBlockNotifyTopic?.Trim()) ? extra.ZmqBlockNotifyTopic.Trim() : BitcoinConstants.ZmqPublisherTopicBlockHash;
 
                     return (Socket: extra.ZmqBlockNotifySocket, Topic: topic);
@@ -90,9 +162,13 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
             if(zmq.Count > 0)
             {
-                logger.Info(() => $"Subscribing to ZMQ push-updates from {string.Join(", ", zmq.Values)}");
+                foreach(var endpoint in zmq.Keys)
+                {
+                    var endpointIndex = RpcDiagnostics.EndpointIndex(poolConfig.Daemons, endpoint);
+                    logger.Info(() => $"Subscribing to ZMQ daemon endpoint {endpointIndex?.ToString() ?? "unknown"}");
+                }
 
-                var blockNotify = rpc.ZmqSubscribe(logger, ct, zmq)
+                var blockNotify = rpc.ZmqSubscribe(logger, ct, zmq, poolConfig.Daemons)
                     .Select(msg =>
                     {
                         using(msg)
@@ -171,6 +247,16 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
                     .RefCount());
             }
 
+            if(PollJobsWithBlockTemplateStream && poolConfig.BlockRefreshInterval > 0)
+            {
+                var pollingInterval = TimeSpan.FromMilliseconds(poolConfig.BlockRefreshInterval);
+
+                triggers.Add(Observable.Timer(pollingInterval)
+                    .TakeUntil(blockFound)
+                    .Select(_ => (false, JobRefreshBy.Poll, (string) null))
+                    .Repeat());
+            }
+
             // get initial blocktemplate
             triggers.Add(Observable.Interval(TimeSpan.FromMilliseconds(1000))
                 .Select(_ => (false, JobRefreshBy.Initial, (string) null))
@@ -178,9 +264,13 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         }
 
         Jobs = triggers.Merge()
+            .TakeUntil(shutdown)
             .Select(x => Observable.FromAsync(() => UpdateJob(ct, x.Force, x.Via, x.Data)))
             .Concat()
-            .Where(x => x.IsNew || x.Force)
+            // Diagnostics must never turn a safely suppressed update into a
+            // job-pipeline failure or pool fail-stop.
+            .Do(x => Guard(() => ReportMissingVerifiedJob(x, ct)))
+            .Where(x => IsPublishableJobUpdate(x, ct))
             .Do(x =>
             {
                 if(x.IsNew)
@@ -234,7 +324,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
                 var errors = results.Where(x => x.Error != null).ToArray();
 
                 if(errors.Any())
-                    logger.Warn(() => $"Error(s) refreshing network stats: {string.Join(", ", errors.Select(y => y.Error.Message))}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinJobManagerBase.UpdateNetworkStatsAsync", code: errors[0].Error?.Code, failedCount: errors.Length);
             }
 
             var miningInfoResponse = results[0].Response.ToObject<MiningInfo>();
@@ -250,13 +340,23 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         catch(Exception e)
         {
-            logger.Error(e);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManagerBase.UpdateNetworkStatsAsync", failure: e);
         }
     }
 
-    protected record SubmitResult(bool Accepted, string CoinbaseTx);
+    protected record SubmitResult(bool Accepted, string CoinbaseTx, bool Ambiguous = false,
+        bool Duplicate = false);
 
-    protected async Task<SubmitResult> SubmitBlockAsync(Share share, string blockHex, CancellationToken ct)
+    internal enum SubmissionBlockLookupResult
+    {
+        Accepted,
+        MissingCoinbase,
+        KnownInactive,
+        Unavailable,
+    }
+
+    protected async Task<SubmitResult> SubmitBlockAsync(Share share, string blockHex,
+        CancellationToken ct, bool notifyAmbiguous = true)
     {
         var submitBlockRequest = hasSubmitBlockMethod
             ? new RpcRequest(BitcoinCommands.SubmitBlock, new[] { blockHex })
@@ -276,25 +376,142 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
             submitResult.Error?.Code.ToString(CultureInfo.InvariantCulture) ??
             submitResult.Response?.ToString();
 
-        if(!string.IsNullOrEmpty(submitError))
-        {
-            logger.Warn(() => $"Block {share.BlockHeight} submission failed with: {submitError}");
-            messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {submitError}"));
-            return new SubmitResult(false, null);
-        }
-
-        // was it accepted?
+        // was it accepted and can it be reconciled to a coinbase transaction?
         var acceptResult = results[1];
         var block = acceptResult.Response?.ToObject<DaemonResponses.Block>();
-        var accepted = acceptResult.Error == null && block?.Hash == share.BlockHash;
+        var lookupResult = ClassifySubmissionBlockLookup(acceptResult.Error, block,
+            share.BlockHash);
+        var duplicateSubmission = IsDuplicateBlockSubmissionResponse(submitError);
+        var inconclusiveSubmission = IsInconclusiveBlockSubmissionResponse(submitError);
+        var outcome = ClassifyBlockSubmissionOutcome(submitError, submitResult.Error,
+            acceptResult.Error, block, share.BlockHash);
 
-        if(!accepted)
+        if(!string.IsNullOrEmpty(submitError) && !duplicateSubmission && !inconclusiveSubmission)
         {
-            logger.Warn(() => $"Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission");
-            messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block submission failed", $"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission"));
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinJobManagerBase.SubmitBlockAsync", code: submitResult.Error?.Code);
+            if(!outcome.Ambiguous || notifyAmbiguous)
+                messageBus.SendMessage(new AdminNotification("Block submission failed", $"Pool {poolConfig.Id} {(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}failed to submit block {share.BlockHeight}: {RpcConsumerDiagnostics.WithheldError}"));
+            return new SubmitResult(outcome.Accepted, outcome.CoinbaseTx,
+                outcome.Ambiguous, outcome.Duplicate);
         }
 
-        return new SubmitResult(accepted, block?.Transactions.FirstOrDefault());
+        if(duplicateSubmission)
+        {
+            if(lookupResult == SubmissionBlockLookupResult.Accepted ||
+                lookupResult == SubmissionBlockLookupResult.MissingCoinbase)
+                logger.Warn(() => $"Block {share.BlockHeight} submission returned duplicate; block [{share.BlockHash}] is active on the daemon and will not be accepted by the shared Bitcoin submit path");
+            else
+                logger.Warn(() => $"Block {share.BlockHeight} submission returned duplicate, but block [{share.BlockHash}] was not found active after submission");
+
+            return new SubmitResult(outcome.Accepted, outcome.CoinbaseTx,
+                outcome.Ambiguous, outcome.Duplicate);
+        }
+
+        if(!outcome.Accepted)
+        {
+            logger.Warn(() => $"Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission");
+            if(!outcome.Ambiguous || notifyAmbiguous)
+                messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block submission failed", $"[{poolConfig.Id}]-[{(!string.IsNullOrEmpty(share.Source) ? $"[{share.Source.ToUpper()}] " : string.Empty)}] Block {share.BlockHeight} submission failed for pool {poolConfig.Id} because block was not found after submission"));
+        }
+
+        return new SubmitResult(outcome.Accepted, outcome.CoinbaseTx,
+            !outcome.Accepted && outcome.Ambiguous, outcome.Duplicate);
+    }
+
+    internal static bool IsDuplicateBlockSubmissionResponse(string submitError)
+    {
+        return !string.IsNullOrWhiteSpace(submitError) &&
+            (submitError.Equals("duplicate", StringComparison.OrdinalIgnoreCase) ||
+                submitError.Equals("duplicate-inconclusive", StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal static bool IsInconclusiveBlockSubmissionResponse(string submitError)
+    {
+        return !string.IsNullOrWhiteSpace(submitError) &&
+            submitError.Equals("inconclusive", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static (bool Accepted, string CoinbaseTx, bool Ambiguous, bool Duplicate)
+        ClassifyBlockSubmissionOutcome(string submitError, JsonRpcError submitRpcError,
+            JsonRpcError lookupError, DaemonResponses.Block block, string expectedHash)
+    {
+        var duplicateSubmission = IsDuplicateBlockSubmissionResponse(submitError);
+        var inconclusiveSubmission = IsInconclusiveBlockSubmissionResponse(submitError);
+
+        if(!string.IsNullOrEmpty(submitError) && !duplicateSubmission && !inconclusiveSubmission)
+            return (false, null, submitRpcError?.Code == -500, false);
+
+        if(duplicateSubmission)
+            return ClassifyDuplicateSubmissionLookup(lookupError, block, expectedHash);
+
+        var lookupResult = ClassifySubmissionBlockLookup(lookupError, block, expectedHash);
+
+        return lookupResult switch
+        {
+            SubmissionBlockLookupResult.Accepted =>
+                (true, GetCoinbaseTransaction(block), false, false),
+            SubmissionBlockLookupResult.MissingCoinbase =>
+                (false, null, true, false),
+            SubmissionBlockLookupResult.Unavailable =>
+                (false, null, true, false),
+            _ => (false, null, false, false),
+        };
+    }
+
+    internal static (bool Accepted, string CoinbaseTx, bool Ambiguous, bool Duplicate)
+        ClassifyDuplicateSubmissionLookup(JsonRpcError error, DaemonResponses.Block block,
+            string expectedHash)
+    {
+        var lookupResult = ClassifySubmissionBlockLookup(error, block, expectedHash);
+
+        return lookupResult switch
+        {
+            SubmissionBlockLookupResult.Accepted =>
+                (false, GetCoinbaseTransaction(block), true, true),
+            SubmissionBlockLookupResult.MissingCoinbase =>
+                (false, null, true, true),
+            SubmissionBlockLookupResult.Unavailable =>
+                (false, null, true, true),
+            _ => (false, null, false, true),
+        };
+    }
+
+    internal static bool IsAcceptedBlockLookup(JsonRpcError error, DaemonResponses.Block block,
+        string expectedHash)
+    {
+        return IsActiveBlockLookup(error, block, expectedHash) &&
+            !string.IsNullOrEmpty(GetCoinbaseTransaction(block));
+    }
+
+    internal static bool IsActiveBlockLookup(JsonRpcError error, DaemonResponses.Block block,
+        string expectedHash)
+    {
+        return error == null &&
+            string.Equals(block?.Hash, expectedHash, StringComparison.OrdinalIgnoreCase) &&
+            block.Confirmations > 0;
+    }
+
+    internal static SubmissionBlockLookupResult ClassifySubmissionBlockLookup(
+        JsonRpcError error, DaemonResponses.Block block, string expectedHash)
+    {
+        if(error != null ||
+            !string.Equals(block?.Hash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            return SubmissionBlockLookupResult.Unavailable;
+
+        if(block.Confirmations < 0)
+            return SubmissionBlockLookupResult.KnownInactive;
+
+        if(block.Confirmations == 0)
+            return SubmissionBlockLookupResult.Unavailable;
+
+        return string.IsNullOrEmpty(GetCoinbaseTransaction(block))
+            ? SubmissionBlockLookupResult.MissingCoinbase
+            : SubmissionBlockLookupResult.Accepted;
+    }
+
+    internal static string GetCoinbaseTransaction(DaemonResponses.Block block)
+    {
+        return block?.Transactions?.FirstOrDefault();
     }
 
     protected async Task<bool> AreDaemonsHealthyLegacyAsync(CancellationToken ct)
@@ -307,12 +524,15 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     protected async Task<bool> AreDaemonsConnectedLegacyAsync(CancellationToken ct)
     {
         var response = await rpc.ExecuteAsync<DaemonInfo>(logger, BitcoinCommands.GetInfo, ct);
-        
-        // update stats
-        if(!string.IsNullOrEmpty(response.Response.Version))
-            BlockchainStats.NodeVersion = (string) response.Response.Version;
 
-        return response.Error == null && response.Response.Connections > 0;
+        if(!TryGetLegacyDaemonConnection(response, out var version))
+            return false;
+
+        // update stats
+        if(!string.IsNullOrEmpty(version))
+            BlockchainStats.NodeVersion = version;
+
+        return true;
     }
 
     protected async Task ShowDaemonSyncProgressLegacyAsync(CancellationToken ct)
@@ -352,7 +572,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
                 var errors = results.Where(x => x.Error != null).ToArray();
 
                 if(errors.Any())
-                    logger.Warn(() => $"Error(s) refreshing network stats: {string.Join(", ", errors.Select(y => y.Error.Message))}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinJobManagerBase.UpdateNetworkStatsLegacyAsync", code: errors[0].Error?.Code, failedCount: errors.Length);
             }
 
             var connectionCountResponse = results[0].Response.ToObject<object>();
@@ -363,7 +583,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         catch(Exception e)
         {
-            logger.Error(e);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManagerBase.UpdateNetworkStatsLegacyAsync", failure: e);
         }
     }
 
@@ -385,11 +605,13 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         var response = await rpc.ExecuteAsync<BlockchainInfo>(logger, BitcoinCommands.GetBlockchainInfo, ct);
 
-        if(response.Error != null)
+        if(response.Error != null || response.Response == null)
         {
-            logger.Error(() => $"Daemon reports: {response.Error.Message}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManagerBase.AreDaemonsHealthyAsync", code: response.Error?.Code);
             return false;
         }
+
+        daemonChain = response.Response.Chain;
         return true;
     }
 
@@ -400,12 +622,29 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         var response = await rpc.ExecuteAsync<NetworkInfo>(logger, BitcoinCommands.GetNetworkInfo, ct);
 
+        if(response.Error != null || response.Response == null)
+            return false;
+
         // update stats
         if(!string.IsNullOrEmpty(response.Response.Version))
-            BlockchainStats.NodeVersion = (string) response.Response?.Version;
+            BlockchainStats.NodeVersion = response.Response.Version;
 
-        return response.Error == null && response.Response?.Connections > 0;
+        if(HasRequiredPeerConnection(response.Response.Connections, daemonChain,
+               extraPoolConfig?.AllowPeerlessRegtest == true))
+        {
+            if(response.Response.Connections == 0)
+                logger.Warn(() => "Starting with no daemon peers because allowPeerlessRegtest is enabled on regtest");
+
+            return true;
+        }
+
+        return false;
     }
+
+    internal static bool HasRequiredPeerConnection(int connections, string chain,
+        bool allowPeerlessRegtest) =>
+        connections > 0 || (allowPeerlessRegtest &&
+            string.Equals(chain, "regtest", StringComparison.OrdinalIgnoreCase));
 
     protected override async Task EnsureDaemonsSynchedAsync(CancellationToken ct)
     {
@@ -504,10 +743,9 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         // ensure pool owns wallet
         if(validateAddressResponse is not {IsValid: true})
-            throw new PoolStartupException($"Daemon reports pool-address '{poolConfig.Address}' as invalid", poolConfig.Id);
+            throw new TrustedPoolStartupException("Daemon reports the configured pool address as invalid", poolConfig.Id);
 
-        isPoS = poolConfig.Template is BitcoinTemplate {IsPseudoPoS: true} ||
-            (difficultyResponse.Values().Any(x => x.Path == "proof-of-stake" && !difficultyResponse.Values().Any(x => x.Path == "proof-of-work")));
+        isPoS = ResolveProofOfStakeMode(poolConfig.Template, difficultyResponse);
         
         forcePoolAddressDestinationWithPubKey = poolConfig.Template is BitcoinTemplate {ForcePoolAddressDestinationWithPubKey: true};
 
@@ -523,7 +761,8 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         else
         {
             logger.Info(()=> $"Interpreting pool address {poolConfig.Address} as raw public key");
-            poolAddressDestination = new PubKey(poolConfig.PubKey ?? validateAddressResponse.PubKey);
+            poolAddressDestination = ResolvePoolPublicKey(poolConfig,
+                validateAddressResponse);
         }
 
         // Payment-processing setup
@@ -544,7 +783,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         else if(submitBlockResponse.Error?.Code == (int)BitcoinRPCErrorCode.RPC_MISC_ERROR || submitBlockResponse.Error?.Code == (int)BitcoinRPCErrorCode.RPC_INVALID_PARAMS)
             hasSubmitBlockMethod = true;
         else
-            throw new PoolStartupException($"Code [{submitBlockResponse.Error?.Code}]: Unable detect block submission RPC method", poolConfig.Id);
+            throw new TrustedPoolStartupException($"Code [{submitBlockResponse.Error?.Code}]: Unable detect block submission RPC method", poolConfig.Id);
 
         if(!hasLegacyDaemon)
             await UpdateNetworkStatsAsync(ct);
@@ -555,7 +794,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         Observable.Interval(TimeSpan.FromMinutes(10))
             .Select(_ => Observable.FromAsync(() =>
                 Guard(()=> !hasLegacyDaemon ? UpdateNetworkStatsAsync(ct) : UpdateNetworkStatsLegacyAsync(ct),
-                    ex => logger.Error(ex))))
+                    ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManagerBase.PostStartInitAsync", failure: ex))))
             .Concat()
             .Subscribe();
 
@@ -567,22 +806,35 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
     protected virtual IDestination AddressToDestination(string address, BitcoinAddressType? addressType)
     {
+        return ResolveAddressDestination(address, addressType, network,
+            extraPoolConfig?.BechPrefix);
+    }
+
+    internal static IDestination ResolveAddressDestination(string address,
+        BitcoinAddressType? addressType, Network expectedNetwork,
+        string bechPrefix = null)
+    {
         if(!addressType.HasValue)
-            return BitcoinUtils.AddressToDestination(address, network);
+            return BitcoinUtils.AddressToDestination(address,
+                expectedNetwork);
 
         switch(addressType.Value)
         {
             case BitcoinAddressType.BechSegwit:
-                return BitcoinUtils.BechSegwitAddressToDestination(poolConfig.Address, network, extraPoolConfig?.BechPrefix);
+                return BitcoinUtils.BechSegwitAddressToDestination(address,
+                    expectedNetwork, bechPrefix);
 
             case BitcoinAddressType.BCash:
-                return BitcoinUtils.BCashAddressToDestination(poolConfig.Address, network);
+                return BitcoinUtils.BCashAddressToDestination(address,
+                    expectedNetwork);
 
             case BitcoinAddressType.Litecoin:
-                return BitcoinUtils.LitecoinAddressToDestination(poolConfig.Address, network);
+                return BitcoinUtils.LitecoinAddressToDestination(address,
+                    expectedNetwork);
 
             default:
-                return BitcoinUtils.AddressToDestination(poolConfig.Address, network);
+                return BitcoinUtils.AddressToDestination(address,
+                    expectedNetwork);
         }
     }
 
@@ -602,15 +854,76 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
-        extraPoolConfig = pc.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>();
+        pc.Extra.TryExtensionDataAs(out extraPoolConfig,
+            out extraPoolConfigBindingError);
         extraPoolPaymentProcessingConfig = pc.PaymentProcessing?.Extra?.SafeExtensionDataAs<BitcoinPoolPaymentProcessingConfigExtra>();
 
         if(extraPoolConfig?.MaxActiveJobs.HasValue == true)
             maxActiveJobs = extraPoolConfig.MaxActiveJobs.Value;
 
-        hasLegacyDaemon = extraPoolConfig?.HasLegacyDaemon == true;
+        hasLegacyDaemon = ResolveLegacyDaemonMode(pc.Template,
+            extraPoolConfig?.HasLegacyDaemon);
 
         base.Configure(pc, cc);
+    }
+
+    internal static bool ResolveLegacyDaemonMode(CoinTemplate coin,
+        bool? configuredOverride)
+    {
+        return configuredOverride ??
+            (coin is BitcoinTemplate {RequiresLegacyDaemon: true});
+    }
+
+    internal static bool TryGetLegacyDaemonConnection(
+        RpcResponse<DaemonInfo> response, out string version)
+    {
+        version = null;
+
+        if(response?.Error != null || response?.Response == null ||
+            response.Response.Connections <= 0)
+            return false;
+
+        version = response.Response.Version;
+        return true;
+    }
+
+    internal static bool ResolveProofOfStakeMode(CoinTemplate coin,
+        JToken difficultyResponse)
+    {
+        if(coin is BitcoinTemplate {IsPseudoPoS: true})
+            return true;
+
+        var values = difficultyResponse?.Values().ToArray() ?? Array.Empty<JToken>();
+
+        return values.Any(x => x.Path == "proof-of-stake") &&
+            values.All(x => x.Path != "proof-of-work");
+    }
+
+    internal static PubKey ResolvePoolPublicKey(PoolConfig poolConfig,
+        ValidateAddressResponse validateAddressResponse)
+    {
+        var encoded = !string.IsNullOrWhiteSpace(poolConfig.PubKey)
+            ? poolConfig.PubKey.Trim()
+            : validateAddressResponse?.PubKey;
+
+        if(string.IsNullOrWhiteSpace(encoded))
+        {
+            throw new TrustedPoolStartupException(
+                $"Pool '{poolConfig.Id}' requires 'pubKey' because its raw public key " +
+                "was not returned by validateaddress",
+                poolConfig.Id);
+        }
+
+        try
+        {
+            return new PubKey(encoded);
+        }
+        catch(Exception ex)
+        {
+            throw new TrustedPoolStartupException(
+                $"Pool '{poolConfig.Id}' has an invalid 'pubKey' value",
+                poolConfig.Id, ex);
+        }
     }
 
     public virtual async Task<bool> ValidateAddressAsync(string address, CancellationToken ct)

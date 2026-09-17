@@ -1,0 +1,115 @@
+{
+  // Starter configuration: replace every CHANGE_ME value and review it before use.
+  // See README.md and ../config.example.json for topology and field guidance.
+  // Direct Bitcoin SOLO pool. Replace every CHANGE_ME value before use.
+  "clusterName": "bitcoin-example",
+  "logging": {
+    "level": "info",
+    "enableConsoleLog": true,
+    "enableConsoleColors": true,
+    "logFile": "miningcore.log"
+  },
+  "banning": {
+    "manager": "Integrated",
+    "banOnJunkReceive": true,
+    "banOnInvalidShares": true,
+    "banOnLoginFailure": true
+  },
+  "api": {
+    "enabled": true,
+    "listenAddress": "127.0.0.1",
+    "port": 4000,
+    "adminPort": 4001,
+    "metricsPort": 4002,
+    "adminIpWhitelist": [ "127.0.0.1" ],
+    "metricsIpWhitelist": [ "127.0.0.1" ],
+    "legacyNullValueHandling": false,
+    "rateLimiting": {
+      "disabled": true
+    }
+  },
+  "persistence": {
+    "postgres": {
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "miningcore",
+      "password": "CHANGE_ME_POSTGRES_PASSWORD",
+      "database": "miningcore"
+    }
+  },
+  "paymentProcessing": {
+    "enabled": true,
+    "interval": 600,
+    "coinbaseString": "Miningcore"
+  },
+  "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
+  "pools": [
+    {
+      "id": "bitcoin-solo",
+      "enabled": true,
+      "coin": "bitcoin",
+      // Retained for historical custodial blocks and daemon validation. New direct
+      // blocks pay the address supplied by each authorized miner.
+      "address": "CHANGE_ME_BITCOIN_POOL_WALLET_ADDRESS",
+      // Canonical Bitcoin SOLO defaults to true in v0.3.0. Keep this explicit so
+      // the example's non-custodial settlement contract is visible.
+      "soloCoinbasePayout": true,
+      // Optional pool fee or donation. Keep this at 0 until both values are reviewed.
+      "rewardRecipients": [
+        {
+          "address": "bc1q94x9ncw62g09c80yr38jkewyn6cre3h473g54j",
+          "percentage": 0
+        }
+      ],
+      "enableInternalStratum": true,
+      "blockRefreshInterval": 1000,
+      "jobRebroadcastTimeout": 10,
+      "clientConnectionTimeout": 600,
+      "vardiffIdleSweepInterval": 30,
+      "ports": {
+        "3032": {
+          "name": "BTC-LOW-DIFF",
+          "listenAddress": "*",
+          "difficulty": 8192,
+          "varDiff": {
+            "minDiff": 4096,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        },
+        "3033": {
+          "name": "BTC-HIGH-DIFF",
+          "listenAddress": "*",
+          "difficulty": 1048576,
+          "varDiff": {
+            "minDiff": 524288,
+            "targetTime": 15,
+            "retargetTime": 90,
+            "variancePercent": 30
+          }
+        }
+      },
+      "daemons": [
+        {
+          "host": "127.0.0.1",
+          "port": 8332,
+          "user": "CHANGE_ME_BITCOIN_RPC_USER",
+          "password": "CHANGE_ME_BITCOIN_RPC_PASSWORD"
+          // Optional: "zmqBlockNotifySocket": "tcp://127.0.0.1:28332"
+        }
+      ],
+      "banning": {
+        "enabled": true,
+        "checkThreshold": 50,
+        "invalidPercent": 50,
+        "time": 600
+      },
+      "paymentProcessing": {
+        "enabled": true,
+        "minimumPayment": 0.001,
+        "payoutScheme": "SOLO"
+      }
+    }
+  ]
+}

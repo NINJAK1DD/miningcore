@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {
+      "method": "submitauxblock",
+      "action": "drop_after_forward",
+      "count": 1
+    }
+  ]
+}

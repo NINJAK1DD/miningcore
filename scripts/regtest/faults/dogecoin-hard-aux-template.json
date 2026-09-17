@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {
+      "method": "createauxblock",
+      "action": "patch_result",
+      "patch": {
+        "bits": "1f00ffff"
+      }
+    }
+  ]
+}

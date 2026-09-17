@@ -233,7 +233,7 @@ public class SatoshicashJob : BitcoinJob
         var nonceInt = uint.Parse(nonce, NumberStyles.HexNumber);
 
         // dupe check
-        if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce))
+        if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce, null))
             throw new StratumException(StratumError.DuplicateShare, "duplicate");
 
         return ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt);

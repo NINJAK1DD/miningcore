@@ -1,0 +1,67 @@
+# Miningcore documentation
+
+Start with the guide that matches the task. The root [README](../README.md) introduces Miningcore and
+contains the shortest installation path; the documents below hold the operational detail.
+
+If Miningcore is already failing or behaving unexpectedly, start with
+[Troubleshooting](troubleshooting.md). It maps symptoms to safe first checks and then links to the
+authoritative recovery procedure. Do not begin an accounting incident by editing PostgreSQL,
+wallet balances or recovery files.
+
+## Running a pool
+
+| Task | Guide |
+| --- | --- |
+| Install, upgrade or roll back a release | [Release installation](releases.md) |
+| Order a local PostgreSQL service safely with Miningcore under systemd | [systemd PostgreSQL ordering](systemd-postgresql-ordering.md) |
+| Choose a ready-to-edit pool or relay topology | [Example configurations](../examples/README.md) |
+| Configure pools, logging and recovery storage | [Configuration](configuration.md) |
+| Operate and monitor a production service | [Operator handbook](operations.md) |
+| Diagnose startup, mining, payout or storage problems | [Troubleshooting](troubleshooting.md) |
+| Set up, back up, migrate or recover PostgreSQL | [Database and recovery](database.md) |
+| Authenticate PostgreSQL TLS and migrate legacy flags | [PostgreSQL TLS policy](postgres-tls.md) |
+| Configure PostgreSQL command timeouts and migrate explicit zero | [PostgreSQL command timeout policy](postgres-command-timeout.md) |
+| Prepare a v0.2.1-or-earlier/pre-PR #135 database for default Bitcoin direct-coinbase SOLO | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
+| Migrate an existing .NET 6 deployment | [.NET 6 to .NET 10 migration](dotnet-6-to-10-migration.md) |
+
+## Features and interfaces
+
+| Task | Guide |
+| --- | --- |
+| Use REST, WebSocket events, metrics or administration | [API and monitoring](api.md) |
+| Provision and rotate administrative credentials | [Administrative API security](admin-api-security.md) |
+| Interpret safe daemon error logs and payout alerts | [RPC consumer diagnostics](rpc-consumer-diagnostics.md) |
+| Interpret safe miner transport and rejection logs | [Stratum diagnostics](stratum-diagnostics.md) |
+| Deploy distributed Stratum/recorder roles | [Share relays](share-relays.md) |
+| Pay canonical Bitcoin SOLO miners directly in the coinbase | [Bitcoin direct-coinbase SOLO](bitcoin-direct-solo.md) |
+| Configure and operate Bitcoin-family PPS | [PPS](pps.md) |
+| Configure Litecoin–Dogecoin merged mining | [Merged mining](merged-mining-litecoin-dogecoin.md) |
+| Configure and commission DigiByte direct mining | [DigiByte](digibyte.md) |
+| Configure the separate Bitcoin BLAKE2b header-v2 chain | [Bitcoin BLAKE2b](bitcoin-blake2b.md) |
+| Review Scrypt daemon/template provenance | [Scrypt coin definitions](scrypt-coin-definitions.md) |
+| Review Bitcoin-family BIP310 mask safety | [Version rolling](version-rolling.md) |
+| Review the daemon-backed merged-mining evidence | [Regtest validation record](merged-mining-regtest-validation.md) |
+| Review dated production evidence and outstanding gates | [Mainnet validation record](mainnet-validation.md) |
+
+## Dependencies and licensing
+
+- [Dependency security decisions](dependency-security.md)
+- [Lucky Penny licence-key configuration](lucky-penny-licence.md)
+
+## Maintainers and release assurance
+
+| Task | Guide |
+| --- | --- |
+| Build, package and publish a release | [Maintainer release procedure](releases.md#maintainer-release-procedure) |
+| Review dependency and licence decisions | [Dependency security](dependency-security.md) |
+| Review reproducible daemon-backed evidence | [Regtest validation record](merged-mining-regtest-validation.md) |
+| Review dated production evidence | [Mainnet validation record](mainnet-validation.md) |
+| Maintain deadline-sensitive test isolation | [Integration deadline scheduling](integration-deadline-tests.md) |
+| Maintain payout retry-contention coverage | [Payout persistence tests](payout-persistence-tests.md) |
+| Review Bitcoin-family notification ownership and regression coverage | [Job notification snapshots](bitcoin-job-notifications.md) |
+
+The machine-readable configuration reference is
+[`src/Miningcore/config.schema.json`](../src/Miningcore/config.schema.json), and the maintained
+starting configuration is [`config.example.json`](../config.example.json). Release-specific changes
+that affect operators are recorded after the installation and upgrade procedures in the
+[release guide](releases.md).

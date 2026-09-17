@@ -5,6 +5,11 @@ namespace Miningcore.Blockchain.Bitcoin.Configuration;
 
 public class BitcoinPoolConfigExtra
 {
+    /// <summary>
+    /// Minimum confirmations required before a mined block is credited.
+    /// </summary>
+    public int? MinimumConfirmations { get; set; }
+
     public BitcoinAddressType AddressType { get; set; } = BitcoinAddressType.Legacy;
 
     public string BechPrefix { get; set; } = "bc";
@@ -26,6 +31,12 @@ public class BitcoinPoolConfigExtra
     public bool HasBrokenSendMany { get; set; } = false;
 
     /// <summary>
+    /// Allow an isolated Bitcoin-family regtest daemon to start without peers.
+    /// Ignored unless getblockchaininfo reports the regtest chain.
+    /// </summary>
+    public bool AllowPeerlessRegtest { get; set; } = false;
+
+    /// <summary>
     /// Arbitrary string appended at end of coinbase tx
     /// Overrides property of same name from BitcoinTemplate
     /// </summary>
@@ -40,4 +51,19 @@ public class BitcoinPoolConfigExtra
     /// Custom Arguments for getblocktemplate RPC
     /// </summary>
     public JToken GBTArgs { get; set; }
+
+    /// <summary>
+    /// Pay canonical Bitcoin SOLO rewards directly in the accepted block's
+    /// coinbase transaction. Enabled by default for canonical Bitcoin SOLO
+    /// pools. Set to false to retain custodial settlement.
+    /// </summary>
+    public bool? SoloCoinbasePayout { get; set; }
+
+    /// <summary>
+    /// Emit the BIP 54-forward-compatible locktime/sequence fields and
+    /// value-first witness-output layout for the canonical Bitcoin template.
+    /// Enabled by default. Set to false only as a temporary compatibility
+    /// fallback for an incompatible miner or proxy.
+    /// </summary>
+    public bool? Bip54Coinbase { get; set; }
 }

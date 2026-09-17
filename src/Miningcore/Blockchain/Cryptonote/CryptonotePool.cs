@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Globalization;
 using System.Reactive;
 using System.Reactive.Linq;
@@ -140,10 +141,7 @@ public class CryptonotePool : PoolBase
             await connection.RespondAsync(response);
 
             // log association
-            if(!string.IsNullOrEmpty(context.Worker))
-                logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {context.Worker}@{context.Miner}");
-            else
-                logger.Info(() => $"[{connection.ConnectionId}] Authorized miner {context.Miner}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
         }
 
         else
@@ -152,7 +150,7 @@ public class CryptonotePool : PoolBase
 
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {context.Miner} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
@@ -285,10 +283,8 @@ public class CryptonotePool : PoolBase
                 response.Extra["error"] = null;
             }
 
-            await connection.RespondAsync(response);
-
-            // publish
-            messageBus.SendMessage(share);
+            await PublishShareAndAcknowledgeAsync(share,
+                () => connection.RespondAsync(response));
 
             // telemetry
             PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, true);
@@ -312,7 +308,7 @@ public class CryptonotePool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            logger.Info(() => $"[{connection.ConnectionId}] Share rejected: {ex.Message} [{context.UserAgent}]");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "CryptonotePool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);
@@ -354,11 +350,11 @@ public class CryptonotePool : PoolBase
             disposables.Add(manager.Blocks
                 .Select(_ => Observable.FromAsync(() =>
                     Guard(OnNewJobAsync,
-                        ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"))))
+                        ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "CryptonotePool.SetupJobManager", failure: ex))))
                 .Concat()
                 .Subscribe(_ => { }, ex =>
                 {
-                    logger.Debug(ex, nameof(OnNewJobAsync));
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "CryptonotePool.SetupJobManager", failure: ex);
                 }));
 
             // start with initial blocktemplate
@@ -443,7 +439,7 @@ public class CryptonotePool : PoolBase
                     break;
 
                 default:
-                    logger.Debug(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "CryptonotePool.OnRequestAsync");
 
                     await connection.RespondErrorAsync(StratumError.Other, $"Unsupported request {request.Method}", request.Id);
                     break;

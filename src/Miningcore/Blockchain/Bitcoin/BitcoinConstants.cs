@@ -151,6 +151,7 @@ public static class BitcoinCommands
     public const string GetBlockchainInfo = "getblockchaininfo";
     public const string GetBlock = "getblock";
     public const string GetTransaction = "gettransaction";
+    public const string GetMempoolEntry = "getmempoolentry";
     public const string SendMany = "sendmany";
     public const string SendToAddress = "sendtoaddress";
     public const string WalletPassphrase = "walletpassphrase";

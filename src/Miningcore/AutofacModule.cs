@@ -5,6 +5,8 @@ using Miningcore.Banning;
 using Miningcore.Blockchain.Alephium;
 using Miningcore.Blockchain.Beam;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.BitcoinBlake2b;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Blockchain.Conceal;
 using Miningcore.Blockchain.Cryptonote;
 using Miningcore.Blockchain.Equihash;
@@ -77,12 +79,17 @@ public class AutofacModule : Module
             .AsImplementedInterfaces()
             .SingleInstance();
 
+        builder.RegisterType<ActiveBlockGracePeriodTracker>()
+            .AsImplementedInterfaces()
+            .SingleInstance();
+
         builder.RegisterType<IntegratedBanManager>()
             .Keyed<IBanManager>(BanManagerKind.Integrated)
             .SingleInstance();
 
         builder.RegisterAssemblyTypes(ThisAssembly)
-            .Where(t => t.GetCustomAttributes<CoinFamilyAttribute>().Any() && t.GetInterfaces()
+            .Where(t => t != typeof(BitcoinPool) &&
+                t.GetCustomAttributes<CoinFamilyAttribute>().Any() && t.GetInterfaces()
                 .Any(i =>
                     i.IsAssignableFrom(typeof(IMiningPool)) ||
                     i.IsAssignableFrom(typeof(IPayoutHandler)) ||
@@ -135,7 +142,29 @@ public class AutofacModule : Module
         builder.RegisterType<PayoutManager>()
             .SingleInstance();
 
+        builder.RegisterType<PostgresPayoutManagerLease>()
+            .As<IPayoutManagerLease>()
+            .SingleInstance();
+
         builder.RegisterType<ShareRecorder>()
+            .AsSelf()
+            .As<IBlockCandidateRecorder>()
+            .SingleInstance();
+
+        builder.RegisterType<CandidatePersistenceFailureHandler>()
+            .As<ICandidatePersistenceFailureHandler>()
+            .SingleInstance();
+
+        builder.RegisterType<ShareRecoveryFailureHandler>()
+            .As<IShareRecoveryFailureHandler>()
+            .SingleInstance();
+
+        builder.RegisterType<ShareRecoveryFatalState>()
+            .As<IShareRecoveryFatalState>()
+            .SingleInstance();
+
+        builder.RegisterType<ShareRecoveryPathOwnership>()
+            .As<IShareRecoveryPathOwnership>()
             .SingleInstance();
 
         builder.RegisterType<ShareReceiver>()
@@ -151,6 +180,8 @@ public class AutofacModule : Module
             .SingleInstance();
 
         builder.RegisterType<NotificationService>()
+            .AsSelf()
+            .As<ICriticalNotificationSender>()
             .SingleInstance();
 
         builder.RegisterType<MetricsPublisher>()
@@ -174,6 +205,10 @@ public class AutofacModule : Module
         builder.RegisterType<PROPPaymentScheme>()
             .Keyed<IPayoutScheme>(PayoutScheme.PROP)
             .SingleInstance();
+
+        builder.RegisterType<PPSPaymentScheme>()
+            .Keyed<IPayoutScheme>(PayoutScheme.PPS)
+            .SingleInstance();
         
         //////////////////////
         // Alephium
@@ -188,7 +223,11 @@ public class AutofacModule : Module
         //////////////////////
         // Bitcoin and family
 
-        builder.RegisterType<BitcoinJobManager>();
+        builder.RegisterType<MergedMiningBitcoinJobManager>()
+            .As<BitcoinJobManager>()
+            .AsSelf();
+
+        builder.RegisterType<BitcoinBlake2bJobManager>();
 
         //////////////////////
         // Conceal

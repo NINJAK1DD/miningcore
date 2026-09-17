@@ -293,6 +293,66 @@ int blake2b( void *out, size_t outlen, const void *in, size_t inlen, const void 
   return 0;
 }
 
+int miningcore_argon2_blake2b_long( void *out, size_t outlen,
+                                   const void *in, size_t inlen )
+{
+  uint8_t *pout = ( uint8_t * )out;
+  blake2b_state state = { 0 };
+  uint8_t outlen_bytes[sizeof( uint32_t )] = { 0 };
+  uint8_t out_buffer[BLAKE2B_OUTBYTES] = { 0 };
+  int result = -1;
+
+  if( out == NULL || outlen == 0 || outlen > UINT32_MAX ) return -1;
+  if( in == NULL && inlen > 0 ) return -1;
+
+  store32( outlen_bytes, ( uint32_t )outlen );
+
+  if( outlen <= BLAKE2B_OUTBYTES )
+  {
+    if( blake2b_init( &state, outlen ) < 0 ) goto cleanup;
+    if( blake2b_update( &state, outlen_bytes, sizeof( outlen_bytes ) ) < 0 ) goto cleanup;
+    if( blake2b_update( &state, in, inlen ) < 0 ) goto cleanup;
+    result = blake2b_final( &state, pout, outlen );
+    goto cleanup;
+  }
+
+  {
+    uint32_t toproduce;
+
+    if( blake2b_init( &state, BLAKE2B_OUTBYTES ) < 0 ) goto cleanup;
+    if( blake2b_update( &state, outlen_bytes, sizeof( outlen_bytes ) ) < 0 ) goto cleanup;
+    if( blake2b_update( &state, in, inlen ) < 0 ) goto cleanup;
+    if( blake2b_final( &state, out_buffer, BLAKE2B_OUTBYTES ) < 0 ) goto cleanup;
+
+    memcpy( pout, out_buffer, BLAKE2B_OUTBYTES / 2 );
+    pout += BLAKE2B_OUTBYTES / 2;
+    toproduce = ( uint32_t )outlen - BLAKE2B_OUTBYTES / 2;
+
+    while( toproduce > BLAKE2B_OUTBYTES )
+    {
+      if( blake2b_init( &state, BLAKE2B_OUTBYTES ) < 0 ) goto cleanup;
+      if( blake2b_update( &state, out_buffer, BLAKE2B_OUTBYTES ) < 0 ) goto cleanup;
+      if( blake2b_final( &state, out_buffer, BLAKE2B_OUTBYTES ) < 0 ) goto cleanup;
+
+      memcpy( pout, out_buffer, BLAKE2B_OUTBYTES / 2 );
+      pout += BLAKE2B_OUTBYTES / 2;
+      toproduce -= BLAKE2B_OUTBYTES / 2;
+    }
+
+    if( blake2b_init( &state, toproduce ) < 0 ) goto cleanup;
+    if( blake2b_update( &state, out_buffer, BLAKE2B_OUTBYTES ) < 0 ) goto cleanup;
+    if( blake2b_final( &state, out_buffer, toproduce ) < 0 ) goto cleanup;
+
+    memcpy( pout, out_buffer, toproduce );
+    result = 0;
+  }
+
+cleanup:
+  secure_zero_memory( &state, sizeof( state ) );
+  secure_zero_memory( out_buffer, sizeof( out_buffer ) );
+  return result;
+}
+
 int blake2( void *out, size_t outlen, const void *in, size_t inlen, const void *key, size_t keylen ) {
   return blake2b(out, outlen, in, inlen, key, keylen);
 }

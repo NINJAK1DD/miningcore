@@ -1,13 +1,31 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
+using System.Threading.Tasks;
+using Miningcore.Blockchain.Bitcoin.DaemonResponses;
+using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Crypto.Hashing.Equihash;
 using Miningcore.Extensions;
+using Miningcore.Native;
+using Miningcore.Stratum;
 using Miningcore.Tests.Util;
 using Xunit;
 
 namespace Miningcore.Tests.Crypto;
+
+internal sealed class LinuxNativeFactAttribute : FactAttribute
+{
+    public LinuxNativeFactAttribute()
+    {
+        if(!OperatingSystem.IsLinux())
+            Skip = "Requires Linux native libraries built from the current source tree";
+    }
+}
 
 public class HashingTests : TestBase
 {
@@ -129,13 +147,121 @@ public class HashingTests : TestBase
         Assert.Equal("75d08b4c639645f3f1e15c7c412160867821441d365a7bbe3edf2c6b852ccb59", result);
     }
 
+    [LinuxNativeFact]
+    public void Yescrypt_Hash()
+    {
+        var hasher = new Yescrypt();
+        var hash = new byte[32];
+        hasher.Digest(testValue, hash);
+
+        Assert.Equal("bac679e3dddaee9bb52f433fd4aff04cbfd3325c91188ec819b0ba1066e5a764",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void YescryptR8_Hash()
+    {
+        var hasher = new YescryptR8();
+        var hash = new byte[32];
+        hasher.Digest(testValue, hash);
+
+        Assert.Equal("bac679e3dddaee9bb52f433fd4aff04cbfd3325c91188ec819b0ba1066e5a764",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void YescryptR16_Hash()
+    {
+        var hasher = new YescryptR16();
+        var hash = new byte[32];
+        hasher.Digest(testValue, hash);
+
+        Assert.Equal("33a2ac510a4df3ad40388f9ab2795941378637c7044e5375bab4e6f5cd51742f",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void YescryptR32_Hash()
+    {
+        var hasher = new YescryptR32();
+        var hash = new byte[32];
+        hasher.Digest(testValue, hash);
+
+        Assert.Equal("fd6c95c8f0213ded55762c62fe80bf88ab21014577e0fbfa1de029b2808b0831",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void Flex_Hash_MatchesKnownVector()
+    {
+        var hasher = new Flex();
+        var first = new byte[32];
+        var second = new byte[32];
+
+        hasher.Digest(testValue2, first);
+        hasher.Digest(testValue2, second);
+
+        Assert.Equal(first, second);
+        Assert.Equal("06c6d3f15e7ca2cd11a528fec7c3aefd6511c88051f7ce2ec8a83ca3898d1c3d",
+            first.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void Argon2d250_Hash_MatchesKnownVector()
+    {
+        var hasher = new Argon2d250();
+        var hash = new byte[32];
+
+        hasher.Digest(testValue2, hash);
+
+        Assert.Equal("5b75d9a75f843872e975ae322e6011d3b2598b6eadb6c0c0df150b4e0604ff0a",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void Allium_Hash_MatchesExternalGarlicoinVector()
+    {
+        var hasher = new Allium();
+        var hash = new byte[32];
+
+        hasher.Digest(testValue2, hash);
+
+        // Independently cross-checked with garlicoin-project/allium-hash-python 1.0.3.
+        // PyPI source SHA-256: 50f23cfecf1dfe656c9dc30b82f5547ca5eff001cdf3c824b3c0d86fac5db4e8.
+        Assert.Equal("41db9975e0fed3d25f33d5a689f97544349cd3e26f657be483073935964e9d65",
+            hash.ToHexString());
+    }
+
+    [LinuxNativeFact]
+    public void Zanonote_LoadsReviewedNativeEntryPoints()
+    {
+        var handle = NativeLibrary.Load("libzanonote.so", typeof(HashingTests).Assembly,
+            DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.SafeDirectories);
+
+        try
+        {
+            foreach(var export in new[]
+                    {
+                        "convert_blob_export",
+                        "convert_block_export",
+                        "get_blob_id_export",
+                        "get_block_id_export",
+                    })
+            {
+                Assert.True(NativeLibrary.TryGetExport(handle, export, out _),
+                    $"libzanonote.so does not export required entry point: {export}");
+            }
+        }
+
+        finally
+        {
+            NativeLibrary.Free(handle);
+        }
+    }
+
     [Fact]
     public void Lyra2Rev2_Hash()
     {
-        // for some unknown reason this tests fails only in Github actions
-        if(IsGithubActionRunner)
-            return;
-
         var hasher = new Lyra2Rev2();
         var hash = new byte[32];
         hasher.Digest(Enumerable.Repeat((byte) 5, 80).ToArray(), hash);
@@ -154,9 +280,11 @@ public class HashingTests : TestBase
     [Fact]
     public void Lyra2Rev3_Hash()
     {
-        // for some unknown reason this tests fails only in Github actions
-        if(IsGithubActionRunner)
+        if(System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+            System.Runtime.InteropServices.OSPlatform.Linux))
+        {
             return;
+        }
 
         var hasher = new Lyra2Rev3();
         var hash = new byte[32];
@@ -203,6 +331,33 @@ public class HashingTests : TestBase
         var result = hash.ToHexString();
 
         Assert.Equal("bd75a82b9957d6d043076dea52262635042693f1fe23bcadadaecc908e1e5cc6", result);
+    }
+
+    [Fact]
+    public void RinHash_Uses_Managed_Sha3_Fallback()
+    {
+        var hash = new byte[32];
+
+        RinHash.HashSha3(Encoding.ASCII.GetBytes("abc"), hash, false);
+
+        Assert.Equal("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532",
+            hash.ToHexString());
+    }
+
+    [Fact]
+    public void RinHash_Sha3_Implementations_Agree()
+    {
+        if(!SHA3_256.IsSupported)
+            return;
+
+        var data = Enumerable.Range(0, 256).Select(x => (byte) x).ToArray();
+        var managed = new byte[32];
+        var platform = new byte[32];
+
+        RinHash.HashSha3(data, managed, false);
+        RinHash.HashSha3(data, platform, true);
+
+        Assert.Equal(managed.ToHexString(), platform.ToHexString());
     }
 
     [Fact]
@@ -435,10 +590,20 @@ public class HashingTests : TestBase
     {
         var hasher = new HeavyHash();
         var hash = new byte[32];
-        hasher.Digest(testValue, hash);
+        hasher.Digest(testValue2, hash);
         var result = hash.ToHexString();
 
-        Assert.Equal("e89c26771f3fda42e6f8ed82ca888f805fa15013d8543ab2692904095c6d3dc3", result);
+        Assert.Equal("08f58ffa540660c84bcc8388d2252fdd33ea8d332c0001d08e22c4eb6cb4ec42", result);
+    }
+
+    [Fact]
+    public void Heavy_Hash_Should_Throw_On_Short_Input()
+    {
+        var hasher = new HeavyHash();
+        var hash = new byte[32];
+
+        Assert.Throws<ArgumentException>(() =>
+            hasher.Digest(new byte[35], hash));
     }
 
     [Fact]
@@ -450,6 +615,218 @@ public class HashingTests : TestBase
         var result = hash.ToHexString();
 
         Assert.Equal("79fd64cd7f4b9e59ea469c6dbfdfb6388c912240ab0b6065d65d21fcda3618ce", result);
+    }
+
+    [Fact]
+    public void OdoCrypt_ScheduleKeyUsesConsensusIntervalBoundary()
+    {
+        const uint interval = 864000;
+
+        Assert.Equal(0u, OdoCrypt.DeriveKey(interval - 1, interval));
+        Assert.Equal(interval, OdoCrypt.DeriveKey(interval, interval));
+        Assert.Equal(interval, OdoCrypt.DeriveKey(interval * 2 - 1, interval));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            OdoCrypt.DeriveKey(1, 0));
+    }
+
+    [Fact]
+    public void OdoCrypt_HashMatchesPinnedDigiByteImplementation()
+    {
+        // DigiByte mainnet activation block 9,112,320. The expected PoW hash
+        // was independently reproduced by dgbminer 91297fd's cipher and
+        // Keccak implementation with the reviewed ten-day network schedule.
+        var hasher = new OdoCrypt();
+        var hash = new byte[32];
+        var header = "020e0020ca8f5c98bc0e0c77cd4dddc76a1a6ac0b9b015a6d5e7cfd40500000000000000d6feb064acf05aaf278fd135479d0028b0aecfbac4a722c5c9fecaa260e7a673a60a355dffff001cc8acfc25".HexToByteArray();
+        var network = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 9112320,
+            OdoCryptShapeChangeInterval = 864000,
+        };
+
+        const uint nTime = 1563757222;
+        var blockTemplate = new BlockTemplate
+        {
+            Height = 9112320,
+            CurTime = nTime,
+            OdoKey = OdoCrypt.DeriveKey(nTime, 864000),
+        };
+        OdoCrypt.ValidateJobContract(blockTemplate, network);
+        hasher.Digest(header, hash, (ulong) nTime, blockTemplate, null, network);
+
+        Assert.Equal(
+            "8fe8946b1339262591dc2a437c29d42edb02c8c902caea06729dcd0000000000",
+            hash.ToHexString());
+    }
+
+    [Fact]
+    public void OdoCrypt_RegtestJobContractRejectsHeight600AndAccepts601()
+    {
+        var network = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 601,
+            OdoCryptShapeChangeInterval = 864000,
+        };
+
+        var ex = Assert.Throws<InvalidDataException>(() =>
+            OdoCrypt.ValidateJobContract(new BlockTemplate
+            {
+                Height = 600,
+                CurTime = 0,
+                OdoKey = 0,
+            }, network));
+
+        Assert.Contains("not active", ex.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        OdoCrypt.ValidateJobContract(new BlockTemplate
+        {
+            Height = 601,
+            CurTime = 0,
+            OdoKey = 0,
+        }, network);
+    }
+
+    [Fact]
+    public void OdoCrypt_JobContractRejectsMissingOrInvalidConsensusMetadata()
+    {
+        var blockTemplate = new BlockTemplate
+        {
+            Height = 601,
+            CurTime = 0,
+            OdoKey = 0,
+        };
+
+        var missingActivation = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptShapeChangeInterval = 864000,
+        };
+        Assert.Throws<InvalidDataException>(() =>
+            OdoCrypt.ValidateJobContract(blockTemplate, missingActivation));
+
+        var missingSchedule = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 601,
+        };
+        Assert.Throws<InvalidDataException>(() =>
+            OdoCrypt.ValidateJobContract(blockTemplate, missingSchedule));
+
+        var validNetwork = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 601,
+            OdoCryptShapeChangeInterval = 864000,
+        };
+        var missingDaemonKey = new BlockTemplate { Height = 601, CurTime = 0 };
+        var missingKeyError = Assert.Throws<InvalidDataException>(() =>
+            OdoCrypt.ValidateJobContract(missingDaemonKey, validNetwork));
+        Assert.Contains("algo=odo", missingKeyError.Message,
+            StringComparison.Ordinal);
+
+        var mismatchedDaemonKey = new BlockTemplate
+        {
+            Height = 601,
+            CurTime = 864000,
+            OdoKey = 1,
+        };
+        Assert.Throws<InvalidDataException>(() =>
+            OdoCrypt.ValidateJobContract(mismatchedDaemonKey, validNetwork));
+    }
+
+    [Fact]
+    public void OdoCrypt_ShareTimeCanCrossTemplateScheduleBoundary()
+    {
+        var hasher = new OdoCrypt();
+        var hash = new byte[32];
+        const uint interval = 864000;
+        var network = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 601,
+            OdoCryptShapeChangeInterval = interval,
+        };
+        var blockTemplate = new BlockTemplate
+        {
+            Height = 601,
+            CurTime = interval - 1,
+            OdoKey = 0,
+        };
+
+        OdoCrypt.ValidateJobContract(blockTemplate, network);
+        hasher.Digest(testValue2, hash, (ulong) interval, blockTemplate, null,
+            network);
+
+        Assert.Contains(hash, value => value != 0);
+    }
+
+    [Fact]
+    public void OdoCrypt_PerShareContractFailuresUseStratumErrors()
+    {
+        var hasher = new OdoCrypt();
+        var network = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 601,
+            OdoCryptShapeChangeInterval = 864000,
+        };
+
+        var ex = Assert.Throws<StratumException>(() => hasher.Digest(testValue2,
+            new byte[32], (ulong) uint.MaxValue + 1, null, null, network));
+
+        Assert.Equal(StratumError.Other, ex.Code);
+
+        network.OdoCryptShapeChangeInterval = null;
+        ex = Assert.Throws<StratumException>(() => hasher.Digest(testValue2,
+            new byte[32], 0UL, null, null, network));
+
+        Assert.Equal(StratumError.Other, ex.Code);
+    }
+
+    [Fact]
+    public void OdoCrypt_CachedSchedulesAreThreadSafeAcrossKeys()
+    {
+        var hasher = new OdoCrypt();
+        var network = new BitcoinTemplate.BitcoinNetworkParams
+        {
+            OdoCryptActivationHeight = 1,
+            OdoCryptShapeChangeInterval = 864000,
+        };
+        // Exercise more keys than the bounded native cache can retain so replacement
+        // remains safe as well as concurrent lookup.
+        var keys = Enumerable.Range(0, 12)
+            .Select(x => (uint) x * 864000)
+            .ToArray();
+        var expected = keys.ToDictionary(key => key, key =>
+        {
+            var result = new byte[32];
+            hasher.Digest(testValue2, result, (ulong) key, null, null, network);
+            return result.ToHexString();
+        });
+
+        Parallel.For(0, 64, iteration =>
+        {
+            var key = keys[iteration % keys.Length];
+            var result = new byte[32];
+            hasher.Digest(testValue2, result, (ulong) key, null, null, network);
+            Assert.Equal(expected[key], result.ToHexString());
+        });
+    }
+
+    [Fact]
+    public void OdoCrypt_NativeBoundaryRejectsMalformedBuffers()
+    {
+        var input = Marshal.AllocHGlobal(80);
+        var output = Marshal.AllocHGlobal(32);
+
+        try
+        {
+            Assert.Equal(0, OdoCryptNative.Hash(IntPtr.Zero, output, 80, 0));
+            Assert.Equal(0, OdoCryptNative.Hash(input, IntPtr.Zero, 80, 0));
+            Assert.Equal(0, OdoCryptNative.Hash(input, output, 79, 0));
+            Assert.Equal(0, OdoCryptNative.Hash(input, output, 81, 0));
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(input);
+            Marshal.FreeHGlobal(output);
+        }
     }
 
     [Fact]

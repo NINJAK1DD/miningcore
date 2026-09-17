@@ -1,0 +1,961 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ dev ]
+    paths:
+      - '.github/workflows/release.yml'
+      - '.dockerignore'
+      - 'Dockerfile'
+      - 'build-*.sh'
+      - 'global.json'
+      - 'src/**'
+      - 'packaging/**'
+      - 'scripts/release/**'
+      - 'docs/**'
+      - 'examples/**'
+      - 'config.example.json'
+      - 'README.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  resolve-release:
+    name: Resolve release identity and targets
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      source_commit: ${{ steps.release.outputs.source_commit }}
+      source_date_epoch: ${{ steps.release.outputs.source_date_epoch }}
+      target_matrix: ${{ steps.release.outputs.target_matrix }}
+
+    steps:
+      - name: Checkout release contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Resolve one release identity and target matrix
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          source scripts/release/linux-release-targets.sh
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="$GITHUB_REF_NAME"
+          else
+            # One resolver prevents independently versioned matrix legs. Release
+            # failures must be recovered with "Re-run all jobs" because Actions
+            # artifact downloads are scoped to the latest run attempt.
+            version="v0.0.0-ci.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          fi
+
+          source_commit=$(git rev-parse 'HEAD^{commit}')
+          source_date_epoch=$(git show -s --format=%ct "$source_commit")
+          target_matrix=$(miningcore_linux_release_matrix_json)
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "source_date_epoch=$source_date_epoch" >> "$GITHUB_OUTPUT"
+          echo "target_matrix=$target_matrix" >> "$GITHUB_OUTPUT"
+
+  source-container-check:
+    name: Test source container
+    # Docker supplies the Ubuntu 26.04 userspace under test. Stable orchestration
+    # avoids coupling a generic container job to preview-runner capacity.
+    runs-on: ubuntu-24.04
+    # A clean source-container build can exceed 30 minutes when hosted-runner
+    # CPU allocation is constrained; retain a bounded budget without cancelling
+    # successful runtime checks during job cleanup.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - name: Build source container
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          push: false
+          tags: miningcore-source-test:${{ github.sha }}
+          cache-from: type=gha,scope=source-container
+          cache-to: type=gha,mode=max,scope=source-container
+
+      - name: Smoke-test source container
+        run: docker run --rm miningcore-source-test:${{ github.sha }} --version
+
+      - name: Setup .NET for container runtime tests
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish ZeroMQ runtime probe
+        run: >-
+          dotnet publish
+          scripts/release/fixtures/zeromq-runtime-probe/ZeroMqRuntimeProbe.csproj
+          --configuration Release
+          --output zeromq-runtime-probe
+
+      - name: Smoke-test managed ZeroMQ binding in source container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/zeromq-runtime-probe:/probe:ro" \
+            --entrypoint dotnet \
+            miningcore-source-test:${{ github.sha }} \
+            /probe/ZeroMqRuntimeProbe.dll
+
+      - name: Install container listener test build dependencies
+        if: github.event_name == 'pull_request'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          cmake ninja-build build-essential libssl-dev pkg-config
+          libboost-all-dev libsodium-dev libzmq3-dev libgmp-dev
+
+      - name: Publish container listener test host
+        if: github.event_name == 'pull_request'
+        run: >-
+          dotnet publish src/Miningcore.Tests.ProcessHost/Miningcore.Tests.ProcessHost.csproj
+          --configuration Release
+          --output api-listener-smoke-host
+
+      - name: Test protected container listeners from host loopback
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          network=miningcore-api-smoke
+          container=miningcore-api-smoke
+          unconfigured_container=miningcore-api-unconfigured
+          shared_container=miningcore-api-shared
+          rate_limit_container=miningcore-api-rate-limit
+          proxy_container=miningcore-api-nginx
+          admin_token="$(openssl rand -hex 32)"
+
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker rm -f "$unconfigured_container" >/dev/null 2>&1 || true
+            docker rm -f "$proxy_container" >/dev/null 2>&1 || true
+            docker rm -f "$shared_container" >/dev/null 2>&1 || true
+            docker rm -f "$rate_limit_container" >/dev/null 2>&1 || true
+            docker network rm "$network" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker network create --driver bridge \
+            --subnet 172.30.56.0/24 --gateway 172.30.56.1 "$network"
+
+          docker run --detach --name "$container" \
+            --network "$network" \
+            --env "MININGCORE_ADMIN_API_TOKEN=$admin_token" \
+            --publish 127.0.0.1:4001:4001 \
+            --publish 127.0.0.1:4002:4002 \
+            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-container-smoke.json:/test/config.json:ro" \
+            --entrypoint dotnet \
+            miningcore-source-test:${{ github.sha }} \
+            /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
+
+          admin_status=000
+          for attempt in {1..30}; do
+            admin_status="$(curl --silent --output /dev/null \
+              --write-out '%{http_code}' \
+              --header "Authorization: Bearer $admin_token" \
+              http://127.0.0.1:4001/api/admin/status || true)"
+            if [[ "$admin_status" == 200 ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$admin_status" != 200 ]]; then
+            docker logs "$container"
+            echo "Host admin request returned HTTP $admin_status instead of 200"
+            exit 1
+          fi
+
+          assert_response_header() {
+            local description=$1
+            local pattern=$2
+            shift 2
+            if ! curl --silent --dump-header - --output /dev/null "$@" |
+              tr -d '\r' |
+              grep --ignore-case --extended-regexp --line-regexp "$pattern" >/dev/null; then
+              echo "$description did not return the expected response header: $pattern"
+              return 1
+            fi
+          }
+
+          assert_protected_headers() {
+            local description=$1
+            shift
+            assert_response_header "$description resource policy" \
+              'Cross-Origin-Resource-Policy:[[:space:]]*same-origin' "$@"
+            assert_response_header "$description cache policy" \
+              'Cache-Control:[[:space:]]*no-store' "$@"
+            assert_response_header "$description content-type policy" \
+              'X-Content-Type-Options:[[:space:]]*nosniff' "$@"
+          }
+
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4001/api/admin/status)" = 401
+
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4002/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4002/metrics)" = 200
+          test "$(curl --silent --request OPTIONS --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4002/metrics)" = 405
+          test "$(curl --silent --request POST --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4002/metrics)" = 405
+          test "$(curl --silent --request get --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4002/metrics)" = 405
+          curl --silent --request OPTIONS --dump-header - --output /dev/null \
+            http://127.0.0.1:4002/metrics |
+            tr -d '\r' |
+            grep --ignore-case --extended-regexp --line-regexp \
+              'Allow:[[:space:]]*GET,[[:space:]]*HEAD' >/dev/null
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4001/api/pools)" = 404
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4002/api/pools)" = 404
+
+          assert_protected_headers "Authenticated admin response" \
+            --header "Authorization: Bearer $admin_token" \
+            http://127.0.0.1:4001/api/admin/status
+          assert_protected_headers "Rejected admin response" \
+            http://127.0.0.1:4001/api/admin/status
+          assert_protected_headers "Metrics scrape" \
+            http://127.0.0.1:4002/metrics
+          assert_protected_headers "Rejected metrics method" \
+            --request OPTIONS http://127.0.0.1:4002/metrics
+
+          docker rm -f "$container" >/dev/null
+
+          docker run --detach --name "$unconfigured_container" \
+            --network "$network" \
+            --publish 127.0.0.1:4001:4001 \
+            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-container-smoke.json:/test/config.json:ro" \
+            --entrypoint dotnet \
+            miningcore-source-test:${{ github.sha }} \
+            /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
+
+          unavailable_status=000
+          for attempt in {1..30}; do
+            unavailable_status="$(curl --silent --output /dev/null \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:4001/api/admin/status || true)"
+            if [[ "$unavailable_status" == 503 ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$unavailable_status" != 503 ]]; then
+            docker logs "$unconfigured_container"
+            echo "Unconfigured admin credential returned HTTP $unavailable_status instead of 503"
+            exit 1
+          fi
+
+          assert_protected_headers "Unavailable admin response" \
+            http://127.0.0.1:4001/api/admin/status
+
+          docker rm -f "$unconfigured_container" >/dev/null
+
+          docker run --detach --name "$rate_limit_container" \
+            --network "$network" \
+            --ip 172.30.56.4 \
+            --publish 127.0.0.1:4010:4000 \
+            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-rate-limit-smoke.json:/test/config.json:ro" \
+            --entrypoint dotnet \
+            miningcore-source-test:${{ github.sha }} \
+            /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
+
+          metrics_status=000
+          for attempt in {1..30}; do
+            metrics_status="$(curl --silent --output /dev/null \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:4010/metrics || true)"
+            if [[ "$metrics_status" == 200 ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$metrics_status" != 200 ]]; then
+            docker logs "$rate_limit_container"
+            echo "Rate-limit smoke metrics request returned HTTP $metrics_status instead of 200"
+            exit 1
+          fi
+
+          # Exact scrape methods bypass throttling. Unsupported case variants
+          # consume the two-request budget and the next request must receive 429.
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+          test "$(curl --silent --request get --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4010/metrics)" = 405
+          if ! lowercase_head_status="$(
+            curl --silent --max-time 10 --request head --output /dev/null \
+              --write-out '%{http_code}' http://127.0.0.1:4010/metrics
+          )"; then
+            echo "Lowercase HEAD metrics probe timed out or failed"
+            exit 1
+          fi
+          if [[ "$lowercase_head_status" != 405 ]]; then
+            echo "Lowercase HEAD metrics probe returned HTTP $lowercase_head_status instead of 405"
+            exit 1
+          fi
+          test "$(curl --silent --request get --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4010/metrics)" = 429
+          assert_protected_headers "Rate-limited metrics method" \
+            --request get http://127.0.0.1:4010/metrics
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4010/metrics)" = 200
+
+          docker rm -f "$rate_limit_container" >/dev/null
+
+          docker run --detach --name "$shared_container" \
+            --network "$network" \
+            --ip 172.30.56.2 \
+            --env "MININGCORE_ADMIN_API_TOKEN=$admin_token" \
+            --publish 127.0.0.1:4000:4000 \
+            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-nginx-smoke.json:/test/config.json:ro" \
+            --entrypoint dotnet \
+            miningcore-source-test:${{ github.sha }} \
+            /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
+
+          # Review the pinned nginx version and digest at least quarterly and
+          # whenever upstream Alpine security updates are released.
+          docker run --detach --name "$proxy_container" \
+            --network "$network" \
+            --ip 172.30.56.3 \
+            --publish 127.0.0.1:4080:8080 \
+            --volume "$GITHUB_WORKSPACE/scripts/release/nginx-shared-listener.conf:/etc/nginx/nginx.conf:ro" \
+            nginx:1.31.3-alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
+
+          proxy_status=000
+          for attempt in {1..30}; do
+            proxy_status="$(curl --silent --output /dev/null \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:4080/api/administrator || true)"
+            if [[ "$proxy_status" == 200 ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$proxy_status" != 200 ]]; then
+            docker logs "$shared_container"
+            docker logs "$proxy_container"
+            echo "nginx public lookalike request returned HTTP $proxy_status instead of 200"
+            exit 1
+          fi
+
+          untrusted_metrics="$(docker exec "$proxy_container" \
+            wget -S -O /dev/null \
+            http://172.30.56.2:4000/metrics 2>&1 || true)"
+          if ! grep --extended-regexp \
+            'HTTP/1\.[01][[:space:]]+403[[:space:]]+Forbidden' \
+            <<<"$untrusted_metrics" >/dev/null; then
+            echo "Shared-listener metrics request from an untrusted container was not denied"
+            printf '%s\n' "$untrusted_metrics"
+            exit 1
+          fi
+
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4000/api/pools)" = 200
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer $admin_token" \
+            http://127.0.0.1:4000/api/admin/status)" = 200
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4000/metrics)" = 200
+          test "$(curl --silent --head --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:4000/metrics)" = 200
+          test "$(curl --silent --request POST --output /dev/null \
+            --write-out '%{http_code}' http://127.0.0.1:4000/metrics)" = 405
+
+          assert_protected_headers "Shared-listener admin response" \
+            --header "Authorization: Bearer $admin_token" \
+            http://127.0.0.1:4000/api/admin/status
+          assert_protected_headers "Shared-listener metrics scrape" \
+            http://127.0.0.1:4000/metrics
+          assert_protected_headers "Shared-listener rejected metrics method" \
+            --request POST http://127.0.0.1:4000/metrics
+
+          assert_status() {
+            local expected=$1
+            local path=$2
+            local actual
+            actual="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              "http://127.0.0.1:4080${path}")"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "nginx request $path returned HTTP $actual instead of $expected"
+              return 1
+            fi
+          }
+
+          for path in \
+            /api/admin \
+            /API/ADMIN/payment/processing/disable \
+            /metrics \
+            /METRICS \
+            /metrics/ \
+            /metrics/export; do
+            assert_status 404 "$path"
+          done
+
+          for path in /api/administrator /metrics-export; do
+            assert_status 200 "$path"
+          done
+
+  build-release:
+    name: Test and package Ubuntu ${{ matrix.ubuntu }} x64 (${{ matrix.role }})
+    needs: resolve-release
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve-release.outputs.target_matrix) }}
+    permissions:
+      contents: read
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: miningcore
+          POSTGRES_PASSWORD: miningcore-test
+          POSTGRES_DB: miningcore_tests
+        options: >-
+          --health-cmd "pg_isready -U miningcore -d miningcore_tests"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Bootstrap release build container
+        run: |
+          set -euo pipefail
+          apt-get -o Acquire::Retries=3 update
+          DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y \
+            ca-certificates curl git gzip jq tar unzip cmake ninja-build \
+            build-essential libssl-dev pkg-config libboost-all-dev \
+            libsodium-dev libzmq3-dev libgmp-dev \
+            libicu-dev libgssapi-krb5-2 zlib1g file passwd util-linux
+          # Checkout writes the bind-mounted worktree as the host runner user,
+          # while later job-container steps run as root. Trust only this path.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify release build identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          test "$ID" = ubuntu
+          test "$VERSION_ID" = "${{ matrix.ubuntu }}"
+          test "$(uname -m)" = x86_64
+          test "$(git rev-parse 'HEAD^{commit}')" = \
+            "${{ needs.resolve-release.outputs.source_commit }}"
+
+      - name: Test administrative API systemd permissions
+        run: bash scripts/release/test-admin-api-systemd-permissions.sh
+
+      - name: Validate release installation documentation on target userspace
+        run: bash scripts/release/test-release-install-docs.sh
+
+      - name: Test recoverable release publication state
+        run: bash scripts/release/test-release-publication-state.sh
+
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Release tags must use SemVer, for example v0.1.0-rc.1 or v0.1.0"
+            exit 1
+          fi
+
+          tagged_commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
+            echo "Release tag $GITHUB_REF_NAME resolves to $tagged_commit instead of $GITHUB_SHA"
+            exit 1
+          fi
+
+          git fetch --no-tags origin dev
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}^{commit}" origin/dev; then
+            echo "Release tag $GITHUB_REF_NAME does not point to a commit reachable from dev"
+            exit 1
+          fi
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Test source-build identity resolution
+        run: bash scripts/release/test-source-build-identity.sh
+
+      - name: Restore dependencies
+        run: dotnet restore src
+
+      - name: Build
+        shell: bash
+        env:
+          DOTNET_CLI_UI_LANGUAGE: en
+          LC_ALL: C
+        run: |
+          set -euo pipefail
+
+          build_log=$(mktemp)
+          trap 'rm -f -- "$build_log"' EXIT
+
+          build_identity_args=()
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            build_identity_args+=(
+              "-p:MiningcoreReleaseVersion=${GITHUB_REF_NAME#v}"
+              "-p:MiningcoreSourceCommit=$GITHUB_SHA"
+            )
+          fi
+
+          dotnet build src \
+            --configuration Release \
+            --no-restore \
+            "${build_identity_args[@]}" 2>&1 | tee "$build_log"
+
+          bash scripts/release/assert-warning-free-build.sh "$build_log"
+
+      - name: Stage Linux native libraries for tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          app_out="$GITHUB_WORKSPACE/src/Miningcore/bin/Release/net10.0"
+          test_out="$GITHUB_WORKSPACE/src/Miningcore.Tests/bin/Release/net10.0"
+          mkdir -p "$test_out"
+
+          if ! compgen -G "$app_out/*.so" > /dev/null; then
+            echo "No native libraries were produced in $app_out"
+            exit 1
+          fi
+
+          cp -av "$app_out"/*.so "$test_out/"
+
+      - name: Smoke-test ZeroMQ relay runtime
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Release/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Release/net10.0
+        run: >-
+          dotnet test --configuration Release --no-build --verbosity normal
+          --filter "FullyQualifiedName~Miningcore.Tests.Mining.ShareReceiverTests"
+          src/Miningcore.Tests/Miningcore.Tests.csproj
+
+      - name: Run complete test suite
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Release/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Release/net10.0
+          MININGCORE_TEST_POSTGRES: Host=postgres;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
+        run: >-
+          dotnet test --configuration Release
+          --logger:"console;verbosity=detailed"
+          --no-build --verbosity normal src
+
+      - name: Publish framework-dependent Linux x64 build
+        run: >-
+          dotnet publish src/Miningcore/Miningcore.csproj
+          --configuration Release
+          --framework net10.0
+          --self-contained false
+          --no-build
+          --output publish
+
+      - name: Validate published runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -x publish/Miningcore
+          file publish/Miningcore | grep -q 'ELF 64-bit.*x86-64'
+
+          if ! compgen -G 'publish/*.so' > /dev/null; then
+            echo 'Published archive contains no native Miningcore libraries'
+            exit 1
+          fi
+
+          while IFS= read -r -d '' binary; do
+            echo "Checking runtime links: $binary"
+            if ldd "$binary" | tee /tmp/miningcore-ldd.txt | grep -q 'not found'; then
+              cat /tmp/miningcore-ldd.txt
+              exit 1
+            fi
+          done < <(find publish -maxdepth 1 -type f \( -name 'Miningcore' -o -name '*.so' \) -print0)
+
+          version_output="$(LD_LIBRARY_PATH="$GITHUB_WORKSPACE/publish" ./publish/Miningcore --version)"
+          printf '%s\n' "$version_output"
+          version_line="$(printf '%s\n' "$version_output" | tail -n 1)"
+
+          if [[ "$version_output" != *"$GITHUB_SHA"* ]]; then
+            echo "Published binary does not report source commit $GITHUB_SHA"
+            exit 1
+          fi
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            expected_version="${GITHUB_REF_NAME#v} [$GITHUB_SHA]"
+
+            if [[ "$version_line" != "$expected_version" ]]; then
+              echo "Published binary reports '$version_line'; expected '$expected_version'"
+              exit 1
+            fi
+          fi
+
+          bash scripts/release/validate-managed-dependencies.sh publish
+
+      - name: Assemble release archive
+        env:
+          SOURCE_COMMIT: ${{ needs.resolve-release.outputs.source_commit }}
+          SOURCE_DATE_EPOCH: ${{ needs.resolve-release.outputs.source_date_epoch }}
+        run: >-
+          bash scripts/release/package-linux-x64.sh
+          "${{ needs.resolve-release.outputs.version }}"
+          "${{ matrix.ubuntu }}"
+          "$GITHUB_WORKSPACE/publish"
+          "$GITHUB_WORKSPACE/dist"
+          "${{ matrix.image }}"
+
+      - name: Inspect release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum --check SHA256SUMS)
+          archive="miningcore-${{ needs.resolve-release.outputs.version }}"
+          archive+="-linux-x64-ubuntu-${{ matrix.ubuntu }}.tar.gz"
+          tar -tzf "dist/$archive"
+          extracted=$(mktemp -d)
+          trap 'rm -rf -- "$extracted"' EXIT
+          tar -xzf "dist/$archive" -C "$extracted"
+          package_root="$extracted/${archive%.tar.gz}"
+          test -f "$package_root/systemd/configure-postgresql-ordering.sh"
+          test -x "$package_root/systemd/configure-postgresql-ordering.sh"
+          test "$(stat -c %a "$package_root/systemd/configure-postgresql-ordering.sh")" = 755
+          test -f "$package_root/systemd/postgresql-ordering.conf.example"
+          test -f "$package_root/docs/systemd-postgresql-ordering.md"
+
+      - name: Upload tested release archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-archive-ubuntu-${{ matrix.ubuntu }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  collect-release-assets:
+    name: Collect release archives
+    needs: [ resolve-release, build-release ]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout release validation scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download tested release archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-archive-ubuntu-*
+          merge-multiple: true
+          path: dist
+
+      - name: Validate archive set and write combined checksums
+        shell: bash
+        run: >-
+          bash scripts/release/collect-linux-release-assets.sh dist
+          "${{ needs.resolve-release.outputs.version }}"
+          "${{ needs.resolve-release.outputs.source_commit }}"
+
+      - name: Upload complete release asset set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  container-check:
+    name: Test packaged container
+    needs: collect-release-assets
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout packaging files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download tested release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Setup .NET for container runtime test
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish ZeroMQ runtime probe
+        run: >-
+          dotnet publish
+          scripts/release/fixtures/zeromq-runtime-probe/ZeroMqRuntimeProbe.csproj
+          --configuration Release
+          --output zeromq-runtime-probe
+
+      - name: Prepare container context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir container-context
+          tar -xzf dist/miningcore-*-linux-x64-ubuntu-26.04.tar.gz \
+            --strip-components=1 -C container-context
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - name: Build packaged container
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: container-context
+          file: packaging/docker/Dockerfile.release
+          load: true
+          push: false
+          tags: miningcore-release-test:${{ github.sha }}
+          cache-from: type=gha,scope=release-container
+          cache-to: type=gha,mode=max,scope=release-container
+
+      - name: Smoke-test packaged container
+        run: docker run --rm miningcore-release-test:${{ github.sha }} --version
+
+      - name: Smoke-test managed ZeroMQ binding in packaged container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/zeromq-runtime-probe:/probe:ro" \
+            --entrypoint dotnet \
+            miningcore-release-test:${{ github.sha }} \
+            /probe/ZeroMqRuntimeProbe.dll
+
+  publish-release:
+    name: Publish GitHub Release and GHCR image
+    if: startsWith(github.ref, 'refs/tags/v')
+    # GitHub Releases and GHCR aliases are repository-wide mutable state. Keep
+    # every tag publication in one FIFO queue so freshness inspection and alias
+    # promotion cannot interleave across versions.
+    concurrency:
+      group: release-publication-${{ github.repository }}
+      cancel-in-progress: false
+      queue: max
+    needs:
+      - resolve-release
+      - source-container-check
+      - collect-release-assets
+      - container-check
+    runs-on: ubuntu-24.04
+    # Bound head-of-line blocking for the repository-wide publication queue.
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+
+    steps:
+      - name: Checkout packaging files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download tested release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Resolve lowercase GHCR image name
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Write release-note preamble
+        shell: bash
+        run: |
+          cat > release-notes.md <<'EOF'
+          This release contains a primary, framework-dependent **Ubuntu 26.04 x64** build
+          and a separately built **Ubuntu 22.04 x64 compatibility** archive. Use only the archive
+          matching the host release; native binaries built on Ubuntu 26.04 are not compatible with
+          older glibc systems. Ubuntu 24.04 remains a tested source-build target.
+
+          Read the packaged `INSTALL.md` or the [release installation guide](https://github.com/NINJAK1DD/miningcore/blob/dev/docs/releases.md)
+          before deployment. Miningcore targets the supported .NET 10 LTS runtime; install the
+          documented runtime dependencies and complete all required PostgreSQL migrations before
+          startup.
+          EOF
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - name: Prepare or resume release publication
+        id: publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MININGCORE_IMAGE: ${{ steps.image.outputs.name }}
+          MININGCORE_RELEASE_ASSET_DIR: dist
+          MININGCORE_RELEASE_NOTES_FILE: release-notes.md
+          MININGCORE_SOURCE_COMMIT: ${{ needs.resolve-release.outputs.source_commit }}
+        shell: bash
+        run: bash scripts/release/publish-release-state.sh prepare
+
+      - name: Attest binary archive provenance
+        if: steps.publication.outputs.release_state != 'published'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Prepare container context
+        if: steps.publication.outputs.needs_container_build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir container-context
+          tar -xzf dist/miningcore-*-linux-x64-ubuntu-26.04.tar.gz \
+            --strip-components=1 -C container-context
+
+      - name: Generate staged container metadata
+        if: steps.publication.outputs.needs_container_build == 'true'
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.image.outputs.name }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ steps.publication.outputs.staging_tag }}
+          labels: |
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ needs.resolve-release.outputs.source_commit }}
+
+      - name: Publish version-scoped staged container
+        if: steps.publication.outputs.needs_container_build == 'true'
+        id: container
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: container-context
+          file: packaging/docker/Dockerfile.release
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          # Retain serviced runtime-base tags while recording resolved build
+          # materials in registry-attached provenance and an SBOM.
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=release-container
+          cache-to: type=gha,mode=max,scope=release-container
+
+      - name: Record and verify staged container digest
+        id: recorded-container
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MININGCORE_IMAGE: ${{ steps.image.outputs.name }}
+          MININGCORE_RELEASE_ASSET_DIR: dist
+          MININGCORE_RELEASE_NOTES_FILE: release-notes.md
+          MININGCORE_SOURCE_COMMIT: ${{ needs.resolve-release.outputs.source_commit }}
+          MININGCORE_CONTAINER_DIGEST: >-
+            ${{ steps.container.outputs.digest || steps.publication.outputs.staging_digest }}
+        shell: bash
+        run: bash scripts/release/publish-release-state.sh record
+
+      - name: Attest container provenance
+        if: steps.publication.outputs.release_state != 'published'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.recorded-container.outputs.digest }}
+          push-to-registry: true
+
+      - name: Publish and verify durable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MININGCORE_IMAGE: ${{ steps.image.outputs.name }}
+          MININGCORE_RELEASE_ASSET_DIR: dist
+          MININGCORE_RELEASE_NOTES_FILE: release-notes.md
+          MININGCORE_SOURCE_COMMIT: ${{ needs.resolve-release.outputs.source_commit }}
+        shell: bash
+        run: bash scripts/release/publish-release-state.sh publish
+
+      - name: Promote and verify release container tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MININGCORE_IMAGE: ${{ steps.image.outputs.name }}
+          MININGCORE_RELEASE_ASSET_DIR: dist
+          MININGCORE_RELEASE_NOTES_FILE: release-notes.md
+          MININGCORE_SOURCE_COMMIT: ${{ needs.resolve-release.outputs.source_commit }}
+        shell: bash
+        run: bash scripts/release/publish-release-state.sh promote

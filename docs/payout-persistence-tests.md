@@ -1,0 +1,186 @@
+# Payout persistence retry tests
+
+`src/Miningcore.Tests/Payments/PayoutHandlerPersistenceIntegrationTests.cs` owns
+the four live PostgreSQL retry-contention cases for `PayoutHandlerBase`, alongside
+its unit tests. These cases exercise existing payout idempotency under lock
+contention; they do not change the [command-timeout policy](postgres-command-timeout.md).
+
+For new coverage, live PostgreSQL tests whose subject is payout behavior belong
+under `Payments/`; tests whose subject is the persistence layer belong under
+`Persistence/Postgres/`. Existing suites outside this placement rule are not
+relocated by this change.
+
+For each persistence overload, the test observes one or two distinct retry
+transactions blocked by an unfinished COMMIT. The production retry hook,
+exponential backoff and Npgsql cancellation budget remain unchanged. A test-only
+deferred trigger absorbs the first cancellation and waits on an observer-owned
+advisory lock. The observer releases that gate only after PostgreSQL reports the
+required number of retry transactions blocked by the original payment-batch key.
+In the two-retry cases, the first retry times out naturally before the second
+reaches that same unresolved transaction. Backend PID and transaction start time
+distinguish attempts, including pooled backend reuse and repeated polling.
+
+After release and idempotent replay, each case asserts one wallet submission,
+one payment batch, one payment and one debit. The advisory gate is released and
+the payout awaited even when overlap observation fails. Early completion reports
+task status; deadline failures report observed versus required attempts and the
+observer-poll/cancellation/backend/retry-budget assumptions to check. Financial
+assertions and pool-reuse checks wait for server transaction completion.
+
+## Timing assumptions
+
+The trigger's **15-second cancellation window** must survive until `query_canceled`
+arrives and arms the advisory gate, including scheduling jitter. Cancellation
+normally interrupts the sleep after roughly one second. Gate release follows
+observed blocking state, independent of the driver's SQL spelling; see
+[PostgreSQL advisory locks](https://www.postgresql.org/docs/18/explicit-locking.html#ADVISORY-LOCKS).
+
+The one-retry observation budget is the gate window plus eight seconds
+(**23 seconds**). This lets an unarmed gate finish its sleep and expose the payout
+outcome before the deadline. It also covers the one-second command timeout,
+two-second cancellation budget, two-second first backoff and reconnect/observation.
+The second retry adds eight seconds (**31 seconds** total), covering another
+one-second command timeout, up to two seconds of cancellation, the four-second
+second backoff and reconnect slack.
+
+This linear addition is valid only because `Assert.InRange` caps the required
+retry count at **two**. Production backoff doubles (2, 4, 8, 16 seconds, etc.);
+extending the cases requires revisiting both the cap and the budget. Changes to
+the retry policy, Npgsql cancellation semantics or PostgreSQL wait-event names
+require checking these assumptions. The existing four cases establish the
+invariant without exercising all eight production retries.
+
+Each failed retry is visible to the observer only during its roughly one-second
+command-timeout window. The 25 ms polling delay is added to a database round trip;
+it does not guarantee a sample within that window. A slow query or scheduling
+stall can miss an entire retry, especially on a loaded runner. A longer deadline
+cannot recover a missed observation, although a later retry may still be observed.
+Failures therefore name observer-poll starvation alongside the other timing
+assumptions. Observer continuations avoid the caller's synchronization context
+to avoid introducing additional scheduling delays.
+
+If observed CI failures confirm polling starvation, widen the retry's visible
+window by increasing the command timeout for these four contention cases and
+re-evaluate their timing budgets. Increasing only the observation deadline cannot
+recover a missed sample; the current timing remains unchanged.
+
+## Run the live tests
+
+Use the [documented isolated Windows/WSL lab](merged-mining-regtest-validation.md)
+and [managed build instructions](postgres-command-timeout.md#reproduce-the-live-checks).
+The payout and timeout suites share `PostgresPersistenceTestDatabase`,
+`PayoutPersistenceTestHandler` and the `IsolatedPostgresFact`/`IsolatedPostgresTheory`
+opt-in attributes under `src/Miningcore.Tests/Util/Postgres`. The shared server,
+collection definition, cleanup helper and its tests also live there. The database
+helper builds its own connection configuration without depending on a test class
+and asserts the resulting timeout, `VerifyCA` mode and root certificate. Neither
+suite owns the other's shared helpers. Timeout-only fault injection stays in the
+timeout suite.
+The TLS suite also uses these internal attributes; its Unix-permission case keeps
+the additional platform restriction in `PostgresTlsUnixFact`, beside the other
+attributes in `Util/Postgres/IsolatedPostgresAttributes.cs`.
+The collection is named `Isolated PostgreSQL policy`. An inventory test discovers
+its live suites by their `IsolatedPostgresServer` constructor parameter, so new
+members automatically receive the opt-in check without another hand-maintained
+live-suite list. Every collection member must belong to exactly one category:
+a discovered live suite, or the explicit unit-only exceptions
+`PostgresConnectionPolicyTests` and `PostgresCommandTimeoutTests`. A constructor
+refactor that hides server injection therefore fails the guard. Live database
+tests belong in the server-injected suites; this structural check cannot detect
+raw database access added inside a unit-only method.
+Every live test method must use exactly one isolated opt-in attribute (or the
+TLS Unix specialization in the TLS suite); duplicate-attribute failures name the
+method and offending attributes. These attributes require
+`MININGCORE_TEST_POSTGRES_BIN` to name the PostgreSQL **bin directory**;
+the separate `PostgresIntegrationFact` instead uses the `MININGCORE_TEST_POSTGRES`
+connection string for an existing service database.
+`SchemaAndApplicationName` explicitly identifies the generated schema, search path
+and application name shared by each case's connections. Its
+`miningcore_persist_{guid}` prefix identifies test-owned schemas; even the
+longest identity, with the observer suffix, fits PostgreSQL's 63-byte limit.
+The shared payout adapter accepts a transaction ID, defaulting to `tx-1`; the
+contention cases exercise distinct batch and recipient IDs through replay.
+The suites use the same collection-owned `IsolatedPostgresServer` as TLS tests,
+retaining process-state isolation and one temporary server. Each case owns its
+schema, application identity and one-slot pool. Existing lab databases and wallets
+are not used.
+
+```powershell
+$env:MININGCORE_TEST_POSTGRES_BIN = 'C:/Program Files/PostgreSQL/17/bin'
+dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --no-restore --filter 'FullyQualifiedName~PayoutHandlerPersistenceIntegrationTests' --logger 'trx;LogFileName=payout-persistence.trx'
+```
+
+To run all fifteen timeout/payout database cases plus cleanup and collection
+isolation checks, use this combined filter:
+
+```powershell
+dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --no-restore --filter 'FullyQualifiedName~PostgresCommandTimeoutIntegrationTests|FullyQualifiedName~PayoutHandlerPersistenceIntegrationTests|FullyQualifiedName~PostgresTestCleanupTests|FullyQualifiedName~NonParallelCollectionTests' --logger 'trx;LogFileName=payout-persistence-relocation.trx'
+```
+
+To check the shared attributes' TLS consumers too, append
+`|FullyQualifiedName~PostgresTlsIntegrationTests` to that filter. The Unix-permission
+case intentionally skips on Windows.
+
+On Linux, point `MININGCORE_TEST_POSTGRES_BIN` at the PostgreSQL binary directory
+and run as an unprivileged user. Primary Linux CI already installs PostgreSQL 18
+and enables these cases. Without the environment variable the live tests skip.
+
+The primary Linux workflow already runs the complete timeout and payout suite:
+it exports `MININGCORE_TEST_POSTGRES_BIN=/usr/lib/postgresql/18/bin` before the
+unfiltered `dotnet test` step. The [Linux run at `f2afb229`](https://github.com/NINJAK1DD/miningcore/actions/runs/34815000311)
+records all **15 cases passing** with PostgreSQL **18.6** and Npgsql **9.0.3**,
+including each of the four payout overlap cases. This is CI execution evidence,
+separate from the local Windows artifacts below.
+
+## Relocation verification: 2026-09-14
+
+The documented Windows lab (PostgreSQL **17.10**, Npgsql **9.0.3**) passed all
+**28 combined checks**, including **15 live database cases**, with zero failures
+or skips after relocating the four contention cases. The managed build completed
+with zero warnings/errors; documentation links and diff-whitespace checks passed.
+Local validation artifact (not committed):
+`src/Miningcore.Tests/TestResults/payout-persistence-relocation.trx`.
+The `TestResults` directory is gitignored; these paths identify local evidence,
+not files available in a repository checkout or uploaded CI artifacts.
+Earlier policy evidence remains in the [timeout verification record](postgres-command-timeout.md#broader-verification-record-2026-09-13).
+
+The review follow-up passed the same **28 checks**, including all **15 live cases**,
+after moving the shared helpers to `Util` and extracting the generic opt-in
+attributes. Without the opt-in variable, **13 checks passed** and **eight test
+methods skipped**; xUnit reports skipped theories once without expanding their
+rows. Both runs had zero failures, and the managed build had zero warnings/errors.
+Local validation artifacts (not committed):
+`src/Miningcore.Tests/TestResults/payout-review-live.trx` and
+`src/Miningcore.Tests/TestResults/payout-review-opt-out.trx`.
+
+The TLS attribute follow-up passed **55 checks** with zero failures and the one
+expected Unix-permission skip on Windows, including all 15 timeout/payout cases.
+Without the opt-in variable, **13 checks passed** and **17 methods skipped**.
+The build had zero warnings/errors. Local artifacts (not committed):
+`src/Miningcore.Tests/TestResults/postgres-shared-attributes-live.trx` and
+`src/Miningcore.Tests/TestResults/postgres-shared-attributes-opt-out.trx`.
+
+At `b3e519aa`, the shared PostgreSQL infrastructure follow-up passed **56 checks** with
+zero failures and the expected Unix-permission skip on Windows. This includes
+all **15 timeout/payout live cases** and the derived opt-in inventory check. Without
+the opt-in variable, **14 checks passed** and **17 methods skipped**. The managed
+build had zero warnings/errors. A temporary fourth suite with a plain `[Fact]`
+failed the guard without updating either inventory. Stacked fact attributes
+failed with the method name and both attribute types. The latter check temporarily
+suppressed xUnit1002, which already rejects duplicates at build time. All mutations
+and the suppression were removed before the final build and passing runs.
+Local artifacts (not committed), under `src/Miningcore.Tests/TestResults/`:
+`postgres-derived-guard-live.trx`, `postgres-derived-guard-opt-out.trx`,
+`postgres-guard-new-suite-mutation.trx` and `postgres-guard-duplicate-mutation.trx`.
+The two mutation artifacts are expected failures proving the guard. Current-head
+Linux evidence, including the Unix-only TLS case, is recorded in the PR checks
+and description.
+
+The subsequent collection-accounting follow-up changes inventory assertions and
+guidance only. Its managed build had zero warnings/errors; without PostgreSQL
+opt-in, **14 checks passed** and **17 methods skipped**. Temporarily removing the
+payout suite's server constructor parameter failed the guard with that suite's
+name, while other live suites remained discoverable. The mutation was restored
+before the final build and passing run. Local artifacts (not committed), under
+`src/Miningcore.Tests/TestResults/`: `postgres-hidden-injection-mutation.trx`
+(expected failure) and `postgres-classification-opt-out.trx`.

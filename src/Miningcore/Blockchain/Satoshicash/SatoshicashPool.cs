@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Globalization;
 using System.Reactive;
 using System.Reactive.Linq;
@@ -38,7 +39,6 @@ public class SatoshicashPool : PoolBase
     {
     }
 
-    protected object currentJobParams;
     protected SatoshicashJobManager manager;
     private BitcoinTemplate coin;
 
@@ -138,7 +138,7 @@ public class SatoshicashPool : PoolBase
             await connection.RespondAsync(response);
 
             // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker {workerValue}");
+            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
 
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
@@ -164,7 +164,7 @@ public class SatoshicashPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker {minerName} for {loginFailureBanTimeout.TotalSeconds} sec");
+                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
@@ -231,10 +231,8 @@ public class SatoshicashPool : PoolBase
                 response.Extra["error"] = null;
             }
 
-            await connection.RespondAsync(response);
-
-            // publish
-            messageBus.SendMessage(share);
+            await PublishShareAndAcknowledgeAsync(share,
+                () => connection.RespondAsync(response));
 
             // telemetry
             PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, true);
@@ -258,7 +256,7 @@ public class SatoshicashPool : PoolBase
 
             // update client stats
             context.Stats.InvalidShares++;
-            logger.Info(() => $"[{connection.ConnectionId}] Share rejected: {ex.Message} [{context.UserAgent}]");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "SatoshicashPool.OnSubmitAsync", failure: ex, connectionId: connection.ConnectionId);
 
             // banning
             ConsiderBan(connection, context, poolConfig.Banning);
@@ -305,14 +303,12 @@ public class SatoshicashPool : PoolBase
 
         catch(Exception ex)
         {
-            logger.Error(ex, () => $"Unable to convert suggested difficulty {request.Params}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "SatoshicashPool.OnSuggestDifficultyAsync", failure: ex);
         }
     }
 
     protected virtual async Task OnNewJobAsync(object jobParams)
     {
-        currentJobParams = jobParams;
-
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
         await Guard(() => ForEachMinerAsync(async (connection, ct) =>
@@ -365,11 +361,11 @@ public class SatoshicashPool : PoolBase
             disposables.Add(manager.Jobs
                 .Select(job => Observable.FromAsync(() =>
                     Guard(()=> OnNewJobAsync(job),
-                        ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"))))
+                        ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "SatoshicashPool.SetupJobManager", failure: ex))))
                 .Concat()
                 .Subscribe(_ => { }, ex =>
                 {
-                    logger.Debug(ex, nameof(OnNewJobAsync));
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "SatoshicashPool.SetupJobManager", failure: ex);
                 }));
 
             // start with initial blocktemplate
@@ -438,7 +434,7 @@ public class SatoshicashPool : PoolBase
                     break;
 
                 default:
-                    logger.Debug(() => $"[{connection.ConnectionId}] Unsupported RPC request: {JsonConvert.SerializeObject(request, serializerSettings)}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "SatoshicashPool.OnRequestAsync");
 
                     await connection.RespondErrorAsync(StratumError.Other, $"Unsupported request {request.Method}", request.Id);
                     break;
@@ -457,11 +453,8 @@ public class SatoshicashPool : PoolBase
 
         if(connection.Context.ApplyPendingDifficulty())
         {
-            var cleanJob = (bool) ((object[]) currentJobParams)[^1];
-            if(cleanJob)
-                cleanJob = !cleanJob;
-
-            var minerJobParams = CreateWorkerJob(connection, cleanJob);
+            // A difficulty change preserves work from the current block.
+            var minerJobParams = CreateWorkerJob(connection, false);
 
             await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);

@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
@@ -71,6 +72,7 @@ public class StatsRecorder : BackgroundService
     private readonly TimeSpan updateInterval;
     private readonly TimeSpan cleanupDays;
     private readonly TimeSpan gcInterval;
+    internal int AttachedPoolCount => pools.Count;
     private readonly TimeSpan hashrateCalculationWindow;
     private const int RetryCount = 4;
     private IAsyncPolicy readFaultPolicy;
@@ -329,7 +331,7 @@ public class StatsRecorder : BackgroundService
 
             catch(Exception ex)
             {
-                logger.Error(ex);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "StatsRecorder.UpdateAsync", failure: ex);
             }
         } while(await timer.WaitForNextTickAsync(ct));
     }
@@ -352,7 +354,7 @@ public class StatsRecorder : BackgroundService
 
             catch(Exception ex)
             {
-                logger.Error(ex);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "StatsRecorder.GcAsync", failure: ex);
             }
         } while(await timer.WaitForNextTickAsync(ct));
     }
@@ -370,18 +372,49 @@ public class StatsRecorder : BackgroundService
 
     private static void OnPolicyRetry(Exception ex, int retry, object context)
     {
-        logger.Warn(() => $"Retry {retry} due to {ex.Source}: {ex.GetType().Name} ({ex.Message})");
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "StatsRecorder.OnPolicyRetry", failure: ex);
+    }
+
+    public override async Task StartAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        // .NET 10 runs BackgroundService.ExecuteAsync entirely on a background thread.
+        // Subscribe before StartAsync returns so immediate pool-online events cannot be lost.
+        disposables.Add(messageBus.Listen<PoolStatusNotification>()
+            .ObserveOn(TaskPoolScheduler.Default)
+            .Subscribe(OnPoolStatusNotification));
+
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            await base.StartAsync(ct);
+        }
+
+        catch
+        {
+            disposables.Dispose();
+            throw;
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken ct)
+    {
+        try
+        {
+            await base.StopAsync(ct);
+        }
+
+        finally
+        {
+            disposables.Dispose();
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         try
         {
-            // monitor pool lifetime
-            disposables.Add(messageBus.Listen<PoolStatusNotification>()
-                .ObserveOn(TaskPoolScheduler.Default)
-                .Subscribe(OnPoolStatusNotification));
-
             logger.Info(() => "Online");
 
             // warm-up delay

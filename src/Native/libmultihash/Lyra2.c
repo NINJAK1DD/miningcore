@@ -305,7 +305,7 @@ int LYRA2_old(void *K, uint64_t kLen, const void *pwd, uint64_t pwdlen, const vo
     ptrWord = wholeMatrix;
     for (i = 0; i < nBlocksInput; i++) {
       absorbBlockBlake2Safe(state, ptrWord); //absorbs each block of pad(pwd || salt || basil)
-      ptrWord += BLOCK_LEN_BLAKE2_SAFE_BYTES; //goes to next block of pad(pwd || salt || basil)
+      ptrWord += BLOCK_LEN_BLAKE2_SAFE_INT64; //goes to next 64-byte block of pad(pwd || salt || basil)
     }
 
     //Initializes M[0] and M[1]

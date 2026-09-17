@@ -1,3 +1,4 @@
+using Miningcore.Rpc;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
@@ -74,8 +75,14 @@ public abstract class PoolBase : StratumServer,
     protected static readonly TimeSpan loginFailureBanTimeout = TimeSpan.FromSeconds(10);
     protected static readonly Regex regexStaticDiff = new(@";?d=(\d*(\.\d+)?)", RegexOptions.Compiled);
     protected const string PasswordControlVarsSeparator = ";";
+    private StratumListenerReservationSession stratumListenerReservations;
 
     protected abstract Task SetupJobManager(CancellationToken ct);
+    protected virtual void NotifyPoolOnline()
+    {
+        LogPoolInfo();
+        messageBus.NotifyPoolStatus(this, PoolStatus.Online);
+    }
     protected abstract WorkerContextBase CreateWorkerContext();
 
     protected double? GetStaticDiffFromPassparts(string[] parts)
@@ -132,11 +139,11 @@ public abstract class PoolBase : StratumServer,
 
                 catch(Exception ex)
                 {
-                    logger.Error(ex);
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.EnsureNoZombieClient", failure: ex);
                 }
             }, ex =>
             {
-                logger.Error(ex, nameof(EnsureNoZombieClient));
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.EnsureNoZombieClient", failure: ex);
             });
     }
 
@@ -178,7 +185,7 @@ public abstract class PoolBase : StratumServer,
                 await Guard(() => ForEachMinerAsync(async (connection, _ct) =>
                 {
                     await Guard(() => UpdateVarDiffAsync(connection, true, _ct),
-                        ex => logger.Error(() => $"[{connection.ConnectionId}] Error updating vardiff: {ex.Message}"));
+                        ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.RunVardiffIdleUpdaterAsync", failure: ex));
                 }, ct));
 
                 logger.Debug(() => "Vardiff Idle Update pass ends");
@@ -186,7 +193,7 @@ public abstract class PoolBase : StratumServer,
         }, ex =>
         {
             if(ex is not OperationCanceledException)
-                logger.Error(ex);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.RunVardiffIdleUpdaterAsync", failure: ex);
         });
     }
 
@@ -223,7 +230,7 @@ public abstract class PoolBase : StratumServer,
 
             catch(Exception ex)
             {
-                logger.Error(() => $"[{connection.ConnectionId}] {LogUtil.DotTerminate(ex.Message)} Closing connection ...");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.ForEachMinerAsync", failure: ex);
 
                 Disconnect(connection);
             }
@@ -239,7 +246,7 @@ public abstract class PoolBase : StratumServer,
             var minerEffort = await cf.Run(con => shareRepo.GetMinerEffortBetweenCreatedAsync(con, poolConfig.Id, connection.Context.Miner, dateStart, clock.Now, ct));
             if(minerEffort.HasValue)
             {
-                logger.Debug(() => $"[{connection.Context.Miner}] Checking effort for worker: {minerEffort.Value}%");
+                logger.Debug(() => $"[{connection.ConnectionId}] Checking effort for worker: {minerEffort.Value}%");
 
                 if(minerEffort.Value >= poolConfig.Banning.MinerEffortPercent.Value)
                 {
@@ -294,7 +301,7 @@ public abstract class PoolBase : StratumServer,
 
         catch(Exception ex)
         {
-            logger.Warn(ex, () => "Unable to load pool stats");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "PoolBase.LoadStatsAsync", failure: ex);
         }
     }
 
@@ -329,17 +336,15 @@ public abstract class PoolBase : StratumServer,
         }
     }
 
-    protected async Task RunStratum(CancellationToken ct)
+    private async Task RunStratum(CancellationToken ct,
+        StratumListenerReservation[] listeners)
     {
-        var ipEndpoints = poolConfig.Ports.Keys
-            .Select(port => PoolEndpoint2IPEndpoint(port, poolConfig.Ports[port]))
-            .ToArray();
-
-        var varDiffEnabled = ipEndpoints.Any(x => x.PoolEndpoint.VarDiff != null);
+        var varDiffEnabled = listeners.Any(x =>
+            x.Endpoint.PoolEndpoint.VarDiff != null);
 
         var tasks = new List<Task>
         {
-            base.RunAsync(ct, ipEndpoints)
+            base.RunAsync(ct, listeners)
         };
 
         if(varDiffEnabled)
@@ -354,15 +359,6 @@ public abstract class PoolBase : StratumServer,
             return await nicehashService.GetStaticDiff(coinName, algoName, CancellationToken.None);
 
         return null;
-    }
-
-    private StratumEndpoint PoolEndpoint2IPEndpoint(int port, PoolEndpoint pep)
-    {
-        var listenAddress = IPAddress.Parse("127.0.0.1");
-        if(!string.IsNullOrEmpty(pep.ListenAddress))
-            listenAddress = pep.ListenAddress != "*" ? IPAddress.Parse(pep.ListenAddress) : IPAddress.Any;
-
-        return new StratumEndpoint(new IPEndPoint(listenAddress, port), pep);
     }
 
     private void LogPoolInfo()
@@ -402,6 +398,13 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
         clusterConfig = cc;
     }
 
+    internal void AttachStratumListenerReservations(
+        StratumListenerReservationSession reservations)
+    {
+        stratumListenerReservations = reservations ??
+            throw new ArgumentNullException(nameof(reservations));
+    }
+
     public abstract double HashrateFromShares(double shares, double interval);
     public virtual double ShareMultiplier => 1;
 
@@ -410,20 +413,40 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
         Contract.RequiresNonNull(poolConfig);
 
         logger.Info(() => "Starting Pool ...");
+        StratumListenerReservation[] listeners = null;
 
         try
         {
+            if(poolConfig.EnableInternalStratum == true)
+            {
+                if(stratumListenerReservations == null)
+                {
+                    throw new PoolStartupException(
+                        "Internal Stratum listeners were not reserved before pool startup",
+                        poolConfig.Id);
+                }
+
+                // Claim ownership before initialization can announce this pool online.
+                listeners = stratumListenerReservations.Claim(poolConfig.Id);
+            }
+
             SetupBanManagement();
 
             await SetupJobManager(ct);
             await InitStatsAsync(ct);
 
-            LogPoolInfo();
+            if(listeners != null)
+            {
+                foreach(var listener in listeners)
+                    listener.Activate();
+            }
 
-            messageBus.NotifyPoolStatus(this, PoolStatus.Online);
+            NotifyPoolOnline();
 
             if(poolConfig.EnableInternalStratum == true)
-                await RunStratum(ct);
+                await RunStratum(ct, listeners);
+            else
+                await WaitForShutdownAsync(ct);
         }
 
         catch(PoolStartupException)
@@ -440,8 +463,34 @@ Pool Fee:               {(poolConfig.RewardRecipients?.Any() == true ? poolConfi
 
         catch(Exception ex)
         {
-            logger.Error(ex);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.RunAsync", failure: ex);
             throw;
+        }
+
+        finally
+        {
+            if(listeners != null)
+            {
+                foreach(var listener in listeners)
+                    listener.Dispose();
+            }
+
+            disposables.Dispose();
+            logger.Info(() => "Pool Offline");
+        }
+    }
+
+    internal static async Task WaitForShutdownAsync(CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        }
+
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            // Normal host shutdown for pools that only maintain jobs/network state for a relay
+            // receiver and therefore have no internal Stratum listener to keep RunAsync alive.
         }
     }
 

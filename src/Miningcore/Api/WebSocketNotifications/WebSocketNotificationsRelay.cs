@@ -80,6 +80,15 @@ public class WebSocketNotificationsRelay : WebSocketHandler
 
     private string ToJson<T>(WsNotificationType type, T msg)
     {
+        return WebSocketNotificationSerializer.Serialize(type, msg, serializer);
+    }
+}
+
+internal static class WebSocketNotificationSerializer
+{
+    internal static string Serialize<T>(WsNotificationType type, T msg,
+        JsonSerializer serializer)
+    {
         var result = JObject.FromObject(msg, serializer);
         result["type"] = type.ToString().ToLower();
 

@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <TargetFramework>net6.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <Platforms>AnyCPU</Platforms>
     <AssemblyName>Miningcore.Tests</AssemblyName>
@@ -35,11 +35,16 @@
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.13.4" />
     <PackageReference Include="BenchmarkDotNet.Annotations" Version="0.13.4" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.4.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
     <PackageReference Include="Microsoft.Reactive.Testing" Version="5.0.0" />
     <PackageReference Include="NLog" Version="5.4.0" />
     <PackageReference Include="Npgsql" Version="9.0.3" />
     <PackageReference Include="NSubstitute" Version="4.4.0" />
+    <!-- ConfigurationContractTests requires the public
+         XunitException(message, innerException) constructor added in xUnit 2.4.2. -->
+    <!-- When upgrading xUnit or its runner, verify cross-collection DisableParallelization
+         scheduling: PostgresConfigurationLoggingTests relies on it while temporarily
+         changing Program.logger and JsonConvert.DefaultSettings. -->
     <PackageReference Include="xunit" Version="2.4.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.4.5">
       <PrivateAssets>all</PrivateAssets>
@@ -49,32 +54,61 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Miningcore\Miningcore.csproj" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" PrivateAssets="all" />
+    <Reference Include="ZeroMQ">
+      <HintPath>..\..\libs\ZeroMQ.dll</HintPath>
+    </Reference>
+    <ProjectReference Include="..\Miningcore.Tests.ProcessHost\Miningcore.Tests.ProcessHost.csproj" />
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="../../README.md" Link="README.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="../../config.example.json" Link="config.example.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="../../examples/*.json"
+          Link="examples/%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Include="../../examples/README.md" Link="examples/README.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="../../docs/releases.md" Link="docs/releases.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="test.runsettings">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Update="xunit.runner.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="Fixtures/config-diagnostics-v2.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
-  <!-- Copy library binaries from Miningcore build output on Windows  -->
-  <Target Name="CopyLibsWin" AfterTargets="AfterBuild" Condition="'$(IsWindows)' == 'true'">
-    <ItemGroup>
-      <Libs Include="$(ProjectDir)..\Miningcore\bin\$(Configuration)\net6.0\lib*.dll" />
-    </ItemGroup>
-
-    <Copy SourceFiles="@(Libs)" DestinationFolder="$(OutDir)" />
+  <!-- Do not let a previous source-built runtime mask the explicit managed-only opt-out. -->
+  <Target Name="RemoveOdoCryptFromManagedOnlyTestOutput" BeforeTargets="PrepareForBuild"
+          Condition="'$(IsWindows)' == 'true' and '$(BuildOdoCryptWindows)' == 'false'">
+    <Delete Files="$(TargetDir)libodocrypt.dll" />
   </Target>
 
-  <!-- Copy library binaries from Miningcore build output on Linux  -->
-  <Target Name="CopyLibsLinux" AfterTargets="AfterBuild" Condition="'$(IsLinux)' == 'true'">
+  <!-- Copy Linux native libs from Miningcore output into test output -->
+  <Target Name="CopyLibsLinux" AfterTargets="Build" Condition="'$(IsLinux)' == 'true'">
     <ItemGroup>
-      <Libs Include="$(ProjectDir)..\Miningcore\bin\$(Configuration)\net6.0\lib*.so" />
+      <Libs Include="$(MSBuildProjectDirectory)/../Miningcore/bin/$(Configuration)/$(TargetFramework)/*.so" />
     </ItemGroup>
 
-    <Copy SourceFiles="@(Libs)" DestinationFolder="$(OutDir)" />
+    <Message Importance="high"
+             Text="Copying Linux native libs from Miningcore output to test output: @(Libs)"
+             Condition="'@(Libs)' != ''" />
+
+    <Copy SourceFiles="@(Libs)"
+          DestinationFolder="$(TargetDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(Libs)' != ''" />
   </Target>
 </Project>

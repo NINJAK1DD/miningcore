@@ -1,0 +1,918 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Reactive;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Threading;
+using System.Threading.Tasks;
+using Autofac;
+using Microsoft.IO;
+using Microsoft.Extensions.Hosting;
+using Miningcore.Blockchain;
+using Miningcore.Banning;
+using Miningcore.Configuration;
+using Miningcore.Messaging;
+using Miningcore.JsonRpc;
+using Miningcore.Mining;
+using Miningcore.Stratum;
+using Miningcore.Time;
+using NLog;
+using NSubstitute;
+using Xunit;
+
+namespace Miningcore.Tests.Stratum;
+
+public class StratumServerTests
+{
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
+
+    [Fact]
+    public async Task PrepublishedMergedShare_WaitsForPropagatedJournalAdmissionBeforeResponse()
+    {
+        var lifetime = Substitute.For<IHostApplicationLifetime>();
+        using var coordinator = new MiningFailStopCoordinator(new ProcessStatus(),
+            lifetime);
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance<IMiningFailStopCoordinator>(coordinator);
+        using var container = builder.Build();
+        var server = new TestStratumServer(container, new MessageBus(coordinator));
+        var journalCommit = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var share = new Share { StatisticalRecordEmitted = true };
+        share.SetPersistenceAdmission(journalCommit.Task);
+        var acknowledged = false;
+
+        var admission = server.AdmitAsync(share, () =>
+        {
+            acknowledged = true;
+            return Task.CompletedTask;
+        }, false);
+
+        await Task.Delay(25);
+        Assert.False(admission.IsCompleted);
+        Assert.False(acknowledged);
+
+        journalCommit.TrySetResult();
+        await admission.WaitAsync(TestTimeout);
+        Assert.True(acknowledged);
+    }
+
+    [Fact]
+    public async Task PrepublishedMergedShare_JournalFailureDoesNotQueuePositiveResponse()
+    {
+        var processStatus = new ProcessStatus();
+        var lifetime = Substitute.For<IHostApplicationLifetime>();
+        using var coordinator = new MiningFailStopCoordinator(processStatus, lifetime);
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance<IMiningFailStopCoordinator>(coordinator);
+        using var container = builder.Build();
+        var server = new TestStratumServer(container, new MessageBus(coordinator));
+        var journalCommit = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var share = new Share { StatisticalRecordEmitted = true };
+        share.SetPersistenceAdmission(journalCommit.Task);
+        var acknowledged = false;
+        var admission = server.AdmitAsync(share, () =>
+        {
+            acknowledged = true;
+            return Task.CompletedTask;
+        }, false);
+
+        Assert.True(coordinator.BeginFailStop(
+            ProcessExitCodes.UnreconciledShareDurabilityLoss));
+        journalCommit.TrySetException(new IOException(
+            "injected merged-mining emergency-journal failure"));
+
+        var error = await Assert.ThrowsAsync<IOException>(() => admission);
+        Assert.Contains("emergency-journal failure", error.Message);
+        Assert.False(acknowledged);
+        Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+            processStatus.ExitCode);
+        lifetime.Received(1).StopApplication();
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenCancelled_StopsIdleListenerPromptly()
+    {
+        var server = new TestStratumServer();
+        using var cts = new CancellationTokenSource();
+        var runTask = server.RunListenerAsync(cts.Token);
+
+        cts.Cancel();
+
+        // Cancellation disposes the listening socket synchronously, but completion of the
+        // resulting AcceptAsync continuation still needs a thread-pool turn. Native hashing
+        // tests can briefly saturate constrained CI runners, so retain a strict shutdown bound
+        // without making scheduler latency look like a listener leak.
+        await runTask.WaitAsync(TestTimeout);
+    }
+
+    [Fact]
+    public async Task RunAsync_ShutdownWithConnectedMiner_AllowsImmediateExclusiveRestart()
+    {
+        StratumConnection dispatchedConnection = null;
+        var server = new TestStratumServer
+        {
+            ConnectionInitializer = connection =>
+                dispatchedConnection = connection,
+        };
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(cts.Token, endpoint);
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port,
+            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+        await server.WaitForConnectionCountAsync(1, TestTimeout);
+
+        // Keep the remote peer alive while ordinary host shutdown closes the accepted socket.
+        // Reacquire directly rather than through the retry coordinator so residual TCP state
+        // cannot be hidden by its AddressAlreadyInUse backoff.
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+        Assert.NotNull(dispatchedConnection);
+        Assert.Equal(StratumConnectionCompletionReason.HostShutdown,
+            dispatchedConnection.CompletionReason);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            endpoint.IPEndPoint);
+    }
+
+    [Fact]
+    public async Task RunAsync_PeerEof_IsClassifiedAccurately()
+    {
+        StratumConnection dispatchedConnection = null;
+        var server = new TestStratumServer
+        {
+            ConnectionInitializer = connection =>
+                dispatchedConnection = connection,
+        };
+        using var host = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(host.Token, endpoint);
+
+        using(var client = new TcpClient(AddressFamily.InterNetwork))
+        {
+            await client.ConnectAsync(IPAddress.Loopback, port,
+                CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+            await server.WaitForConnectionCountAsync(1, TestTimeout);
+        }
+
+        await server.WaitForNoConnectionsAsync(TestTimeout);
+        await server.WaitForNoConnectionTasksAsync(TestTimeout);
+        Assert.NotNull(dispatchedConnection);
+        Assert.Equal(StratumConnectionCompletionReason.PeerEof,
+            dispatchedConnection.CompletionReason);
+
+        host.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+    }
+
+    [Fact]
+    public async Task RunAsync_SendLoopCancellation_AllowsImmediateExclusiveRestart()
+    {
+        var sendAttempted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        StratumConnection dispatchedConnection = null;
+        var server = new TestStratumServer
+        {
+            ConnectionInitializer = connection =>
+            {
+                dispatchedConnection = connection;
+                connection.SendMessageOverride = (_, _) =>
+                {
+                    sendAttempted.TrySetResult();
+                    return Task.FromException(new OperationCanceledException(
+                        "Injected independent Stratum send failure"));
+                };
+            },
+            RequestHandler = (connection, request, _) =>
+                connection.RespondAsync(true, request.Value.Id),
+        };
+        using var host = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(host.Token, endpoint);
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port,
+            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+        await server.WaitForConnectionCountAsync(1, TestTimeout);
+        await using var stream = client.GetStream();
+        var request = StratumConnection.Encoding.GetBytes(
+            "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[]}\n");
+        await stream.WriteAsync(request);
+        await stream.FlushAsync();
+
+        await sendAttempted.Task.WaitAsync(TestTimeout);
+        await server.WaitForNoConnectionsAsync(TestTimeout);
+        await server.WaitForNoConnectionTasksAsync(TestTimeout);
+        Assert.False(host.IsCancellationRequested);
+        Assert.NotNull(dispatchedConnection);
+        Assert.Equal(StratumConnectionCompletionReason.IndependentCancellation,
+            dispatchedConnection.CompletionReason);
+
+        // Keep the remote peer alive and stop only the listener. The send-loop OCE must have
+        // retained abortive cleanup, and this direct bind must not rely on retry backoff.
+        host.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            endpoint.IPEndPoint);
+    }
+
+    [Fact]
+    public async Task RunAsync_FailStopCancellationWithConnectedClient_AllowsImmediateExclusiveRestart()
+    {
+        using var failStop = new CancellationTokenSource();
+        var coordinator = Substitute.For<IMiningFailStopCoordinator>();
+        coordinator.Token.Returns(failStop.Token);
+        coordinator.IsFailStopRequested.Returns(_ =>
+            failStop.IsCancellationRequested);
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(coordinator);
+        using var container = builder.Build();
+        StratumConnection dispatchedConnection = null;
+        var server = new TestStratumServer(container,
+            new MessageBus(coordinator))
+        {
+            ConnectionInitializer = connection =>
+                dispatchedConnection = connection,
+        };
+        using var host = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(host.Token, endpoint);
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port,
+            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+        await server.WaitForConnectionCountAsync(1, TestTimeout);
+        await server.WaitForConnectionTaskCountAsync(1, TestTimeout);
+
+        // Cancel only the independent mining fail-stop token. Host/listener cancellation must
+        // remain untouched so it cannot mask the accepted-socket cleanup being exercised.
+        failStop.Cancel();
+        await server.WaitForNoConnectionsAsync(TestTimeout);
+        await server.WaitForNoConnectionTasksAsync(TestTimeout);
+        Assert.False(host.IsCancellationRequested);
+        Assert.NotNull(dispatchedConnection);
+        Assert.Equal(StratumConnectionCompletionReason.MiningFailStop,
+            dispatchedConnection.CompletionReason);
+
+        // Keep the remote peer alive through listener shutdown and immediate reacquisition.
+        host.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            endpoint.IPEndPoint);
+    }
+
+    [Fact]
+    public async Task RunAsync_BannedClientRejection_AllowsImmediateExclusiveRestart()
+    {
+        var banManager = Substitute.For<IBanManager>();
+        banManager.IsBanned(Arg.Any<IPAddress>()).Returns(true);
+        var server = new TestStratumServer();
+        server.SetBanManager(banManager);
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(cts.Token, endpoint);
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await ConnectAndWaitForRejectionAsync(client, IPAddress.Loopback,
+            port);
+        banManager.Received().IsBanned(Arg.Any<IPAddress>());
+
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            endpoint.IPEndPoint);
+    }
+
+    [Fact]
+    public async Task RunAsync_PreDispatchFailure_AllowsImmediateExclusiveRestart()
+    {
+        var server = new TestStratumServer
+        {
+            ThrowOnConnect = true,
+        };
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(cts.Token, endpoint);
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await ConnectAndWaitForRejectionAsync(client, IPAddress.Loopback,
+            port);
+        await server.WaitForNoConnectionsAsync(TestTimeout);
+
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            endpoint.IPEndPoint);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RunAsync_LocalAdmissionClosureRejectsQuietlyWithoutLeakingConnections(bool closeDuringConnect)
+    {
+        using var logs = new LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${level}|${message}|${exception}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRuleForAllLevels(target);
+        logs.Configuration = logging;
+        var server = new TestStratumServer { AdmissionOpen = closeDuringConnect };
+        server.SetLogger(logs.GetLogger("local-admission-test"));
+        var connected = false;
+        server.ConnectionInitializer = _ =>
+        {
+            connected = true;
+            server.AdmissionOpen = false;
+            throw new StratumException(StratumError.JobNotFound, "local admission closed");
+        };
+        using var stop = new CancellationTokenSource();
+        var endpoint = new StratumEndpoint(new IPEndPoint(IPAddress.Loopback, GetFreePort()), new PoolEndpoint());
+        var lifetime = server.RunListenerAsync(stop.Token, endpoint);
+        try
+        {
+            using var client = new TcpClient(AddressFamily.InterNetwork);
+            await ConnectAndWaitForRejectionAsync(client, IPAddress.Loopback, endpoint.IPEndPoint.Port);
+            await server.WaitForNoConnectionsAsync(TestTimeout);
+            Assert.Equal(closeDuringConnect, connected);
+            Assert.Equal(0, server.TrackedConnectionTaskCount);
+            Assert.DoesNotContain(target.Logs, line => line.StartsWith("Error|", StringComparison.Ordinal));
+            Assert.DoesNotContain(target.Logs, line => line.Contains(nameof(StratumException), StringComparison.Ordinal));
+        }
+        finally { stop.Cancel(); await lifetime.WaitAsync(TestTimeout); }
+        using var rebound = StratumServer.CreateBoundSocket(endpoint.IPEndPoint);
+    }
+
+    [Fact]
+    public async Task RunAsync_DuplicateConnectionIdRejectsSecondWithoutClosingFirst()
+    {
+        var server = new TestStratumServer
+        {
+            ConnectionIdFactory = () => "duplicate-connection-id",
+        };
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(cts.Token, endpoint);
+        using var firstClient = new TcpClient(AddressFamily.InterNetwork);
+        await firstClient.ConnectAsync(IPAddress.Loopback, port,
+            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+        await server.WaitForConnectionCountAsync(1, TestTimeout);
+        await server.WaitForConnectionTaskCountAsync(1, TestTimeout);
+
+        using var duplicateClient = new TcpClient(AddressFamily.InterNetwork);
+        await ConnectAndWaitForRejectionAsync(duplicateClient,
+            IPAddress.Loopback, port);
+
+        Assert.Equal(1, server.ConnectionCount);
+        Assert.Equal(1, server.TrackedConnectionTaskCount);
+        Assert.False(firstClient.Client.Poll(0, SelectMode.SelectRead));
+
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+    }
+
+    [Fact]
+    public void UnregisterConnection_WhenIdentityIsMissing_Throws()
+    {
+        var server = new TestStratumServer();
+        var connection = new StratumConnection(
+            LogManager.GetCurrentClassLogger(),
+            new RecyclableMemoryStreamManager(),
+            Substitute.For<IMasterClock>(), "missing-connection-id", false);
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            server.UnregisterForTest(connection));
+
+        Assert.Contains("missing-connection-id is not registered",
+            error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsync_StaleTrackedConnectionIdObservesAndRejectsNewDispatch()
+    {
+        const string connectionId = "stale-tracked-connection-id";
+        var allowTaskRemoval = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var server = new TestStratumServer
+        {
+            ConnectionIdFactory = () => connectionId,
+            BeforeConnectionTaskRemoval = _ => allowTaskRemoval.Task,
+        };
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(cts.Token, endpoint);
+
+        using(var firstClient = new TcpClient(AddressFamily.InterNetwork))
+        {
+            await firstClient.ConnectAsync(IPAddress.Loopback, port,
+                CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+            await server.WaitForConnectionCountAsync(1, TestTimeout);
+        }
+
+        await server.WaitForConnectionCountAsync(0, TestTimeout);
+        Assert.Equal(1, server.TrackedConnectionTaskCount);
+
+        using var duplicateClient = new TcpClient(AddressFamily.InterNetwork);
+        await ConnectAndWaitForRejectionAsync(duplicateClient,
+            IPAddress.Loopback, port);
+        await server.WaitForConnectionCountAsync(0, TestTimeout);
+        Assert.Equal(1, server.TrackedConnectionTaskCount);
+
+        allowTaskRemoval.TrySetResult();
+        await server.WaitForNoConnectionTasksAsync(TestTimeout);
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+    }
+
+    [Fact]
+    public async Task RunAsync_MalformedJsonClient_AllowsImmediateExclusiveRestart()
+    {
+        var server = new TestStratumServer();
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var endpoint = new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint());
+        var runTask = server.RunListenerAsync(cts.Token, endpoint);
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port,
+            CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+        await server.WaitForConnectionCountAsync(1, TestTimeout);
+        await using var stream = client.GetStream();
+        var malformedRequest = StratumConnection.Encoding.GetBytes(
+            "not-json\n");
+        await stream.WriteAsync(malformedRequest);
+        await stream.FlushAsync();
+        await server.WaitForNoConnectionsAsync(TestTimeout);
+
+        // Keep the client object alive while stopping the listener. The server-side protocol
+        // rejection must already have made its accepted-socket close abortive.
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            endpoint.IPEndPoint);
+    }
+
+    [UnixFact]
+    public async Task RunAsync_InvalidTlsHandshake_AllowsImmediateExclusiveRestart()
+    {
+        const string pfxPassword = "miningcore-test-password";
+        var pfxFile = Path.Combine(Path.GetTempPath(),
+            $"miningcore-tls-rejection-{Guid.NewGuid():N}.pfx");
+        var endpointConfig = new PoolEndpoint
+        {
+            Difficulty = 1,
+            Tls = true,
+            TlsPfxFile = pfxFile,
+            TlsPfxPassword = pfxPassword,
+        };
+        var server = new TestStratumServer();
+        using var cts = new CancellationTokenSource();
+        Task runTask = null;
+
+        try
+        {
+            using var certificate = CreateServerCertificate();
+            await File.WriteAllBytesAsync(pfxFile,
+                certificate.Export(X509ContentType.Pfx, pfxPassword));
+
+            var port = GetFreePort();
+            var endpoint = new StratumEndpoint(
+                new IPEndPoint(IPAddress.Loopback, port), endpointConfig);
+            runTask = server.RunListenerAsync(cts.Token, endpoint);
+            using var client = new TcpClient(AddressFamily.InterNetwork);
+            await client.ConnectAsync(IPAddress.Loopback, port,
+                CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+            await server.WaitForConnectionCountAsync(1, TestTimeout);
+            await using var stream = client.GetStream();
+            var invalidHandshake = StratumConnection.Encoding.GetBytes(
+                "not-a-tls-client\n");
+            await stream.WriteAsync(invalidHandshake);
+            await stream.FlushAsync();
+            await server.WaitForNoConnectionsAsync(TestTimeout);
+
+            // Keep the peer alive until after the server has stopped so this proves the TLS
+            // failure path, rather than client disposal, permits immediate exclusive rebinding.
+            cts.Cancel();
+            await runTask.WaitAsync(TestTimeout);
+            runTask = null;
+
+            using var restarted = StratumServer.CreateBoundSocket(
+                endpoint.IPEndPoint);
+        }
+        finally
+        {
+            cts.Cancel();
+
+            if(runTask != null)
+                await runTask.WaitAsync(TestTimeout);
+
+            server.RemoveCachedCertificate(pfxFile)?.Dispose();
+            File.Delete(pfxFile);
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_ShutdownDrainsInFlightRequestHandler()
+    {
+        var server = new TestStratumServer();
+        var requestEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRequest = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        server.RequestHandler = async (_, _, ct) =>
+        {
+            requestEntered.TrySetResult();
+            await releaseRequest.Task;
+            Assert.True(ct.IsCancellationRequested);
+        };
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var runTask = server.RunListenerAsync(cts.Token, new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint()));
+
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port, CancellationToken.None)
+            .AsTask().WaitAsync(TestTimeout);
+        await using var stream = client.GetStream();
+        var request = StratumConnection.Encoding.GetBytes(
+            "{\"id\":1,\"method\":\"mining.submit\",\"params\":[]}\n");
+        await stream.WriteAsync(request);
+        await stream.FlushAsync();
+        await requestEntered.Task.WaitAsync(TestTimeout);
+
+        cts.Cancel();
+        await Task.Delay(50);
+        Assert.False(runTask.IsCompleted);
+
+        releaseRequest.TrySetResult();
+        await runTask.WaitAsync(TestTimeout);
+        await server.WaitForNoConnectionsAsync(TestTimeout);
+    }
+
+    [Fact]
+    public async Task RunAsync_UnresponsiveRequestHandlerFailsStopWithinReservedBudget()
+    {
+        var processStatus = new ProcessStatus();
+        var lifetime = Substitute.For<IHostApplicationLifetime>();
+        using var coordinator = new MiningFailStopCoordinator(processStatus, lifetime);
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance<IMiningFailStopCoordinator>(coordinator);
+        using var container = builder.Build();
+        var server = new TestStratumServer(container, new MessageBus(coordinator));
+        server.SetConnectionDrainTimeout(TimeSpan.FromMilliseconds(100));
+        var requestEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var neverCompletes = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        server.RequestHandler = (_, _, _) =>
+        {
+            requestEntered.TrySetResult();
+            return neverCompletes.Task;
+        };
+        using var cts = new CancellationTokenSource();
+        var port = GetFreePort();
+        var runTask = server.RunListenerAsync(cts.Token, new StratumEndpoint(
+            new IPEndPoint(IPAddress.Loopback, port), new PoolEndpoint()));
+
+        using var client = new TcpClient(AddressFamily.InterNetwork);
+        await client.ConnectAsync(IPAddress.Loopback, port, CancellationToken.None)
+            .AsTask().WaitAsync(TestTimeout);
+        await using var stream = client.GetStream();
+        var request = StratumConnection.Encoding.GetBytes(
+            "{\"id\":1,\"method\":\"mining.submit\",\"params\":[]}\n");
+        await stream.WriteAsync(request);
+        await stream.FlushAsync();
+        await requestEntered.Task.WaitAsync(TestTimeout);
+
+        cts.Cancel();
+        await runTask.WaitAsync(TestTimeout);
+
+        Assert.True(coordinator.IsFailStopRequested);
+        Assert.Equal(ProcessExitCodes.GeneralFailure, processStatus.ExitCode);
+        lifetime.Received(1).StopApplication();
+        Assert.False(neverCompletes.Task.IsCompleted);
+
+        using var restarted = StratumServer.CreateBoundSocket(
+            new IPEndPoint(IPAddress.Loopback, port));
+    }
+
+    [Fact]
+    public async Task RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake()
+    {
+        const string pfxPassword = "miningcore-test-password";
+        var pfxFile = Path.Combine(Path.GetTempPath(), $"miningcore-tls-{Guid.NewGuid():N}.pfx");
+        var endpoint = new PoolEndpoint
+        {
+            Difficulty = 1,
+            Tls = true,
+            TlsPfxFile = pfxFile,
+            TlsPfxPassword = pfxPassword,
+        };
+        var server = new TestStratumServer();
+        using var cts = new CancellationTokenSource();
+        Task runTask = null;
+
+        try
+        {
+            using var certificate = CreateServerCertificate();
+            await File.WriteAllBytesAsync(pfxFile,
+                certificate.Export(X509ContentType.Pfx, pfxPassword));
+
+            var validation = await new PoolEndpointValidator().ValidateAsync(endpoint);
+            Assert.True(validation.IsValid,
+                string.Join(Environment.NewLine, validation.Errors.Select(x => x.ErrorMessage)));
+
+            var port = GetFreePort();
+            runTask = server.RunListenerAsync(cts.Token, new StratumEndpoint(
+                new IPEndPoint(IPAddress.Loopback, port), endpoint));
+
+            var cachedCertificate = server.GetCachedCertificate(pfxFile);
+            Assert.NotNull(cachedCertificate);
+            Assert.True(cachedCertificate.HasPrivateKey);
+
+            X509Certificate presentedCertificate = null;
+            using(var client = new TcpClient(AddressFamily.InterNetwork))
+            {
+                await client.ConnectAsync(IPAddress.Loopback, port, cts.Token)
+                    .AsTask()
+                    .WaitAsync(TestTimeout);
+
+                await using var sslStream = new SslStream(client.GetStream(), false,
+                    (_, certificate, _, _) =>
+                    {
+                        presentedCertificate = certificate;
+                        return true;
+                    });
+
+                await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                {
+                    TargetHost = "localhost",
+                    EnabledSslProtocols = SslProtocols.None,
+                    CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
+                }, cts.Token).WaitAsync(TestTimeout);
+
+                Assert.True(sslStream.IsAuthenticated);
+                Assert.True(sslStream.IsEncrypted);
+                Assert.True(sslStream.SslProtocol is SslProtocols.Tls12 or SslProtocols.Tls13,
+                    $"Unexpected OS-selected TLS protocol {sslStream.SslProtocol}");
+                Assert.NotNull(presentedCertificate);
+                using var presentedCertificate2 = X509CertificateLoader.LoadCertificate(
+                    presentedCertificate.GetRawCertData());
+                Assert.Equal(certificate.Thumbprint, presentedCertificate2.Thumbprint);
+            }
+
+            await server.WaitForNoConnectionsAsync(TestTimeout);
+        }
+
+        finally
+        {
+            cts.Cancel();
+
+            if(runTask != null)
+                await runTask.WaitAsync(TestTimeout);
+
+            server.RemoveCachedCertificate(pfxFile)?.Dispose();
+            File.Delete(pfxFile);
+        }
+    }
+
+    private static X509Certificate2 CreateServerCertificate()
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest("CN=localhost", rsa,
+            HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(
+            X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, false));
+        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
+            new OidCollection { new("1.3.6.1.5.5.7.3.1") }, false));
+
+        var subjectAlternativeName = new SubjectAlternativeNameBuilder();
+        subjectAlternativeName.AddDnsName("localhost");
+        subjectAlternativeName.AddIpAddress(IPAddress.Loopback);
+        request.CertificateExtensions.Add(subjectAlternativeName.Build());
+
+        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5),
+            DateTimeOffset.UtcNow.AddDays(1));
+    }
+
+    private static int GetFreePort()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint) listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
+    }
+
+    private static async Task WaitForRejectedSocketAsync(Socket socket)
+    {
+        var buffer = new byte[1];
+
+        try
+        {
+            var received = await socket.ReceiveAsync(buffer,
+                    SocketFlags.None)
+                .WaitAsync(TestTimeout);
+            Assert.Equal(0, received);
+        }
+        catch(SocketException ex)
+        {
+            Assert.True(IsAbortiveReceiveRejection(ex.SocketErrorCode),
+                $"Unexpected rejection error {ex.SocketErrorCode}");
+        }
+    }
+
+    private static async Task ConnectAndWaitForRejectionAsync(TcpClient client,
+        IPAddress address, int port)
+    {
+        try
+        {
+            await client.ConnectAsync(address, port,
+                CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+            await WaitForRejectedSocketAsync(client.Client);
+        }
+        catch(SocketException ex)
+        {
+            // A fast server-side rejection can race the completion of ConnectAsync on Linux.
+            // Both observation points prove that the listener accepted and abortively rejected
+            // this client; refusal, timeout and every other connect failure remain test failures.
+            Assert.True(IsFastAbortiveConnectRejection(ex.SocketErrorCode),
+                $"Unexpected rejection error {ex.SocketErrorCode}");
+        }
+    }
+
+    private static bool IsAbortiveReceiveRejection(SocketError error) =>
+        error is SocketError.ConnectionReset or
+            SocketError.ConnectionAborted;
+
+    private static bool IsFastAbortiveConnectRejection(SocketError error) =>
+        IsAbortiveReceiveRejection(error) ||
+        // An Ubuntu GitHub Actions run observed SocketError.Shutdown (EPIPE) from
+        // ConnectAsync when the server accepted and abortively rejected this client before
+        // connect completion. Keep that platform-specific race out of the ReceiveAsync path.
+        error == SocketError.Shutdown;
+
+    private sealed class TestStratumServer : StratumServer
+    {
+        public TestStratumServer() : base(
+            Substitute.For<IComponentContext>(),
+            Substitute.For<IMessageBus>(),
+            new RecyclableMemoryStreamManager(),
+            Substitute.For<IMasterClock>())
+        {
+            logger = LogManager.GetCurrentClassLogger();
+            clusterConfig = new ClusterConfig { Logging = new ClusterLoggingConfig() };
+            poolConfig = new PoolConfig { Id = "tls-test" };
+        }
+
+        public TestStratumServer(IComponentContext context, IMessageBus messageBus) :
+            base(context, messageBus, new RecyclableMemoryStreamManager(),
+                Substitute.For<IMasterClock>())
+        {
+            logger = LogManager.GetCurrentClassLogger();
+            clusterConfig = new ClusterConfig { Logging = new ClusterLoggingConfig() };
+            poolConfig = new PoolConfig { Id = "admission-test" };
+        }
+
+        public Task AdmitAsync(Share share, Func<Task> acknowledge,
+            bool publishShare) =>
+            PublishShareAndAcknowledgeAsync(share, acknowledge, publishShare);
+
+        public Func<StratumConnection, Timestamped<JsonRpcRequest>,
+            CancellationToken, Task> RequestHandler { get; set; }
+
+        public Action<StratumConnection> ConnectionInitializer { get; set; }
+
+        public Func<string> ConnectionIdFactory { get; set; }
+
+        public Func<string, Task> BeforeConnectionTaskRemoval { get; set; }
+
+        public int ConnectionCount => connections.Count;
+
+        public bool ThrowOnConnect { get; set; }
+        public bool AdmissionOpen { get; set; } = true;
+        protected override bool IsConnectionAdmissionOpen => AdmissionOpen;
+        public void SetLogger(Logger value) => logger = value;
+
+        public Task RunListenerAsync(CancellationToken ct)
+        {
+            return RunListenerAsync(ct, new StratumEndpoint(
+                new IPEndPoint(IPAddress.Loopback, 0), new PoolEndpoint()));
+        }
+
+        public Task RunListenerAsync(CancellationToken ct, StratumEndpoint endpoint)
+        {
+            var socket = StratumServer.CreateBoundSocket(
+                endpoint.IPEndPoint);
+            var reservation = new StratumListenerReservation(poolConfig.Id,
+                endpoint, socket);
+            reservation.Activate();
+            return RunAsync(ct, reservation);
+        }
+
+        public void SetConnectionDrainTimeout(TimeSpan timeout)
+        {
+            ConnectionDrainTimeout = timeout;
+        }
+
+        public void SetBanManager(IBanManager manager)
+        {
+            banManager = manager;
+        }
+
+        public void UnregisterForTest(StratumConnection connection)
+        {
+            UnregisterConnection(connection);
+        }
+
+        public X509Certificate2 GetCachedCertificate(string path)
+        {
+            certs.TryGetValue(path, out var certificate);
+            return certificate;
+        }
+
+        public X509Certificate2 RemoveCachedCertificate(string path)
+        {
+            certs.TryRemove(path, out var certificate);
+            return certificate;
+        }
+
+        public async Task WaitForNoConnectionsAsync(TimeSpan timeout)
+        {
+            using var timeoutCts = new CancellationTokenSource(timeout);
+
+            while(!connections.IsEmpty)
+                await Task.Delay(10, timeoutCts.Token);
+        }
+
+        public Task WaitForNoConnectionTasksAsync(TimeSpan timeout)
+        {
+            return WaitForConnectionTaskCountAsync(0, timeout);
+        }
+
+        public async Task WaitForConnectionTaskCountAsync(int count,
+            TimeSpan timeout)
+        {
+            using var timeoutCts = new CancellationTokenSource(timeout);
+
+            while(TrackedConnectionTaskCount != count)
+                await Task.Delay(10, timeoutCts.Token);
+        }
+
+        public async Task WaitForConnectionCountAsync(int count,
+            TimeSpan timeout)
+        {
+            using var timeoutCts = new CancellationTokenSource(timeout);
+
+            while(connections.Count != count)
+                await Task.Delay(10, timeoutCts.Token);
+        }
+
+        protected override Task OnRequestAsync(StratumConnection connection,
+            Timestamped<JsonRpcRequest> request, CancellationToken ct)
+        {
+            return RequestHandler?.Invoke(connection, request, ct) ??
+                Task.CompletedTask;
+        }
+
+        protected override string CreateConnectionId() =>
+            ConnectionIdFactory?.Invoke() ?? base.CreateConnectionId();
+
+        protected override Task BeforeConnectionTaskRemovalAsync(
+            string connectionId) =>
+            BeforeConnectionTaskRemoval?.Invoke(connectionId) ??
+            Task.CompletedTask;
+
+        protected override void OnConnect(StratumConnection connection, IPEndPoint endpoint)
+        {
+            ConnectionInitializer?.Invoke(connection);
+
+            if(ThrowOnConnect)
+                throw new InvalidOperationException(
+                    "Injected pre-dispatch connection failure");
+        }
+    }
+}

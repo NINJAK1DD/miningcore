@@ -9,6 +9,8 @@ namespace Miningcore.Api.Controllers;
 
 public abstract class ApiControllerBase : ControllerBase
 {
+    protected const int MaximumBlockPageSize = 100;
+
     protected ApiControllerBase(IComponentContext ctx)
     {
         mapper = ctx.Resolve<IMapper>();
@@ -29,6 +31,14 @@ public abstract class ApiControllerBase : ControllerBase
         return pool;
     }
 
+    protected PoolConfig FindPoolIncludingDisabled(string poolId)
+    {
+        if(string.IsNullOrEmpty(poolId))
+            return null;
+
+        return clusterConfig.Pools.FirstOrDefault(x => x.Id == poolId);
+    }
+
     protected PoolConfig GetPool(string poolId)
     {
         if(string.IsNullOrEmpty(poolId))
@@ -41,4 +51,9 @@ public abstract class ApiControllerBase : ControllerBase
 
         return pool;
     }
+
+    internal static string NormalizeMinerAddress(PoolConfig pool, string address) =>
+        pool?.Template?.Family == CoinFamily.Ethereum
+            ? address?.ToLowerInvariant()
+            : address;
 }

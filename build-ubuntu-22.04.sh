@@ -1,22 +1,44 @@
 #!/bin/bash
 
-# dotnet 6 or higher is included in Ubuntu 22.04 and up
+set -euo pipefail
+
+# Install .NET 10 from Canonical's Ubuntu 22.04 backports feed.
 
 # install install-dependencies
-sudo apt-get update; \
-  sudo apt-get -y install wget
-  
+sudo apt-get -o Acquire::Retries=3 update
+sudo apt-get -o Acquire::Retries=3 -y install software-properties-common
+
 # add dotnet repo
-wget https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
-sudo dpkg -i packages-microsoft-prod.deb
-rm packages-microsoft-prod.deb
+sudo add-apt-repository -y ppa:dotnet/backports
 
 # install dev-dependencies
-sudo apt-get update; \
-  sudo apt-get -y install dotnet-sdk-6.0 git cmake ninja-build build-essential libssl-dev pkg-config libboost-all-dev libsodium-dev libzmq5 libgmp-dev
+sudo apt-get -o Acquire::Retries=3 update
+sudo apt-get -o Acquire::Retries=3 -y install \
+  dotnet-sdk-10.0 \
+  git \
+  cmake \
+  ninja-build \
+  build-essential \
+  libssl-dev \
+  pkg-config \
+  libboost-all-dev \
+  libsodium-dev \
+  libzmq5 \
+  libzmq3-dev \
+  libgmp-dev
 
-(cd src/Miningcore && \
-BUILDIR=${1:-../../build} && \
-echo "Building into $BUILDIR" && \
-"$HOME/.dotnet/dotnet" dotnet publish -c Release --framework net6.0 -o $BUILDIR)
-
+(
+  cd src/Miningcore
+  BUILDIR=${1:-../../build}
+  echo "Building into $BUILDIR"
+  source ../../scripts/release/source-build-identity.sh
+  BUILD_IDENTITY_ARGS=()
+  miningcore_resolve_source_build_identity ../.. BUILD_IDENTITY_ARGS
+  BUILD_LOG=$(mktemp)
+  trap 'rm -f -- "$BUILD_LOG"' EXIT
+  export DOTNET_CLI_UI_LANGUAGE=en
+  export LC_ALL=C
+  bash ../../scripts/release/run-warning-audited-dotnet.sh "$BUILD_LOG" \
+    publish -c Release --framework net10.0 -o "$BUILDIR" \
+    "${BUILD_IDENTITY_ARGS[@]}"
+)

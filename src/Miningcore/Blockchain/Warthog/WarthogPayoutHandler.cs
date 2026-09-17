@@ -1,5 +1,9 @@
+using Miningcore.Rpc;
 using System;
+using System.Collections.Concurrent;
 using System.Linq;
+using System.Net;
+using System.Runtime.ExceptionServices;
 using Autofac;
 using AutoMapper;
 using Miningcore.Blockchain.Warthog.Configuration;
@@ -62,6 +66,9 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
     private ECPrivKey ellipticPrivateKey;
     private readonly IHashAlgorithm sha256S = new Sha256S();
     private object nonceGenLock = new();
+
+    protected sealed record RecipientPayoutResult(Balance Balance, string TxHash,
+        Exception Error);
 
     protected override string LogCategory => "Warthog Payout Handler";
     
@@ -143,7 +150,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
             chainInfo = await restClient.Get<GetChainInfoResponse>(WarthogCommands.GetChainInfo, ct);
             if(chainInfo?.Error != null)
             {
-                logger.Warn(() => $"[{LogCategory}] '{WarthogCommands.GetChainInfo}': {chainInfo.Error} (Code {chainInfo?.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "WarthogPayoutHandler.ClassifyBlocksAsync");
                 return blocks;
             }
         }
@@ -176,7 +183,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
                 {
                     response = await restClient.Get<WarthogBlock>(WarthogCommands.GetBlockByHeight.Replace(WarthogCommands.DataLabel, block.BlockHeight.ToString()), ct);
                     if(response?.Error != null)
-                        logger.Warn(() => $"[{LogCategory}] Block {block.BlockHeight}: {response.Error} (Code {response?.Code})");
+                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "WarthogPayoutHandler.ClassifyBlocksAsync");
                 }
 
                 catch(Exception e)
@@ -193,7 +200,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
                     block.Status = BlockStatus.Orphaned;
                     block.Reward = 0;
 
-                    logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} classified as orphaned because {(response?.Error != null ? "it's not on chain" : $"it has a different hash on chain: {response.Data.Header.Hash}")}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "WarthogPayoutHandler.ClassifyBlocksAsync");
 
                     messageBus.NotifyBlockUnlocked(poolConfig.Id, block, coin);
                 }
@@ -253,6 +260,12 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
     {
         Contract.RequiresNonNull(balances);
 
+        await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+    }
+
+    protected virtual async Task PayoutTrackedAsync(Balance[] balances,
+        CancellationToken ct)
+    {
         // build args
         var amounts = balances
             .Where(x => x.Amount > 0)
@@ -270,30 +283,38 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
             logger.Debug(() => $"[{LogCategory}] Address {pair.Key} with amount [{FormatAmount(pair.Value)}]");
             try
             {
-                var responseAddress = await restClient.Get<WarthogBlockTemplate>(WarthogCommands.GetBlockTemplate.Replace(WarthogCommands.DataLabel, pair.Key), ct);
+                var responseAddress = await GetPayoutAddressTemplateAsync(pair.Key, ct);
                 if(responseAddress?.Error != null)
-                    logger.Warn(()=> $"[{LogCategory}] Address {pair.Key} is not valid: {responseAddress.Error} (Code {responseAddress?.Code})");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "WarthogPayoutHandler.PayoutTrackedAsync");
             }
 
-            catch(Exception e)
+            catch(OperationCanceledException) when(ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch(Exception ex)
             {
                 logger.Warn(() => $"[{LogCategory}] '{WarthogCommands.DaemonName} - {WarthogCommands.GetBlockTemplate}' daemon does not seem to be running...");
-                throw new Exception($"'{WarthogCommands.DaemonName}' returned error: {e}");
+                throw new Exception($"'{WarthogCommands.DaemonName}' returned error: {ex.Message}", ex);
             }
         }
         
         WarthogBalance responseBalance;
         try
         {
-            responseBalance = await restClient.Get<WarthogBalance>(WarthogCommands.GetBalance.Replace(WarthogCommands.DataLabel, poolConfig.Address), ct);
+            responseBalance = await GetPayoutWalletBalanceAsync(ct);
             if(responseBalance?.Error != null)
-                logger.Warn(()=> $"[{LogCategory}] '{WarthogCommands.GetBalance}': {responseBalance.Error} (Code {responseBalance?.Code})");
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "WarthogPayoutHandler.PayoutTrackedAsync");
         }
 
-        catch(Exception e)
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch(Exception ex)
         {
             logger.Warn(() => $"[{LogCategory}] '{WarthogCommands.DaemonName} - {WarthogCommands.GetBalance}' daemon does not seem to be running...");
-            throw new Exception($"'{WarthogCommands.DaemonName}' returned error: {e}");
+            throw new Exception($"'{WarthogCommands.DaemonName}' returned error: {ex.Message}", ex);
         }
 
         var walletBalance = (decimal) (responseBalance?.Data.Balance == null ? 0 : responseBalance?.Data.Balance) / WarthogConstants.SmallestUnit;
@@ -310,24 +331,26 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
         if(extraPoolPaymentProcessingConfig?.KeepTransactionFees == true)
             logger.Debug(() => $"[{LogCategory}] Pool does not pay the transaction fee, so each address will have its payout deducted with [{FormatAmount(maximumTransactionFees / WarthogConstants.SmallestUnit)}]");
 
-        var txFailures = new List<Tuple<KeyValuePair<string, decimal>, Exception>>();
-        var successBalances = new Dictionary<Balance, string>();
+        var txFailures = new ConcurrentBag<Tuple<KeyValuePair<string, decimal>, Exception>>();
+        var successBalances = new ConcurrentDictionary<Balance, string>();
 
         Random randomNonceId = new Random();
         List<uint> usedNonceId = new List<uint>();
 
         var parallelOptions = new ParallelOptions
         {
-            MaxDegreeOfParallelism = extraPoolPaymentProcessingConfig?.MaxDegreeOfParallelPayouts ?? 2,
+            MaxDegreeOfParallelism = PayoutMaxDegreeOfParallelism,
             CancellationToken = ct
         };
 
-        await Parallel.ForEachAsync(amounts, parallelOptions, async (x, _ct) =>
-        {
-            var (address, amount) = x;
+        OperationCanceledException loopCancellation = null;
 
-            await Guard(async () =>
+        try
+        {
+            await Parallel.ForEachAsync(amounts, parallelOptions, async (x, _ct) =>
             {
+                var (address, amount) = x;
+
                 uint nonceId = (uint) randomNonceId.NextInt64((long)uint.MinValue, (long)uint.MaxValue);
 
                 lock(nonceGenLock)
@@ -349,85 +372,44 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
 
                 logger.Info(()=> $"[{LogCategory}] [{nonceId}] Sending {FormatAmount(amount)} to {address}");
 
-                // WART payment is quite complex: https://www.warthog.network/docs/developers/integrations/wallet-integration/ - https://www.warthog.network/docs/developers/api/#post-transactionadd
-                var chainInfo = await restClient.Get<GetChainInfoResponse>(WarthogCommands.GetChainInfo, ct);
-                if(chainInfo?.Error != null)
-                    throw new Exception($"'{WarthogCommands.GetChainInfo}': {chainInfo.Error} (Code {chainInfo?.Code})");
-
-                var feeE8Encoded = await restClient.Get<WarthogFeeE8EncodedResponse>(WarthogCommands.GetFeeE8Encoded.Replace(WarthogCommands.DataLabel, maximumTransactionFees.ToString()), ct);
-                if(feeE8Encoded?.Error != null)
-                    throw new Exception($"'{WarthogCommands.GetFeeE8Encoded}': {feeE8Encoded.Error} (Code {feeE8Encoded?.Code})");
-
-                var amountE8 = (ulong) Math.Floor(((extraPoolPaymentProcessingConfig?.KeepTransactionFees == false) ? amount : (amount > (maximumTransactionFees / WarthogConstants.SmallestUnit) ? amount - (maximumTransactionFees / WarthogConstants.SmallestUnit) : amount)) * WarthogConstants.SmallestUnit);
-
-                // generate bytes to sign
-                var pinHashBytes = chainInfo.Data.PinHash.HexToByteArray();
-                var pinHeightNonceIdFeeBytes = SerializePinHeightNonceIdFee(chainInfo.Data.PinHeight, nonceId, feeE8Encoded.Data.Rounded);
-                var toAddressBytes = address.HexToByteArray().Take(WarthogConstants.ToAddressOffset).ToArray();
-                var amountBytes = SerializeAmount(amountE8);
-                var signatureBytes = SerializeSignature(pinHashBytes, pinHeightNonceIdFeeBytes, toAddressBytes, amountBytes);
-
-                // sign bytes
-                byte[] signatureHashBytes = new byte[32];
-                sha256S.Digest(signatureBytes, (Span<byte>) signatureHashBytes);
-
-                SecpECDSASignature signatureECDSA;
-                int recid;
-
-                // this beautiful NBitcoin class automatically normalizes the signature and recid
-                var signedECDSA = ellipticPrivateKey.TrySignECDSA(signatureHashBytes, null, out recid, out signatureECDSA);
-                if(!signedECDSA || signatureECDSA == null)
-                    throw new Exception("SignECDSA failed (bug in C# secp256k1)");
-
-                var fullSignatureBytes = SerializeFullSignature(signatureECDSA.r.ToBytes(), signatureECDSA.s.ToBytes(), (byte) recid);
-
-                var sendTransaction = new WarthogSendTransactionRequest
-                {
-                    PinHeight = chainInfo.Data.PinHeight,
-                    NonceId = nonceId,
-                    ToAddress = address,
-                    Amount = amountE8,
-                    Fee = feeE8Encoded.Data.Rounded,
-                    Signature = fullSignatureBytes.ToHexString()
-                };
-
-                var response = await restClient.Post<WarthogSendTransactionResponse>(WarthogCommands.SendTransaction, sendTransaction, ct);
-                if(response?.Error != null)
-                    throw new Exception($"[{nonceId}] {WarthogCommands.SendTransaction} returned error: {response.Error} (Code {response?.Code})");
-
-                if(string.IsNullOrEmpty(response.Data.TxHash))
-                    throw new Exception($"[{nonceId}] {WarthogCommands.SendTransaction} did not return a transaction id!");
+                var result = await PayoutRecipientAsync(address, amount, nonceId, _ct);
+                if(result.Error != null)
+                    txFailures.Add(Tuple.Create(x, result.Error));
                 else
-                    logger.Info(() => $"[{LogCategory}] [{nonceId}] Payment transaction id: {response.Data.TxHash}");
-
-                successBalances.Add(new Balance
-                {
-                    PoolId = poolConfig.Id,
-                    Address = address,
-                    Amount = amount,
-                }, response.Data.TxHash);
-            }, ex =>
-            {
-                txFailures.Add(Tuple.Create(x, ex));
+                    successBalances.TryAdd(result.Balance, result.TxHash);
             });
-        });
+        }
+        catch(OperationCanceledException ex) when(ct.IsCancellationRequested)
+        {
+            // Parallel.ForEachAsync has drained active delegates. Persist transaction identities
+            // returned before a later recipient observed shutdown, then propagate cancellation.
+            loopCancellation = ex;
+        }
 
         if(successBalances.Any())
         {
-            await PersistPaymentsAsync(successBalances);
+            await PersistPaymentsAsync(successBalances.ToDictionary(x => x.Key, x => x.Value));
 
             NotifyPayoutSuccess(poolConfig.Id, successBalances.Keys.ToArray(), successBalances.Values.ToArray(), null);
         }
 
         if(txFailures.Any())
         {
-            var failureBalances = txFailures.Select(x=> new Balance { Amount = x.Item1.Value }).ToArray();
+            var failureBalances = txFailures.Select(x => new Balance
+            {
+                PoolId = poolConfig.Id,
+                Address = x.Item1.Key,
+                Amount = x.Item1.Value,
+            }).ToArray();
             var error = string.Join(", ", txFailures.Select(x => $"{x.Item1.Key} {FormatAmount(x.Item1.Value)}: {x.Item2.Message}"));
 
-            logger.Error(()=> $"[{LogCategory}] Failed to transfer the following balances: {error}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "WarthogPayoutHandler.PayoutTrackedAsync");
 
             NotifyPayoutFailure(poolConfig.Id, failureBalances, error, null);
         }
+
+        if(loopCancellation != null)
+            ExceptionDispatchInfo.Capture(loopCancellation).Throw();
     }
 
     public double AdjustBlockEffort(double effort)
@@ -436,6 +418,146 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
     }
 
     #endregion // IPayoutHandler
+
+    protected async Task<RecipientPayoutResult> PayoutRecipientAsync(string address,
+        decimal amount, uint nonceId, CancellationToken ct)
+    {
+        var submittedBalance = new Balance
+        {
+            PoolId = poolConfig.Id,
+            Address = address,
+            Amount = amount,
+        };
+
+        WarthogSendTransactionRequest request;
+
+        try
+        {
+            request = await PreparePayoutTransactionAsync(address, amount, nonceId, ct);
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch(Exception ex)
+        {
+            // Chain, fee and signing work happens before the wallet submission boundary. Its
+            // failures are conclusive preparation failures and never require reconciliation.
+            TrackPayoutFailure(new[] { submittedBalance }, ex.Message);
+            return new RecipientPayoutResult(submittedBalance, null, ex);
+        }
+
+        // Keep this outside the submission catch: an already-cancelled token must remain an
+        // ordinary shutdown rather than being reclassified as an ambiguous POST.
+        BeforePayoutSubmission(submittedBalance, ct);
+        TrackPayoutSubmission(ct, submittedBalance);
+
+        try
+        {
+            var response = await SendPayoutTransactionAsync(request, ct);
+            if(response?.Error != null)
+                throw new Exception($"[{nonceId}] {WarthogCommands.SendTransaction} returned error: {response.Error} (Code {response?.Code})");
+
+            var txHash = WalletSubmissionOutcome.RequireTransactionId(
+                response?.Data?.TxHash, WarthogCommands.SendTransaction);
+            logger.Info(() => $"[{LogCategory}] [{nonceId}] Payment transaction id: {txHash}");
+
+            TrackPayoutTransaction(new[] { submittedBalance }, txHash);
+            return new RecipientPayoutResult(submittedBalance, txHash, null);
+        }
+        catch(Exception ex)
+        {
+            if(ex is HttpRequestException { StatusCode: { } statusCode } &&
+                IsConclusiveHttpRejection(statusCode))
+            {
+                TrackPayoutFailure(new[] { submittedBalance }, ex.Message);
+                return new RecipientPayoutResult(submittedBalance, null, ex);
+            }
+
+            WalletSubmissionOutcome.RethrowIfUnknown(ex,
+                WarthogCommands.SendTransaction);
+            TrackPayoutFailure(new[] { submittedBalance }, ex.Message);
+            return new RecipientPayoutResult(submittedBalance, null, ex);
+        }
+    }
+
+    protected virtual Task<WarthogBlockTemplate> GetPayoutAddressTemplateAsync(
+        string address, CancellationToken ct) =>
+        restClient.Get<WarthogBlockTemplate>(WarthogCommands.GetBlockTemplate.Replace(
+            WarthogCommands.DataLabel, address), ct);
+
+    protected virtual Task<WarthogBalance> GetPayoutWalletBalanceAsync(
+        CancellationToken ct) =>
+        restClient.Get<WarthogBalance>(WarthogCommands.GetBalance.Replace(
+            WarthogCommands.DataLabel, poolConfig.Address), ct);
+
+    protected virtual void BeforePayoutSubmission(Balance balance,
+        CancellationToken ct)
+    {
+    }
+
+    protected virtual int PayoutMaxDegreeOfParallelism =>
+        extraPoolPaymentProcessingConfig?.MaxDegreeOfParallelPayouts ?? 2;
+
+    protected virtual async Task<WarthogSendTransactionRequest>
+        PreparePayoutTransactionAsync(string address, decimal amount, uint nonceId,
+            CancellationToken ct)
+    {
+        // WART payment is quite complex: https://www.warthog.network/docs/developers/integrations/wallet-integration/
+        var chainInfo = await restClient.Get<GetChainInfoResponse>(
+            WarthogCommands.GetChainInfo, ct);
+        if(chainInfo?.Error != null)
+            throw new Exception($"'{WarthogCommands.GetChainInfo}': {chainInfo.Error} (Code {chainInfo?.Code})");
+
+        var feeE8Encoded = await restClient.Get<WarthogFeeE8EncodedResponse>(
+            WarthogCommands.GetFeeE8Encoded.Replace(WarthogCommands.DataLabel,
+                maximumTransactionFees.ToString()), ct);
+        if(feeE8Encoded?.Error != null)
+            throw new Exception($"'{WarthogCommands.GetFeeE8Encoded}': {feeE8Encoded.Error} (Code {feeE8Encoded?.Code})");
+
+        var amountE8 = (ulong) Math.Floor(((extraPoolPaymentProcessingConfig?.KeepTransactionFees == false) ? amount : (amount > (maximumTransactionFees / WarthogConstants.SmallestUnit) ? amount - (maximumTransactionFees / WarthogConstants.SmallestUnit) : amount)) * WarthogConstants.SmallestUnit);
+        var pinHashBytes = chainInfo.Data.PinHash.HexToByteArray();
+        var pinHeightNonceIdFeeBytes = SerializePinHeightNonceIdFee(
+            chainInfo.Data.PinHeight, nonceId, feeE8Encoded.Data.Rounded);
+        var toAddressBytes = address.HexToByteArray()
+            .Take(WarthogConstants.ToAddressOffset).ToArray();
+        var amountBytes = SerializeAmount(amountE8);
+        var signatureBytes = SerializeSignature(pinHashBytes,
+            pinHeightNonceIdFeeBytes, toAddressBytes, amountBytes);
+        byte[] signatureHashBytes = new byte[32];
+        sha256S.Digest(signatureBytes, (Span<byte>) signatureHashBytes);
+
+        var signedECDSA = ellipticPrivateKey.TrySignECDSA(signatureHashBytes, null,
+            out var recid, out var signatureECDSA);
+        if(!signedECDSA || signatureECDSA == null)
+            throw new Exception("SignECDSA failed (bug in C# secp256k1)");
+
+        var fullSignatureBytes = SerializeFullSignature(signatureECDSA.r.ToBytes(),
+            signatureECDSA.s.ToBytes(), (byte) recid);
+
+        return new WarthogSendTransactionRequest
+        {
+            PinHeight = chainInfo.Data.PinHeight,
+            NonceId = nonceId,
+            ToAddress = address,
+            Amount = amountE8,
+            Fee = feeE8Encoded.Data.Rounded,
+            Signature = fullSignatureBytes.ToHexString()
+        };
+    }
+
+    protected virtual Task<WarthogSendTransactionResponse> SendPayoutTransactionAsync(
+        WarthogSendTransactionRequest request, CancellationToken ct) =>
+        restClient.Post<WarthogSendTransactionResponse>(
+            WarthogCommands.SendTransaction, request, ct);
+
+    // Restrict conclusive classification to client/request statuses that prove rejection.
+    // Timeouts, throttling, conflicts and all server-side statuses remain fail-closed.
+    private static bool IsConclusiveHttpRejection(HttpStatusCode statusCode) =>
+        statusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or
+            HttpStatusCode.Forbidden or HttpStatusCode.NotFound or
+            HttpStatusCode.MethodNotAllowed or HttpStatusCode.RequestEntityTooLarge or
+            HttpStatusCode.UnsupportedMediaType or HttpStatusCode.UnprocessableEntity;
 
     private byte[] SerializePinHeightNonceIdFee(uint pinHeight, uint nonceId, ulong feeE8Encoded)
     {

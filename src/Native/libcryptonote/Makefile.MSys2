@@ -22,7 +22,7 @@ OBJECTS = exports.o \
 	common/base58.o \
         zephyr_oracle/pricing_record.o \
         salvium_oracle/pricing_record.o \
-	mingw_stubs.o
+	miningcore_stubs.o
 
 all: $(TARGET)
 

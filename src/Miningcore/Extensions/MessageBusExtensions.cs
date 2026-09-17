@@ -27,6 +27,9 @@ public static class MessageBusExtensions
             Miner = block.Miner,
             MinerExplorerLink = minerExplorerLink,
             Source = block.Source,
+            SettlementMode = block.SettlementMode,
+            GrossRewardSatoshis = block.GrossRewardSatoshis,
+            DirectMinerRewardSatoshis = block.DirectMinerRewardSatoshis,
         });
     }
 
@@ -52,7 +55,15 @@ public static class MessageBusExtensions
         if(block.Status != BlockStatus.Orphaned)
         {
             // block explorer link
-            if(coin.ExplorerBlockLinks.TryGetValue(!string.IsNullOrEmpty(block.Type) ? block.Type : "block", out var blockInfobaseUrl))
+            var blockType = !string.IsNullOrEmpty(block.Type) ? block.Type : "block";
+            string blockInfobaseUrl = null;
+            coin.ExplorerBlockLinks?.TryGetValue(blockType, out blockInfobaseUrl);
+
+            if(string.IsNullOrEmpty(blockInfobaseUrl) && blockType != "block" &&
+                coin.ExplorerBlockLinks != null)
+                coin.ExplorerBlockLinks.TryGetValue("block", out blockInfobaseUrl);
+
+            if(!string.IsNullOrEmpty(blockInfobaseUrl))
             {
                 if(blockInfobaseUrl.Contains(CoinMetaData.BlockHeightPH))
                     blockExplorerLink = blockInfobaseUrl.Replace(CoinMetaData.BlockHeightPH, block.BlockHeight.ToString(CultureInfo.InvariantCulture));
@@ -79,6 +90,9 @@ public static class MessageBusExtensions
             ExplorerLink = blockExplorerLink,
             Miner = block.Miner,
             MinerExplorerLink = minerExplorerLink,
+            SettlementMode = block.SettlementMode,
+            GrossRewardSatoshis = block.GrossRewardSatoshis,
+            DirectMinerRewardSatoshis = block.DirectMinerRewardSatoshis,
         });
     }
 

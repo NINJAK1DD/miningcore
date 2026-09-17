@@ -65,9 +65,13 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
     {
         var coin = poolConfig.Template.As<ConcealCoinTemplate>();
 
+        WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
+            ConcealWalletCommands.SendTransaction);
+
         if(response.Error == null)
         {
-            var txHash = response.Response.TxHash;
+            var txHash = WalletSubmissionOutcome.RequireTransactionId(
+                response.Response?.TxHash, ConcealWalletCommands.SendTransaction);
             var txFee = ConcealConstants.StaticTransactionFeeReserve;
 
             logger.Info(() => $"[{LogCategory}] Payment transaction id: {txHash}, TxFee {FormatAmount(txFee)}");
@@ -79,9 +83,9 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
 
         else
         {
-            logger.Error(() => $"[{LogCategory}] Daemon command '{ConcealWalletCommands.SendTransaction}' returned error: {response.Error.Message} code {response.Error.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ConcealPayoutHandler.HandleSendTransactionResponseAsync", code: response.Error?.Code);
 
-            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ConcealWalletCommands.SendTransaction}' returned error: {response.Error.Message} code {response.Error.Code}", null);
+            NotifyPayoutFailure(poolConfig.Id, balances, $"Daemon command '{ConcealWalletCommands.SendTransaction}' returned error: {response.Error.Message} code {response.Error.Code}", null, daemonCode: response.Error.Code);
             return false;
         }
     }
@@ -98,7 +102,7 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
         
         if(response.Error != null)
         {
-            logger.Error(() => $"[{LogCategory}] Daemon command '{ConcealWalletCommands.GetBalance}' returned error: {response.Error.Message} code {response.Error.Code}");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "ConcealPayoutHandler.EnsureBalance", code: response.Error?.Code);
             return false;
         }
 
@@ -153,6 +157,7 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
         logger.Info(() => $"[{LogCategory}] [batch] Paying {FormatAmount(balances.Sum(x => x.Amount))} to {balances.Length} addresses:\n{string.Join("\n", balances.OrderByDescending(x => x.Amount).Select(x => $"{FormatAmount(x.Amount)} to {x.Address}"))}");
 
         // send command
+        TrackPayoutSubmission(ct, balances);
         var sendTransactionResponse = await rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger, ConcealWalletCommands.SendTransaction, ct, request);
 
         return await HandleSendTransactionResponseAsync(sendTransactionResponse, balances);
@@ -216,6 +221,7 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
             logger.Info(() => $"[{LogCategory}] Paying {FormatAmount(balance.Amount)} to integrated address {balance.Address}");
 
         // send command
+        TrackPayoutSubmission(ct, balance);
         var result = await rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger, ConcealWalletCommands.SendTransaction, ct, request);
 
         return await HandleSendTransactionResponseAsync(result, balance);
@@ -316,7 +322,7 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
 
                 if(rpcResult.Error != null)
                 {
-                    logger.Debug(() => $"[{LogCategory}] Daemon reports error '{rpcResult.Error.Message}' (Code {rpcResult.Error.Code}) for block {block.BlockHeight}");
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "ConcealPayoutHandler.ClassifyBlocksAsync", code: rpcResult.Error?.Code);
                     continue;
                 }
 
@@ -376,6 +382,14 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
     {
         Contract.RequiresNonNull(balances);
 
+        await TrackPayoutAsync(balances, () => PayoutTrackedAsync(balances, ct));
+
+        // save wallet
+        await rpcClientWallet.ExecuteAsync<JToken>(logger, ConcealWalletCommands.Save, ct);
+    }
+
+    private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
+    {
         var coin = poolConfig.Template.As<ConcealCoinTemplate>();
 
 #if !DEBUG // ensure we have peers
@@ -484,8 +498,6 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
                 break;
         }
 
-        // save wallet
-        await rpcClientWallet.ExecuteAsync<JToken>(logger, ConcealWalletCommands.Save, ct);
     }
 
     public double AdjustBlockEffort(double effort)
