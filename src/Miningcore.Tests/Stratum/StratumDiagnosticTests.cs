@@ -559,7 +559,9 @@ public class StratumDiagnosticTests
         Assert.Equal(reason, record["reason"].Value<string>());
         Assert.Equal(reservation.Endpoint.IPEndPoint.Port, record["port"].Value<int>());
         Assert.Equal(0, server.TrackedConnectionTaskCount);
-        using var rebound = StratumServer.CreateBoundSocket(reservation.Endpoint.IPEndPoint);
+        // Check the listener's actual ownership: after it closes, another parallel
+        // test or process may acquire the same ephemeral port before we can rebind.
+        Assert.True(reservation.Socket.SafeHandle.IsClosed);
         logs.AssertSafe();
     }
 

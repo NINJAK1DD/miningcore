@@ -89,7 +89,7 @@
         <PackageReference Include="AutoMapper" Version="16.2.0" />
         <PackageReference Include="Dapper" Version="2.1.86" />
         <PackageReference Include="FluentValidation" Version="12.1.1" />
-        <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.0" />
+        <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.1" />
         <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
         <PackageReference Include="JetBrains.Annotations" Version="2026.2.0" />
         <PackageReference Include="MailKit" Version="4.17.0" />
