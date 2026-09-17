@@ -509,13 +509,21 @@ PostgreSQL ledger test additionally requires `MININGCORE_TEST_POSTGRES`.
   does not require another subscribe. Fix the firmware/proxy sequence; initial subscribe
   remains free and the error does not invalidate previously issued work.
 - **Connection closes during assignment publication:** `AssignmentPublicationFailure`
-  means a response had already started when work publication failed, or the pool faulted.
+  means an assignment could not be completed safely, or the pool faulted. It can arise
+  during an idle VarDiff update without any request or response in progress.
   This includes disconnects immediately after an accepted `mining.submit` when its VarDiff
   update cannot publish work. The accepted proof remains accounted for and is not counted
   as invalid. Check the `publication-failure` admission-counter outcome.
   No contradictory second response is sent. Reconnect for a fresh subscription and
-  assignment; investigate work availability or pool isolation if this repeats. This event
-  does not by itself mean the miner exceeded its negotiation allowance.
+  assignment. The counter combines work-unavailability and outbound-queue failures;
+  it does not identify their cause. For idle updates, inspect the accompanying
+  `PoolBase.RunVardiffIdleUpdaterAsync` RPC consumer diagnostic's `failure` and
+  `failureCode` fields. A `job-not-found` category points to work availability or pool
+  isolation; an `io` category can indicate send-queue pressure, so also check whether
+  the miner/proxy drains responses and whether its network connection is stalled.
+  An `io` category alone does not prove the miner caused the failure. Diagnostics use
+  bounded categories and codes; raw exception messages are withheld. This event does
+  not by itself mean the miner exceeded its negotiation allowance.
 - **Startup refuses a node:** check exact version, RPC authentication, selected chain,
   deployment state, and `!blake2b`. Do not remove the gate or substitute the `bitcoin` template.
 - **Activation parent RPC is temporarily unavailable:** work verification retries with

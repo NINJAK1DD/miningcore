@@ -331,11 +331,18 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             }
             catch(Exception ex)
             {
+                // Unlike the recovery loops in RunAsync, this boundary attempts
+                // terminal cleanup even for OOM, then rethrows; it never resumes
+                // mining with a possibly partial assignment.
                 // Idle updates have no request-error boundary. Publication can
                 // fail after difficulty commits but before its job is queued;
                 // latch closed while still holding the assignment gate.
                 // Cancellation after entering the operation also invalidates any
                 // partial assignment, but ordinary shutdown is not a failure metric.
+                // Use the owning operation's shutdown state, not token identity:
+                // linked/wrapped cancellation can carry a different token. An
+                // unrelated cancellation racing shutdown is also suppressed;
+                // this affects diagnostics only, never terminal invalidation.
                 CloseAssignmentPublicationFailure(connection,
                     !(ex is OperationCanceledException && (ct.IsCancellationRequested || operations.IsClosed)));
                 throw;
