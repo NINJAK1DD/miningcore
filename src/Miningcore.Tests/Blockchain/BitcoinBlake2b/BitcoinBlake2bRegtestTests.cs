@@ -296,7 +296,7 @@ public class BitcoinBlake2bRegtestTests : TestBase
                         Assert.True(response["result"]?.Value<bool>() == true, response.ToString());
                         if(zeroAverage)
                         {
-                            var expected = limitDelta ? 2e-9 : BitcoinBlake2bDifficulty.Maximum;
+                            var expected = limitDelta ? 2e-9 : 1e-7;
                             var update = await wire.ReadAsync();
                             Assert.Equal("mining.set_difficulty", update["method"].Value<string>());
                             Assert.Equal(expected, update["params"][0].Value<double>());

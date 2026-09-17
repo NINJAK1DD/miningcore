@@ -106,10 +106,25 @@ Canonical Bitcoin's post-response policy is tracked separately in
 BLAKE2b continues to reject canonical direct-coinbase SOLO options at startup.
 
 Omitted BLAKE2b VarDiff maxima now use the highest representable difficulty as an effective
-runtime ceiling, without modifying configuration. Share and idle retargets handle zero
-intervals and extreme ratios before delta limiting, so fast valid miners receive a valid
-assignment and stay connected. The shared arithmetic also avoids overflow, underflow and
-delta cancellation for other pool families while retaining their existing maximum policy.
+runtime ceiling, without modifying configuration. The shared timing and arithmetic changes
+are described separately below.
+
+## Unreleased: shared VarDiff timing and arithmetic
+
+[#184](https://github.com/NINJAK1DD/miningcore/issues/184) corrects shared VarDiff behavior
+across pool families. Share and idle producers sample time under the same state lock.
+Backward time or invalid interval history rebases the timing window without retargeting
+or changing the last actual assignment marker; valid later samples resume adaptation.
+
+Genuine zero-length windows use a conservative 0.1-second mean interval for proportional
+retargeting instead of automatically jumping to a difficulty ceiling. Configured `maxDelta`
+and difficulty bounds still apply. This avoids parking fast miners at an extreme target
+solely because whole-second timestamps could not resolve their intervals. Normal positive
+interval calculations are preserved. Zero windows hold difficulty for target intervals
+at or below 0.1 seconds, subject to configured bounds. Extreme ratios avoid intermediate overflow/underflow,
+delta limits avoid cancellation, and invalid/non-finite inputs produce no retarget.
+BLAKE2b supplies its representable runtime ceiling; other families retain their maximum
+policy. No operator configuration is rewritten.
 
 ## Unreleased: Bitcoin-family verified job gate
 

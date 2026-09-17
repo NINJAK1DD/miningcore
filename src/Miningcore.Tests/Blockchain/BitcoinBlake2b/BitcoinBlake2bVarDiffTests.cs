@@ -15,6 +15,39 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 public partial class BitcoinBlake2bDifficultyBudgetTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ServerVarDiff_BackwardClockPreservesAssignmentAndResumesNormally(bool idle)
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
+        await Subscribe(wire);
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var jobs = context.validJobs.ToArray();
+        var options = new VarDiffConfig { MinDiff = 1e-9, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
+        config.Ports[wire.Connection.LocalEndpoint.Port].VarDiff = options;
+        var now = clock.Now;
+        context.VarDiff = new VarDiffContext { Config = options, LastTs = now.ToUnixSeconds(),
+            LastRetarget = now.ToUnixSeconds() - 100, TimeBuffer = new CircularBuffer<double>(10) };
+        for(var i = 0; i < 10; i++)
+            context.VarDiff.TimeBuffer.PushBack(0);
+        clock.Now.Returns(now.AddSeconds(-1));
+        await wire.RetargetVarDiffAsync(idle);
+        await Fence(wire); // No assignment notification may precede this response.
+        Assert.Equal(1e-9, context.Difficulty);
+        Assert.Equal(jobs, context.validJobs.ToArray());
+        Assert.Null(context.VarDiff.TimeBuffer);
+        Assert.True(wire.Connection.IsAlive);
+        clock.Now.Returns(now.AddSeconds(4));
+        await wire.RetargetVarDiffAsync(idle);
+        await Assignment(wire, 2e-9);
+        await Fence(wire);
+        Assert.True(wire.Connection.IsAlive);
+        bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
+            x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());
+    }
+
+    [Theory]
     [InlineData(false, false, false)]
     [InlineData(false, true, false)]
     [InlineData(true, false, false)]
@@ -38,7 +71,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         for(var i = 0; i < 10; i++)
             context.VarDiff.TimeBuffer.PushBack(0);
         await wire.RetargetVarDiffAsync(idle);
-        var expected = limitDelta ? 2e-9 : explicitMaximum ? 3e-9 : BitcoinBlake2bDifficulty.Maximum;
+        var expected = limitDelta ? 2e-9 : explicitMaximum ? 3e-9 : 1e-7;
         await Assignment(wire, expected);
         await Fence(wire);
         Assert.True(wire.Connection.IsAlive);

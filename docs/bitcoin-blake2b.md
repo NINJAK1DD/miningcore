@@ -256,11 +256,26 @@ existing parser. The exact parsed value is reused for execution.
 Server-driven BLAKE2b VarDiff has an effective maximum of `65535 * 2^208`, the highest
 representable difficulty (target 1), when `maxDiff` is omitted. A configured lower maximum
 is honored. This runtime ceiling applies to both share-triggered and idle retargeting
-without rewriting the operator's configuration. Zero-length interval windows saturate
-at the effective maximum before applying `maxDelta`. Extreme positive ratios avoid
+without rewriting the operator's configuration. A genuine zero-length interval window
+uses a conservative **0.1-second mean interval**, then applies normal proportional
+retargeting, `maxDelta` and difficulty bounds. For example, difficulty 10 with a ten-second
+target becomes 1,000 without a delta limit, or 12 with `maxDelta: 2`; it does not automatically
+jump to the protocol maximum. For target intervals at or below 0.1 seconds, an unresolved
+zero window holds the current difficulty, subject to configured bounds, instead of
+lowering it. Positive measured intervals retain their proportional calculation.
+Extreme positive ratios avoid
 intermediate overflow/underflow, and delta limiting uses the previous difficulty plus
 or minus the limit, avoiding cancellation. The shared VarDiff arithmetic fixes also apply
 to other pool families, which retain their existing effective maximum.
+
+Both share and idle updates read the wall clock while holding the VarDiff state lock.
+A backward timestamp, future retarget timestamp or invalid interval history resets the
+measurement window and timing baseline without changing difficulty, jobs or the last
+actual assignment marker. Later valid samples resume normal retargeting. Negative elapsed
+time is never treated as a fast-miner observation. Invalid/non-finite arithmetic inputs
+produce no retarget. These shared changes are tracked in
+[#184](https://github.com/NINJAK1DD/miningcore/issues/184); interval measurement still uses
+the wall clock, with explicit rollback recovery rather than a new monotonic timer.
 
 When exhausted:
 
@@ -425,7 +440,10 @@ intervals, both with and without `maxDelta`: accepted accounting survives, the c
 remains usable, and the next difficulty/notify pair has an exactly representable target.
 Wire tests also cover idle retargeting, explicit lower maxima, retained jobs, unchanged
 configuration and untouched negotiation allowance. Shared VarDiff unit tests cover ordinary
-retargeting, extreme ratios and generic-family default bounds. Run the focused suite with:
+retargeting, extreme ratios and generic-family default bounds. Backward-clock tests cover
+both producers and protocol bounds, preserved assignments, discarded invalid samples and
+subsequent recovery. A lock-checking clock guards against reading time before the monitor.
+Run the focused suite with:
 
 ```sh
 dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj -c Release --filter FullyQualifiedName~BitcoinBlake2bDifficultyBudgetTests

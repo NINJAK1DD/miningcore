@@ -448,8 +448,11 @@ public class BitcoinPool : PoolBase
             {
                 var value = requestParams.FirstOrDefault();
                 var culture = System.Globalization.CultureInfo.InvariantCulture;
-                var text = value is IFormattable formattable ? formattable.ToString(null, culture) : value?.ToString();
-                return double.Parse(text?.Trim(), System.Globalization.NumberStyles.Float, culture);
+                // Boxed JSON numerics need no formatting round-trip. Strings
+                // still use strict float syntax, without grouping separators.
+                if(value is sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal)
+                    return Convert.ToDouble(value, culture);
+                return double.Parse(value?.ToString().Trim(), System.Globalization.NumberStyles.Float, culture);
             }
             return (double) Convert.ChangeType(requestParams.FirstOrDefault()?.ToString().Trim(), typeof(double));
         }
