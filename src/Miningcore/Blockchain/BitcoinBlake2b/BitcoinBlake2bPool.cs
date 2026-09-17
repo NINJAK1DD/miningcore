@@ -365,6 +365,15 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         if(budget?.IsClosed == true)
             return;
 
+        // Missing IDs never consume admission or duplicate-subscription state,
+        // including after a successful subscription or its first duplicate warning.
+        if(request.Value.Id == null && request.Value.Method is BitcoinStratumMethods.SuggestDifficulty or
+            BitcoinStratumMethods.Authorize or BitcoinStratumMethods.MiningConfigure or BitcoinStratumMethods.Subscribe)
+        {
+            await connection.RespondErrorAsync(StratumError.MinusOne, "missing request id", null, false);
+            return;
+        }
+
         var context = connection.ContextAs<BitcoinWorkerContext>();
         if(request.Value.Method == BitcoinStratumMethods.Subscribe && context.IsSubscribed)
         {
@@ -374,13 +383,6 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                     "Already subscribed; another subscription attempt will close this connection", request.Value.Id, false);
             else
                 CloseAdmission(connection, budget, StratumDiagnostics.Event.DuplicateSubscription, "duplicate-subscribe");
-            return;
-        }
-
-        if(request.Value.Id == null && request.Value.Method is BitcoinStratumMethods.SuggestDifficulty or
-            BitcoinStratumMethods.Authorize or BitcoinStratumMethods.MiningConfigure or BitcoinStratumMethods.Subscribe)
-        {
-            await connection.RespondErrorAsync(StratumError.MinusOne, "missing request id", null, false);
             return;
         }
 
@@ -469,6 +471,11 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                     // A protocol rejection before response/assignment mutation is
                     // recoverable. All other failures invalidate the session while
                     // the gate is owned, including a failed response enqueue.
+                    // In these handlers, AddJob is reached only after a response
+                    // attempt or difficulty change; VersionRollingMask stays null
+                    // because BLAKE2b requires DisableVersionRolling at startup.
+                    // A new gated handler must witness every pre-response state
+                    // mutation here, or attempt its response before mutating it.
                     if(ex is not StratumException || connection.ResponseSequence != responseSequence ||
                        context.Difficulty != previousDifficulty || context.IsSubscribed != previousSubscription ||
                        context.ExtraNonce1 != previousExtraNonce || context.VarDiff != previousVarDiff)
@@ -624,6 +631,10 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             var previousDifficulty = connection.Context.Difficulty;
             try
             {
+                // Authorization already acknowledged success. Even cancellation
+                // before static mutation leaves that assignment incomplete, so
+                // close here; unlike pre-request/pre-VarDiff cancellation, it
+                // cannot preserve the session. Host shutdown suppresses telemetry.
                 ct.ThrowIfCancellationRequested();
                 await base.ApplyStaticDifficultyAsync(connection, difficulty, ct);
                 await CompleteAssignmentAsync(connection, previousDifficulty, BitcoinStratumMethods.Authorize);

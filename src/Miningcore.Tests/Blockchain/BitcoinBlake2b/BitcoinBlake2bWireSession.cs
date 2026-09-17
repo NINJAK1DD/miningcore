@@ -54,6 +54,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal Func<Task> AfterConfigure { set => ((TestPool) pool).AfterConfigure = value; }
     internal Action BeforeCreateJob { set => ((TestPool) pool).BeforeCreateJob = value; }
     internal Action AssignmentWaiting { set => ((TestPool) pool).AssignmentWaiting = value; }
+    internal Action AssignmentAcquired { set => ((TestPool) pool).AssignmentAcquired = value; }
     internal Func<Task> BeforeAssignment { set => ((TestPool) pool).BeforeAssignment = value; }
     internal Func<Task> BeforeVarDiffPublication { set => ((TestPool) pool).BeforeVarDiffPublication = value; }
     internal Task SendRawAsync(string lines) => writer.WriteLineAsync(lines);
@@ -213,6 +214,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
             string coinName, string algorithm) => NicehashLookup?.Invoke(context) ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm);
         internal Action BeforeCreateJob;
         internal Action AssignmentWaiting;
+        internal Action AssignmentAcquired;
         internal Func<Task> BeforeAssignment;
         internal Func<Task> BeforeVarDiffPublication;
 
@@ -223,7 +225,17 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
             var wait = base.EnterAssignmentAsync(connection, ct);
             if(!wait.IsCompleted)
                 AssignmentWaiting?.Invoke();
-            return await wait;
+            var gate = await wait;
+            try
+            {
+                AssignmentAcquired?.Invoke();
+                return gate;
+            }
+            catch
+            {
+                gate.Release();
+                throw;
+            }
         }
 
         protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double difficulty, CancellationToken ct)

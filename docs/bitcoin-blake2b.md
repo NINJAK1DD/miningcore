@@ -295,6 +295,11 @@ and unexpected exceptions. Cleanup happens while the assignment gate is owned. S
 propagate notification failures so a recovered queue cannot accept an unmatched job.
 Pre-response protocol errors that leave assignment state untouched remain recoverable;
 authorization RPC and subscription autodiff lookups remain outside the gate.
+Once authorization has responded successfully, cancellation before acquiring the static
+assignment gate or before its first mutation is terminal: the miner has already received
+success for an unfinished assignment. Host shutdown clears jobs and closes the session
+without a publication-failure diagnostic or metric. Cancellation before the request's
+early validation gate remains a no-op on assignment state.
 
 Both share and idle updates read the wall clock while holding the VarDiff state lock.
 A no-op idle sweep leaves the share timestamp, interval buffer and assignment markers
@@ -348,7 +353,9 @@ When exhausted:
 The **first valid subscribe is free**, even after difficulty allowance is exhausted. The first
 duplicate `mining.subscribe` receives Stratum error 20 with `result: false`, retaining the
 working connection. Another duplicate closes it without queuing another response. Neither
-duplicate rotates extranonce, changes work or emits difficulty/job notifications. The
+duplicate rotates extranonce, changes work or emits difficulty/job notifications.
+Missing or null request IDs take precedence: they receive error -1 without consuming
+the duplicate warning or difficulty allowance, even after subscription or a warning. The
 one-warning allowance is per connection and is not reset by other requests or refill.
 This protocol does not support in-session resubscription. Buffered requests cannot reopen
 a terminal connection. Canonical Bitcoin's existing resubscription behavior is separately

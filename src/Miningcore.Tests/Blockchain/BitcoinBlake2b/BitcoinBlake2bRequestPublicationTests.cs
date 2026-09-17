@@ -11,6 +11,7 @@ using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Extensions;
 using Miningcore.Notifications.Messages;
 using Miningcore.Stratum;
+using Newtonsoft.Json.Linq;
 using NSubstitute;
 using Xunit;
 
@@ -180,6 +181,70 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         await Accepted(wire, true, 2e-9);
         await Fence(wire);
         Assert.True(wire.Connection.IsAlive);
+        bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
+            x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AuthorizationCancellationAfterSuccessBeforeStaticMutation_IsTerminal(bool afterAcquisition)
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
+        await Subscribe(wire);
+        using var logs = new NLog.LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}${exception:format=tostring}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(NLog.LogLevel.Info, NLog.LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        wire.SetLogger(logs.GetLogger("authorization-cancellation-test"));
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var responses = wire.Connection.ResponseSequence;
+        var jobs = wire.JobsCreated;
+        var observedSuccess = false;
+        using var cancel = new CancellationTokenSource();
+        wire.BeforeAssignment = async () =>
+        {
+            // Skip the early validation gate, then deliver the actual success
+            // response before canceling the unfinished static assignment.
+            if(wire.Connection.ResponseSequence == responses)
+                return;
+            wire.BeforeAssignment = null;
+            var success = await wire.ReadAsync();
+            Assert.Equal(1000, success["id"].Value<int>());
+            Assert.True(success["result"].Value<bool>());
+            observedSuccess = true;
+            if(!afterAcquisition)
+                cancel.Cancel();
+        };
+        wire.AssignmentAcquired = () =>
+        {
+            if(afterAcquisition && observedSuccess)
+            {
+                wire.AssignmentAcquired = null;
+                cancel.Cancel();
+            }
+        };
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            wire.DispatchBufferedAsync(cancel.Token, "mining.authorize", PublicationParameters("mining.authorize")));
+        Assert.True(observedSuccess);
+        Assert.Equal(1e-9, context.Difficulty); // No static mutation happened.
+        Assert.Equal(jobs, wire.JobsCreated);
+        Assert.Empty(context.validJobs);
+        Assert.Equal(responses + 1, wire.Connection.ResponseSequence);
+        var validations = manager.AddressValidations;
+        await wire.DispatchBufferedAsync("mining.authorize", "test.worker", Password(4e-9));
+        await wire.DispatchBufferedAsync("mining.extranonce.subscribe");
+        await wire.RetargetVarDiffAsync(false);
+        await wire.AnnounceJobAsync(manager.GetJobForStratum().GetJobParams(false));
+        Assert.Equal(validations, manager.AddressValidations);
+        Assert.Equal(responses + 1, wire.Connection.ResponseSequence);
+        Assert.Equal(jobs, wire.JobsCreated);
+        Assert.Empty(context.validJobs);
+        Assert.Empty(await wire.ReadUntilDisconnectedAsync());
+        Assert.False(wire.Connection.IsAlive);
+        Assert.DoesNotContain(target.Logs, x => x.Contains("AssignmentPublicationFailure"));
         bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
             x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());
     }

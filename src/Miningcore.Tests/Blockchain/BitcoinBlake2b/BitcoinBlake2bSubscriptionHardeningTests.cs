@@ -1,10 +1,13 @@
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Extensions;
+using Miningcore.Notifications.Messages;
 using Miningcore.Stratum;
 using Newtonsoft.Json.Linq;
+using NSubstitute;
 using Xunit;
 
 namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
@@ -124,5 +127,51 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         await wire.AssertDisconnectedAsync();
         Assert.True(wire.MiningFaulted);
         Assert.Equal(1, wire.JobsCreated);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SubscribedMissingId_PreservesDuplicateWarningAndDifficultyAllowance(bool omitId)
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            budgetTimeProvider: new ManualTimeProvider());
+        await Subscribe(wire);
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var extraNonce = context.ExtraNonce1;
+        var jobs = context.validJobs.ToArray();
+        var lookups = 0;
+        wire.NicehashLookup = _ => { lookups++; return Task.FromResult<double?>(null); };
+        var request = omitId ? "{\"method\":\"mining.subscribe\",\"params\":[]}" :
+            "{\"id\":null,\"method\":\"mining.subscribe\",\"params\":[]}";
+        // Missing-ID requests neither spend nor reset the duplicate warning.
+        for(var warned = 0; warned < 2; warned++)
+        {
+            for(var i = 0; i < 2; i++)
+            {
+                await wire.SendRawAsync(request);
+                Assert.Equal((int) StratumError.MinusOne, (await wire.ReadAsync())["error"]["code"].Value<int>());
+                Assert.Equal(extraNonce, context.ExtraNonce1);
+                Assert.Equal(jobs, context.validJobs.ToArray());
+                Assert.Equal(1e-9, context.Difficulty);
+                Assert.Equal(1, wire.JobsCreated);
+            }
+            if(warned == 0)
+            {
+                await wire.SendRequestAsync("mining.subscribe", "duplicate");
+                Assert.Equal((int) StratumError.Other, (await wire.ReadAsync())["error"]["code"].Value<int>());
+            }
+        }
+        Assert.Equal(0, lookups);
+        for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
+            await Accepted(wire, true, (i + 2) / 1e9);
+        await Refused(wire, true);
+        await Fence(wire);
+        await wire.SendRequestAsync("mining.subscribe", "duplicate");
+        Assert.Empty(await wire.ReadUntilDisconnectedAsync());
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
+            x.Category == TelemetryCategory.StratumAdmission &&
+            x.Info == "duplicate-subscribe"), Arg.Any<string>());
     }
 }
