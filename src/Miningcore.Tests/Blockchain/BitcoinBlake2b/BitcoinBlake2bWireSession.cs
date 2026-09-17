@@ -54,6 +54,8 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal Func<Task> AfterConfigure { set => ((TestPool) pool).AfterConfigure = value; }
     internal Action BeforeCreateJob { set => ((TestPool) pool).BeforeCreateJob = value; }
     internal Action AssignmentWaiting { set => ((TestPool) pool).AssignmentWaiting = value; }
+    internal Func<Task> BeforeAssignment { set => ((TestPool) pool).BeforeAssignment = value; }
+    internal Func<Task> BeforeVarDiffPublication { set => ((TestPool) pool).BeforeVarDiffPublication = value; }
     internal Task SendRawAsync(string lines) => writer.WriteLineAsync(lines);
 
     internal async Task SendDisconnectingBatchAsync(string lines)
@@ -205,13 +207,24 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
             string coinName, string algorithm) => NicehashLookup?.Invoke(context) ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm);
         internal Action BeforeCreateJob;
         internal Action AssignmentWaiting;
+        internal Func<Task> BeforeAssignment;
+        internal Func<Task> BeforeVarDiffPublication;
 
-        internal override ValueTask<SemaphoreSlim> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct)
+        internal override async ValueTask<SemaphoreSlim> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct)
         {
+            if(BeforeAssignment != null)
+                await BeforeAssignment();
             var wait = base.EnterAssignmentAsync(connection, ct);
             if(!wait.IsCompleted)
                 AssignmentWaiting?.Invoke();
-            return wait;
+            return await wait;
+        }
+
+        protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double difficulty, CancellationToken ct)
+        {
+            if(BeforeVarDiffPublication != null)
+                await BeforeVarDiffPublication();
+            await base.OnVarDiffUpdateAsync(connection, difficulty, ct);
         }
 
         protected override async Task OnConfigureMiningAsync(StratumConnection connection,
@@ -244,8 +257,14 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         public void AddConnection(StratumConnection value) => RegisterConnection(value);
         public Task Dispatch(StratumConnection connection, JsonRpcRequest request,
             CancellationToken ct) => OnRequestAsync(connection, request, ct);
-        public Task UpdateVarDiff(StratumConnection connection, double difficulty) =>
-            OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None);
+        // Explicit assignment injection for publication-only tests. Actual
+        // retarget tests use RetargetVarDiff and the production calculation gate.
+        public async Task UpdateVarDiff(StratumConnection connection, double difficulty)
+        {
+            var gate = await EnterAssignmentAsync(connection, CancellationToken.None);
+            try { await OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None); }
+            finally { gate.Release(); }
+        }
         internal Task RetargetVarDiff(StratumConnection connection, bool idle) =>
             UpdateVarDiffAsync(connection, idle, CancellationToken.None);
         public Task Announce(object jobParams) => OnNewJobAsync(jobParams);

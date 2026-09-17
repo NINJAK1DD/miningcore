@@ -164,6 +164,14 @@ public class VarDiffConfigValidator : AbstractValidator<VarDiffConfig>
 {
     public VarDiffConfigValidator()
     {
+        RuleFor(j => j.MinDiff)
+            .Must(x => double.IsFinite(x) && x > 0)
+            .WithMessage("VarDiff: min value must be finite and greater than zero");
+
+        RuleFor(j => j.MaxDiff)
+            .Must(x => !x.HasValue || double.IsFinite(x.Value) && x.Value > 0)
+            .WithMessage("VarDiff: max value must be finite and greater than zero when specified");
+
         RuleFor(j => j.MaxDiff)
             .GreaterThanOrEqualTo(x => x.MinDiff)
             .When(x => x.MaxDiff.HasValue)

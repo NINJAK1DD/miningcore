@@ -91,6 +91,9 @@ Subscribe resolves NiceHash autodiff before acquiring the gate and committing su
 state; an authorize-before-subscribe client cannot hold up broadcasts during the API lookup.
 The parsed user agent and lookup result are carried together into the subscription commit.
 Each successful acquisition releases its exact semaphore, including protocol-error paths.
+The same gate covers the enabled-state check and calculation for both share and idle
+VarDiff updates. Fixed-difficulty configure/static authorization cannot disable VarDiff
+between a calculation and its publication or be overwritten by a stale retarget.
 If work publication fails after subscribe, configure, suggest, static authorization or a share submission has
 already been acknowledged, the connection closes without a second response for the request.
 Buffered requests cannot reopen it. Errors before acknowledgement remain recoverable;
@@ -116,15 +119,21 @@ across pool families. Share and idle producers sample time under the same state 
 Backward time or invalid interval history rebases the timing window without retargeting
 or changing the last actual assignment marker; valid later samples resume adaptation.
 
-Genuine zero-length windows use a conservative 0.1-second mean interval for proportional
-retargeting instead of automatically jumping to a difficulty ceiling. Configured `maxDelta`
+No-op idle sweeps preserve the real-share timing baseline instead of creating an artificial
+zero interval for a share in the same second. Genuine zero-length windows use a conservative
+mean of `1 / min(interval count, 10)` seconds, counting the current interval, for proportional
+retargeting instead of automatically jumping to a difficulty ceiling. Full windows still use
+0.1 seconds; sparse windows use a larger estimate. Configured `maxDelta`
 and difficulty bounds still apply. This avoids parking fast miners at an extreme target
 solely because whole-second timestamps could not resolve their intervals. Normal positive
 interval calculations are preserved. Zero windows hold difficulty for target intervals
-at or below 0.1 seconds, subject to configured bounds. Extreme ratios avoid intermediate overflow/underflow,
+at or below the estimate, subject to configured bounds. Extreme ratios avoid intermediate overflow/underflow,
 delta limits avoid cancellation, and invalid/non-finite inputs produce no retarget.
 BLAKE2b supplies its representable runtime ceiling; other families retain their maximum
-policy. No operator configuration is rewritten.
+policy. Shared startup validation now rejects non-finite or non-positive `minDiff` and
+configured `maxDiff` values; omitted maxima remain supported. No operator configuration
+is rewritten. Forward wall-clock steps still resemble idle intervals; monotonic elapsed
+measurement is tracked separately in [#185](https://github.com/NINJAK1DD/miningcore/issues/185).
 
 ## Unreleased: Bitcoin-family verified job gate
 

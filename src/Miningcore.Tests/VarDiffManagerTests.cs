@@ -145,10 +145,10 @@ public class VarDiffManagerTests
         });
         mutableClock.CurrentTime = mutableClock.Now.AddSeconds(10);
         Assert.Null(VarDiffManager.IdleUpdate(context, options, clock));
-        Assert.Equal(1010, context.VarDiff.LastTs);
+        Assert.Equal(1000, context.VarDiff.LastTs);
         Assert.Equal(900, context.VarDiff.LastRetarget);
         mutableClock.CurrentTime = mutableClock.Now.AddSeconds(1);
-        Assert.Equal(100, VarDiffManager.Update(context, options, clock));
+        Assert.Equal(100d / 11d, VarDiffManager.Update(context, options, clock));
         Assert.Equal(1011, context.VarDiff.LastTs);
     }
 
@@ -206,5 +206,83 @@ public class VarDiffManagerTests
         Assert.Null(VarDiffManager.Update(context, options, clock));
         Assert.Null(VarDiffManager.IdleUpdate(context, options, clock));
         Assert.Equal(10, context.Difficulty);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DisabledVarDiff_IsANoOp(bool idle)
+    {
+        var (context, options, clock) = Fixture();
+        context.VarDiff = null;
+        Assert.Null(idle ? VarDiffManager.IdleUpdate(context, options, clock) :
+            VarDiffManager.Update(context, options, clock));
+        Assert.Equal(10, context.Difficulty);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void NoOpIdleSweep_PreservesRealShareIntervalAndSubsequentRetarget(bool atMinimum, bool limitDelta)
+    {
+        var (context, options, clock) = Fixture();
+        options.MinDiff = atMinimum ? 10 : 1;
+        options.MaxDelta = limitDelta ? 2 : null;
+        context.VarDiff.TimeBuffer = null;
+        var previousTs = context.VarDiff.LastTs;
+        clock.CurrentTime = clock.Now.AddSeconds(atMinimum ? 30 : 10);
+        // Repeated scheduler evaluations are not extra share observations.
+        Assert.Null(VarDiffManager.IdleUpdate(context, options, clock));
+        Assert.Null(VarDiffManager.IdleUpdate(context, options, clock));
+        Assert.Equal(previousTs, context.VarDiff.LastTs);
+        Assert.Equal(900, context.VarDiff.LastRetarget);
+        Assert.Null(context.VarDiff.LastUpdate);
+        Assert.Null(context.VarDiff.TimeBuffer);
+        Assert.Null(VarDiffManager.Update(context, options, clock));
+        Assert.Equal(atMinimum ? 30d : 10d, context.VarDiff.TimeBuffer.Front());
+        // Real, faster intervals eventually replace the slow observation.
+        double? result = null;
+        for(var i = 0; i < 11 && result == null; i++)
+        {
+            clock.CurrentTime = clock.Now.AddSeconds(1);
+            result = VarDiffManager.Update(context, options, clock);
+        }
+        Assert.NotNull(result);
+        Assert.InRange(result.Value, 10.000001, limitDelta ? 12 : 100);
+    }
+
+    [Theory]
+    [InlineData(0, false, 100d)]
+    [InlineData(1, false, 200d)]
+    [InlineData(4, false, 500d)]
+    [InlineData(9, false, 1000d)]
+    [InlineData(10, false, 1000d)]
+    [InlineData(0, true, 100d)]
+    [InlineData(1, true, 200d)]
+    [InlineData(4, true, 500d)]
+    [InlineData(9, true, 1000d)]
+    [InlineData(10, true, 1000d)]
+    public void ZeroAverage_EstimateUsesAvailableIntervals(int storedSamples, bool idle, double expected)
+    {
+        var (context, options, clock) = Fixture();
+        context.VarDiff.TimeBuffer = new CircularBuffer<double>(10);
+        for(var i = 0; i < storedSamples; i++)
+            context.VarDiff.TimeBuffer.PushBack(0);
+        Assert.Equal(expected, idle ? VarDiffManager.IdleUpdate(context, options, clock) :
+            VarDiffManager.Update(context, options, clock));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SparseZeroWindow_DoesNotLowerDifficultyBelowItsEstimate(bool idle)
+    {
+        var (context, options, clock) = Fixture();
+        context.VarDiff.TimeBuffer = null;
+        options.TargetTime = 0.5;
+        Assert.Null(idle ? VarDiffManager.IdleUpdate(context, options, clock) :
+            VarDiffManager.Update(context, options, clock));
     }
 }

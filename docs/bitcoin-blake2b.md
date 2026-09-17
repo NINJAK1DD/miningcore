@@ -257,18 +257,29 @@ Server-driven BLAKE2b VarDiff has an effective maximum of `65535 * 2^208`, the h
 representable difficulty (target 1), when `maxDiff` is omitted. A configured lower maximum
 is honored. This runtime ceiling applies to both share-triggered and idle retargeting
 without rewriting the operator's configuration. A genuine zero-length interval window
-uses a conservative **0.1-second mean interval**, then applies normal proportional
-retargeting, `maxDelta` and difficulty bounds. For example, difficulty 10 with a ten-second
-target becomes 1,000 without a delta limit, or 12 with `maxDelta: 2`; it does not automatically
-jump to the protocol maximum. For target intervals at or below 0.1 seconds, an unresolved
-zero window holds the current difficulty, subject to configured bounds, instead of
-lowering it. Positive measured intervals retain their proportional calculation.
+uses a conservative mean of **1 / min(interval count, 10) seconds**, including the current
+interval, then applies normal proportional retargeting, `maxDelta` and difficulty bounds.
+A full window uses 0.1 seconds; two intervals use 0.5 seconds. For example, difficulty 10
+with a ten-second target and a full zero window becomes 1,000 without a delta limit, or 12
+with `maxDelta: 2`; two zero intervals produce 200 without a delta limit. It does not
+automatically jump to the protocol maximum. For target intervals at or below the estimate,
+an unresolved zero window holds the current difficulty, subject to configured bounds,
+instead of lowering it. Positive measured intervals retain their proportional calculation.
 Extreme positive ratios avoid
 intermediate overflow/underflow, and delta limiting uses the previous difficulty plus
 or minus the limit, avoiding cancellation. The shared VarDiff arithmetic fixes also apply
 to other pool families, which retain their existing effective maximum.
 
+The BLAKE2b assignment gate covers the entire share/idle VarDiff operation: checking whether
+VarDiff is enabled, calculating the retarget and publishing its assignment. A concurrent
+fixed-difficulty configure or static authorization therefore either follows a completely
+published retarget or disables VarDiff before it can calculate. No stale result can replace
+the fixed assignment. Shared manager entry points also safely ignore a disabled context.
+
 Both share and idle updates read the wall clock while holding the VarDiff state lock.
+A no-op idle sweep leaves the share timestamp, interval buffer and assignment markers
+unchanged, so a real share in the same second still measures from the previous share or
+actual retarget. An idle update advances the baseline only when difficulty really changes.
 A backward timestamp, future retarget timestamp or invalid interval history resets the
 measurement window and timing baseline without changing difficulty, jobs or the last
 actual assignment marker. Later valid samples resume normal retargeting. Negative elapsed
@@ -276,6 +287,10 @@ time is never treated as a fast-miner observation. Invalid/non-finite arithmetic
 produce no retarget. These shared changes are tracked in
 [#184](https://github.com/NINJAK1DD/miningcore/issues/184); interval measurement still uses
 the wall clock, with explicit rollback recovery rather than a new monotonic timer.
+Forward clock steps can still resemble an idle interval and lower difficulty within
+configured bounds; [#185](https://github.com/NINJAK1DD/miningcore/issues/185) tracks a
+cross-family migration to monotonic elapsed time. Shared startup validation rejects non-finite or non-positive minimum
+and configured maximum difficulties; omitting `maxDiff` remains supported.
 
 When exhausted:
 

@@ -10,12 +10,13 @@ public static class VarDiffManager
 {
     private const int BufferSize = 10;  // Last 10 shares should be enough
     private const double SafetyMargin = 1;    // ensure we don't miss a cycle due a sub-second fraction delta;
-    private const double ZeroWindowAverage = 1d / BufferSize;
 
     public static double? Update(WorkerContextBase context, VarDiffConfig options, IMasterClock clock,
         double protocolMaximum = double.MaxValue)
     {
         var ctx = context.VarDiff;
+        if(ctx == null)
+            return null;
 
         try
         {
@@ -39,7 +40,8 @@ public static class VarDiffManager
 
                 // Always calculate the time until now even there is no share submitted.
                 var timeTotal = ctx.TimeBuffer.Sum() + timeDelta;
-                var avg = timeTotal / (ctx.TimeBuffer.Size + 1);
+                var sampleCount = ctx.TimeBuffer.Size + 1;
+                var avg = timeTotal / sampleCount;
 
                 // Once there is a share submitted, store the time into the buffer and update the last time.
                 ctx.TimeBuffer.PushBack(timeDelta);
@@ -54,7 +56,7 @@ public static class VarDiffManager
                     return null;
 
                 // Possible New Diff
-                if(TryCalculateDifficulty(difficulty, options.TargetTime, avg, maxDiff, out var newDiff) &&
+                if(TryCalculateDifficulty(difficulty, options.TargetTime, avg, sampleCount, maxDiff, out var newDiff) &&
                    TryApplyNewDiff(ref newDiff, difficulty, minDiff, maxDiff, ts, ctx, options, now))
                     return newDiff;
             }
@@ -79,6 +81,8 @@ public static class VarDiffManager
         double protocolMaximum = double.MaxValue)
     {
         var ctx = context.VarDiff;
+        if(ctx == null)
+            return null;
 
         // abort if a regular update is just happening
         if(!Monitor.TryEnter(ctx))
@@ -100,20 +104,23 @@ public static class VarDiffManager
             if(timeDelta < options.RetargetTime)
                 return null;
 
-            // update the last time
-            ctx.LastTs = ts;
-
             var minDiff = options.MinDiff;
             var maxDiff = Math.Min(options.MaxDiff ?? protocolMaximum, protocolMaximum);
 
             // Always calculate the time until now even there is no share submitted.
             var timeTotal = (ctx.TimeBuffer?.Sum() ?? 0) + (timeDelta - SafetyMargin);
-            var avg = timeTotal / ((ctx.TimeBuffer?.Size ?? 0) + 1);
+            var sampleCount = (ctx.TimeBuffer?.Size ?? 0) + 1;
+            var avg = timeTotal / sampleCount;
 
             // Possible New Diff
-            if(TryCalculateDifficulty(difficulty, options.TargetTime, avg, maxDiff, out var newDiff) &&
+            if(TryCalculateDifficulty(difficulty, options.TargetTime, avg, sampleCount, maxDiff, out var newDiff) &&
                TryApplyNewDiff(ref newDiff, difficulty, minDiff, maxDiff, ts, ctx, options, now))
+            {
+                // A no-op sweep is not a share. Preserve the next real share's
+                // elapsed interval unless a new assignment starts a fresh window.
+                ctx.LastTs = ts;
                 return newDiff;
+            }
         }
 
         finally
@@ -140,7 +147,7 @@ public static class VarDiffManager
         return true;
     }
 
-    private static bool TryCalculateDifficulty(double difficulty, double targetTime, double average,
+    private static bool TryCalculateDifficulty(double difficulty, double targetTime, double average, int sampleCount,
         double maximum, out double result)
     {
         result = 0;
@@ -151,18 +158,19 @@ public static class VarDiffManager
             return false;
 
         // A zero window only says samples fit inside the one-second resolution.
-        // Use 0.1 s as a conservative mean, then honor MaxDelta and normal bounds;
-        // do not park a fast miner at the protocol ceiling by construction.
+        // Scale the estimate to the available intervals (at most ten), so a
+        // sparse window cannot claim the same rate as a full zero window.
         if(average == 0)
         {
+            var zeroWindowAverage = 1d / Math.Min(sampleCount, BufferSize);
             // Coarse zero samples cannot justify a downward adjustment when
             // the configured target interval is already at/below this estimate.
-            if(targetTime <= ZeroWindowAverage)
+            if(targetTime <= zeroWindowAverage)
             {
                 result = Math.Min(difficulty, maximum);
                 return true;
             }
-            average = ZeroWindowAverage;
+            average = zeroWindowAverage;
         }
 
         var product = difficulty * targetTime;

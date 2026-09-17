@@ -152,7 +152,7 @@ public abstract class PoolBase : StratumServer,
     // An effective runtime bound, independent of the operator's nullable MaxDiff.
     protected virtual double MaximumVarDiff => double.MaxValue;
 
-    protected async Task UpdateVarDiffAsync(StratumConnection connection, bool idle, CancellationToken ct)
+    protected virtual async Task UpdateVarDiffAsync(StratumConnection connection, bool idle, CancellationToken ct)
     {
         var context = connection.Context;
 

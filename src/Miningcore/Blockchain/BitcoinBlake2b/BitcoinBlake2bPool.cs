@@ -314,13 +314,16 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
 
     protected override double MaximumVarDiff => BitcoinBlake2bDifficulty.Maximum;
 
-    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken ct)
+    protected override async Task UpdateVarDiffAsync(StratumConnection connection, bool idle, CancellationToken ct)
     {
+        // Include the enabled-state check and calculation in the assignment
+        // transition. A fixed-difficulty request must not disable VarDiff while
+        // a calculation based on the previous assignment is awaiting publication.
         var gate = await EnterAssignmentAsync(connection, ct);
         try
         {
             if(!IsAdmissionClosed(connection))
-                await base.OnVarDiffUpdateAsync(connection, newDiff, ct);
+                await base.UpdateVarDiffAsync(connection, idle, ct);
         }
         finally { gate.Release(); }
     }
