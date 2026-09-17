@@ -84,7 +84,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         var (config, manager, clock, bus) = Fixture();
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
         using var logs = new NLog.LogFactory();
-        var target = new NLog.Targets.MemoryTarget { Layout = "${message}" };
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}${exception:format=tostring}" };
         var logging = new NLog.Config.LoggingConfiguration();
         logging.AddRule(NLog.LogLevel.Info, NLog.LogLevel.Fatal, target);
         logs.Configuration = logging;
@@ -114,7 +114,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         Assert.Empty(context.validJobs);
         if(!nicehash)
             Assert.Equal(1e-9, context.Difficulty);
-        Assert.Single(target.Logs.Where(x => x.Contains("AssignmentPublicationFailure")));
+        AssertPublicationCause(target, nicehash ? "share-rejected" : "argument", nicehash ? (int) StratumError.Other : null);
         bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
             x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());
     }

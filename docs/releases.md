@@ -148,6 +148,9 @@ leave a live partially committed assignment: admission closes, jobs clear and th
 disconnects. Already accepted shares retain their valid accounting. Cancellation before the
 operation leaves the assignment untouched; cancellation during the operation closes it
 without publication-failure telemetry when the host token is canceled.
+The single `AssignmentPublicationFailure` record includes a bounded `failure` category
+and optional `code` across idle, accepted-share and request paths. Operators can distinguish
+unavailable work from I/O failures without raw exception text or new metric labels.
 
 ## Unreleased: Bitcoin-family verified job gate
 

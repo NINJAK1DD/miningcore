@@ -34,7 +34,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
         await Subscribe(wire);
         using var logs = new NLog.LogFactory();
-        var target = new NLog.Targets.MemoryTarget { Layout = "${message}" };
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}${exception:format=tostring}" };
         var logging = new NLog.Config.LoggingConfiguration();
         logging.AddRule(NLog.LogLevel.Info, NLog.LogLevel.Fatal, target);
         logs.Configuration = logging;
@@ -74,7 +74,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
                     cancel.Cancel();
                 if(failure.Contains("cancellation"))
                     throw new OperationCanceledException(cancel.Token);
-                throw new InvalidOperationException("job construction failed");
+                throw new InvalidOperationException("sensitive-exception-marker\njob construction failed");
             };
 
         try
@@ -108,6 +108,14 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
             Assert.False(wire.MiningFaulted);
             var expectedEvents = failure == "host-cancellation" ? 0 : 1;
             Assert.Equal(expectedEvents, target.Logs.Count(x => x.Contains("AssignmentPublicationFailure")));
+            if(expectedEvents != 0)
+                AssertPublicationCause(target, failure switch
+                {
+                    "missing-job" => "job-not-found",
+                    "send-queue" => "io",
+                    "unexpected-cancellation" => "cancelled",
+                    _ => "invalid-operation",
+                }, failure == "missing-job" ? (int) StratumError.JobNotFound : null);
             bus.Received(expectedEvents).SendMessage(Arg.Is<TelemetryEvent>(x =>
                 x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());
         }

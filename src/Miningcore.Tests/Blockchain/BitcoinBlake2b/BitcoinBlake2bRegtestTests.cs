@@ -245,6 +245,12 @@ public class BitcoinBlake2bRegtestTests : TestBase
                 {
                     if(failPublication)
                     {
+                        using var logs = new NLog.LogFactory();
+                        var target = new NLog.Targets.MemoryTarget { Layout = "${message}|${exception:format=tostring}" };
+                        var logging = new NLog.Config.LoggingConfiguration();
+                        logging.AddRule(NLog.LogLevel.Info, NLog.LogLevel.Fatal, target);
+                        logs.Configuration = logging;
+                        wire.SetLogger(logs.GetLogger("accepted-proof-publication"));
                         var context = worker.ContextAs<BitcoinWorkerContext>();
                         var options = new VarDiffConfig { MinDiff = 1e-9, MaxDiff = 4e-9,
                             TargetTime = 10, RetargetTime = 1, VariancePercent = 0 };
@@ -270,6 +276,11 @@ public class BitcoinBlake2bRegtestTests : TestBase
                         Assert.Equal(valid + 1, context.Stats.ValidShares);
                         Assert.Equal(invalid, context.Stats.InvalidShares);
                         Assert.Empty(context.validJobs);
+                        var diagnostic = Assert.Single(target.Logs.Where(x => x.Contains("AssignmentPublicationFailure")));
+                        Assert.EndsWith("|", diagnostic); // No exception attached to the NLog event.
+                        var cause = JObject.Parse(diagnostic[diagnostic.IndexOf('{')..^1]);
+                        Assert.Equal("job-not-found", cause["failure"].Value<string>());
+                        Assert.Equal((int) StratumError.JobNotFound, cause["code"].Value<int>());
                         bus.Received(1).SendMessage(Arg.Any<Share>(), Arg.Any<string>());
                         bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
                             x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());

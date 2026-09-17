@@ -16,6 +16,17 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public partial class BitcoinBlake2bDifficultyBudgetTests
 {
+    private static void AssertPublicationCause(NLog.Targets.MemoryTarget target, string category, int? code = null)
+    {
+        var message = Assert.Single(target.Logs.Where(x => x.Contains("AssignmentPublicationFailure")));
+        var record = JObject.Parse(message[message.IndexOf('{')..]);
+        Assert.Equal(category, record["failure"].Value<string>());
+        Assert.Equal(code, record["code"]?.Value<int>());
+        Assert.All(record.Properties(), property =>
+            Assert.Contains(property.Name, new[] { "event", "connectionId", "failure", "code" }));
+        Assert.DoesNotContain("sensitive-exception-marker", message);
+    }
+
     private static object[] PublicationParameters(string method) => method switch
     {
         "mining.subscribe" => new object[] { "publication-test" },
@@ -38,7 +49,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         if(method != "mining.subscribe")
             await Subscribe(wire);
         using var logs = new NLog.LogFactory();
-        var target = new NLog.Targets.MemoryTarget { Layout = "${message}" };
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}${exception:format=tostring}" };
         var logging = new NLog.Config.LoggingConfiguration();
         logging.AddRule(NLog.LogLevel.Info, NLog.LogLevel.Fatal, target);
         logs.Configuration = logging;
@@ -59,7 +70,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         Assert.DoesNotContain(messages, x => x["method"]?.Value<string>() == "mining.notify");
         Assert.Equal(jobs, wire.JobsCreated);
         Assert.False(wire.MiningFaulted); // A per-connection publication failure is not a pool fault.
-        Assert.Single(target.Logs.Where(x => x.Contains("AssignmentPublicationFailure")));
+        AssertPublicationCause(target, "job-not-found", (int) StratumError.JobNotFound);
         Assert.Empty(wire.Connection.ContextAs<BitcoinWorkerContext>().validJobs);
         bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
             x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());

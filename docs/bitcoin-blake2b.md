@@ -516,9 +516,9 @@ PostgreSQL ledger test additionally requires `MININGCORE_TEST_POSTGRES`.
   as invalid. Check the `publication-failure` admission-counter outcome.
   No contradictory second response is sent. Reconnect for a fresh subscription and
   assignment. The counter combines work-unavailability and outbound-queue failures;
-  it does not identify their cause. For idle updates, inspect the accompanying
-  `PoolBase.RunVardiffIdleUpdaterAsync` RPC consumer diagnostic's `failure` and
-  `failureCode` fields. A `job-not-found` category points to work availability or pool
+  it does not identify their cause. Across idle, accepted-share and request paths,
+  inspect the `AssignmentPublicationFailure` record's `failure` and optional `code`
+  fields. A `job-not-found` category (code `21`) points to work availability or pool
   isolation; an `io` category can indicate send-queue pressure, so also check whether
   the miner/proxy drains responses and whether its network connection is stalled.
   An `io` category alone does not prove the miner caused the failure. Diagnostics use

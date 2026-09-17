@@ -343,7 +343,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 // linked/wrapped cancellation can carry a different token. An
                 // unrelated cancellation racing shutdown is also suppressed;
                 // this affects diagnostics only, never terminal invalidation.
-                CloseAssignmentPublicationFailure(connection,
+                CloseAssignmentPublicationFailure(connection, ex,
                     !(ex is OperationCanceledException && (ct.IsCancellationRequested || operations.IsClosed)));
                 throw;
             }
@@ -474,14 +474,14 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             // that happens, a publication failure is terminal: never send a second
             // response or retain a live, partially published assignment. Also latch
             // admission closed so requests already buffered cannot resume this session.
-            CloseAssignmentPublicationFailure(connection);
+            CloseAssignmentPublicationFailure(connection, error);
             return Task.CompletedTask;
         }
 
         return base.OnRequestErrorAsync(connection, request, error, false);
     }
 
-    private void CloseAssignmentPublicationFailure(StratumConnection connection, bool reportFailure = true)
+    private void CloseAssignmentPublicationFailure(StratumConnection connection, Exception failure, bool reportFailure = true)
     {
         // Even a submit-only session needs the latch: disconnect alone does not
         // prevent dispatch of further lines already in the receive buffer.
@@ -493,7 +493,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             if(reportFailure)
             {
                 StratumDiagnostics.Write(logger, NLog.LogLevel.Info,
-                    StratumDiagnostics.Event.AssignmentPublicationFailure, connection.ConnectionId);
+                    StratumDiagnostics.Event.AssignmentPublicationFailure, connection.ConnectionId, failure: failure);
                 PublishTelemetry(TelemetryCategory.StratumAdmission, "publication-failure", TimeSpan.Zero);
             }
         }
@@ -528,10 +528,10 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         {
             Blake2bManager.ValidateWorkerDifficulty(context.Difficulty);
         }
-        catch(ArgumentOutOfRangeException)
+        catch(ArgumentOutOfRangeException ex)
         {
             context.SetDifficulty(previousDifficulty);
-            CloseAssignmentPublicationFailure(connection);
+            CloseAssignmentPublicationFailure(connection, ex);
             return;
         }
         if(context.IsSubscribed && method != BitcoinStratumMethods.Subscribe)
