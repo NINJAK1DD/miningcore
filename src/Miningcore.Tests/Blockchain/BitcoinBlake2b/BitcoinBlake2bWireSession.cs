@@ -177,7 +177,11 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal Task AnnounceJobAsync(object jobParams) => pool.Announce(jobParams);
     internal object CreateJob() => pool.CreateJob(Connection);
     internal Task UpdateVarDiffAsync(double difficulty) => pool.UpdateVarDiff(Connection, difficulty);
-    internal Task RetargetVarDiffAsync(bool idle) => ((TestPool) pool).RetargetVarDiff(Connection, idle);
+    internal Task RetargetVarDiffAsync(bool idle, CancellationToken ct = default) => ((TestPool) pool).RetargetVarDiff(Connection, idle, ct);
+    // Reproduce a decoded request already owned by the receive loop when a
+    // concurrent idle producer closes the session. Uses the production dispatcher.
+    internal Task DispatchBufferedAsync(string method, params object[] parameters) => pool.Dispatch(Connection,
+        new JsonRpcRequest { Id = 1000, Method = method, Params = JArray.FromObject(parameters) }, CancellationToken.None);
 
     internal async Task AssertDisconnectedAsync()
     {
@@ -265,8 +269,8 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
             try { await OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None); }
             finally { gate.Release(); }
         }
-        internal Task RetargetVarDiff(StratumConnection connection, bool idle) =>
-            UpdateVarDiffAsync(connection, idle, CancellationToken.None);
+        internal Task RetargetVarDiff(StratumConnection connection, bool idle, CancellationToken ct) =>
+            UpdateVarDiffAsync(connection, idle, ct);
         public Task Announce(object jobParams) => OnNewJobAsync(jobParams);
         public object CreateJob(StratumConnection connection) => CreateWorkerJob(connection, false);
     }

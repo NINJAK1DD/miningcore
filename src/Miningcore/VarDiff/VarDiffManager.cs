@@ -162,6 +162,9 @@ public static class VarDiffManager
         // sparse window cannot claim the same rate as a full zero window.
         if(average == 0)
         {
+            // A full buffer plus the current interval gives eleven samples.
+            // Cap at ten to retain the conservative 0.1-second full-window
+            // estimate instead of increasing the retarget another ten percent.
             var zeroWindowAverage = 1d / Math.Min(sampleCount, BufferSize);
             // Coarse zero samples cannot justify a downward adjustment when
             // the configured target interval is already at/below this estimate.

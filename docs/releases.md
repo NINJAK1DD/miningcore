@@ -114,6 +114,13 @@ are described separately below.
 
 ## Unreleased: shared VarDiff timing and arithmetic
 
+**Upgrade action required:** every configured `varDiff` block, across all pool families,
+must specify a finite `minDiff` greater than zero. Omitting `minDiff` deserializes to zero
+and now fails startup validation, so a previously running configuration may fail to restart
+after upgrading. Before restarting, set an explicit positive `minDiff` appropriate for the
+coin and endpoint in every `varDiff` block. A configured `maxDiff` must also be finite,
+positive and at least `minDiff`; omitting `maxDiff` remains supported.
+
 [#184](https://github.com/NINJAK1DD/miningcore/issues/184) corrects shared VarDiff behavior
 across pool families. Share and idle producers sample time under the same state lock.
 Backward time or invalid interval history rebases the timing window without retargeting
@@ -134,6 +141,13 @@ policy. Shared startup validation now rejects non-finite or non-positive `minDif
 configured `maxDiff` values; omitted maxima remain supported. No operator configuration
 is rewritten. Forward wall-clock steps still resemble idle intervals; monotonic elapsed
 measurement is tracked separately in [#185](https://github.com/NINJAK1DD/miningcore/issues/185).
+
+BLAKE2b now makes VarDiff publication failures terminal inside the assignment gate for
+both idle and share updates. Missing work, a full send queue or another exception cannot
+leave a live partially committed assignment: admission closes, jobs clear and the connection
+disconnects. Already accepted shares retain their valid accounting. Cancellation before the
+operation leaves the assignment untouched; cancellation during the operation closes it
+without publication-failure telemetry when the host token is canceled.
 
 ## Unreleased: Bitcoin-family verified job gate
 

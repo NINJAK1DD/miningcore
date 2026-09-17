@@ -322,8 +322,24 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         var gate = await EnterAssignmentAsync(connection, ct);
         try
         {
-            if(!IsAdmissionClosed(connection))
+            if(IsAdmissionClosed(connection))
+                return;
+            ct.ThrowIfCancellationRequested();
+            try
+            {
                 await base.UpdateVarDiffAsync(connection, idle, ct);
+            }
+            catch(Exception ex)
+            {
+                // Idle updates have no request-error boundary. Publication can
+                // fail after difficulty commits but before its job is queued;
+                // latch closed while still holding the assignment gate.
+                // Cancellation after entering the operation also invalidates any
+                // partial assignment, but ordinary shutdown is not a failure metric.
+                CloseAssignmentPublicationFailure(connection,
+                    !(ex is OperationCanceledException && (ct.IsCancellationRequested || operations.IsClosed)));
+                throw;
+            }
         }
         finally { gate.Release(); }
     }
@@ -458,7 +474,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         return base.OnRequestErrorAsync(connection, request, error, false);
     }
 
-    private void CloseAssignmentPublicationFailure(StratumConnection connection)
+    private void CloseAssignmentPublicationFailure(StratumConnection connection, bool reportFailure = true)
     {
         // Even a submit-only session needs the latch: disconnect alone does not
         // prevent dispatch of further lines already in the receive buffer.
@@ -467,9 +483,12 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         if(budget.TryClose())
         {
             connection.ContextAs<BitcoinWorkerContext>().ClearJobs();
-            StratumDiagnostics.Write(logger, NLog.LogLevel.Info,
-                StratumDiagnostics.Event.AssignmentPublicationFailure, connection.ConnectionId);
-            PublishTelemetry(TelemetryCategory.StratumAdmission, "publication-failure", TimeSpan.Zero);
+            if(reportFailure)
+            {
+                StratumDiagnostics.Write(logger, NLog.LogLevel.Info,
+                    StratumDiagnostics.Event.AssignmentPublicationFailure, connection.ConnectionId);
+                PublishTelemetry(TelemetryCategory.StratumAdmission, "publication-failure", TimeSpan.Zero);
+            }
         }
         Disconnect(connection);
     }

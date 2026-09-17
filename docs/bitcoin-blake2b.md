@@ -275,6 +275,18 @@ VarDiff is enabled, calculating the retarget and publishing its assignment. A co
 fixed-difficulty configure or static authorization therefore either follows a completely
 published retarget or disables VarDiff before it can calculate. No stale result can replace
 the fixed assignment. Shared manager entry points also safely ignore a disabled context.
+Every VarDiff check following an accepted share acquires this per-connection gate, even
+when no retarget is due. This adds synchronization with that connection's own assignment
+producers; it keeps the enabled-state check and calculation consistent with fixed-difficulty
+changes. Share validation and accounting remain outside the gate.
+
+VarDiff also owns its failure boundary while holding the gate. If work construction or
+queueing fails, it closes admission, clears jobs and disconnects before another producer can
+publish. This applies to periodic idle updates as well as accepted-share updates, so a
+background error logger cannot leave a live hidden difficulty. Restored work or buffered
+requests cannot resume that session. Host cancellation before the operation leaves it
+untouched; cancellation during the operation invalidates the session without classifying
+ordinary host shutdown as a publication failure. Accepted proofs remain valid.
 
 Both share and idle updates read the wall clock while holding the VarDiff state lock.
 A no-op idle sweep leaves the share timestamp, interval buffer and assignment markers
@@ -291,6 +303,12 @@ Forward clock steps can still resemble an idle interval and lower difficulty wit
 configured bounds; [#185](https://github.com/NINJAK1DD/miningcore/issues/185) tracks a
 cross-family migration to monotonic elapsed time. Shared startup validation rejects non-finite or non-positive minimum
 and configured maximum difficulties; omitting `maxDiff` remains supported.
+
+**Before upgrading:** set an explicit finite, positive `minDiff` appropriate for the coin
+and endpoint in every `varDiff` block, including other pool families. An omitted `minDiff`
+defaults to zero and now prevents startup. A previously working configuration may therefore
+fail on its next restart unless corrected. Configured `maxDiff` must also be finite, positive
+and at least `minDiff`; it may still be omitted.
 
 When exhausted:
 
