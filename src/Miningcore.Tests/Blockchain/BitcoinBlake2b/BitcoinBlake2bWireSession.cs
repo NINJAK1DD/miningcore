@@ -180,8 +180,10 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal Task RetargetVarDiffAsync(bool idle, CancellationToken ct = default) => ((TestPool) pool).RetargetVarDiff(Connection, idle, ct);
     // Reproduce a decoded request already owned by the receive loop when a
     // concurrent idle producer closes the session. Uses the production dispatcher.
-    internal Task DispatchBufferedAsync(string method, params object[] parameters) => pool.Dispatch(Connection,
-        new JsonRpcRequest { Id = 1000, Method = method, Params = JArray.FromObject(parameters) }, CancellationToken.None);
+    internal Task DispatchBufferedAsync(string method, params object[] parameters) => DispatchBufferedAsync(CancellationToken.None, method, parameters);
+
+    internal Task DispatchBufferedAsync(CancellationToken ct, string method, params object[] parameters) => pool.Dispatch(Connection,
+        new JsonRpcRequest { Id = 1000, Method = method, Params = JArray.FromObject(parameters) }, ct);
 
     internal async Task AssertDisconnectedAsync()
     {

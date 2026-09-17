@@ -307,13 +307,14 @@ public class BitcoinBlake2bRegtestTests : TestBase
                         Assert.True(response["result"]?.Value<bool>() == true, response.ToString());
                         if(zeroAverage)
                         {
-                            var expected = limitDelta ? 2e-9 : 1e-7;
+                            var expected = limitDelta ? 2e-9 : 1e-4;
                             var update = await wire.ReadAsync();
                             Assert.Equal("mining.set_difficulty", update["method"].Value<string>());
-                            Assert.Equal(expected, update["params"][0].Value<double>());
+                            Assert.InRange(context.Difficulty / expected, 0.99999999999999, 1.00000000000001);
+                            Assert.Equal(context.Difficulty, update["params"][0].Value<double>());
                             var work = await wire.ReadAsync();
                             Assert.Equal("mining.notify", work["method"].Value<string>());
-                            Assert.Equal(BitcoinBlake2bDifficulty.Create(expected).Bits.ToString("x8"), work["params"][6].Value<string>());
+                            Assert.Equal(BitcoinBlake2bDifficulty.Create(context.Difficulty).Bits.ToString("x8"), work["params"][6].Value<string>());
                             Assert.True(worker.IsAlive);
                             Assert.Equal(valid + 1, context.Stats.ValidShares);
                             Assert.Equal(invalid, context.Stats.InvalidShares);

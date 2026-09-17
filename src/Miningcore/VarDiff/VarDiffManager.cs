@@ -157,15 +157,15 @@ public static class VarDiffManager
            !double.IsFinite(maximum) || maximum <= 0)
             return false;
 
-        // A zero window only says samples fit inside the one-second resolution.
+        // A zero window only says samples fit inside one Unix-millisecond bucket.
         // Scale the estimate to the available intervals (at most ten), so a
         // sparse window cannot claim the same rate as a full zero window.
         if(average == 0)
         {
             // A full buffer plus the current interval gives eleven samples.
-            // Cap at ten to retain the conservative 0.1-second full-window
+            // Cap at ten to retain the conservative 0.0001-second full-window
             // estimate instead of increasing the retarget another ten percent.
-            var zeroWindowAverage = 1d / Math.Min(sampleCount, BufferSize);
+            var zeroWindowAverage = DateExtensions.UnixSecondsResolution / Math.Min(sampleCount, BufferSize);
             // Coarse zero samples cannot justify a downward adjustment when
             // the configured target interval is already at/below this estimate.
             if(targetTime <= zeroWindowAverage)

@@ -257,11 +257,12 @@ Server-driven BLAKE2b VarDiff has an effective maximum of `65535 * 2^208`, the h
 representable difficulty (target 1), when `maxDiff` is omitted. A configured lower maximum
 is honored. This runtime ceiling applies to both share-triggered and idle retargeting
 without rewriting the operator's configuration. A genuine zero-length interval window
-uses a conservative mean of **1 / min(interval count, 10) seconds**, including the current
+uses the Unix-millisecond timestamp resolution: a conservative mean of
+**0.001 / min(interval count, 10) seconds**, including the current
 interval, then applies normal proportional retargeting, `maxDelta` and difficulty bounds.
-A full window uses 0.1 seconds; two intervals use 0.5 seconds. For example, difficulty 10
-with a ten-second target and a full zero window becomes 1,000 without a delta limit, or 12
-with `maxDelta: 2`; two zero intervals produce 200 without a delta limit. It does not
+A full window uses 0.0001 seconds; two intervals use 0.0005 seconds. For example, difficulty 10
+with a ten-second target and a full zero window becomes 1,000,000 without a delta limit, or 12
+with `maxDelta: 2`; two zero intervals produce 200,000 without a delta limit. It does not
 automatically jump to the protocol maximum. For target intervals at or below the estimate,
 an unresolved zero window holds the current difficulty, subject to configured bounds,
 instead of lowering it. Positive measured intervals retain their proportional calculation.
@@ -288,9 +289,16 @@ requests cannot resume that session. Host cancellation before the operation leav
 untouched; cancellation during the operation invalidates the session without classifying
 ordinary host shutdown as a publication failure. Accepted proofs remain valid.
 
+Subscribe, configure, suggest and static authorization use the same terminal policy
+for failed responses or assignment publication, including queue exhaustion, cancellation
+and unexpected exceptions. Cleanup happens while the assignment gate is owned. Suggestions
+propagate notification failures so a recovered queue cannot accept an unmatched job.
+Pre-response protocol errors that leave assignment state untouched remain recoverable;
+authorization RPC and subscription autodiff lookups remain outside the gate.
+
 Both share and idle updates read the wall clock while holding the VarDiff state lock.
 A no-op idle sweep leaves the share timestamp, interval buffer and assignment markers
-unchanged, so a real share in the same second still measures from the previous share or
+unchanged, so a real share in the same millisecond still measures from the previous share or
 actual retarget. An idle update advances the baseline only when difficulty really changes.
 A backward timestamp, future retarget timestamp or invalid interval history resets the
 measurement window and timing baseline without changing difficulty, jobs or the last
@@ -308,7 +316,10 @@ and configured maximum difficulties; omitting `maxDiff` remains supported.
 and endpoint in every `varDiff` block, including other pool families. An omitted `minDiff`
 defaults to zero and now prevents startup. A previously working configuration may therefore
 fail on its next restart unless corrected. Configured `maxDiff` must also be finite, positive
-and at least `minDiff`; it may still be omitted.
+and at least `minDiff`; it may still be omitted. `targetTime` and `retargetTime` must
+be finite and greater than zero. A specified `maxDelta` must be finite and nonnegative;
+zero or omission disables delta limiting. Correct nonfinite or negative values before
+upgrading; these startup checks apply across all pool families.
 
 When exhausted:
 
@@ -521,7 +532,15 @@ PostgreSQL ledger test additionally requires `MININGCORE_TEST_POSTGRES`.
   fields. A `job-not-found` category (code `21`) points to work availability or pool
   isolation; an `io` category can indicate send-queue pressure, so also check whether
   the miner/proxy drains responses and whether its network connection is stalled.
-  An `io` category alone does not prove the miner caused the failure. Diagnostics use
+  An `io` category alone does not prove the miner caused the failure. An `argument`
+  or `share-rejected` category (including code `20`) can indicate a difficulty outside
+  the supported BLAKE2b range reaching publication: check miner-requested/static
+  values and any autodiff source, then the assignment path. These are general error
+  categories, so they do not uniquely identify an invalid difficulty. An
+  `invalid-operation` category points to a failed operation/state invariant;
+  `cancelled` indicates cancellation outside observed host shutdown. Correlate these
+  with pool lifecycle diagnostics; ordinary host cancellation closes partial
+  assignments without emitting this event. Diagnostics use
   bounded categories and codes; raw exception messages are withheld. This event does
   not by itself mean the miner exceeded its negotiation allowance.
 - **Startup refuses a node:** check exact version, RPC authentication, selected chain,

@@ -182,12 +182,17 @@ public class VarDiffConfigValidator : AbstractValidator<VarDiffConfig>
             .WithMessage("VarDiff: variancePercent must be a percentage betwen 1 and 100");
 
         RuleFor(j => j.TargetTime)
-            .GreaterThan(0)
-            .WithMessage("VarDiff: targetTime invalid");
+            .Must(x => double.IsFinite(x) && x > 0)
+            .WithMessage("VarDiff: targetTime must be finite and greater than zero");
 
         RuleFor(j => j.RetargetTime)
-            .GreaterThan(0)
-            .WithMessage("VarDiff: retargetTime invalid");
+            .Must(x => double.IsFinite(x) && x > 0)
+            .WithMessage("VarDiff: retargetTime must be finite and greater than zero");
+
+        // Zero retains the existing disabled-delta-limit behavior.
+        RuleFor(j => j.MaxDelta)
+            .Must(x => !x.HasValue || double.IsFinite(x.Value) && x.Value >= 0)
+            .WithMessage("VarDiff: maxDelta must be finite and nonnegative when specified");
     }
 }
 

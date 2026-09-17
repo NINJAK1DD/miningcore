@@ -119,7 +119,10 @@ must specify a finite `minDiff` greater than zero. Omitting `minDiff` deserializ
 and now fails startup validation, so a previously running configuration may fail to restart
 after upgrading. Before restarting, set an explicit positive `minDiff` appropriate for the
 coin and endpoint in every `varDiff` block. A configured `maxDiff` must also be finite,
-positive and at least `minDiff`; omitting `maxDiff` remains supported.
+positive and at least `minDiff`; omitting `maxDiff` remains supported. `targetTime` and
+`retargetTime` must be finite and positive. A specified `maxDelta` must be finite and
+nonnegative; zero or omission still disables delta limiting. Previously accepted infinity
+or negative delta limits now fail startup and must be corrected before restarting.
 
 [#184](https://github.com/NINJAK1DD/miningcore/issues/184) corrects shared VarDiff behavior
 across pool families. Share and idle producers sample time under the same state lock.
@@ -127,12 +130,13 @@ Backward time or invalid interval history rebases the timing window without reta
 or changing the last actual assignment marker; valid later samples resume adaptation.
 
 No-op idle sweeps preserve the real-share timing baseline instead of creating an artificial
-zero interval for a share in the same second. Genuine zero-length windows use a conservative
-mean of `1 / min(interval count, 10)` seconds, counting the current interval, for proportional
-retargeting instead of automatically jumping to a difficulty ceiling. Full windows still use
-0.1 seconds; sparse windows use a larger estimate. Configured `maxDelta`
+zero interval for a share in the same millisecond. Genuine zero-length windows use a conservative
+mean of `0.001 / min(interval count, 10)` seconds, counting the current interval, for proportional
+retargeting instead of automatically jumping to a difficulty ceiling. Based on the actual
+Unix-millisecond timestamp resolution, full windows use
+0.0001 seconds; sparse windows use a larger estimate. Configured `maxDelta`
 and difficulty bounds still apply. This avoids parking fast miners at an extreme target
-solely because whole-second timestamps could not resolve their intervals. Normal positive
+solely because millisecond-quantized timestamps could not resolve their intervals. Normal positive
 interval calculations are preserved. Zero windows hold difficulty for target intervals
 at or below the estimate, subject to configured bounds. Extreme ratios avoid intermediate overflow/underflow,
 delta limits avoid cancellation, and invalid/non-finite inputs produce no retarget.
@@ -151,6 +155,11 @@ without publication-failure telemetry when the host token is canceled.
 The single `AssignmentPublicationFailure` record includes a bounded `failure` category
 and optional `code` across idle, accepted-share and request paths. Operators can distinguish
 unavailable work from I/O failures without raw exception text or new metric labels.
+Subscribe, configure, suggest and static authorization also invalidate failed assignments
+under the gate for I/O, unexpected exceptions and cancellation. BLAKE2b suggestions
+propagate notification failures, so a queue that recovers after rejecting the difficulty
+cannot receive an unmatched job. Failed response enqueues are covered even when configure
+already changed difficulty; recoverable pre-response protocol errors remain supported.
 
 ## Unreleased: Bitcoin-family verified job gate
 

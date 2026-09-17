@@ -190,12 +190,14 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         for(var i = 0; i < 10; i++)
             context.VarDiff.TimeBuffer.PushBack(0);
         await wire.RetargetVarDiffAsync(idle);
-        var expected = limitDelta ? 2e-9 : explicitMaximum ? 3e-9 : 1e-7;
-        await Assignment(wire, expected);
+        var expected = limitDelta ? 2e-9 : explicitMaximum ? 3e-9 : 1e-4;
+        Assert.InRange(context.Difficulty / expected, 0.99999999999999, 1.00000000000001);
+        // The proportional result can differ by one ULP from a decimal literal;
+        // announcements and immutable target binding must still match it exactly.
+        await Assignment(wire, context.Difficulty);
         await Fence(wire);
         Assert.True(wire.Connection.IsAlive);
-        Assert.Equal(expected, context.Difficulty);
-        Assert.Equal(expected, BitcoinBlake2bDifficulty.Create(context.Difficulty).Difficulty);
+        Assert.Equal(context.Difficulty, BitcoinBlake2bDifficulty.Create(context.Difficulty).Difficulty);
         Assert.Equal(explicitMaximum ? 3e-9 : (double?) null, options.MaxDiff);
         Assert.Equal(limitDelta ? 1e-9 : (double?) null, options.MaxDelta);
         Assert.False(context.HasPendingDifficulty);

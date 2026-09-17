@@ -464,7 +464,7 @@ public class BitcoinPool : PoolBase
     }
 
     protected async Task OnSuggestDifficultyAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest,
-        ParsedSuggestedDifficulty? parsedDifficulty = null)
+        ParsedSuggestedDifficulty? parsedDifficulty = null, bool propagatePublicationFailures = false)
     {
         var request = tsRequest.Value;
         var context = connection.ContextAs<BitcoinWorkerContext>();
@@ -483,8 +483,8 @@ public class BitcoinPool : PoolBase
         // acknowledge
         await connection.RespondAsync(response);
 
-        // Preserve inherited handling of endpoint/notification failures separately
-        // from parse failures. General post-response policy is tracked in #183.
+        // BLAKE2b owns a terminal assignment boundary and must see publication
+        // failures. Preserve canonical Bitcoin's existing policy (#183).
         try
         {
             var requestedDiff = parsedDifficulty.HasValue ? parsedDifficulty.Value.Value : ReadSuggestedDifficulty(request);
@@ -501,7 +501,7 @@ public class BitcoinPool : PoolBase
             }
         }
 
-        catch(Exception ex)
+        catch(Exception ex) when(!propagatePublicationFailures)
         {
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPool.OnSuggestDifficultyAsync", failure: ex);
         }

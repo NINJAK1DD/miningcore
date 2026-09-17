@@ -435,27 +435,47 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             }
 
             var gate = await EnterAssignmentAsync(connection, ct);
+            var previousDifficulty = context.Difficulty;
+            var previousSubscription = context.IsSubscribed;
+            var previousExtraNonce = context.ExtraNonce1;
+            var previousVarDiff = context.VarDiff;
             try
             {
                 if(IsAdmissionClosed(connection))
                     return;
-                var previousDifficulty = context.Difficulty;
-                var suggestedDifficulty = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty
-                    ? ReadSuggestedDifficulty(request.Value, invariant: true) : null;
-                var proposedDifficulty = minimumDifficulty ?? suggestedDifficulty;
-                if(proposedDifficulty > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty &&
-                   !await ValidateProposedDifficultyAsync(connection, request.Value, proposedDifficulty.Value))
-                    return;
-                if(request.Value.Method == BitcoinStratumMethods.MiningConfigure)
-                    await OnConfigureMiningAsync(connection, request, minimumDifficulty);
-                else if(request.Value.Method == BitcoinStratumMethods.Subscribe)
-                    // Intentionally bypass OnSubscribeAsync: BLAKE2b owns the
-                    // preparation/commit boundary here. Overrides of that inherited
-                    // hook do not customize this pool's subscription dispatch.
-                    await OnSubscribeCoreAsync(connection, request, subscription);
-                else
-                    await OnSuggestDifficultyAsync(connection, request, new ParsedSuggestedDifficulty(suggestedDifficulty));
-                await CompleteAssignmentAsync(connection, previousDifficulty, request.Value.Method);
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var suggestedDifficulty = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty
+                        ? ReadSuggestedDifficulty(request.Value, invariant: true) : null;
+                    var proposedDifficulty = minimumDifficulty ?? suggestedDifficulty;
+                    if(proposedDifficulty > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty &&
+                       !await ValidateProposedDifficultyAsync(connection, request.Value, proposedDifficulty.Value))
+                        return;
+                    if(request.Value.Method == BitcoinStratumMethods.MiningConfigure)
+                        await OnConfigureMiningAsync(connection, request, minimumDifficulty);
+                    else if(request.Value.Method == BitcoinStratumMethods.Subscribe)
+                        // Intentionally bypass OnSubscribeAsync: BLAKE2b owns the
+                        // preparation/commit boundary here. Overrides of that inherited
+                        // hook do not customize this pool's subscription dispatch.
+                        await OnSubscribeCoreAsync(connection, request, subscription);
+                    else
+                        await OnSuggestDifficultyAsync(connection, request, new ParsedSuggestedDifficulty(suggestedDifficulty),
+                            propagatePublicationFailures: true);
+                    await CompleteAssignmentAsync(connection, previousDifficulty, request.Value.Method);
+                }
+                catch(Exception ex)
+                {
+                    // A protocol rejection before response/assignment mutation is
+                    // recoverable. All other failures invalidate the session while
+                    // the gate is owned, including a failed response enqueue.
+                    if(ex is not StratumException || connection.ResponseSequence != responseSequence ||
+                       context.Difficulty != previousDifficulty || context.IsSubscribed != previousSubscription ||
+                       context.ExtraNonce1 != previousExtraNonce || context.VarDiff != previousVarDiff)
+                        CloseAssignmentPublicationFailure(connection, ex,
+                            !(ex is OperationCanceledException && (ct.IsCancellationRequested || operations.IsClosed)));
+                    throw;
+                }
             }
             finally { gate.Release(); }
         }
@@ -468,7 +488,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     protected override Task OnRequestErrorAsync(StratumConnection connection, JsonRpcRequest request,
         StratumException error, bool responseStarted)
     {
-        if(responseStarted || operations.IsClosed)
+        if(responseStarted || IsAdmissionClosed(connection))
         {
             // Inherited handlers may acknowledge before constructing work. Once
             // that happens, a publication failure is terminal: never send a second
@@ -571,7 +591,25 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             }
             finally { gate.Release(); }
         }
-        await OnAuthorizeCoreAsync(connection, request, ct, new ParsedStaticDifficulty(difficulty), parameters);
+        var responseSequence = connection.ResponseSequence;
+        try
+        {
+            await OnAuthorizeCoreAsync(connection, request, ct, new ParsedStaticDifficulty(difficulty), parameters);
+        }
+        catch(Exception ex) when(connection.ResponseSequence != responseSequence)
+        {
+            // Authorization responds before acquiring the static-assignment gate.
+            // Cover failure of that response and cancellation waiting for the gate;
+            // daemon validation itself remains outside this terminal boundary.
+            var gate = await EnterAssignmentAsync(connection, CancellationToken.None);
+            try
+            {
+                CloseAssignmentPublicationFailure(connection, ex,
+                    !(ex is OperationCanceledException && (ct.IsCancellationRequested || operations.IsClosed)));
+            }
+            finally { gate.Release(); }
+            throw;
+        }
     }
 
     protected override async Task ApplyStaticDifficultyAsync(StratumConnection connection, double? difficulty, CancellationToken ct)
@@ -584,8 +622,18 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             if(IsAdmissionClosed(connection))
                 return;
             var previousDifficulty = connection.Context.Difficulty;
-            await base.ApplyStaticDifficultyAsync(connection, difficulty, ct);
-            await CompleteAssignmentAsync(connection, previousDifficulty, BitcoinStratumMethods.Authorize);
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                await base.ApplyStaticDifficultyAsync(connection, difficulty, ct);
+                await CompleteAssignmentAsync(connection, previousDifficulty, BitcoinStratumMethods.Authorize);
+            }
+            catch(Exception ex)
+            {
+                CloseAssignmentPublicationFailure(connection, ex,
+                    !(ex is OperationCanceledException && (ct.IsCancellationRequested || operations.IsClosed)));
+                throw;
+            }
         }
         finally { gate.Release(); }
     }

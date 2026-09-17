@@ -58,7 +58,7 @@ public class VarDiffManagerTests
     {
         var (context, options, clock) = Fixture();
         options.MaxDelta = limitDelta ? 2 : null;
-        Assert.Equal(limitDelta ? 12d : 1000d, VarDiffManager.Update(context, options, clock));
+        Assert.Equal(limitDelta ? 12d : 1000000d, VarDiffManager.Update(context, options, clock));
     }
 
     [Theory]
@@ -197,8 +197,8 @@ public class VarDiffManagerTests
     }
 
     [Theory]
-    [InlineData(0.1)]
-    [InlineData(0.001)]
+    [InlineData(0.0001)]
+    [InlineData(0.000001)]
     public void ZeroAverage_DoesNotLowerDifficultyForSubsecondTargets(double target)
     {
         var (context, options, clock) = Fixture();
@@ -254,16 +254,16 @@ public class VarDiffManagerTests
     }
 
     [Theory]
-    [InlineData(0, false, 100d)]
-    [InlineData(1, false, 200d)]
-    [InlineData(4, false, 500d)]
-    [InlineData(9, false, 1000d)]
-    [InlineData(10, false, 1000d)]
-    [InlineData(0, true, 100d)]
-    [InlineData(1, true, 200d)]
-    [InlineData(4, true, 500d)]
-    [InlineData(9, true, 1000d)]
-    [InlineData(10, true, 1000d)]
+    [InlineData(0, false, 100000d)]
+    [InlineData(1, false, 200000d)]
+    [InlineData(4, false, 500000d)]
+    [InlineData(9, false, 1000000d)]
+    [InlineData(10, false, 1000000d)]
+    [InlineData(0, true, 100000d)]
+    [InlineData(1, true, 200000d)]
+    [InlineData(4, true, 500000d)]
+    [InlineData(9, true, 1000000d)]
+    [InlineData(10, true, 1000000d)]
     public void ZeroAverage_EstimateUsesAvailableIntervals(int storedSamples, bool idle, double expected)
     {
         var (context, options, clock) = Fixture();
@@ -281,8 +281,72 @@ public class VarDiffManagerTests
     {
         var (context, options, clock) = Fixture();
         context.VarDiff.TimeBuffer = null;
-        options.TargetTime = 0.5;
+        options.TargetTime = 0.0005;
         Assert.Null(idle ? VarDiffManager.IdleUpdate(context, options, clock) :
             VarDiffManager.Update(context, options, clock));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SubmillisecondSamples_UseTimestampQuantizationAndRecoverWithMeasuredIntervals(bool idle)
+    {
+        var (context, options, clock) = Fixture();
+        context.VarDiff.TimeBuffer = null;
+        context.VarDiff.LastRetarget = clock.Now.ToUnixSeconds();
+        var start = clock.Now;
+        for(var i = 1; i <= 9; i++)
+        {
+            clock.CurrentTime = start.AddTicks(i * 1000); // 0.1 ms steps in one bucket.
+            Assert.Equal(start.ToUnixSeconds(), clock.Now.ToUnixSeconds());
+            Assert.Equal(start.ToUnixSeconds(), new DateTimeOffset(clock.Now).ToUnixSeconds());
+            Assert.Null(VarDiffManager.Update(context, options, clock));
+        }
+        Assert.Equal(9, context.VarDiff.TimeBuffer.Size);
+        context.VarDiff.LastRetarget -= 100; // Make the collected window eligible.
+        var difficulty = idle ? VarDiffManager.IdleUpdate(context, options, clock) :
+            VarDiffManager.Update(context, options, clock);
+        Assert.Equal(1000000d, difficulty);
+        context.SetDifficulty(difficulty.Value);
+        clock.CurrentTime = start.AddMilliseconds(5);
+        Assert.Equal(DateExtensions.UnixSecondsResolution * 5,
+            clock.Now.ToUnixSeconds() - start.ToUnixSeconds(), 10);
+        context.VarDiff.LastRetarget -= 100;
+        var measured = idle ? VarDiffManager.IdleUpdate(context, options, clock) :
+            VarDiffManager.Update(context, options, clock);
+        Assert.InRange(measured.Value, 1999999999d, 2000000001d);
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    [InlineData(-1d)]
+    [InlineData(0d)]
+    public void TimingConfiguration_RejectsNonfiniteAndNonpositiveValues(double value)
+    {
+        var (_, options, _) = Fixture();
+        var validator = new VarDiffConfigValidator();
+        options.TargetTime = value;
+        Assert.Contains(validator.Validate(options).Errors, x => x.PropertyName == nameof(options.TargetTime));
+        options.TargetTime = 10;
+        options.RetargetTime = value;
+        Assert.Contains(validator.Validate(options).Errors, x => x.PropertyName == nameof(options.RetargetTime));
+    }
+
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData(0d, true)]
+    [InlineData(2d, true)]
+    [InlineData(double.MaxValue, true)]
+    [InlineData(-1d, false)]
+    [InlineData(double.NaN, false)]
+    [InlineData(double.PositiveInfinity, false)]
+    [InlineData(double.NegativeInfinity, false)]
+    public void DeltaConfiguration_PreservesDisabledLimitAndRejectsInvalidValues(double? value, bool valid)
+    {
+        var (_, options, _) = Fixture();
+        options.MaxDelta = value;
+        Assert.Equal(valid, new VarDiffConfigValidator().Validate(options).IsValid);
     }
 }
