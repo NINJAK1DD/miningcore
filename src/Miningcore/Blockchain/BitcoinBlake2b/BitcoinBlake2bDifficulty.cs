@@ -6,6 +6,9 @@ namespace Miningcore.Blockchain.BitcoinBlake2b;
 // credited difficulty and the proof target, or construct an invalid default.
 internal sealed class BitcoinBlake2bDifficulty
 {
+    // Diff1 is exactly representable as a double and produces target 1.
+    internal static double Maximum => (double) Bitcoin.BitcoinConstants.Diff1;
+
     private BitcoinBlake2bDifficulty(double difficulty)
     {
         Target = BitcoinBlake2bHeader.TargetForDifficulty(difficulty);

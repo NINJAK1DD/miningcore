@@ -245,8 +245,22 @@ must also produce a representable BLAKE2b share target. Even finite positive val
 as `1e100` can exceed that range. Such requests receive one Stratum error 20 before
 acknowledgment, mutation or authorization RPC, preserving identity, difficulty, VarDiff,
 pending updates and existing jobs. They consume their normal admission token and leave
-the healthy connection usable. Suggestion parsing retains the inherited culture/conversion
-rules; its exact parsed value is reused for execution.
+the healthy connection usable. BLAKE2b suggestions and configure minimum-difficulty use
+invariant numeric conversion: `"1.5"` means 1.5 on every server locale. Send a JSON number
+or a numeric string with a dot decimal separator and optional exponent; grouping separators
+and decimal commas are not accepted. Malformed suggestions retain their compatibility
+success acknowledgement with no assignment change, while still consuming admission.
+This changes legacy locale-dependent suggestion strings; canonical Bitcoin retains its
+existing parser. The exact parsed value is reused for execution.
+
+Server-driven BLAKE2b VarDiff has an effective maximum of `65535 * 2^208`, the highest
+representable difficulty (target 1), when `maxDiff` is omitted. A configured lower maximum
+is honored. This runtime ceiling applies to both share-triggered and idle retargeting
+without rewriting the operator's configuration. Zero-length interval windows saturate
+at the effective maximum before applying `maxDelta`. Extreme positive ratios avoid
+intermediate overflow/underflow, and delta limiting uses the previous difficulty plus
+or minus the limit, avoiding cancellation. The shared VarDiff arithmetic fixes also apply
+to other pool families, which retain their existing effective maximum.
 
 When exhausted:
 
@@ -404,9 +418,14 @@ It verifies terminal closure, one response attempt, rejection of buffered follow
 requests, unchanged invalid-share counts and exactly-once PostgreSQL settlement.
 [Representability tests](../src/Miningcore.Tests/Blockchain/BitcoinBlake2b/BitcoinBlake2bRepresentabilityTests.cs)
 cover finite out-of-range requests, remaining token capacity, unchanged worker state,
-external/future post-acknowledgment failure and culture-compatible suggestion parsing.
+external/future post-acknowledgment failure and invariant suggestion parsing across six locales.
 The target unit tests pin the adjacent floating-point values at the highest accepted
-difficulty. Run the focused suite with:
+difficulty. Additional live-proof cases exercise an omitted VarDiff maximum and ten zero
+intervals, both with and without `maxDelta`: accepted accounting survives, the connection
+remains usable, and the next difficulty/notify pair has an exactly representable target.
+Wire tests also cover idle retargeting, explicit lower maxima, retained jobs, unchanged
+configuration and untouched negotiation allowance. Shared VarDiff unit tests cover ordinary
+retargeting, extreme ratios and generic-family default bounds. Run the focused suite with:
 
 ```sh
 dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj -c Release --filter FullyQualifiedName~BitcoinBlake2bDifficultyBudgetTests

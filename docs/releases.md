@@ -67,6 +67,10 @@ external lookup or extranonce mutation, and a valid initial subscription stays f
 after malformed requests exhaust the allowance. Numeric-string minimum difficulty remains
 compatible and is parsed once. Miner-selected values that cannot produce a BLAKE2b target are rejected before
 acknowledgment or state mutation while still consuming admission allowance.
+BLAKE2b suggestion strings now use the same invariant decimal/exponent notation as
+minimum-difficulty configure, independent of server locale. Decimal commas and grouping
+separators are not accepted; malformed suggestions keep their acknowledgement/no-op
+compatibility behavior and consume allowance. Canonical Bitcoin parsing is unchanged.
 Authorization preserves scalar worker/password conversion,
 and authorize/configure tolerate ignored trailing fields. Canonical Bitcoin now declines
 minimum-difficulty negotiation with a missing value without dropping the connection.
@@ -100,6 +104,12 @@ an invalid-share count or ban penalty when subsequent VarDiff publication fails.
 Canonical Bitcoin's post-response policy is tracked separately in
 [#183](https://github.com/NINJAK1DD/miningcore/issues/183).
 BLAKE2b continues to reject canonical direct-coinbase SOLO options at startup.
+
+Omitted BLAKE2b VarDiff maxima now use the highest representable difficulty as an effective
+runtime ceiling, without modifying configuration. Share and idle retargets handle zero
+intervals and extreme ratios before delta limiting, so fast valid miners receive a valid
+assignment and stay connected. The shared arithmetic also avoids overflow, underflow and
+delta cancellation for other pool families while retaining their existing maximum policy.
 
 ## Unreleased: Bitcoin-family verified job gate
 

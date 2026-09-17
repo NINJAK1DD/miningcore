@@ -175,6 +175,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal Task AnnounceJobAsync(object jobParams) => pool.Announce(jobParams);
     internal object CreateJob() => pool.CreateJob(Connection);
     internal Task UpdateVarDiffAsync(double difficulty) => pool.UpdateVarDiff(Connection, difficulty);
+    internal Task RetargetVarDiffAsync(bool idle) => ((TestPool) pool).RetargetVarDiff(Connection, idle);
 
     internal async Task AssertDisconnectedAsync()
     {
@@ -245,6 +246,8 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
             CancellationToken ct) => OnRequestAsync(connection, request, ct);
         public Task UpdateVarDiff(StratumConnection connection, double difficulty) =>
             OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None);
+        internal Task RetargetVarDiff(StratumConnection connection, bool idle) =>
+            UpdateVarDiffAsync(connection, idle, CancellationToken.None);
         public Task Announce(object jobParams) => OnNewJobAsync(jobParams);
         public object CreateJob(StratumConnection connection) => CreateWorkerJob(connection, false);
     }

@@ -11,7 +11,8 @@ public static class VarDiffManager
     private const int BufferSize = 10;  // Last 10 shares should be enough
     private const double SafetyMargin = 1;    // ensure we don't miss a cycle due a sub-second fraction delta;
 
-    public static double? Update(WorkerContextBase context, VarDiffConfig options, IMasterClock clock)
+    public static double? Update(WorkerContextBase context, VarDiffConfig options, IMasterClock clock,
+        double protocolMaximum = double.MaxValue)
     {
         var ctx = context.VarDiff;
         var difficulty = context.Difficulty;
@@ -25,7 +26,7 @@ public static class VarDiffManager
             if(ctx.LastTs.HasValue)
             {
                 var minDiff = options.MinDiff;
-                var maxDiff = options.MaxDiff ?? Math.Max(minDiff, double.MaxValue); // for regtest
+                var maxDiff = Math.Min(options.MaxDiff ?? protocolMaximum, protocolMaximum);
                 var timeDelta = ts - ctx.LastTs.Value;
 
                 // make sure buffer exists as this point
@@ -48,7 +49,7 @@ public static class VarDiffManager
                     return null;
 
                 // Possible New Diff
-                var newDiff = difficulty * options.TargetTime / avg;
+                var newDiff = CalculateDifficulty(difficulty, options.TargetTime, avg, maxDiff);
 
                 if(TryApplyNewDiff(ref newDiff, difficulty, minDiff, maxDiff, ts, ctx, options, clock))
                     return newDiff;
@@ -70,7 +71,8 @@ public static class VarDiffManager
         return null;
     }
 
-    public static double? IdleUpdate(WorkerContextBase context, VarDiffConfig options, IMasterClock clock)
+    public static double? IdleUpdate(WorkerContextBase context, VarDiffConfig options, IMasterClock clock,
+        double protocolMaximum = double.MaxValue)
     {
         var ctx = context.VarDiff;
         var difficulty = context.Difficulty;
@@ -100,14 +102,14 @@ public static class VarDiffManager
             ctx.LastTs = ts;
 
             var minDiff = options.MinDiff;
-            var maxDiff = options.MaxDiff ?? Math.Max(minDiff, double.MaxValue); // for regtest
+            var maxDiff = Math.Min(options.MaxDiff ?? protocolMaximum, protocolMaximum);
 
             // Always calculate the time until now even there is no share submitted.
             var timeTotal = (ctx.TimeBuffer?.Sum() ?? 0) + (timeDelta - SafetyMargin);
             var avg = timeTotal / ((ctx.TimeBuffer?.Size ?? 0) + 1);
 
             // Possible New Diff
-            var newDiff = difficulty * options.TargetTime / avg;
+            var newDiff = CalculateDifficulty(difficulty, options.TargetTime, avg, maxDiff);
 
             if(TryApplyNewDiff(ref newDiff, difficulty, minDiff, maxDiff, ts, ctx, options, clock))
                 return newDiff;
@@ -119,6 +121,30 @@ public static class VarDiffManager
         }
 
         return null;
+    }
+
+    private static double CalculateDifficulty(double difficulty, double targetTime, double average, double maximum)
+    {
+        // Whole-second timestamps can produce a full buffer of zero intervals.
+        // Saturate before MaxDelta arithmetic; Infinity - Infinity would be NaN.
+        if(average <= 0)
+            return maximum;
+
+        var product = difficulty * targetTime;
+        var candidate = product / average;
+        if((!double.IsFinite(candidate) || product == 0 || double.IsSubnormal(product)) &&
+           double.IsFinite(difficulty) && difficulty > 0 &&
+           double.IsFinite(targetTime) && targetTime > 0 && double.IsFinite(average))
+        {
+            // Preserve ordinary arithmetic, but avoid intermediate overflow or
+            // underflow when the final proportional result is representable.
+            var d = Math.ILogB(difficulty);
+            var t = Math.ILogB(targetTime);
+            var a = Math.ILogB(average);
+            candidate = Math.ScaleB(Math.ScaleB(difficulty, -d) * Math.ScaleB(targetTime, -t) /
+                Math.ScaleB(average, -a), d + t - a);
+        }
+        return Math.Min(candidate, maximum);
     }
 
     /// <summary>
@@ -135,9 +161,9 @@ public static class VarDiffManager
             if(delta > options.MaxDelta)
             {
                 if(newDiff > oldDiff)
-                    newDiff -= delta - options.MaxDelta.Value;
+                    newDiff = oldDiff + options.MaxDelta.Value;
                 else if(newDiff < oldDiff)
-                    newDiff += delta - options.MaxDelta.Value;
+                    newDiff = oldDiff - options.MaxDelta.Value;
             }
         }
 

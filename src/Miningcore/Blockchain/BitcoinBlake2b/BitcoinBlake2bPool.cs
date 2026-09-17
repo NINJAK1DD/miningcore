@@ -312,6 +312,8 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         await Guard(BroadcastAsync);
     }
 
+    protected override double MaximumVarDiff => BitcoinBlake2bDifficulty.Maximum;
+
     protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken ct)
     {
         var gate = await EnterAssignmentAsync(connection, ct);
@@ -413,7 +415,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                     return;
                 var previousDifficulty = context.Difficulty;
                 var suggestedDifficulty = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty
-                    ? ReadSuggestedDifficulty(request.Value) : null;
+                    ? ReadSuggestedDifficulty(request.Value, invariant: true) : null;
                 var proposedDifficulty = minimumDifficulty ?? suggestedDifficulty;
                 if(proposedDifficulty > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty &&
                    !await ValidateProposedDifficultyAsync(connection, request.Value, proposedDifficulty.Value))
@@ -480,7 +482,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         catch(ArgumentOutOfRangeException)
         {
             await connection.RespondErrorAsync(StratumError.Other,
-                "Difficulty produces an unrepresentable BLAKE2b share target", request.Id, false);
+                "Difficulty is outside the supported BLAKE2b range", request.Id, false);
             return false;
         }
     }
@@ -490,6 +492,9 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         var context = connection.ContextAs<BitcoinWorkerContext>();
         if(context.Difficulty == previousDifficulty)
             return;
+        // Retain this final invariant: authorization releases the gate across
+        // daemon RPC, so its earlier applicability check can become stale. Also
+        // cover externally supplied autodiff and future assignment producers.
         try
         {
             Blake2bManager.ValidateWorkerDifficulty(context.Difficulty);
@@ -522,6 +527,9 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             return;
         if(difficulty.HasValue)
         {
+            // An early rejection optimization, not the final assignment guarantee.
+            // VarDiff/difficulty may change after this gate is released for RPC;
+            // CompleteAssignmentAsync must still validate the eventual assignment.
             var gate = await EnterAssignmentAsync(connection, ct);
             try
             {

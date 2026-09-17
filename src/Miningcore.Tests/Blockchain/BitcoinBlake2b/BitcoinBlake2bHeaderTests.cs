@@ -224,7 +224,7 @@ public class BitcoinBlake2bHeaderTests
     public void ShareTarget_HighestRepresentableDifficultyHasAnExactBoundary()
     {
         // Diff1 = 65535 * 2^208 is exactly representable as a double.
-        var highest = (double) BitcoinConstants.Diff1;
+        var highest = BitcoinBlake2bDifficulty.Maximum;
         Assert.Equal(BitcoinConstants.Diff1, new BigInteger(highest));
         Assert.Equal(BigInteger.One, BitcoinBlake2bHeader.TargetForDifficulty(Math.BitDecrement(highest)));
         Assert.Equal(BigInteger.One, BitcoinBlake2bHeader.TargetForDifficulty(highest));

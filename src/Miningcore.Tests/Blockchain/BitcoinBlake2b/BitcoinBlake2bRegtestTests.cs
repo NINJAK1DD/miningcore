@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
+using CircularBuffer;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
@@ -57,7 +58,13 @@ public class BitcoinBlake2bRegtestTests : TestBase
     [BitcoinBlake2bLedgerIntegrationFact]
     public Task HeaderV2_AcceptedProofSurvivesTerminalVarDiffPublicationFailure() => ExerciseAsync(true, true);
 
-    private async Task ExerciseAsync(bool requirePostgres, bool failPublication = false)
+    [BitcoinBlake2bLedgerIntegrationFact]
+    public Task HeaderV2_ZeroIntervalVarDiffPreservesAcceptedProofAndConnection() => ExerciseAsync(true, zeroAverage: true);
+
+    [BitcoinBlake2bLedgerIntegrationFact]
+    public Task HeaderV2_ZeroIntervalVarDiffHonorsMaxDeltaAfterAcceptedProof() => ExerciseAsync(true, zeroAverage: true, limitDelta: true);
+
+    private async Task ExerciseAsync(bool requirePostgres, bool failPublication = false, bool zeroAverage = false, bool limitDelta = false)
     {
         await using var ledger = requirePostgres ? await BitcoinBlake2bLedgerProbe.CreateAsync() : null;
         await using var node = await BitcoinPayoutHandlerRegtestTests.BitcoinCoreRegtestNode.StartAsync(
@@ -231,7 +238,7 @@ public class BitcoinBlake2bRegtestTests : TestBase
                 if(BitcoinBlake2bHeader.HashValue(proof) > BitcoinBlake2bHeader.DecodeCompactTarget(
                     BitcoinBlake2bHeader.ParseCompactBits((string) notify[6])))
                     continue;
-                if(failPublication && BitcoinBlake2bHeader.HashValue(proof) >
+                if((failPublication || zeroAverage) && BitcoinBlake2bHeader.HashValue(proof) >
                    BitcoinBlake2bHeader.DecodeCompactTarget(BitcoinBlake2bHeader.ParseCompactBits(template.Bits)))
                     continue;
                 try
@@ -269,9 +276,41 @@ public class BitcoinBlake2bRegtestTests : TestBase
                     }
                     else
                     {
+                        var context = worker.ContextAs<BitcoinWorkerContext>();
+                        var valid = context.Stats.ValidShares;
+                        var invalid = context.Stats.InvalidShares;
+                        VarDiffConfig options = null;
+                        if(zeroAverage)
+                        {
+                            options = new VarDiffConfig { MinDiff = 1e-9, MaxDiff = null,
+                                MaxDelta = limitDelta ? 1e-9 : null, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
+                            pool.Ports[worker.LocalEndpoint.Port].VarDiff = options;
+                            context.VarDiff = new VarDiffContext { Config = options, LastTs = clock.Now.ToUnixSeconds(),
+                                LastRetarget = clock.Now.ToUnixSeconds() - 10, TimeBuffer = new CircularBuffer<double>(10) };
+                            for(var i = 0; i < 10; i++)
+                                context.VarDiff.TimeBuffer.PushBack(0);
+                            bus.ClearReceivedCalls();
+                        }
                         var response = await wire.RequestAsync("mining.submit", destination + ".test",
                             notify[0], "0000000000000000", time, nonceBytes.ToHexString());
                         Assert.True(response["result"]?.Value<bool>() == true, response.ToString());
+                        if(zeroAverage)
+                        {
+                            var expected = limitDelta ? 2e-9 : BitcoinBlake2bDifficulty.Maximum;
+                            var update = await wire.ReadAsync();
+                            Assert.Equal("mining.set_difficulty", update["method"].Value<string>());
+                            Assert.Equal(expected, update["params"][0].Value<double>());
+                            var work = await wire.ReadAsync();
+                            Assert.Equal("mining.notify", work["method"].Value<string>());
+                            Assert.Equal(BitcoinBlake2bDifficulty.Create(expected).Bits.ToString("x8"), work["params"][6].Value<string>());
+                            Assert.True(worker.IsAlive);
+                            Assert.Equal(valid + 1, context.Stats.ValidShares);
+                            Assert.Equal(invalid, context.Stats.InvalidShares);
+                            Assert.Null(options.MaxDiff); // Effective ceiling does not rewrite config.
+                            bus.Received(1).SendMessage(Arg.Any<Share>(), Arg.Any<string>());
+                            bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
+                                x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());
+                        }
                     }
                     candidate = Assert.IsType<Share>(published);
                     if(candidate.IsBlockCandidate)

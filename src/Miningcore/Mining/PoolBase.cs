@@ -149,6 +149,9 @@ public abstract class PoolBase : StratumServer,
 
     #region VarDiff
 
+    // An effective runtime bound, independent of the operator's nullable MaxDiff.
+    protected virtual double MaximumVarDiff => double.MaxValue;
+
     protected async Task UpdateVarDiffAsync(StratumConnection connection, bool idle, CancellationToken ct)
     {
         var context = connection.Context;
@@ -160,8 +163,8 @@ public abstract class PoolBase : StratumServer,
             var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
 
             var newDiff = !idle ?
-                VarDiffManager.Update(context, poolEndpoint.VarDiff, clock) :
-                VarDiffManager.IdleUpdate(context, poolEndpoint.VarDiff, clock);
+                VarDiffManager.Update(context, poolEndpoint.VarDiff, clock, MaximumVarDiff) :
+                VarDiffManager.IdleUpdate(context, poolEndpoint.VarDiff, clock, MaximumVarDiff);
 
             if(newDiff != null)
             {

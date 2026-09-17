@@ -439,16 +439,23 @@ public class BitcoinPool : PoolBase
     // to parse again. BLAKE2b validates and executes the same converted value.
     protected readonly record struct ParsedSuggestedDifficulty(double? Value);
 
-    protected double? ReadSuggestedDifficulty(JsonRpcRequest request)
+    protected double? ReadSuggestedDifficulty(JsonRpcRequest request, bool invariant = false)
     {
         try
         {
             var requestParams = request.ParamsAs<object[]>();
+            if(invariant)
+            {
+                var value = requestParams.FirstOrDefault();
+                var culture = System.Globalization.CultureInfo.InvariantCulture;
+                var text = value is IFormattable formattable ? formattable.ToString(null, culture) : value?.ToString();
+                return double.Parse(text?.Trim(), System.Globalization.NumberStyles.Float, culture);
+            }
             return (double) Convert.ChangeType(requestParams.FirstOrDefault()?.ToString().Trim(), typeof(double));
         }
         catch(Exception ex)
         {
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPool.OnSuggestDifficultyAsync", failure: ex);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPool.ReadSuggestedDifficulty", failure: ex);
             return null;
         }
     }
@@ -473,6 +480,8 @@ public class BitcoinPool : PoolBase
         // acknowledge
         await connection.RespondAsync(response);
 
+        // Preserve inherited handling of endpoint/notification failures separately
+        // from parse failures. General post-response policy is tracked in #183.
         try
         {
             var requestedDiff = parsedDifficulty.HasValue ? parsedDifficulty.Value.Value : ReadSuggestedDifficulty(request);
