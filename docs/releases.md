@@ -74,6 +74,8 @@ Real HTTP tests cover the production exporter overload on shared and dedicated
 listeners, including admission samples, content type and protected response headers.
 Host shutdown and financial fail-stop take precedence over simultaneous parser errors
 before the first request owns its handler, without masking failures after ownership.
+The same rule applies to the outer setup/teardown catch, so shutdown cannot hide an
+established connection's teardown failure.
 
 **Reverse proxies:** without a usable trusted PROXY v1 identity, all miners behind a
 front-end share its per-address rate and concurrent cap. Configure explicit trusted peers

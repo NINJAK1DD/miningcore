@@ -88,7 +88,8 @@ to the event name and server connection ID, without a growing set of empty field
 
 `CancelledFailure` preserves diagnostic context when server cancellation wins over a
 concurrent startup failure. Once the first request owns its handler, non-cancellation
-handler/parser failures retain the normal error path even during shutdown.
+handler/parser and teardown failures retain the normal error path even during shutdown,
+including failures that escape to the outer dispatch catch.
 The event is Debug-only in dispatch, uses the same exception-safe projection, and
 does not send the failure into the Error/junk-ban path. The completion still follows
 the [connection admission lifecycle](stratum-connection-admission.md).

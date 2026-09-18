@@ -204,6 +204,58 @@ public class StratumDiagnosticTests
         logs.AssertSafe();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Tcp_CancelledOwnedTeardownFailure_RemainsAnError(bool failStop)
+    {
+        using var logs = new Capture();
+        using var cancelled = new CancellationTokenSource();
+        using var container = new ContainerBuilder().Build();
+        var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationTokenRegistration registration = default;
+        var server = new DiagnosticServer(container, Substitute.For<IMessageBus>(), logs.Logger)
+        {
+            Handler = (_, _, ct) =>
+            {
+                // Peer EOF makes DispatchAsync cancel its I/O token outside the
+                // WhenAll catch. Throw there after cancelling the server token to
+                // exercise the outer catch with startup already owned, without a
+                // production hook or an unreliable pipe-completion failure.
+                registration = ct.Register(() =>
+                {
+                    cancelled.Cancel();
+                    throw new IOException(Hostile);
+                });
+                handled.TrySetResult();
+                return Task.CompletedTask;
+            },
+        };
+        try
+        {
+            await using var tcp = await TcpSession.Start(logs.Logger, server,
+                hostShutdown: failStop ? default : cancelled.Token,
+                failStop: failStop ? cancelled.Token : default);
+            await tcp.Send("{\"id\":1,\"method\":\"mining.submit\",\"params\":[]}\n");
+            await handled.Task.WaitAsync(Deadline);
+            tcp.Client.Client.Shutdown(SocketShutdown.Send);
+            await tcp.Dispatch.WaitAsync(Deadline);
+        }
+        finally
+        {
+            registration.Dispose();
+        }
+        Assert.True(cancelled.IsCancellationRequested);
+        Assert.Equal(0, server.Completions);
+        Assert.Equal(1, server.Errors);
+        Assert.Equal(1, server.Requests);
+        server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
+        Assert.DoesNotContain(logs.Records, x => x["event"].Value<string>() == "CancelledFailure");
+        Assert.Contains(logs.Records, x => x["event"].Value<string>() == "ConnectionError" &&
+            x["failure"]?.Value<string>() == "io");
+        logs.AssertSafe();
+    }
+
     [Fact]
     public void CancelledFailure_ProjectsOnlyReviewedCompletionValues()
     {

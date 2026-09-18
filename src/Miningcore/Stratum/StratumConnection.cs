@@ -125,6 +125,15 @@ public class StratumConnection
         // Exactly one of first-request admission and deadline expiry wins. Disarming
         // a timer alone cannot prevent an already queued callback cancelling a handler.
         var startupState = 0; // 0 pending, 1 complete, 2 expired
+        bool StartupCancellationWins()
+        {
+            // Use the same ownership boundary for task failures and exceptions
+            // escaping setup/teardown. Shutdown must not hide an owned failure.
+            var finalStartupState = Volatile.Read(ref startupState);
+            return finalStartupState == 2 ||
+                (finalStartupState == 0 && (ct.IsCancellationRequested || failStopToken.IsCancellationRequested));
+        }
+
         StratumConnectionCompletionReason CancellationCompletion() =>
             failStopToken.IsCancellationRequested ? StratumConnectionCompletionReason.MiningFailStop :
             ct.IsCancellationRequested ? StratumConnectionCompletionReason.HostShutdown :
@@ -251,9 +260,7 @@ public class StratumConnection
                 // Server cancellation wins a simultaneous startup/parser failure, but
                 // must not hide a failure from a handler that already owns its request.
                 // Preserve the suppressed startup failure category at Debug.
-                var finalStartupState = Volatile.Read(ref startupState);
-                if(error == null || finalStartupState == 2 ||
-                    (finalStartupState == 0 && (ct.IsCancellationRequested || failStopToken.IsCancellationRequested)))
+                if(error == null || StartupCancellationWins())
                 {
                     // A peer-driven clean EOF may close gracefully. Host shutdown and the
                     // independent financial fail-stop gate remain abortive so accepted sockets
@@ -308,11 +315,10 @@ public class StratumConnection
             if(!terminalCallbackSignalled)
             {
                 terminalCallbackSignalled = true;
-                // TLS detection/authentication precedes the pipe tasks. Deadline or
-                // shutdown cancellation here must not enter junk-ban/error handling,
-                // even if the TLS implementation wraps cancellation as an I/O error.
-                if(Volatile.Read(ref startupState) == 2 || ct.IsCancellationRequested ||
-                    failStopToken.IsCancellationRequested)
+                // TLS setup precedes the pipe tasks, but teardown can also reach
+                // this catch after first-request ownership. Suppress startup failures
+                // during server cancellation without hiding owned teardown failures.
+                if(StartupCancellationWins())
                 {
                     CompletionReason = CancellationCompletion();
                     StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.CancelledFailure,

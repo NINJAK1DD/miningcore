@@ -191,7 +191,8 @@ Before the first complete request takes ownership, a startup deadline, host shut
 or financial fail-stop coinciding with a setup/parser failure wins completion and
 never causes a junk ban. Debug diagnostics retain the failure category and completion
 reason, without exception messages, stack traces or raw request data. Once a request
-owns its handler, shutdown does not suppress a non-cancellation handler/parser error.
+owns its handler, shutdown does not suppress a non-cancellation handler/parser or
+teardown error. Task completion and the outer setup/teardown catch share this rule.
 
 The connection CTS links the financial fail-stop token directly so it also cancels
 TLS setup before the pipe/send tasks exist. Established handlers already received that
