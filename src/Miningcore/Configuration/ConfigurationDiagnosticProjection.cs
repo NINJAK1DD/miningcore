@@ -83,6 +83,7 @@ internal static class ConfigurationDiagnosticProjection
             [typeof(StratumAdmissionConfig)] = Fields<StratumAdmissionConfig>(
                 nameof(StratumAdmissionConfig.ConnectionsPerSecond), nameof(StratumAdmissionConfig.Burst),
                 nameof(StratumAdmissionConfig.MaxConcurrentConnections),
+                nameof(StratumAdmissionConfig.MaxPendingIdentities),
                 nameof(StratumAdmissionConfig.ConnectionsPerSecondPerAddress), nameof(StratumAdmissionConfig.BurstPerAddress),
                 nameof(StratumAdmissionConfig.MaxConcurrentConnectionsPerAddress),
                 nameof(StratumAdmissionConfig.MaxTrackedAddresses), nameof(StratumAdmissionConfig.IdleExpirySeconds),

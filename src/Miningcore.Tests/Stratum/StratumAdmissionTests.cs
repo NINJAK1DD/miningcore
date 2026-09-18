@@ -22,7 +22,7 @@ using Xunit;
 
 namespace Miningcore.Tests.Stratum;
 
-public class StratumAdmissionTests
+public partial class StratumAdmissionTests
 {
     internal static readonly TimeSpan Timeout = TimeSpan.FromSeconds(15);
 
@@ -162,11 +162,11 @@ public class StratumAdmissionTests
     }
 
     [Fact]
-    public async Task ActiveProxyIdentities_DoNotExpireOrEvict_WhenTableIsFull()
+    public async Task ActiveProxyIdentities_DoNotExpireOrEvict_WhenOtherClientsArrive()
     {
         var time = new ManualTimeProvider();
         await using var server = new Server(new StratumAdmissionConfig
-        { BurstPerAddress = 1, IdleExpirySeconds = 1, MaxTrackedAddresses = 1 }, time,
+        { BurstPerAddress = 1, IdleExpirySeconds = 1 }, time,
             new TcpProxyProtocolConfig { Enable = true, Mandatory = true });
         using(var client = await server.Connect())
         {
@@ -175,11 +175,11 @@ public class StratumAdmissionTests
             time.AdvanceMonotonic(TimeSpan.FromDays(1));
             server.ConnectionAdmission.SweepIdle();
             Assert.Equal((1, 1), server.ConnectionAdmission.Snapshot);
-            // A new transport may briefly hold a global slot, but must never evict this identity.
+            // A new identity must never evict an active identity, even after idle expiry.
             using(var other = await server.Connect())
             {
-                await Send(other, Header("192.0.2.2"));
-                await Closed(other);
+                await Send(other, Header("192.0.2.2"), false);
+                Assert.NotNull(await Exchange(other));
             }
             Assert.NotNull(await Exchange(client));
         }
@@ -281,16 +281,16 @@ public class StratumAdmissionTests
     }
 
     [Fact]
-    public async Task TrustedProxy_SeparatesClients_BoundsIdentityTable_AndDoesNotRefreshExhaustedEntries()
+    public async Task TrustedProxy_SeparatesClients_AndDoesNotRefreshExhaustedEntries()
     {
         var time = new ManualTimeProvider();
         await using var server = new Server(new StratumAdmissionConfig
-        { BurstPerAddress = 1, ConnectionsPerSecondPerAddress = 1, MaxTrackedAddresses = 2, IdleExpirySeconds = 2 },
+        { BurstPerAddress = 1, ConnectionsPerSecondPerAddress = 1, IdleExpirySeconds = 2 },
             time, new TcpProxyProtocolConfig { Enable = true, Mandatory = true });
         await server.Exchange(header: Header("192.0.2.1"));
         await server.Rejected(header: Header("192.0.2.1"));
         await server.Exchange(header: Header("192.0.2.2"));
-        await server.Rejected(header: Header("192.0.2.3"));
+        await server.Rejected(header: Header("192.0.2.2"));
         Assert.Equal((0, 2), server.ConnectionAdmission.Snapshot);
         time.AdvanceMonotonic(TimeSpan.FromSeconds(2));
         await server.Exchange(header: Header("192.0.2.3"));
@@ -389,24 +389,34 @@ public class StratumAdmissionTests
         internal IMessageBus Bus => messageBus;
         internal IBanManager Bans => banManager;
         internal string PoolId => poolConfig.Id;
+        internal Task Run => run;
+        internal IPEndPoint[] Endpoints => endpoints;
+        internal void Stop() => stop.Cancel();
+        internal void RemoveCertificate(string path)
+        {
+            if(certs.TryRemove(path, out var cert)) cert.Dispose();
+        }
         internal Func<StratumConnection, Timestamped<JsonRpcRequest>, CancellationToken, Task> Handler;
         internal Func<Task> BeforeRemoval;
         internal bool ThrowOnConnect;
         internal Server(StratumAdmissionConfig config, TimeProvider time = null,
-            TcpProxyProtocolConfig proxy = null, int ports = 1, bool tlsAuto = false, ILogger log = null) : base(
+            TcpProxyProtocolConfig proxy = null, int ports = 1, bool tlsAuto = false, ILogger log = null,
+            string tlsCertificate = null) : base(
             new ContainerBuilder().Build(), Substitute.For<IMessageBus>(), new RecyclableMemoryStreamManager(),
             Substitute.For<IMasterClock>())
         {
             logger = log ?? new NullLogger(LogManager.LogFactory);
             banManager = Substitute.For<IBanManager>();
-            clusterConfig = new ClusterConfig();
+            clusterConfig = new ClusterConfig { Banning = new ClusterBanningConfig { BanOnJunkReceive = true } };
+            // Isolate static Prometheus children across concurrently running tests.
             poolConfig = new PoolConfig { Id = Guid.NewGuid().ToString("N"), ConnectionAdmission = config };
             AdmissionTimeProvider = time ?? TimeProvider.System;
             var reservations = Enumerable.Range(0, ports).Select(_ =>
             {
                 var socket = CreateBoundSocket(new IPEndPoint(IPAddress.Loopback, 0));
                 var endpoint = new StratumEndpoint((IPEndPoint) socket.LocalEndPoint,
-                    new PoolEndpoint { TcpProxyProtocol = proxy, TlsAuto = tlsAuto });
+                    new PoolEndpoint { TcpProxyProtocol = proxy, TlsAuto = tlsAuto,
+                        Tls = tlsCertificate != null, TlsPfxFile = tlsCertificate });
                 var reservation = new StratumListenerReservation(poolConfig.Id, endpoint, socket);
                 reservation.Activate();
                 return reservation;
@@ -462,9 +472,12 @@ public class StratumAdmissionTests
         public async ValueTask DisposeAsync()
         {
             stop.Cancel();
-            await run.WaitAsync(Timeout);
-            stop.Dispose();
-            ((IDisposable) ctx).Dispose();
+            try { await run.WaitAsync(Timeout); }
+            finally
+            {
+                stop.Dispose();
+                ((IDisposable) ctx).Dispose();
+            }
         }
     }
 }

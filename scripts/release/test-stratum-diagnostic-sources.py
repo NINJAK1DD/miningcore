@@ -18,6 +18,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 APPROVED = {
+    # Numeric configured limits and closed, internal reason strings only. No identity labels.
+    "src/Miningcore/Stratum/StratumConnectionAdmission.cs": (
+        r'''logger.Info("Stratum admission: {0}/s burst {1}, {2} concurrent; per address {3}/s burst {4}, {5} concurrent; {6} pending identities, {7} tracked addresses, {8}s idle retention, {9}s startup timeout",
+            config.ConnectionsPerSecond, config.Burst, config.MaxConcurrentConnections,
+            config.ConnectionsPerSecondPerAddress, config.BurstPerAddress, config.MaxConcurrentConnectionsPerAddress,
+            config.MaxPendingIdentities, config.MaxTrackedAddresses, config.IdleExpirySeconds, config.StartupTimeoutSeconds);''',
+        r'''logger.Warn("Stratum connection admission: {0}; suppressed since last summary: {1}. Existing connections are retained.", reason, suppressed);''',
+    ),
     "src/Miningcore/Stratum/StratumConnection.cs": (
         r'''logger.Info(() => $"[{ConnectionId}] {sslStream.SslProtocol.ToString().ToUpperInvariant()}-{sslStream.NegotiatedCipherSuite.ToString().ToUpperInvariant()} Connection from {RemoteEndpoint.Address.CensorOrReturn(gpdrCompliantLogging)}:{RemoteEndpoint.Port} accepted on port {endpoint.IPEndPoint.Port}");''',
         r'''logger.Info(() => $"[{ConnectionId}] Connection from {RemoteEndpoint.Address.CensorOrReturn(gpdrCompliantLogging)}:{RemoteEndpoint.Port} accepted on port {endpoint.IPEndPoint.Port}");''',

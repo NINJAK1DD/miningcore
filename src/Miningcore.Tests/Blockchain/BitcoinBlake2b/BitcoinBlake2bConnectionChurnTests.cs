@@ -33,11 +33,14 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         if(measurement != null && enforce != bool.Parse(Environment.GetEnvironmentVariable("MININGCORE_TEST_CHURN_ENFORCE")))
             return;
         var (config, manager, clock, bus) = Fixture();
+        // Stable external measurement scenario names. Tests asserting static metric
+        // values use unique pool IDs in StratumAdmissionTests.Server for isolation.
         config.Id = enforce ? "churn-limited" : "churn-generous";
         config.ConnectionAdmission = new StratumAdmissionConfig
         {
             Burst = 1000, BurstPerAddress = enforce ? 8 : 1000,
             IdleExpirySeconds = 1000,
+            MaxTrackedAddresses = 110000,
         };
         using var scope = container.BeginLifetimeScope(builder =>
         {

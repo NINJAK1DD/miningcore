@@ -207,10 +207,14 @@ public class StratumAdmissionConfigValidator : AbstractValidator<StratumAdmissio
         RuleFor(x => x.ConnectionsPerSecond).InclusiveBetween(1, 100000);
         RuleFor(x => x.Burst).InclusiveBetween(1, 100000);
         RuleFor(x => x.MaxConcurrentConnections).InclusiveBetween(1, 1000000);
+        RuleFor(x => x.MaxPendingIdentities).InclusiveBetween(1, 1000000);
         RuleFor(x => x.ConnectionsPerSecondPerAddress).InclusiveBetween(1, 100000);
         RuleFor(x => x.BurstPerAddress).InclusiveBetween(1, 100000);
         RuleFor(x => x.MaxConcurrentConnectionsPerAddress).InclusiveBetween(1, 1000000);
         RuleFor(x => x.MaxTrackedAddresses).InclusiveBetween(1, 1000000);
+        RuleFor(x => x.MaxTrackedAddresses)
+            .Must((x, tracked) => tracked >= x.MinimumTrackedAddresses)
+            .WithMessage("maxTrackedAddresses must cover maxConcurrentConnections + burst + connectionsPerSecond * idleExpirySeconds; increase the table or reduce those limits");
         RuleFor(x => x.IdleExpirySeconds).InclusiveBetween(1, 86400)
             .Must((x, expiry) => (long) expiry * x.ConnectionsPerSecondPerAddress >= x.BurstPerAddress)
             .WithMessage("Idle expiry must allow a complete address bucket refill");

@@ -55,14 +55,32 @@ Every internal Stratum pool now limits reconnect startup rate and concurrent dis
 across all its ports, with bounded client-address retention and monotonic expiry.
 Defaults allow a 200-connection pool burst and 100 per second, 4,096 active dispatches,
 and a 32-connection burst/two per second/256 active dispatches per client address.
-Configure `pools[].connectionAdmission` for larger shared-address fleets before upgrading.
+**Upgrade action:** these defaults apply to existing configurations too. Before upgrading,
+configure `pools[].connectionAdmission` for pools exceeding **4,096 concurrent miners**,
+farms exceeding **256 miners behind one address**, or larger restart bursts. Every pool
+logs its effective limits at startup and exports limits and occupancy for advance alerts.
+There is no unbounded/disabled mode; choose measured finite limits. Raising pool rate,
+burst, concurrent capacity or idle retention also requires sufficient `maxTrackedAddresses`
+(`maxConcurrentConnections + burst + connectionsPerSecond * idleExpirySeconds`).
+Invalid combinations fail configuration validation rather than silently starving new identities.
+
+**Reverse proxies:** without a usable trusted PROXY v1 identity, all miners behind a
+front-end share its per-address rate and concurrent cap. Configure explicit trusted peers
+and mandatory valid headers, or deliberately size the shared-address limits for the whole
+fleet. Trusted transports awaiting identity have a separate 256-slot pool-wide
+`maxPendingIdentities` cap; size it for handshake latency and protect the front-end too.
 Refused transports close immediately without an automatic IP ban or disruption to
 existing miners and owned accounting work. Startup requires a complete request within
 ten seconds, including TLS/PROXY setup; partial bytes no longer keep startup alive.
+Expiry is counted as `startup-timeout`, without an error-level message or IP ban.
 
 Trusted PROXY clients are attributed only after strict v1 validation. Invalid framing,
 address-family mismatches, ambiguous IPv4 literals and malformed ports are rejected;
-configure CRLF-terminated headers and explicit trusted proxy addresses. See
+configure CRLF-terminated headers and explicit trusted proxy addresses. LF-only headers
+are now rejected, the 107-byte wire limit is checked before decoding (including partial
+headers), and `PROXY UNKNOWN` retains the transport peer. Trust matching normalizes
+IPv4-mapped IPv6 on both sides, so an IPv4 allowlist entry also matches its mapped peer.
+Invalid trust-list entries now fail configuration validation. See
 [Stratum connection admission](stratum-connection-admission.md) for operator controls,
 NAT/proxy policy, bounded metrics, firmware reconnect recovery and validation evidence.
 

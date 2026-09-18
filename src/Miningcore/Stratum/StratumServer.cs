@@ -76,7 +76,8 @@ public abstract class StratumServer
     private readonly ConcurrentDictionary<string, Task> connectionTasks = new();
     internal TimeProvider AdmissionTimeProvider { get; set; } = TimeProvider.System;
     internal StratumConnectionAdmission ConnectionAdmission { get; private set; }
-    private TimeSpan startupTimeout;
+    private TimeSpan startupTimeout = TimeSpan.FromSeconds(10);
+    private int runStarted;
     // Lets lifecycle tests distinguish connection unregistration from completion of the
     // socket-owning dispatch task without widening the production subclass surface.
     internal int TrackedConnectionTaskCount => connectionTasks.Count;
@@ -102,15 +103,20 @@ public abstract class StratumServer
     {
         Contract.RequiresNonNull(listeners);
 
-        var admissionConfig = poolConfig.ConnectionAdmission ?? new StratumAdmissionConfig();
-        startupTimeout = TimeSpan.FromSeconds(admissionConfig.StartupTimeoutSeconds);
-        ConnectionAdmission ??= new StratumConnectionAdmission(admissionConfig,
-            AdmissionTimeProvider, poolConfig.Id, logger);
-        using var expiryTimer = AdmissionTimeProvider.CreateTimer(_ => ConnectionAdmission.SweepIdle(),
-            null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
-
+        var ownsRun = false;
         try
         {
+            ownsRun = Interlocked.CompareExchange(ref runStarted, 1, 0) == 0;
+            if(!ownsRun)
+                throw new InvalidOperationException("A Stratum server instance can only run once; restart with a new instance to change admission policy");
+
+            var admissionConfig = (poolConfig.ConnectionAdmission ?? new StratumAdmissionConfig()).Snapshot();
+            startupTimeout = TimeSpan.FromSeconds(admissionConfig.StartupTimeoutSeconds);
+            ConnectionAdmission = new StratumConnectionAdmission(admissionConfig,
+                AdmissionTimeProvider, poolConfig.Id, logger);
+            using var expiryTimer = AdmissionTimeProvider.CreateTimer(_ => ConnectionAdmission.SweepIdle(),
+                null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+
             if(listeners.Any(listener => !listener.IsActivated))
                 throw new InvalidOperationException(
                     "Stratum listeners must be activated before the pool is announced online");
@@ -132,7 +138,11 @@ public abstract class StratumServer
             foreach(var listener in listeners)
                 listener.Dispose();
 
-            await DrainConnectionsAsync();
+            if(ownsRun)
+            {
+                ConnectionAdmission?.Stop();
+                await DrainConnectionsAsync();
+            }
         }
     }
 
@@ -778,8 +788,11 @@ public abstract class StratumServer
 
     protected void OnConnectionComplete(StratumConnection connection)
     {
+        if(connection.CompletionReason == StratumConnectionCompletionReason.StartupTimeout)
+            ConnectionAdmission.RecordStartupTimeout();
         var completion = connection.CompletionReason switch
         {
+            StratumConnectionCompletionReason.StartupTimeout => "Connection startup deadline expired",
             StratumConnectionCompletionReason.PeerEof => "Received EOF",
             StratumConnectionCompletionReason.HostShutdown =>
                 "Connection completed during host shutdown",

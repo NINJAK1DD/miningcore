@@ -30,7 +30,7 @@ public class ConfigurationDiagnosticTests
         };
         var output = ConfigurationDiagnosticProjection.Serialize(config);
         var admission = (JObject) JObject.Parse(output)["configuration"]["pools"][0]["connectionAdmission"];
-        Assert.Equal(9, admission.Count);
+        Assert.Equal(10, admission.Count);
         Assert.All(admission.Properties(), field => Assert.Equal(JTokenType.Integer, field.Value.Type));
         Assert.Equal(64, admission["burstPerAddress"].Value<int>());
         Assert.Equal(13, admission["startupTimeoutSeconds"].Value<int>());

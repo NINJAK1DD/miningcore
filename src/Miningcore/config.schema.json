@@ -967,6 +967,9 @@
         "maxConcurrentConnectionsPerAddress": {
           "type": "integer"
         },
+        "maxPendingIdentities": {
+          "type": "integer"
+        },
         "maxTrackedAddresses": {
           "type": "integer"
         },
