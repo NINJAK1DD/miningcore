@@ -24,7 +24,7 @@ APPROVED = {
             config.ConnectionsPerSecond, config.Burst, config.MaxConcurrentConnections,
             config.ConnectionsPerSecondPerAddress, config.BurstPerAddress, config.MaxConcurrentConnectionsPerAddress,
             config.MaxPendingIdentities, config.MaxTrackedAddresses, config.IdleExpirySeconds, config.StartupTimeoutSeconds);''',
-        r'''logger.Warn("Stratum connection admission: {0}; suppressed since last summary: {1}. Existing connections are retained.", reason, suppressed);''',
+        r'''logger.Warn("Stratum connection admission: {0}; suppressed since last category summary: {1}. Existing connections are retained.", reason, budget.Suppressed);''',
     ),
     "src/Miningcore/Stratum/StratumConnection.cs": (
         r'''logger.Info(() => $"[{ConnectionId}] {sslStream.SslProtocol.ToString().ToUpperInvariant()}-{sslStream.NegotiatedCipherSuite.ToString().ToUpperInvariant()} Connection from {RemoteEndpoint.Address.CensorOrReturn(gpdrCompliantLogging)}:{RemoteEndpoint.Port} accepted on port {endpoint.IPEndPoint.Port}");''',

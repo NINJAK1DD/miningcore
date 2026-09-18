@@ -47,7 +47,7 @@ public partial class StratumAdmissionTests
         await server.Exchange();
         await server.Rejected();
         Assert.Equal(2, target.Logs.Count);
-        Assert.Contains("suppressed since last summary: 20", target.Logs[1]);
+        Assert.Contains("suppressed since last category summary: 20", target.Logs[1]);
         Assert.DoesNotContain(target.Logs, x => x.Contains("127.0.0.1"));
         server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
 
@@ -403,6 +403,7 @@ public partial class StratumAdmissionTests
         internal string PoolId => poolConfig.Id;
         internal Task Run => run;
         internal IPEndPoint[] Endpoints => endpoints;
+        internal StratumListenerReservation[] Reservations { get; }
         internal void Stop() => stop.Cancel();
         internal void RemoveCertificate(string path)
         {
@@ -433,6 +434,7 @@ public partial class StratumAdmissionTests
                 reservation.Activate();
                 return reservation;
             }).ToArray();
+            Reservations = reservations;
             endpoints = reservations.Select(x => x.Endpoint.IPEndPoint).ToArray();
             run = RunAsync(stop.Token, reservations);
         }

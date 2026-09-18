@@ -111,6 +111,48 @@ public class StratumDiagnosticTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancelledSetupFailure_PreservesSanitizedFailureAndCompletionReason(bool failStop)
+    {
+        using var logs = new Capture();
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        var connection = new StratumConnection(logs.Logger, new RecyclableMemoryStreamManager(),
+            new StandardClock(), "cancelled-setup", false, failStop ? cancelled.Token : default);
+        var endpoint = new StratumEndpoint(new IPEndPoint(IPAddress.Loopback, 3333), new PoolEndpoint
+        {
+            TcpProxyProtocol = new TcpProxyProtocolConfig { Enable = true, ProxyAddresses = new[] { Hostile } },
+        });
+        var completed = 0;
+        var errors = 0;
+        await connection.DispatchAsync(socket, failStop ? default : cancelled.Token, endpoint,
+            endpoint.IPEndPoint, null, (_, _, _) => throw new InvalidOperationException("Must not dispatch"),
+            _ => completed++, (_, _) => errors++);
+        Assert.Equal(1, completed);
+        Assert.Equal(0, errors);
+        var record = Assert.Single(logs.Records.Where(x => x["event"].Value<string>() == "CancelledFailure"));
+        Assert.Equal("invalid-operation", record["failure"].Value<string>());
+        Assert.Equal(failStop ? "MiningFailStop" : "HostShutdown", record["completion"].Value<string>());
+        logs.AssertSafe();
+    }
+
+    [Fact]
+    public void CancelledFailure_ProjectsOnlyReviewedCompletionValues()
+    {
+        using var logs = new Capture();
+        StratumDiagnostics.Write(logs.Logger, LogLevel.Debug, StratumDiagnostics.Event.CancelledFailure,
+            failure: new JsonReaderException(Hostile), completion: StratumConnectionCompletionReason.StartupTimeout);
+        StratumDiagnostics.Write(logs.Logger, LogLevel.Debug, StratumDiagnostics.Event.CancelledFailure,
+            completion: (StratumConnectionCompletionReason) int.MaxValue);
+        Assert.Equal("json", logs.Records[0]["failure"].Value<string>());
+        Assert.Equal("StartupTimeout", logs.Records[0]["completion"].Value<string>());
+        Assert.Equal("other", logs.Records[1]["completion"].Value<string>());
+        logs.AssertSafe();
+    }
+
+    [Theory]
     [InlineData("ReceiveWait")]
     [InlineData("BufferWait")]
     public void WaitingRecords_ContainOnlyEventAndConnectionId(string eventName)

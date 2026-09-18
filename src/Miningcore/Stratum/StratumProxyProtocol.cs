@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
@@ -7,18 +8,41 @@ namespace Miningcore.Stratum;
 
 internal sealed class StratumAdmissionException : Exception;
 
-internal static class StratumProxyProtocol
+// Built once per listener before accepting connections. No mutable configuration or
+// IPAddress instance escapes into the lookup set; admission and header parsing share it.
+internal sealed class StratumProxyPolicy
 {
-    internal static bool IsTrustedPeer(TcpProxyProtocolConfig config, IPAddress peer)
+    private readonly FrozenSet<IPAddress> trusted;
+
+    internal StratumProxyPolicy(TcpProxyProtocolConfig config)
     {
-        if(config?.Enable != true) return false;
-        peer = StratumConnectionAdmission.Normalize(peer);
-        if(config.ProxyAddresses == null || config.ProxyAddresses.Length == 0)
-            return peer.Equals(IPAddress.Loopback) || peer.Equals(IPAddress.IPv6Loopback);
-        return config.ProxyAddresses.Any(x => IPAddress.TryParse(x, out var trusted) &&
-            StratumConnectionAdmission.Normalize(trusted).Equals(peer));
+        Enabled = config?.Enable == true;
+        Mandatory = Enabled && config.Mandatory;
+        if(!Enabled)
+        {
+            trusted = FrozenSet<IPAddress>.Empty;
+            return;
+        }
+
+        var literals = config.ProxyAddresses;
+        if(literals == null || literals.Length == 0)
+            literals = new[] { "127.0.0.1", "::1" };
+        trusted = literals.Select(text =>
+        {
+            if(!IPAddress.TryParse(text, out var address))
+                throw new InvalidOperationException("Enabled PROXY trust lists require valid literal IP addresses");
+            return StratumConnectionAdmission.Normalize(address);
+        }).ToFrozenSet();
     }
 
+    internal bool Enabled { get; }
+    internal bool Mandatory { get; }
+    internal bool IsTrustedPeer(IPAddress peer) =>
+        Enabled && trusted.Contains(StratumConnectionAdmission.Normalize(peer));
+}
+
+internal static class StratumProxyProtocol
+{
     internal static IPEndPoint Parse(string line, IPEndPoint peer)
     {
         // Includes CR but excludes LF, which the line dispatcher consumed. v1's wire maximum

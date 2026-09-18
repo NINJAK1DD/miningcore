@@ -24,7 +24,7 @@ startup reports every effective limit, including defaults.
   "connectionsPerSecondPerAddress": 2,
   "burstPerAddress": 32,
   "maxConcurrentConnectionsPerAddress": 256,
-  "maxTrackedAddresses": 16384,
+  "maxTrackedAddresses": 32768,
   "idleExpirySeconds": 120,
   "startupTimeoutSeconds": 10
 }
@@ -48,7 +48,9 @@ measurements, memory headroom and the actual fleet's reconnect behavior.
 
 The table sizing rule includes connections already alive at the start of the idle
 retention window, a complete pool burst, and new admissions throughout that window.
-The defaults require `4096 + 200 + 100 * 120 = 16296` entries and provide 16384.
+The defaults require `4096 + 200 + 100 * 120 = 16296` entries and provide 32768,
+leaving room for moderate tuning without resting directly against the validation boundary.
+This remains a finite cap, and the dictionary allocates entries as identities arrive.
 Raising the pool rate to 500/s requires at least 64296 entries with the other defaults.
 Validation fails with an actionable sizing error if the table is too small. Some
 combinations exceed the 1,000,000-entry ceiling: reduce rate, burst, concurrency or
@@ -102,6 +104,13 @@ private listeners; restrict network access to those proxies. Trusting a proxy me
 trusting its attribution for every client. Never allow a proxy to forward an
 untrusted client's supplied PROXY line unchanged.
 
+Each listener parses and normalizes its allowlist once before accepting connections,
+storing it in an immutable lookup set. The enabled/mandatory flags are frozen too.
+Accept-time transport classification and header processing share that same policy;
+neither reparses or linearly scans configured strings per connection. Later configuration
+mutation cannot widen trust or change header requirements. Invalid enabled trust lists
+fail initialization and release the listener reservations. Restart to apply changes.
+
 Trusted transports still consume the pool rate and concurrency allowance before
 TLS or header processing. Their address allowance is deferred until the first
 line establishes identity; the proxy itself is not charged for every forwarded
@@ -132,7 +141,7 @@ Prometheus exports:
 
 | Metric | Labels / meaning |
 | --- | --- |
-| `miningcore_stratum_connections_admission_total` | `pool`, `reason`: `transport-admitted`, `identity-admitted`, `pool-rate`, `pool-concurrency`, `pending-identity-capacity`, `address-rate`, `address-concurrency`, `address-capacity`, `startup-timeout`. Transport and identity admissions are separate stages, not two connections; startup timeout is a later outcome. |
+| `miningcore_stratum_connections_admission_total` | `pool`, `reason`: `transport-admitted`, `identity-admitted`, `pool-rate`, `pool-concurrency`, `pending-identity-capacity`, `address-rate`, `address-concurrency`, `address-capacity`, `stopped`, `startup-timeout`. Transport and identity admissions are separate stages, not two connections; startup timeout is a later outcome. `stopped` counts transport/identity attempts reaching the stopped controller, not connections refused by the kernel after the listener closes. |
 | `miningcore_stratum_admission_active` | `pool`: dispatches still holding capacity, including drain. |
 | `miningcore_stratum_admission_addresses` | `pool`: active and idle identities retained in the finite table. |
 | `miningcore_stratum_admission_pending_identities` | `pool`: dispatches awaiting a trusted-proxy identity. |
@@ -144,17 +153,29 @@ limit, pending identities by `maxPendingIdentities`, retained addresses by
 `maxTrackedAddresses`, and maximum address occupancy by
 `maxConcurrentConnectionsPerAddress` (match on `pool`, and exclude zero limits).
 An identity reaching 80% of its concurrent cap generates a warning to check NAT/proxy
-configuration and fleet sizing. It shares the one-per-minute pool warning budget with
-refusals and does not disclose the identity. High occupancy is an advisory, not proof
+configuration and fleet sizing. Advisories and refusals have separate one-per-minute
+pool warning budgets, so a busy shared address cannot suppress refusal summaries.
+Neither category discloses the identity. High occupancy is an advisory, not proof
 of proxy misconfiguration. Startup timeouts have a counter and Debug completion message.
 On pool stop, limit gauges become zero. Occupancy remains truthful if accounting is
 still draining; after the last lease exits, all occupancy gauges and retained identities
 are cleared. Counters retain their process-lifetime totals.
 
 Labels contain only configured pool IDs and fixed outcomes, never client addresses,
-connection IDs or worker data. Admission emits at most one warning per pool per
-monotonic minute, with a fixed reason and number of suppressed warnings. Existing
+connection IDs or worker data. Admission emits at most two warnings per pool per
+monotonic minute (one refusal and one advisory), with a fixed reason and the number
+of suppressed warnings in that category. Existing
 [Stratum diagnostics](stratum-diagnostics.md) cover framing/TLS errors.
+If cancellation coincides with a setup/parser failure, cancellation deliberately wins
+completion and never causes a junk ban. Debug diagnostics retain the failure category
+and completion reason, without exception messages, stack traces or raw request data.
+
+The connection CTS links the financial fail-stop token directly so it also cancels
+TLS setup before the pipe/send tasks exist. Established handlers already received that
+cancellation through send-task completion; the direct link removes a scheduling hop.
+It does not release their admission/accounting ownership before handler drain.
+The deadline callback registration is disposed before either CTS, waiting for an
+in-flight callback before its target CTS can be disposed.
 
 Firmware that reconnects after a refused `d=` authorization or difficulty change
 may now see TCP EOF/reset before subscribe receives a reply. This is distinct from
@@ -177,6 +198,8 @@ can eject healthy NAT miners, affect unrelated pools and amplify firmware retrie
 Existing operator-configured junk/share bans remain separate and unchanged.
 
 The algorithm comparison follows [Microsoft's rate-limiter guidance](https://learn.microsoft.com/en-us/aspnet/core/performance/rate-limit?view=aspnetcore-10.0#rate-limiter-algorithms).
+Trust snapshots use [.NET's immutable FrozenSet](https://learn.microsoft.com/en-us/dotnet/api/system.collections.frozen.frozenset-1?view=net-10.0)
+for allowlists constructed at startup and repeatedly queried during listener operation.
 Finite defaults remain enabled on upgrade: making protection opt-in would preserve
 the reconnect-amplification path for unchanged deployments, and rates alone cannot
 bound retained established connections. Operators can raise the finite controls for
@@ -235,8 +258,8 @@ Recorded 2026-09-18 on Windows with .NET 10.0.11, using that separate-client scr
 
 | Policy | Attempts / admitted | Worker jobs | Server process CPU | Server managed allocation | Elapsed |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Generous allowance | 256 / 256 | 2,304 | 1,594 ms | 81,027,096 bytes | 1,192 ms |
-| Eight-startup address burst | 256 / 8 | 72 | 125 ms | 4,249,496 bytes | 254 ms |
+| Generous allowance | 256 / 256 | 2,304 | 1,688 ms | 81,111,992 bytes | 1,185 ms |
+| Eight-startup address burst | 256 / 8 | 72 | 172 ms | 4,167,512 bytes | 291 ms |
 
 Both runs sampled one peak dispatch, retained zero connections/tasks after drain,
 and retained one idle address. The work reduction is deterministic; CPU and allocation
@@ -259,9 +282,15 @@ Review hardening adds real-listener regressions for byte-exact and partial PROXY
 headers, plain/TLS/TLS-auto startup expiry without bans or Error logs, the shared
 pending-identity cap, shutdown telemetry with an owned handler still draining,
 initialization failure and second-run reservation cleanup, and absent proxy configuration.
-The final Ubuntu 22.04 WSL listener/churn selection passes 223 tests, including TLS
-certificate identity. Windows listener/configuration/diagnostic selection passes 452
-tests with five platform skips; a subsequent focused policy/diagnostic run passes 288.
+Further regressions freeze a 10,000-entry trust list, exercise trust/flag mutation
+through actual TCP dispatch, protect live reservations on repeated runs, count stopped
+refusals, preserve cancellation failure categories, and keep warning categories independent.
+A valid five-entry policy with a test-seeded full ledger covers direct/proxy
+`address-capacity` refusals, existing-identity preservation and expiry recovery. This
+exercises the defensive guard without bypassing sizing validation in production.
+The final Ubuntu 22.04 WSL listener/churn selection passes 236 tests, including TLS
+certificate identity. Windows listener/configuration/diagnostic selection passes 465
+tests with five platform skips; the focused policy/diagnostic selection passes 372.
 The deterministic admission test also fills the default 4096-lease cap exactly. That
 is controller coverage: the external-client measurement uses 256 serial reconnect
 attempts and is not evidence of 4096 simultaneous live network clients.

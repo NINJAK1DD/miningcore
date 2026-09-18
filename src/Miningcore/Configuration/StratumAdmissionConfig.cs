@@ -10,7 +10,7 @@ public class StratumAdmissionConfig
     public int ConnectionsPerSecondPerAddress { get; set; } = 2;
     public int BurstPerAddress { get; set; } = 32;
     public int MaxConcurrentConnectionsPerAddress { get; set; } = 256;
-    public int MaxTrackedAddresses { get; set; } = 16384;
+    public int MaxTrackedAddresses { get; set; } = 32768;
     public int IdleExpirySeconds { get; set; } = 120;
     public int StartupTimeoutSeconds { get; set; } = 10;
 
@@ -19,5 +19,7 @@ public class StratumAdmissionConfig
     internal long MinimumTrackedAddresses => (long) MaxConcurrentConnections + Burst +
         (long) ConnectionsPerSecond * IdleExpirySeconds;
 
+    // All members are value types. Any future reference-valued setting must be
+    // deep-copied here before the snapshot can be treated as an immutable policy.
     internal StratumAdmissionConfig Snapshot() => (StratumAdmissionConfig) MemberwiseClone();
 }

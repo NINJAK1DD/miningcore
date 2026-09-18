@@ -63,6 +63,11 @@ There is no unbounded/disabled mode; choose measured finite limits. Raising pool
 burst, concurrent capacity or idle retention also requires sufficient `maxTrackedAddresses`
 (`maxConcurrentConnections + burst + connectionsPerSecond * idleExpirySeconds`).
 Invalid combinations fail configuration validation rather than silently starving new identities.
+The default tracked-address cap is 32,768, providing headroom above the default
+16,296-entry sizing requirement. Startup trust lists are parsed once into an immutable
+normalized lookup shared by admission and header processing; trust changes require restart.
+Advisory and refusal warnings each have their own one-per-minute budget, and attempts
+reaching a stopped admission controller are counted separately as `stopped`.
 
 **Reverse proxies:** without a usable trusted PROXY v1 identity, all miners behind a
 front-end share its per-address rate and concurrent cap. Configure explicit trusted peers

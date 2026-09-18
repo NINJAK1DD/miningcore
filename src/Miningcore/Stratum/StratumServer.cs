@@ -77,7 +77,8 @@ public abstract class StratumServer
     internal TimeProvider AdmissionTimeProvider { get; set; } = TimeProvider.System;
     internal StratumConnectionAdmission ConnectionAdmission { get; private set; }
     private TimeSpan startupTimeout = TimeSpan.FromSeconds(10);
-    private int runStarted;
+    private readonly object runGate = new();
+    private HashSet<StratumListenerReservation> ownedListeners;
     // Lets lifecycle tests distinguish connection unregistration from completion of the
     // socket-owning dispatch task without widening the production subclass surface.
     internal int TrackedConnectionTaskCount => connectionTasks.Count;
@@ -98,18 +99,34 @@ public abstract class StratumServer
     internal TimeSpan ConnectionDrainTimeout { get; set; } =
         TimeSpan.FromSeconds(5);
 
+    // Takes ownership of incoming reservations, including fresh ones on a rejected
+    // second call. Reservations already owned by the first run remain with that run.
     internal async Task RunAsync(CancellationToken ct,
         params StratumListenerReservation[] listeners)
     {
         Contract.RequiresNonNull(listeners);
 
+        var cleanupListeners = listeners.ToArray();
         var ownsRun = false;
         try
         {
-            ownsRun = Interlocked.CompareExchange(ref runStarted, 1, 0) == 0;
+            lock(runGate)
+            {
+                if(ownedListeners == null)
+                {
+                    ownedListeners = new HashSet<StratumListenerReservation>(cleanupListeners,
+                        ReferenceEqualityComparer.Instance);
+                    ownsRun = true;
+                }
+                else
+                    cleanupListeners = cleanupListeners.Where(x => !ownedListeners.Contains(x)).ToArray();
+            }
             if(!ownsRun)
                 throw new InvalidOperationException("A Stratum server instance can only run once; restart with a new instance to change admission policy");
 
+            listeners = cleanupListeners;
+            var ports = listeners.Select(listener => (Listener: listener,
+                Proxy: new StratumProxyPolicy(listener.Endpoint.PoolEndpoint.TcpProxyProtocol))).ToArray();
             var admissionConfig = (poolConfig.ConnectionAdmission ?? new StratumAdmissionConfig()).Snapshot();
             startupTimeout = TimeSpan.FromSeconds(admissionConfig.StartupTimeoutSeconds);
             ConnectionAdmission = new StratumConnectionAdmission(admissionConfig,
@@ -129,13 +146,13 @@ public abstract class StratumServer
                     listener.Dispose();
             });
 
-            await Task.WhenAll(listeners.Select(x =>
-                Listen(x.Socket, x.Endpoint, ct)));
+            await Task.WhenAll(ports.Select(x =>
+                Listen(x.Listener.Socket, x.Listener.Endpoint, x.Proxy, ct)));
         }
 
         finally
         {
-            foreach(var listener in listeners)
+            foreach(var listener in cleanupListeners)
                 listener.Dispose();
 
             if(ownsRun)
@@ -375,7 +392,7 @@ public abstract class StratumServer
         }
     }
 
-    private async Task Listen(Socket server, StratumEndpoint port, CancellationToken ct)
+    private async Task Listen(Socket server, StratumEndpoint port, StratumProxyPolicy proxyPolicy, CancellationToken ct)
     {
         var cert = GetTlsCert(port);
 
@@ -385,7 +402,7 @@ public abstract class StratumServer
             {
                 var socket = await server.AcceptAsync(ct);
 
-                AcceptConnection(socket, port, cert, ct);
+                AcceptConnection(socket, port, cert, proxyPolicy, ct);
             }
 
             catch(OperationCanceledException)
@@ -408,7 +425,8 @@ public abstract class StratumServer
         }
     }
 
-    private void AcceptConnection(Socket socket, StratumEndpoint port, X509Certificate2 cert, CancellationToken ct)
+    private void AcceptConnection(Socket socket, StratumEndpoint port, X509Certificate2 cert,
+        StratumProxyPolicy proxyPolicy, CancellationToken ct)
     {
         StratumConnection connection = null;
         StratumConnectionAdmission.Lease admission = null;
@@ -437,8 +455,7 @@ public abstract class StratumServer
             if(DisconnectIfBanned(socket, remoteEndpoint))
                 return;
 
-            var proxy = StratumProxyProtocol.IsTrustedPeer(port.PoolEndpoint.TcpProxyProtocol,
-                remoteEndpoint.Address);
+            var proxy = proxyPolicy.IsTrustedPeer(remoteEndpoint.Address);
             if(!ConnectionAdmission.TryAcquire(remoteEndpoint.Address, proxy, out admission))
             {
                 StratumSocketCleanup.CloseAbortively(socket);
@@ -448,8 +465,11 @@ public abstract class StratumServer
             // init connection
             connection = new StratumConnection(logger, rmsm, clock,
                 CreateConnectionId(),
-                clusterConfig.Logging?.GPDRCompliant == true, failStop?.Token ?? default);
-            connection.StartupTimeout = startupTimeout;
+                clusterConfig.Logging?.GPDRCompliant == true, failStop?.Token ?? default)
+            {
+                StartupTimeout = startupTimeout,
+                ProxyPolicy = proxyPolicy,
+            };
             if(proxy)
                 connection.AdmitProxyIdentity = admission.TrySetIdentity;
 

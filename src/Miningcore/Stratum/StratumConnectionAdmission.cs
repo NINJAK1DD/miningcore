@@ -44,9 +44,8 @@ internal sealed class StratumConnectionAdmission
     private readonly SortedSet<int> occupancies = new();
     private double tokens;
     private long updated;
-    private long lastLog;
-    private bool logged;
-    private long suppressed;
+    private WarningBudget refusalWarnings;
+    private WarningBudget advisoryWarnings;
     private int count;
     private int pendingCount;
     private bool stopped;
@@ -99,8 +98,8 @@ internal sealed class StratumConnectionAdmission
         lock(gate)
         {
             lease = null;
-            if(stopped) return false;
             var now = time.GetTimestamp();
+            if(stopped) return Reject("stopped", now);
             Sweep(now, 16);
             Refill(ref tokens, ref updated, now, config.Burst, config.ConnectionsPerSecond);
             if(count >= config.MaxConcurrentConnections)
@@ -148,7 +147,7 @@ internal sealed class StratumConnectionAdmission
         ChangeOccupancy(state.Active, state.Active + 1);
         state.Active++;
         if((long) state.Active * 5 >= (long) config.MaxConcurrentConnectionsPerAddress * 4)
-            LogSummary("address-near-capacity; check fleet sizing and NAT/proxy identity configuration", now);
+            LogSummary("address-near-capacity; check fleet sizing and NAT/proxy identity configuration", now, ref advisoryWarnings);
         if(state.IdleNode != null)
         {
             idle.Remove(state.IdleNode);
@@ -167,21 +166,28 @@ internal sealed class StratumConnectionAdmission
     private bool Reject(string reason, long now)
     {
         decisions.WithLabels(poolId, reason).Inc();
-        LogSummary(reason, now);
+        LogSummary(reason, now, ref refusalWarnings);
         return false;
     }
 
-    private void LogSummary(string reason, long now)
+    private struct WarningBudget
     {
-        if(!logged || time.GetElapsedTime(lastLog, now) >= TimeSpan.FromMinutes(1))
+        internal long LastLog;
+        internal bool Logged;
+        internal long Suppressed;
+    }
+
+    private void LogSummary(string reason, long now, ref WarningBudget budget)
+    {
+        if(!budget.Logged || time.GetElapsedTime(budget.LastLog, now) >= TimeSpan.FromMinutes(1))
         {
-            logger.Warn("Stratum connection admission: {0}; suppressed since last summary: {1}. Existing connections are retained.", reason, suppressed);
-            logged = true;
-            lastLog = now;
-            suppressed = 0;
+            logger.Warn("Stratum connection admission: {0}; suppressed since last category summary: {1}. Existing connections are retained.", reason, budget.Suppressed);
+            budget.Logged = true;
+            budget.LastLog = now;
+            budget.Suppressed = 0;
         }
         else
-            suppressed++;
+            budget.Suppressed++;
     }
 
     // An exact maximum without scanning the identity table or exporting client labels.
@@ -272,7 +278,8 @@ internal sealed class StratumConnectionAdmission
         {
             lock(owner.gate)
             {
-                if(disposed || owner.stopped) return false;
+                if(disposed) return false;
+                if(owner.stopped) return owner.Reject("stopped", owner.time.GetTimestamp());
                 if(identity != null) return identity.Address.Equals(Normalize(address));
                 if(!owner.TryIdentity(address, owner.time.GetTimestamp(), out var admitted)) return false;
                 identity = admitted;

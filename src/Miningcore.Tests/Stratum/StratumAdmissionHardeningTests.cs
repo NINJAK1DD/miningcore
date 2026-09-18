@@ -48,6 +48,9 @@ public partial class StratumAdmissionTests
             server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
             Assert.DoesNotContain(target.Logs, x => x.StartsWith("Error|") || x.StartsWith("Fatal|"));
             Assert.Contains(target.Logs, x => x.Contains("Connection startup deadline expired"));
+            if(auto || tls)
+                Assert.Contains(target.Logs, x => x.StartsWith("Debug|") && x.Contains("\"event\":\"CancelledFailure\"") &&
+                    x.Contains("\"completion\":\"StartupTimeout\""));
             Assert.Contains(await Series(server), x => x.Contains("reason=\"startup-timeout\"") && x.EndsWith(" 1"));
         }
         finally
@@ -228,6 +231,8 @@ public partial class StratumAdmissionTests
     {
         var validator = new StratumAdmissionConfigValidator();
         var config = new StratumAdmissionConfig();
+        Assert.Equal(32768, config.MaxTrackedAddresses);
+        Assert.True(validator.Validate(new StratumAdmissionConfig { Burst = 300 }).IsValid);
         Assert.Equal(16296, config.MinimumTrackedAddresses);
         config.MaxTrackedAddresses = 16296;
         Assert.True(validator.Validate(config).IsValid);
@@ -248,12 +253,14 @@ public partial class StratumAdmissionTests
             TcpProxyProtocol = new TcpProxyProtocolConfig { Enable = true, ProxyAddresses = new[] { "not-an-ip" } } }).IsValid);
     }
 
-    private static async Task<string[]> Series(Server server)
+    private static Task<string[]> Series(Server server) => Series(server.PoolId);
+
+    private static async Task<string[]> Series(string poolId)
     {
         using var output = new MemoryStream();
         await Prometheus.Metrics.DefaultRegistry.CollectAndExportAsTextAsync(output);
         return Encoding.UTF8.GetString(output.ToArray()).Split('\n')
-            .Where(x => x.Contains($"pool=\"{server.PoolId}\"")).ToArray();
+            .Where(x => x.Contains($"pool=\"{poolId}\"")).ToArray();
     }
 
     [Fact]

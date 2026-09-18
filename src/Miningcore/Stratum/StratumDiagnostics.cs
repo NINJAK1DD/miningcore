@@ -16,6 +16,7 @@ internal static class StratumDiagnostics
         AcceptError, ListenError, TerminalCallback, UntrackedCompletion,
         Completion, TaskRemoval, Drain, CertificateLoad, ReceiveWait, BufferWait,
         DifficultyBudgetDisconnect, DuplicateSubscription, AssignmentPublicationFailure,
+        CancelledFailure,
     }
 
     internal static string Method(string method) => method switch
@@ -39,7 +40,7 @@ internal static class StratumDiagnostics
 
     internal static void Write(ILogger logger, LogLevel level, Event operation,
         string connectionId = null, Exception failure = null, string method = null,
-        long? bytes = null, int? port = null)
+        long? bytes = null, int? port = null, StratumConnectionCompletionReason? completion = null)
     {
         if(!logger.IsEnabled(level))
             return;
@@ -65,6 +66,8 @@ internal static class StratumDiagnostics
             record["port"] = port.Value;
         if(operation == Event.CertificateLoad && CertificateReason(failure) is { } reason)
             record["reason"] = reason;
+        if(operation == Event.CancelledFailure && completion.HasValue)
+            record["completion"] = Enum.IsDefined(completion.Value) ? completion.Value.ToString() : "other";
 
         logger.Log(level, "Stratum diagnostic " + record.ToString(Formatting.None));
     }
