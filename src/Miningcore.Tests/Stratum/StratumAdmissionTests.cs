@@ -22,6 +22,7 @@ using Xunit;
 
 namespace Miningcore.Tests.Stratum;
 
+[Collection(StratumAdmissionMetricsCollection.Name)]
 public partial class StratumAdmissionTests
 {
     internal static readonly TimeSpan Timeout = TimeSpan.FromSeconds(15);
