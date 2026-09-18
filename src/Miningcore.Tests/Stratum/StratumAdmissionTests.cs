@@ -193,14 +193,26 @@ public partial class StratumAdmissionTests
     {
         await using var server = new Server(new StratumAdmissionConfig
         { MaxConcurrentConnectionsPerAddress = 8, BurstPerAddress = 100 }, new ManualTimeProvider());
-        var clients = await Task.WhenAll(Enumerable.Range(0, 40).Select(_ => server.Connect()));
+        var clients = new TcpClient[40];
         try
         {
+            await Task.WhenAll(Enumerable.Range(0, clients.Length).Select(async i =>
+            {
+                try { clients[i] = await server.Connect(); }
+                catch(SocketException ex) when(ex.SocketErrorCode is SocketError.ConnectionReset or
+                    SocketError.ConnectionAborted)
+                {
+                    // Immediate abortive refusal can reach Linux before ConnectAsync
+                    // completes, or later during exchange. Both are the same refusal.
+                }
+            }));
             await Until(() => server.Accepted == 8);
             var replies = await Task.WhenAll(clients.Select(async client =>
             {
+                if(client == null) return null;
                 try { return await Exchange(client); }
-                catch(IOException) { return null; }
+                catch(IOException ex) when(ex.InnerException is SocketException { SocketErrorCode:
+                    SocketError.ConnectionReset or SocketError.ConnectionAborted or SocketError.Shutdown }) { return null; }
             }));
             Assert.Equal(8, replies.Count(x => x != null));
             Assert.Equal(8, server.ConnectionAdmission.Snapshot.Active);
@@ -209,7 +221,7 @@ public partial class StratumAdmissionTests
             Assert.NotNull(await Exchange(survivor));
             await server.Rejected();
         }
-        finally { foreach(var client in clients) client.Dispose(); }
+        finally { foreach(var client in clients) client?.Dispose(); }
         await server.Empty();
         await server.Exchange();
     }
