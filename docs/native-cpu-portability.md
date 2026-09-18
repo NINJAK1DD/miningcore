@@ -40,10 +40,14 @@ checks that the driver still supplies the fixed baseline. The native probe runs
 RandomX and RandomARQ known-answer hashes, Panthera and SCash cross-CPU hash
 comparisons, CryptoNote integrated-address decoding, GhostRider, Argon2d250,
 BLAKE3 and HighwayHash vectors. It runs on the host and under QEMU's
-`Nehalem-v1,+aes,+pclmulqdq` model, without AVX, AVX2 or AVX-512. A separate
-HighwayHash run uses `Haswell-v1,-xsave` to test disabled OS XSAVE support
-(AVX2 emulation requires QEMU 7.2 or newer; Ubuntu 22.04's QEMU 6.2 additionally
-masks AVX2). An AVX-512 negative control must terminate with SIGILL; otherwise
+`Nehalem-v1,+aes,+pclmulqdq` model, without AVX, AVX2 or AVX-512. The hosted
+Ubuntu 26.04 development runner uses `amd64v3` system-library packages, which
+cannot start on a pre-AVX CPU; that job explicitly selects `--avx2-userspace`
+(`Haswell-v1`, still without AVX-512). Both release containers and the lab keep
+the stricter baseline gate. A separate fixture compiles the real HighwayHash
+dispatcher with a controlled CPUID provider advertising AVX2 but no OS XSAVE,
+and asserts that it selects SSE4.1 instead. An AVX-512 negative control must
+terminate with SIGILL; otherwise
 the gate fails. Crashes, timeouts, missing symbols/libraries and differing hashes
 also fail the gate.
 

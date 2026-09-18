@@ -1,7 +1,6 @@
 // Execute real exported entry points: merely loading or scanning a DSO misses
 // compiler-generated instructions in ordinary hashing and initialization code.
 #include <dlfcn.h>
-#include <cpuid.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
@@ -79,13 +78,6 @@ static void highwayhash(const char* directory)
 {
     std::puts("Testing Dero HighwayHash dispatch");
     auto lib = open_library(directory, "libdero.so");
-    // Inspect the vendored dispatch result as well as its output: emulators
-    // may execute AVX instructions even when OSXSAVE has been masked off.
-    auto supported = symbol<unsigned (*)()>(lib, "_ZN11highwayhash15InstructionSets9SupportedEv");
-    unsigned eax, ebx, ecx, edx;
-    require(__get_cpuid(1, &eax, &ebx, &ecx, &edx), "CPUID unavailable");
-    if((ecx & bit_OSXSAVE) == 0)
-        require((supported() & 4U) == 0, "HighwayHash selected AVX2 without OS XSAVE support");
     auto highway = symbol<uint64_t (*)(const uint64_t*, const char*, uint64_t)>(lib, "HighwayHash64");
     const uint64_t key[] = {0x0706050403020100ULL, 0x0f0e0d0c0b0a0908ULL,
         0x1716151413121110ULL, 0x1f1e1d1c1b1a1918ULL};
@@ -97,10 +89,8 @@ static void highwayhash(const char* directory)
 int main(int argc, char** argv)
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    require(argc == 2 || (argc == 3 && std::strcmp(argv[2], "--highway-only") == 0),
-        "usage: native-cpu-portability LIBRARY_DIRECTORY [--highway-only]");
+    require(argc == 2, "usage: native-cpu-portability LIBRARY_DIRECTORY");
     const char* directory = argv[1];
-    if(argc == 3) { highwayhash(directory); return 0; }
     randomx(directory, "librandomx.so", "639183aae1bf4c9a35884cb46b09cad9175f04efd7684e7262a0ac1c2f0b4e3f");
     randomx(directory, "librandomarq.so", "27f66e4650eb5657513e76c140e09e59336786f21fbef1ed6ff40fc21538221e");
     // These forks have different consensus hashes. Compare their outputs

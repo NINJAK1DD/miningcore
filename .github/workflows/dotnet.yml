@@ -333,7 +333,7 @@ jobs:
     - name: Test native CPU portability
       if: runner.os == 'Linux'
       shell: bash
-      run: bash scripts/release/test-native-cpu-portability.sh src/Miningcore/bin/Debug/net10.0
+      run: bash scripts/release/test-native-cpu-portability.sh src/Miningcore/bin/Debug/net10.0 --avx2-userspace
 
     - name: Smoke-test ZeroMQ relay runtime
       if: runner.os == 'Linux'
