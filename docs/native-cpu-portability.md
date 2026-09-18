@@ -67,8 +67,8 @@ All 25 native files used for reproduction matched the archive byte-for-byte.
 
 | Original library | SHA-256 |
 | --- | --- |
-| `librandomx.so` | `824558084a89546cc53e7db1f2a660f9ac38dfd7cfc2e1918f8222e2d512e7d5` |
-| `librandomarq.so` | `6f3463b9b43fe91b558133b189bdf2356a985c17347fd46b405b56add4d5ca6c` |
+| `librandomx.so` | SHA-256: `824558084a89546cc53e7db1f2a660f9ac38dfd7cfc2e1918f8222e2d512e7d5` |
+| `librandomarq.so` | SHA-256: `6f3463b9b43fe91b558133b189bdf2356a985c17347fd46b405b56add4d5ca6c` |
 
 Isolated managed tests for RandomX seed creation, RandomARQ slow hashing,
 GhostRider and integrated-address decoding each aborted. A small native harness
@@ -108,8 +108,7 @@ GCC 11.4.0, CMake Release, `ARCH=default`, and identical explicit C/C++ flags
 Argon2 flags). This is a controlled AVX-512-target comparison, not a claim to
 reconstruct the original runner's undisclosed `-march=native` expansion.
 
-Both produced SHA-256
-`0918a977031720410b736373cfe3db9dc98412b87ebe4c9e6a9548c55727c0a1` and both
+Both produced SHA-256: `0918a977031720410b736373cfe3db9dc98412b87ebe4c9e6a9548c55727c0a1` and both
 crashed at `blake2b_compress + 435`, instruction `kmovd 0x1c(%r9), %k0`, on the
 same Ryzen lab CPU. This byte-identical base/PR failure establishes that the
 host-dependent native build requirement **predates PR #186**. The comparison
@@ -126,6 +125,13 @@ crashing GhostRider and CryptoNote tests. For this Windows-mounted checkout only
 the managed test build disabled GitVersion metadata generation because its
 worktree pointer uses a Windows path; this does not change native compilation.
 The normal CI builds retain GitVersion and execute the full managed suite.
+
+The complete lab test run also finished successfully: **3,284 passed, 48
+skipped, 0 failed** (3,332 total). The skipped integration cases require their
+separately configured services/daemons; they are not counted as live validation.
+The native probe passed on the actual Ryzen and the emulated baseline without
+AVX/AVX2/AVX-512, with identical hashes. Its negative control rejected AVX-512,
+and the original released libraries failed the new gate as expected.
 
 ### References
 
