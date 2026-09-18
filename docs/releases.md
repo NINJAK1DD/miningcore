@@ -70,6 +70,10 @@ Advisory and refusal warnings each have their own one-per-minute budget, and att
 reaching a stopped admission controller are counted separately as `stopped`, without
 warning during routine shutdown. Both Prometheus packages are updated to 8.2.1 to
 fix concurrent scrape/collector-registration failures during pool startup.
+Real HTTP tests cover the production exporter overload on shared and dedicated
+listeners, including admission samples, content type and protected response headers.
+Host shutdown and financial fail-stop take precedence over simultaneous parser errors
+before the first request owns its handler, without masking failures after ownership.
 
 **Reverse proxies:** without a usable trusted PROXY v1 identity, all miners behind a
 front-end share its per-address rate and concurrent cap. Configure explicit trusted peers

@@ -175,15 +175,23 @@ before pool startup registers its admission collectors. The regression exercises
 default-registry self-metrics and concurrent registration/scraping in a disposable
 process; admission tests also retain normal cross-fixture parallel scheduling.
 See the [upstream 8.2.1 release](https://github.com/prometheus-net/prometheus-net/releases/tag/v8.2.1).
+The ASP.NET exporter upgrade also includes deferred response-stream initialization
+and allocation improvements; the [upstream comparison](https://github.com/prometheus-net/prometheus-net/compare/v8.1.0...v8.2.1)
+records those changes. Real HTTP regressions exercise the production
+`UseMetricServer(MetricsRoutePrefix)` overload with default-registry admission samples
+on shared and dedicated listeners, checking content type, response protections and
+route isolation. Existing custom-registry GET/HEAD and method-policy tests remain.
 
 Labels contain only configured pool IDs and fixed outcomes, never client addresses,
 connection IDs or worker data. Admission emits at most two warnings per pool per
 monotonic minute (one refusal and one advisory), with a fixed reason and the number
 of suppressed warnings in that category. Existing
 [Stratum diagnostics](stratum-diagnostics.md) cover framing/TLS errors.
-If cancellation coincides with a setup/parser failure, cancellation deliberately wins
-completion and never causes a junk ban. Debug diagnostics retain the failure category
-and completion reason, without exception messages, stack traces or raw request data.
+Before the first complete request takes ownership, a startup deadline, host shutdown
+or financial fail-stop coinciding with a setup/parser failure wins completion and
+never causes a junk ban. Debug diagnostics retain the failure category and completion
+reason, without exception messages, stack traces or raw request data. Once a request
+owns its handler, shutdown does not suppress a non-cancellation handler/parser error.
 
 The connection CTS links the financial fail-stop token directly so it also cancels
 TLS setup before the pipe/send tasks exist. Established handlers already received that
@@ -303,9 +311,12 @@ refusals, preserve cancellation failure categories, and keep warning categories 
 A valid five-entry policy with a test-seeded full ledger covers direct/proxy
 `address-capacity` refusals, existing-identity preservation and expiry recovery. This
 exercises the defensive guard without bypassing sizing validation in production.
-The final Ubuntu 22.04 WSL listener/churn selection passes 236 tests, including TLS
-certificate identity. Windows listener/configuration/diagnostic selection passes 465
-tests with five platform skips; the focused policy/diagnostic selection passes 372.
+The round-four Ubuntu 22.04 WSL listener/API/metrics/host/payout selection passes 542
+tests on each of three runs, including TLS certificate identity. The corresponding
+Windows selection passes 534 tests with five platform skips; the certificate identity
+test is excluded there because of the documented Avast interception. Startup/parser
+shutdown races are synchronized for both host shutdown and financial fail-stop;
+separate regressions preserve errors from handlers that already own their requests.
 The deterministic admission test also fills the default 4096-lease cap exactly. That
 is controller coverage: the external-client measurement uses 256 serial reconnect
 attempts and is not evidence of 4096 simultaneous live network clients.

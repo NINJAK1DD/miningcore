@@ -10,6 +10,7 @@ namespace Miningcore.Stratum;
 // serialized. The idle list contains exactly one node per inactive identity, never stale leases.
 internal sealed class StratumConnectionAdmission
 {
+    private const string StoppedReason = "stopped";
     private static readonly Counter decisions = Metrics.CreateCounter(
         "miningcore_stratum_connections_admission_total", "Stratum connection admission decisions",
         new CounterConfiguration { LabelNames = new[] { "pool", "reason" } });
@@ -29,9 +30,8 @@ internal sealed class StratumConnectionAdmission
         "miningcore_stratum_admission_limit", "Configured admission limits; zero after pool shutdown",
         new GaugeConfiguration { LabelNames = new[] { "pool", "limit" } });
     private readonly object gate = new();
-    // Internal for the defensive full-ledger regression; normal mutations require gate.
-    internal readonly Dictionary<IPAddress, AddressState> addresses = new();
-    internal readonly LinkedList<AddressState> idle = new();
+    private readonly Dictionary<IPAddress, AddressState> addresses = new();
+    private readonly LinkedList<AddressState> idle = new();
     private readonly StratumAdmissionConfig config;
     private readonly TimeProvider time;
     private readonly ILogger logger;
@@ -100,7 +100,7 @@ internal sealed class StratumConnectionAdmission
         {
             lease = null;
             var now = time.GetTimestamp();
-            if(stopped) return Reject("stopped", now);
+            if(stopped) return Reject(StoppedReason, now);
             Sweep(now, 16);
             Refill(ref tokens, ref updated, now, config.Burst, config.ConnectionsPerSecond);
             if(count >= config.MaxConcurrentConnections)
@@ -169,7 +169,7 @@ internal sealed class StratumConnectionAdmission
         decisions.WithLabels(poolId, reason).Inc();
         // Expected teardown refusals remain observable without warning about routine
         // shutdown or consuming the operator-actionable refusal summary budget.
-        if(reason != "stopped")
+        if(reason != StoppedReason)
             LogSummary(reason, now, ref refusalWarnings);
         return false;
     }
@@ -242,6 +242,30 @@ internal sealed class StratumConnectionAdmission
             if(!stopped) Sweep(time.GetTimestamp(), 256);
     }
 
+    // The conservative sizing invariant keeps normal traffic below the defensive
+    // full-ledger guard. Tests can construct that boundary without exposing mutable
+    // collections or weakening configuration validation. No live ownership is replaced.
+    internal void SeedIdleIdentitiesForTesting(IReadOnlyCollection<IPAddress> identities)
+    {
+        lock(gate)
+        {
+            if(stopped || count != 0 || addresses.Count != 0 || identities.Count > config.MaxTrackedAddresses)
+                throw new InvalidOperationException("Idle identities require an empty, running admission controller and must fit its capacity");
+            var normalized = identities.Select(Normalize).ToArray();
+            if(normalized.Distinct().Count() != normalized.Length)
+                throw new ArgumentException("Idle identities must be distinct after normalization", nameof(identities));
+
+            var now = time.GetTimestamp();
+            foreach(var address in normalized)
+            {
+                var state = new AddressState(address, config.BurstPerAddress, now) { IdleSince = now };
+                state.IdleNode = idle.AddLast(state);
+                addresses.Add(address, state);
+            }
+            trackedMetric.Set(addresses.Count);
+        }
+    }
+
     private void Sweep(long now, int limit)
     {
         while(limit-- > 0 && idle.First is { } first &&
@@ -283,7 +307,7 @@ internal sealed class StratumConnectionAdmission
             lock(owner.gate)
             {
                 if(disposed) return false;
-                if(owner.stopped) return owner.Reject("stopped", owner.time.GetTimestamp());
+                if(owner.stopped) return owner.Reject(StoppedReason, owner.time.GetTimestamp());
                 if(identity != null) return identity.Address.Equals(Normalize(address));
                 if(!owner.TryIdentity(address, owner.time.GetTimestamp(), out var admitted)) return false;
                 identity = admitted;

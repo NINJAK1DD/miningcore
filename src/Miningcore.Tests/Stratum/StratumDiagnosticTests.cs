@@ -138,6 +138,72 @@ public class StratumDiagnosticTests
         logs.AssertSafe();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Tcp_CancelledFirstRequestParserFailure_CompletesWithoutJunkBan(bool failStop)
+    {
+        using var logs = new Capture();
+        using var cancelled = new CancellationTokenSource();
+        using var container = new ContainerBuilder().Build();
+        var server = new DiagnosticServer(container, Substitute.For<IMessageBus>(), logs.Logger);
+        // Buffer is emitted synchronously after reading the bytes and before parsing.
+        // Cancel at that boundary so malformed JSON and shutdown deterministically
+        // reach terminal classification together, without adding a production test hook.
+        logs.OnMessage = message =>
+        {
+            if(message.Contains("\"event\":\"Buffer\"", StringComparison.Ordinal))
+                cancelled.Cancel();
+        };
+        await using(var tcp = await TcpSession.Start(logs.Logger, server,
+            hostShutdown: failStop ? default : cancelled.Token,
+            failStop: failStop ? cancelled.Token : default))
+        {
+            await tcp.Send("{\"" + Secret + "\":!}\n");
+            await tcp.Dispatch.WaitAsync(Deadline);
+        }
+        Assert.Equal(1, server.Completions);
+        Assert.Equal(0, server.Errors);
+        Assert.Equal(0, server.Requests);
+        server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
+        var record = Assert.Single(logs.Records.Where(x => x["event"].Value<string>() == "CancelledFailure"));
+        Assert.Equal("json", record["failure"].Value<string>());
+        Assert.Equal(failStop ? "MiningFailStop" : "HostShutdown", record["completion"].Value<string>());
+        logs.AssertSafe();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Tcp_CancelledOwnedHandlerFailure_RemainsAnError(bool failStop)
+    {
+        using var logs = new Capture();
+        using var cancelled = new CancellationTokenSource();
+        using var container = new ContainerBuilder().Build();
+        var server = new DiagnosticServer(container, Substitute.For<IMessageBus>(), logs.Logger)
+        {
+            Handler = (_, _, _) =>
+            {
+                cancelled.Cancel();
+                throw new IOException(Hostile);
+            },
+        };
+        await using(var tcp = await TcpSession.Start(logs.Logger, server,
+            hostShutdown: failStop ? default : cancelled.Token,
+            failStop: failStop ? cancelled.Token : default))
+        {
+            await tcp.Send("{\"id\":1,\"method\":\"mining.submit\",\"params\":[]}\n");
+            await tcp.Dispatch.WaitAsync(Deadline);
+        }
+        Assert.Equal(0, server.Completions);
+        Assert.Equal(1, server.Errors);
+        Assert.Equal(1, server.Requests);
+        Assert.DoesNotContain(logs.Records, x => x["event"].Value<string>() == "CancelledFailure");
+        Assert.Contains(logs.Records, x => x["event"].Value<string>() == "ConnectionError" &&
+            x["failure"]?.Value<string>() == "io");
+        logs.AssertSafe();
+    }
+
     [Fact]
     public void CancelledFailure_ProjectsOnlyReviewedCompletionValues()
     {
@@ -931,13 +997,16 @@ public class StratumDiagnosticTests
         public StreamReader Reader { get; private set; }
         public Task Dispatch { get; private set; }
         private readonly CancellationTokenSource lifetime = new(Deadline);
+        private CancellationTokenRegistration hostShutdownRegistration;
         private Socket accepted;
         private DiagnosticServer server;
 
         public static async Task<TcpSession> Start(ILogger logger, DiagnosticServer server, PoolEndpoint settings = null,
-            X509Certificate2 certificate = null)
+            X509Certificate2 certificate = null, CancellationToken hostShutdown = default,
+            CancellationToken failStop = default)
         {
             var result = new TcpSession { server = server };
+            result.hostShutdownRegistration = hostShutdown.Register(result.lifetime.Cancel);
             try
             {
                 using var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -946,7 +1015,7 @@ public class StratumDiagnosticTests
                 await result.Client.ConnectAsync(endpoint.IPEndPoint, result.lifetime.Token);
                 result.accepted = await listener.AcceptSocketAsync(result.lifetime.Token);
                 var connection = new StratumConnection(logger, new RecyclableMemoryStreamManager(),
-                    new StandardClock(), CorrelationIdGenerator.GetNextId(), false);
+                    new StandardClock(), CorrelationIdGenerator.GetNextId(), false, failStop);
                 server.Initialize?.Invoke(connection);
                 server.Register(connection);
                 result.Dispatch = connection.DispatchAsync(result.accepted, result.lifetime.Token, endpoint,
@@ -978,6 +1047,7 @@ public class StratumDiagnosticTests
                 lifetime.Cancel();
                 Reader?.Dispose();
                 accepted?.Dispose();
+                hostShutdownRegistration.Dispose();
                 lifetime.Dispose();
             }
         }

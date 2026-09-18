@@ -248,9 +248,12 @@ public class StratumConnection
                 await receivePipe.Writer.CompleteAsync();
 
                 // Signal completion or error
-                // Deadline wins a simultaneous startup/parser failure: never impose a
-                // junk ban for a server deadline. Preserve the failure category at Debug.
-                if(error == null || Volatile.Read(ref startupState) == 2)
+                // Server cancellation wins a simultaneous startup/parser failure, but
+                // must not hide a failure from a handler that already owns its request.
+                // Preserve the suppressed startup failure category at Debug.
+                var finalStartupState = Volatile.Read(ref startupState);
+                if(error == null || finalStartupState == 2 ||
+                    (finalStartupState == 0 && (ct.IsCancellationRequested || failStopToken.IsCancellationRequested)))
                 {
                     // A peer-driven clean EOF may close gracefully. Host shutdown and the
                     // independent financial fail-stop gate remain abortive so accepted sockets

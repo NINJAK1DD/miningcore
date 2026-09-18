@@ -218,6 +218,34 @@ public partial class StratumAdmissionTests
     }
 
     [Fact]
+    public void IdleLedgerFixture_RejectsInvalidOrLiveStateWithoutMutation()
+    {
+        var config = new StratumAdmissionConfig
+        {
+            MaxConcurrentConnections = 2, Burst = 2, ConnectionsPerSecond = 1,
+            IdleExpirySeconds = 1, BurstPerAddress = 1, MaxTrackedAddresses = 5,
+        };
+        var admission = new StratumConnectionAdmission(config, new ManualTimeProvider(),
+            Guid.NewGuid().ToString("N"), LogManager.CreateNullLogger());
+        var identity = new[] { IPAddress.Loopback };
+        Assert.Throws<InvalidOperationException>(() => admission.SeedIdleIdentitiesForTesting(
+            Enumerable.Range(1, 6).Select(n => IPAddress.Parse($"192.0.2.{n}")).ToArray()));
+        Assert.Throws<ArgumentException>(() => admission.SeedIdleIdentitiesForTesting(
+            new[] { IPAddress.Loopback, IPAddress.Loopback.MapToIPv6() }));
+        Assert.Equal((0, 0), admission.Snapshot);
+        Assert.True(admission.TryAcquire(IPAddress.Loopback, true, out var pending));
+        Assert.Throws<InvalidOperationException>(() => admission.SeedIdleIdentitiesForTesting(identity));
+        Assert.Equal((1, 0), admission.Snapshot);
+        pending.Dispose();
+        admission.SeedIdleIdentitiesForTesting(identity);
+        Assert.Throws<InvalidOperationException>(() => admission.SeedIdleIdentitiesForTesting(identity));
+        Assert.Equal((0, 1), admission.Snapshot);
+        admission.Stop();
+        Assert.Throws<InvalidOperationException>(() => admission.SeedIdleIdentitiesForTesting(identity));
+        Assert.Equal((0, 0), admission.Snapshot);
+    }
+
+    [Fact]
     public async Task AddressCapacity_DefensiveFullLedgerRefusesNewIdentitiesAndPreservesExisting()
     {
         var config = new StratumAdmissionConfig
@@ -229,15 +257,12 @@ public partial class StratumAdmissionTests
         var time = new ManualTimeProvider();
         var admission = new StratumConnectionAdmission(config, time, id, LogManager.CreateNullLogger());
         // Sizing validation conservatively keeps normal traffic below this defensive
-        // ceiling. Seed a structurally valid full idle ledger ONLY in the test, rather
-        // than weaken validation or expose a production bypass to manufacture history.
-        foreach(var n in Enumerable.Range(1, 5))
-        {
-            var address = IPAddress.Parse($"192.0.2.{n}");
-            var state = new StratumConnectionAdmission.AddressState(address, 1, time.GetTimestamp());
-            state.IdleNode = admission.idle.AddLast(state);
-            admission.addresses.Add(address, state);
-        }
+        // ceiling. The narrow helper seeds a valid idle ledger under the controller's
+        // lock, without exposing its collections or bypassing configuration validation.
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(10));
+        admission.SeedIdleIdentitiesForTesting(Enumerable.Range(1, 5)
+            .Select(n => IPAddress.Parse($"192.0.2.{n}")).ToArray());
+        Assert.Contains(await Series(id), x => x.StartsWith("miningcore_stratum_admission_addresses{") && x.EndsWith(" 5"));
         Assert.False(admission.TryAcquire(IPAddress.Parse("192.0.2.6"), false, out _));
         Assert.Equal((0, 5), admission.Snapshot);
         Assert.True(admission.TryAcquire(IPAddress.Loopback, true, out var pending));

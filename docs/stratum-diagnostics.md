@@ -38,7 +38,7 @@ Pooling/hand-written serialization is deferred until profiling demonstrates a ne
 | `StratumConnection.SendMessage` | Serialized reply/notification, echoed IDs, arbitrary error text | Server connection ID and serialized byte count before the newline |
 | `StratumConnection.ProcessProxyHeader` | Raw trusted-proxy header, including malformed addresses/ports | Header byte count; successfully parsed numeric client IP under existing logging settings |
 | `StratumConnection.DispatchAsync` terminal callbacks | Raw callback/teardown exception and inner exception text | Fixed terminal-callback event, structural failure and numeric code |
-| `StratumConnection.DispatchAsync` cancellation precedence | A setup/parser exception coinciding with a deadline or shutdown | Debug `CancelledFailure`, structural category, numeric code and closed completion reason; no raw exception |
+| `StratumConnection.DispatchAsync` cancellation precedence | Before first-request ownership, a setup/parser exception coinciding with a startup deadline, host shutdown or fail-stop | Debug `CancelledFailure`, structural category, numeric code and closed completion reason; no raw exception |
 | `StratumServer.OnRequestAsync` and Ethereum V1 warnings | Miner method and JSON-RPC request ID; telemetry method label | Finite method vocabulary; request ID omitted; unknown telemetry methods grouped as `other` |
 | `StratumServer.OnConnectionError` | Parser message/path, socket/TLS/IO/argument/other exceptions | Connection ID, failure category and numeric code; existing fixed ban messages |
 | Server listen, accept, tracked/untracked completion, task removal and drain observers | Exceptions propagated from callbacks/connection tasks | Fixed event and failure category, connection ID where owned; listener errors retain the port |
@@ -86,8 +86,10 @@ to the event name and server connection ID, without a growing set of empty field
 | `reason` | Certificate-load reason: `file-not-found`, `access-denied`, `file-io`, `invalid-certificate-or-password`, or `other`; otherwise omitted. |
 | `completion` | `CancelledFailure` only: a defined `StratumConnectionCompletionReason` name (normally `StartupTimeout`, `HostShutdown` or `MiningFailStop`); unknown enum values become `other`. |
 
-`CancelledFailure` preserves diagnostic context when cancellation wins over a concurrent
-failure. It is Debug-only in dispatch, uses the same exception-safe projection, and
+`CancelledFailure` preserves diagnostic context when server cancellation wins over a
+concurrent startup failure. Once the first request owns its handler, non-cancellation
+handler/parser failures retain the normal error path even during shutdown.
+The event is Debug-only in dispatch, uses the same exception-safe projection, and
 does not send the failure into the Error/junk-ban path. The completion still follows
 the [connection admission lifecycle](stratum-connection-admission.md).
 
