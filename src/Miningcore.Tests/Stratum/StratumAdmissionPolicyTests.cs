@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Reflection;
@@ -8,6 +7,7 @@ using System.Threading.Tasks;
 using Miningcore.Configuration;
 using Miningcore.Stratum;
 using NLog;
+using NSubstitute;
 using Xunit;
 
 namespace Miningcore.Tests.Stratum;
@@ -84,12 +84,40 @@ public partial class StratumAdmissionTests
         Assert.Equal(0, server.Requests);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ProxyClientJunkBan_IsEnforcedOnReconnectWithoutBanningOtherForwardedClients(bool mapped)
+    {
+        await using var server = new Server(new StratumAdmissionConfig(),
+            proxy: new TcpProxyProtocolConfig { Enable = true, Mandatory = true });
+        var source = IPAddress.Parse("192.0.2.1");
+        var banned = 0;
+        server.Bans.When(x => x.Ban(source, TimeSpan.FromMinutes(3)))
+            .Do(_ => Interlocked.Exchange(ref banned, 1));
+        server.Bans.IsBanned(source).Returns(_ => Volatile.Read(ref banned) == 1);
+        var header = mapped ? "PROXY TCP6 ::ffff:192.0.2.1 ::1 123 3333\r\n" : Header(source.ToString());
+        using(var junk = await server.Connect())
+        {
+            await Send(junk, header + "{]");
+            await Closed(junk);
+        }
+        await server.Empty();
+        server.Bans.Received(1).Ban(source, TimeSpan.FromMinutes(3));
+        await server.Rejected(header: header);
+        Assert.Equal(0, server.Requests); // The existing request gate checks forwarded identity.
+        await server.Exchange(header: Header("192.0.2.2"));
+        Assert.Equal(1, server.Requests);
+        server.Bans.DidNotReceive().Ban(IPAddress.Loopback, Arg.Any<TimeSpan>());
+    }
+
     [Fact]
     public async Task InvalidProxyPolicy_ReleasesAllListenerReservations()
     {
         var server = new Server(new StratumAdmissionConfig(), ports: 2,
             proxy: new TcpProxyProtocolConfig { Enable = true, ProxyAddresses = new[] { "invalid" } });
-        await Assert.ThrowsAsync<InvalidOperationException>(() => server.Run);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => server.Run);
+        Assert.Equal("Enabled PROXY trust lists require valid literal IP addresses", error.Message);
         foreach(var endpoint in server.Endpoints)
         {
             using var rebound = StratumServer.CreateBoundSocket(endpoint);
@@ -101,13 +129,15 @@ public partial class StratumAdmissionTests
     public async Task RejectedSecondRun_PreservesReusedReservationsAndDisposesOnlyNewOnes()
     {
         await using var server = new Server(new StratumAdmissionConfig(), ports: 2);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => server.RunAsync(CancellationToken.None, server.Reservations));
+        var reusedError = await Assert.ThrowsAsync<InvalidOperationException>(() => server.RunAsync(CancellationToken.None, server.Reservations));
+        Assert.Contains("can only run once", reusedError.Message);
         using var socket = StratumServer.CreateBoundSocket(new IPEndPoint(IPAddress.Loopback, 0));
         var endpoint = new StratumEndpoint((IPEndPoint) socket.LocalEndPoint, new PoolEndpoint());
         using var fresh = new StratumListenerReservation(server.PoolId, endpoint, socket);
         fresh.Activate();
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var mixedError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             server.RunAsync(CancellationToken.None, server.Reservations[0], fresh));
+        Assert.Equal(reusedError.Message, mixedError.Message);
         using var rebound = StratumServer.CreateBoundSocket(endpoint.IPEndPoint);
         await server.Exchange(0);
         await server.Exchange(1);
@@ -116,9 +146,14 @@ public partial class StratumAdmissionTests
     [Fact]
     public async Task StoppedAdmission_CountsTransportAndPendingIdentityRefusalsWithoutChangingOccupancy()
     {
+        using var logs = new LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(LogLevel.Warn, LogLevel.Fatal, target);
+        logs.Configuration = logging;
         var id = Guid.NewGuid().ToString("N");
         var admission = new StratumConnectionAdmission(new StratumAdmissionConfig(),
-            new ManualTimeProvider(), id, LogManager.CreateNullLogger());
+            new ManualTimeProvider(), id, logs.GetLogger("stopped-admission"));
         Assert.True(admission.TryAcquire(IPAddress.Loopback, true, out var pending));
         admission.Stop();
         for(var i = 0; i < 3; i++)
@@ -129,6 +164,20 @@ public partial class StratumAdmissionTests
         Assert.False(pending.TrySetIdentity(IPAddress.Loopback)); // Already-disposed misuse is not a new refusal.
         Assert.Equal((0, 0), admission.Snapshot);
         Assert.Contains(await Series(id), x => x.Contains("reason=\"stopped\"") && x.EndsWith(" 4"));
+        Assert.Empty(target.Logs);
+    }
+
+    [Fact]
+    public void AdmissionSnapshot_RemainsSafeForMemberwiseClone()
+    {
+        // A reference-valued setting needs a deep-copy implementation and a mutation
+        // regression before this contract can be relaxed.
+        var settings = typeof(StratumAdmissionConfig).GetProperties(BindingFlags.Instance | BindingFlags.Public);
+        Assert.NotEmpty(settings);
+        Assert.All(settings, setting => Assert.True(setting.PropertyType.IsValueType,
+            $"{setting.Name} needs explicit deep-copy coverage in Snapshot"));
+        Assert.All(typeof(StratumAdmissionConfig).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic),
+            field => Assert.True(field.FieldType.IsValueType, $"{field.Name} needs explicit deep-copy coverage in Snapshot"));
     }
 
     [Fact]
@@ -182,16 +231,12 @@ public partial class StratumAdmissionTests
         // Sizing validation conservatively keeps normal traffic below this defensive
         // ceiling. Seed a structurally valid full idle ledger ONLY in the test, rather
         // than weaken validation or expose a production bypass to manufacture history.
-        var addresses = (Dictionary<IPAddress, StratumConnectionAdmission.AddressState>) typeof(StratumConnectionAdmission)
-            .GetField("addresses", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(admission);
-        var idle = (LinkedList<StratumConnectionAdmission.AddressState>) typeof(StratumConnectionAdmission)
-            .GetField("idle", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(admission);
         foreach(var n in Enumerable.Range(1, 5))
         {
             var address = IPAddress.Parse($"192.0.2.{n}");
             var state = new StratumConnectionAdmission.AddressState(address, 1, time.GetTimestamp());
-            state.IdleNode = idle.AddLast(state);
-            addresses.Add(address, state);
+            state.IdleNode = admission.idle.AddLast(state);
+            admission.addresses.Add(address, state);
         }
         Assert.False(admission.TryAcquire(IPAddress.Parse("192.0.2.6"), false, out _));
         Assert.Equal((0, 5), admission.Snapshot);

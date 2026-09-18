@@ -124,8 +124,8 @@ public abstract class StratumServer
             if(!ownsRun)
                 throw new InvalidOperationException("A Stratum server instance can only run once; restart with a new instance to change admission policy");
 
-            listeners = cleanupListeners;
-            var ports = listeners.Select(listener => (Listener: listener,
+            // Accept, cancellation, and final cleanup all use our copied reservation array.
+            var ports = cleanupListeners.Select(listener => (Listener: listener,
                 Proxy: new StratumProxyPolicy(listener.Endpoint.PoolEndpoint.TcpProxyProtocol))).ToArray();
             var admissionConfig = (poolConfig.ConnectionAdmission ?? new StratumAdmissionConfig()).Snapshot();
             startupTimeout = TimeSpan.FromSeconds(admissionConfig.StartupTimeoutSeconds);
@@ -134,15 +134,15 @@ public abstract class StratumServer
             using var expiryTimer = AdmissionTimeProvider.CreateTimer(_ => ConnectionAdmission.SweepIdle(),
                 null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
 
-            if(listeners.Any(listener => !listener.IsActivated))
+            if(cleanupListeners.Any(listener => !listener.IsActivated))
                 throw new InvalidOperationException(
                     "Stratum listeners must be activated before the pool is announced online");
 
-            logger.Info(() => $"Stratum ports {string.Join(", ", listeners.Select(x => $"{x.Endpoint.IPEndPoint.Address}:{x.Endpoint.IPEndPoint.Port}").ToArray())} online");
+            logger.Info(() => $"Stratum ports {string.Join(", ", cleanupListeners.Select(x => $"{x.Endpoint.IPEndPoint.Address}:{x.Endpoint.IPEndPoint.Port}").ToArray())} online");
 
             using var registration = ct.Register(() =>
             {
-                foreach(var listener in listeners)
+                foreach(var listener in cleanupListeners)
                     listener.Dispose();
             });
 

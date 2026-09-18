@@ -29,8 +29,9 @@ internal sealed class StratumConnectionAdmission
         "miningcore_stratum_admission_limit", "Configured admission limits; zero after pool shutdown",
         new GaugeConfiguration { LabelNames = new[] { "pool", "limit" } });
     private readonly object gate = new();
-    private readonly Dictionary<IPAddress, AddressState> addresses = new();
-    private readonly LinkedList<AddressState> idle = new();
+    // Internal for the defensive full-ledger regression; normal mutations require gate.
+    internal readonly Dictionary<IPAddress, AddressState> addresses = new();
+    internal readonly LinkedList<AddressState> idle = new();
     private readonly StratumAdmissionConfig config;
     private readonly TimeProvider time;
     private readonly ILogger logger;
@@ -166,7 +167,10 @@ internal sealed class StratumConnectionAdmission
     private bool Reject(string reason, long now)
     {
         decisions.WithLabels(poolId, reason).Inc();
-        LogSummary(reason, now, ref refusalWarnings);
+        // Expected teardown refusals remain observable without warning about routine
+        // shutdown or consuming the operator-actionable refusal summary budget.
+        if(reason != "stopped")
+            LogSummary(reason, now, ref refusalWarnings);
         return false;
     }
 

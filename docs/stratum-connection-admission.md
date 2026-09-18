@@ -123,6 +123,12 @@ ordinary first JSON request likewise uses the peer identity. PROXY v2 is unsuppo
 Existing TLS ordering is unchanged: if Miningcore handles TLS, the PROXY line is
 inside that TLS stream; a cleartext PROXY preface before a TLS handshake is unsupported.
 
+Existing client bans are checked against the normalized forwarded identity before
+each request reaches the pool handler. A banned client therefore cannot resume
+mining by reconnecting through a trusted proxy. Earlier rejection immediately after
+header validation and shared-proxy ban policy for pre-identity TLS failures are
+tracked separately in [Issue #187](https://github.com/NINJAK1DD/miningcore/issues/187).
+
 Many legitimate miners behind NAT share one address allowance. Defaults permit 32
 immediate startups, two more per second, and 256 simultaneously active miners on
 one address. A larger NAT fleet needs larger address controls plus corresponding
@@ -160,6 +166,15 @@ of proxy misconfiguration. Startup timeouts have a counter and Debug completion 
 On pool stop, limit gauges become zero. Occupancy remains truthful if accounting is
 still draining; after the last lease exits, all occupancy gauges and retained identities
 are cleared. Counters retain their process-lifetime totals.
+Expected `stopped` refusals only increment the counter: they emit no warning and
+do not consume the refusal warning budget during routine shutdown.
+
+Both Prometheus packages require at least the reviewed 8.2.1 patch, which fixes
+concurrent metric-family registration during scrapes. The API can expose `/metrics`
+before pool startup registers its admission collectors. The regression exercises
+default-registry self-metrics and concurrent registration/scraping in a disposable
+process; admission tests also retain normal cross-fixture parallel scheduling.
+See the [upstream 8.2.1 release](https://github.com/prometheus-net/prometheus-net/releases/tag/v8.2.1).
 
 Labels contain only configured pool IDs and fixed outcomes, never client addresses,
 connection IDs or worker data. Admission emits at most two warnings per pool per

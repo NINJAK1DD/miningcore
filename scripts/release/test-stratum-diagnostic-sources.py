@@ -33,7 +33,7 @@ APPROVED = {
         r'''logger.Info(() => $"Real-IP via Proxy-Protocol: {RemoteEndpoint.Address.CensorOrReturn(gpdrCompliantLogging)}");''',
     ),
     "src/Miningcore/Stratum/StratumServer.cs": (
-        r'''logger.Info(() => $"Stratum ports {string.Join(", ", listeners.Select(x => $"{x.Endpoint.IPEndPoint.Address}:{x.Endpoint.IPEndPoint.Port}").ToArray())} online");''',
+        r'''logger.Info(() => $"Stratum ports {string.Join(", ", cleanupListeners.Select(x => $"{x.Endpoint.IPEndPoint.Address}:{x.Endpoint.IPEndPoint.Port}").ToArray())} online");''',
         r'''logger.Info(() => $"[{connection.ConnectionId}] Accepting connection from {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}:{remoteEndpoint.Port} ...");''',
         r'''logger.Debug("Connection refused because local pool admission is closed");''',
         r'''logger.Fatal(

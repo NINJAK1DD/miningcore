@@ -8,7 +8,6 @@ using Miningcore.Tests.Mining;
 using Miningcore.Tests.Payments;
 using Miningcore.Tests.Persistence.Postgres;
 using Miningcore.Tests.Rpc;
-using Miningcore.Tests.Stratum;
 using Miningcore.Tests.Util;
 using Miningcore.Tests.Util.Postgres;
 using Xunit;
@@ -104,7 +103,6 @@ public class NonParallelCollectionTests
         yield return new object[] { typeof(RpcDiagnosticCollection),
             new[] { typeof(RpcDiagnosticTests), typeof(RpcConsumerDiagnosticTests) } };
         yield return new object[] { typeof(PayoutManagerLoggingCollection), new[] { typeof(PayoutManagerLoggingTests) } };
-        yield return new object[] { typeof(StratumAdmissionMetricsCollection), new[] { typeof(StratumAdmissionTests) } };
         yield return new object[] { typeof(IPAccessWhitelistLoggingCollection), new[] { typeof(IPAccessWhitelistLoggingTests) } };
         yield return new object[] { typeof(ShareRecoveryLoggingCollection),
             new[] { typeof(ShareRecorderTests), typeof(ShareRecoveryPathOwnershipTests) } };

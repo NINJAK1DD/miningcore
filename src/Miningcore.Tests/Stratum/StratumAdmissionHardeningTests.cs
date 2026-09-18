@@ -221,7 +221,8 @@ public partial class StratumAdmissionTests
         var endpoint = new StratumEndpoint((IPEndPoint) socket.LocalEndPoint, new PoolEndpoint());
         using var reservation = new StratumListenerReservation(server.PoolId, endpoint, socket);
         reservation.Activate();
-        await Assert.ThrowsAsync<InvalidOperationException>(() => server.RunAsync(CancellationToken.None, reservation));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => server.RunAsync(CancellationToken.None, reservation));
+        Assert.Contains("can only run once", error.Message);
         using var rebound = StratumServer.CreateBoundSocket(endpoint.IPEndPoint);
         await server.Exchange();
     }
