@@ -49,6 +49,118 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: BLAKE2b difficulty request budget
+
+[#152](https://github.com/NINJAK1DD/miningcore/issues/152) limits miner-requested BLAKE2b
+difficulty negotiation to an eight-request burst and one replenished request per ten
+seconds per connection. Suggest-difficulty, configure minimum-difficulty and authorization
+with a parseable `d=` static-difficulty password control share the budget, including
+duplicate requests. Excess requests receive a protocol refusal;
+eight consecutive refusals close the connection. First subscribe, ordinary authorization
+without static difficulty, shares
+and server-driven VarDiff remain available while the budget recovers. Successful
+changes retain difficulty-before-notify ordering and immutable target/credit binding.
+The first duplicate subscribe receives an error while preserving work; another duplicate
+closes the connection. Malformed subscribe/configure/authorize requests consume allowance
+without state mutation; missing IDs remain uncharged. Subscribe validates parameters before
+external lookup or extranonce mutation, and a valid initial subscription stays free even
+after malformed requests exhaust the allowance. Numeric-string minimum difficulty remains
+compatible and is parsed once. Miner-selected values that cannot produce a BLAKE2b target are rejected before
+acknowledgment or state mutation while still consuming admission allowance.
+BLAKE2b suggestion strings now use the same invariant decimal/exponent notation as
+minimum-difficulty configure, independent of server locale. Decimal commas and grouping
+separators are not accepted; malformed suggestions keep their acknowledgement/no-op
+compatibility behavior and consume allowance. Canonical Bitcoin parsing is unchanged.
+Authorization preserves scalar worker/password conversion,
+and authorize/configure tolerate ignored trailing fields. Canonical Bitcoin now declines
+minimum-difficulty negotiation with a missing value without dropping the connection.
+Terminal events have structured Info diagnostics and bounded admission counters; custom
+BLAKE2b templates must disable version rolling. Cross-connection churn defenses are
+tracked separately in [#180](https://github.com/NINJAK1DD/miningcore/issues/180).
+See the [policy and validation evidence](bitcoin-blake2b.md#miner-requested-difficulty-budget).
+
+## Unreleased: BLAKE2b assignment ordering
+
+[#182](https://github.com/NINJAK1DD/miningcore/issues/182) serializes worker difficulty
+changes, server broadcasts and immediate VarDiff updates per connection. Difficulty
+mutation, `mining.set_difficulty`, immutable target/job creation and `mining.notify` now
+complete together, so a concurrent producer cannot snapshot a target that differs from
+the latest announced difficulty. Previously issued work retains its original target and
+credit basis. Address-validation RPC and share submission/accounting run outside the gate.
+Subscribe resolves NiceHash autodiff before acquiring the gate and committing subscription
+state; an authorize-before-subscribe client cannot hold up broadcasts during the API lookup.
+The parsed user agent and lookup result are carried together into the subscription commit.
+Each successful acquisition releases its exact semaphore, including protocol-error paths.
+The same gate covers the enabled-state check and calculation for both share and idle
+VarDiff updates. Fixed-difficulty configure/static authorization cannot disable VarDiff
+between a calculation and its publication or be overwritten by a stale retarget.
+If work publication fails after subscribe, configure, suggest, static authorization or a share submission has
+already been acknowledged, the connection closes without a second response for the request.
+Buffered requests cannot reopen it. Errors before acknowledgement remain recoverable;
+successful responses retain difficulty-before-notify ordering. Omitted/null subscription
+parameters work on canonical Bitcoin and BLAKE2b, and authorization preserves date-shaped
+scalar conversion under non-English cultures.
+Unexpected unrepresentable post-acknowledgment assignments use the same terminal latch
+and invalidate jobs. The `publication-failure` admission-counter outcome counts each
+terminal publication failure once. Accepted shares remain credited and do not acquire
+an invalid-share count or ban penalty when subsequent VarDiff publication fails.
+Canonical Bitcoin's post-response policy is tracked separately in
+[#183](https://github.com/NINJAK1DD/miningcore/issues/183).
+BLAKE2b continues to reject canonical direct-coinbase SOLO options at startup.
+
+Omitted BLAKE2b VarDiff maxima now use the highest representable difficulty as an effective
+runtime ceiling, without modifying configuration. The shared timing and arithmetic changes
+are described separately below.
+
+## Unreleased: shared VarDiff timing and arithmetic
+
+**Upgrade action required:** every configured `varDiff` block, across all pool families,
+must specify a finite `minDiff` greater than zero. Omitting `minDiff` deserializes to zero
+and now fails startup validation, so a previously running configuration may fail to restart
+after upgrading. Before restarting, set an explicit positive `minDiff` appropriate for the
+coin and endpoint in every `varDiff` block. A configured `maxDiff` must also be finite,
+positive and at least `minDiff`; omitting `maxDiff` remains supported. `targetTime` and
+`retargetTime` must be finite and positive. A specified `maxDelta` must be finite and
+nonnegative; zero or omission still disables delta limiting. Previously accepted infinity
+or negative delta limits now fail startup and must be corrected before restarting.
+
+[#184](https://github.com/NINJAK1DD/miningcore/issues/184) corrects shared VarDiff behavior
+across pool families. Share and idle producers sample time under the same state lock.
+Backward time or invalid interval history rebases the timing window without retargeting
+or changing the last actual assignment marker; valid later samples resume adaptation.
+
+No-op idle sweeps preserve the real-share timing baseline instead of creating an artificial
+zero interval for a share in the same millisecond. Genuine zero-length windows use a conservative
+mean of `0.001 / min(interval count, 10)` seconds, counting the current interval, for proportional
+retargeting instead of automatically jumping to a difficulty ceiling. Based on the actual
+Unix-millisecond timestamp resolution, full windows use
+0.0001 seconds; sparse windows use a larger estimate. Configured `maxDelta`
+and difficulty bounds still apply. This avoids parking fast miners at an extreme target
+solely because millisecond-quantized timestamps could not resolve their intervals. Normal positive
+interval calculations are preserved. Zero windows hold difficulty for target intervals
+at or below the estimate, subject to configured bounds. Extreme ratios avoid intermediate overflow/underflow,
+delta limits avoid cancellation, and invalid/non-finite inputs produce no retarget.
+BLAKE2b supplies its representable runtime ceiling; other families retain their maximum
+policy. Shared startup validation now rejects non-finite or non-positive `minDiff` and
+configured `maxDiff` values; omitted maxima remain supported. No operator configuration
+is rewritten. Forward wall-clock steps still resemble idle intervals; monotonic elapsed
+measurement is tracked separately in [#185](https://github.com/NINJAK1DD/miningcore/issues/185).
+
+BLAKE2b now makes VarDiff publication failures terminal inside the assignment gate for
+both idle and share updates. Missing work, a full send queue or another exception cannot
+leave a live partially committed assignment: admission closes, jobs clear and the connection
+disconnects. Already accepted shares retain their valid accounting. Cancellation before the
+operation leaves the assignment untouched; cancellation during the operation closes it
+without publication-failure telemetry when the host token is canceled.
+The single `AssignmentPublicationFailure` record includes a bounded `failure` category
+and optional `code` across idle, accepted-share and request paths. Operators can distinguish
+unavailable work from I/O failures without raw exception text or new metric labels.
+Subscribe, configure, suggest and static authorization also invalidate failed assignments
+under the gate for I/O, unexpected exceptions and cancellation. BLAKE2b suggestions
+propagate notification failures, so a queue that recovers after rejecting the difficulty
+cannot receive an unmatched job. Failed response enqueues are covered even when configure
+already changed difficulty; recoverable pre-response protocol errors remain supported.
+
 ## Unreleased: Bitcoin-family verified job gate
 
 [#141](https://github.com/NINJAK1DD/miningcore/issues/141) prevents a forced

@@ -112,6 +112,26 @@ public class BitcoinBlake2bConfigurationTests : TestBase
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Manager_RejectsDirectSoloConfigurationBeforeAuthorization(bool enabled)
+    {
+        var manager = new BitcoinBlake2bJobManager(container, Substitute.For<IMasterClock>(),
+            Substitute.For<IMessageBus>(), new BitcoinBlake2bExtraNonceProvider());
+        var config = new PoolConfig
+        {
+            Id = "blake2b-test", Template = ModuleInitializer.CoinTemplates["bitcoin-blake2b"],
+            PaymentProcessing = new PoolPaymentProcessingConfig { PayoutScheme = PayoutScheme.SOLO },
+            Extra = new Dictionary<string, object>
+            {
+                ["soloCoinbasePayout"] = new Newtonsoft.Json.Linq.JObject { ["enabled"] = enabled },
+            },
+        };
+        var error = Assert.Throws<PoolStartupException>(() => manager.Configure(config, new ClusterConfig()));
+        Assert.Contains("canonical-Bitcoin coinbase options are unsupported", error.Message);
+    }
+
+    [Theory]
     [InlineData(PayoutScheme.PPBS)]
     [InlineData(PayoutScheme.PPLNSBF)]
     [InlineData((PayoutScheme) 99)]

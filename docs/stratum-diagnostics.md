@@ -60,6 +60,15 @@ ports remain typed numeric metadata, not copies of password-control strings.
 
 New transport records start with `Stratum diagnostic ` followed by compact JSON:
 
+For BLAKE2b, `AssignmentPublicationFailure` is a bounded Info event for a terminal
+publication error after a response started, or an error observed after pool isolation.
+The connection closes without sending another response for the same request. Its payload
+contains the event and server-generated connection ID, with no miner identity or request
+parameters. It is distinct from the negotiation-budget and duplicate-subscription events.
+The allowlisted `publication-failure` outcome in `miningcore_stratum_admission_total`
+counts the same terminal transition once. This includes publication failures following
+accepted shares during immediate VarDiff; their accepted accounting remains intact.
+
 `event` is always present. Optional fields are omitted when unavailable or inapplicable;
 the projection does not emit explicit JSON nulls. This keeps read-cycle waiting events
 to the event name and server connection ID, without a growing set of empty fields.

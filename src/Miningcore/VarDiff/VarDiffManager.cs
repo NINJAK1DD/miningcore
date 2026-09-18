@@ -11,21 +11,28 @@ public static class VarDiffManager
     private const int BufferSize = 10;  // Last 10 shares should be enough
     private const double SafetyMargin = 1;    // ensure we don't miss a cycle due a sub-second fraction delta;
 
-    public static double? Update(WorkerContextBase context, VarDiffConfig options, IMasterClock clock)
+    public static double? Update(WorkerContextBase context, VarDiffConfig options, IMasterClock clock,
+        double protocolMaximum = double.MaxValue)
     {
         var ctx = context.VarDiff;
-        var difficulty = context.Difficulty;
-        var now = clock.Now;
-        var ts = now.ToUnixSeconds();
+        if(ctx == null)
+            return null;
 
         try
         {
             Monitor.Enter(ctx);
+            // Sample time under the same lock as LastTs. Otherwise an idle
+            // update can advance LastTs past a regular update's captured time.
+            var now = clock.Now;
+            var ts = now.ToUnixSeconds();
+            var difficulty = context.Difficulty;
 
             if(ctx.LastTs.HasValue)
             {
+                if(RebaseInvalidTiming(ctx, ts, ctx.LastTs.Value))
+                    return null;
                 var minDiff = options.MinDiff;
-                var maxDiff = options.MaxDiff ?? Math.Max(minDiff, double.MaxValue); // for regtest
+                var maxDiff = Math.Min(options.MaxDiff ?? protocolMaximum, protocolMaximum);
                 var timeDelta = ts - ctx.LastTs.Value;
 
                 // make sure buffer exists as this point
@@ -33,7 +40,8 @@ public static class VarDiffManager
 
                 // Always calculate the time until now even there is no share submitted.
                 var timeTotal = ctx.TimeBuffer.Sum() + timeDelta;
-                var avg = timeTotal / (ctx.TimeBuffer.Size + 1);
+                var sampleCount = ctx.TimeBuffer.Size + 1;
+                var avg = timeTotal / sampleCount;
 
                 // Once there is a share submitted, store the time into the buffer and update the last time.
                 ctx.TimeBuffer.PushBack(timeDelta);
@@ -48,9 +56,8 @@ public static class VarDiffManager
                     return null;
 
                 // Possible New Diff
-                var newDiff = difficulty * options.TargetTime / avg;
-
-                if(TryApplyNewDiff(ref newDiff, difficulty, minDiff, maxDiff, ts, ctx, options, clock))
+                if(TryCalculateDifficulty(difficulty, options.TargetTime, avg, sampleCount, maxDiff, out var newDiff) &&
+                   TryApplyNewDiff(ref newDiff, difficulty, minDiff, maxDiff, ts, ctx, options, now))
                     return newDiff;
             }
 
@@ -70,10 +77,12 @@ public static class VarDiffManager
         return null;
     }
 
-    public static double? IdleUpdate(WorkerContextBase context, VarDiffConfig options, IMasterClock clock)
+    public static double? IdleUpdate(WorkerContextBase context, VarDiffConfig options, IMasterClock clock,
+        double protocolMaximum = double.MaxValue)
     {
         var ctx = context.VarDiff;
-        var difficulty = context.Difficulty;
+        if(ctx == null)
+            return null;
 
         // abort if a regular update is just happening
         if(!Monitor.TryEnter(ctx))
@@ -83,12 +92,11 @@ public static class VarDiffManager
         {
             var now = clock.Now;
             var ts = now.ToUnixSeconds();
-            double timeDelta;
-
-            if(ctx.LastTs.HasValue)
-                timeDelta = ts - ctx.LastTs.Value;
-            else
-                timeDelta = ts - ctx.Created.ToUnixSeconds();
+            var difficulty = context.Difficulty;
+            var previousTs = ctx.LastTs ?? ctx.Created.ToUnixSeconds();
+            if(RebaseInvalidTiming(ctx, ts, previousTs))
+                return null;
+            var timeDelta = ts - previousTs;
 
             timeDelta += SafetyMargin;
 
@@ -96,21 +104,23 @@ public static class VarDiffManager
             if(timeDelta < options.RetargetTime)
                 return null;
 
-            // update the last time
-            ctx.LastTs = ts;
-
             var minDiff = options.MinDiff;
-            var maxDiff = options.MaxDiff ?? Math.Max(minDiff, double.MaxValue); // for regtest
+            var maxDiff = Math.Min(options.MaxDiff ?? protocolMaximum, protocolMaximum);
 
             // Always calculate the time until now even there is no share submitted.
             var timeTotal = (ctx.TimeBuffer?.Sum() ?? 0) + (timeDelta - SafetyMargin);
-            var avg = timeTotal / ((ctx.TimeBuffer?.Size ?? 0) + 1);
+            var sampleCount = (ctx.TimeBuffer?.Size ?? 0) + 1;
+            var avg = timeTotal / sampleCount;
 
             // Possible New Diff
-            var newDiff = difficulty * options.TargetTime / avg;
-
-            if(TryApplyNewDiff(ref newDiff, difficulty, minDiff, maxDiff, ts, ctx, options, clock))
+            if(TryCalculateDifficulty(difficulty, options.TargetTime, avg, sampleCount, maxDiff, out var newDiff) &&
+               TryApplyNewDiff(ref newDiff, difficulty, minDiff, maxDiff, ts, ctx, options, now))
+            {
+                // A no-op sweep is not a share. Preserve the next real share's
+                // elapsed interval unless a new assignment starts a fresh window.
+                ctx.LastTs = ts;
                 return newDiff;
+            }
         }
 
         finally
@@ -121,11 +131,72 @@ public static class VarDiffManager
         return null;
     }
 
+    private static bool RebaseInvalidTiming(VarDiffContext ctx, double ts, double previousTs)
+    {
+        if(double.IsFinite(previousTs) && double.IsFinite(ctx.LastRetarget) &&
+           ts >= previousTs && ts >= ctx.LastRetarget &&
+           ctx.TimeBuffer?.Any(x => !double.IsFinite(x) || x < 0) != true)
+            return false;
+
+        // Backward time or poisoned history is not evidence of a faster miner.
+        // Start a fresh measurement window; retain LastUpdate because no actual
+        // assignment changed (other families use it for previous-difficulty work).
+        ctx.LastTs = ts;
+        ctx.LastRetarget = ts;
+        ctx.TimeBuffer = null;
+        return true;
+    }
+
+    private static bool TryCalculateDifficulty(double difficulty, double targetTime, double average, int sampleCount,
+        double maximum, out double result)
+    {
+        result = 0;
+        if(!double.IsFinite(difficulty) || difficulty <= 0 ||
+           !double.IsFinite(targetTime) || targetTime <= 0 ||
+           !double.IsFinite(average) || average < 0 ||
+           !double.IsFinite(maximum) || maximum <= 0)
+            return false;
+
+        // A zero window only says samples fit inside one Unix-millisecond bucket.
+        // Scale the estimate to the available intervals (at most ten), so a
+        // sparse window cannot claim the same rate as a full zero window.
+        if(average == 0)
+        {
+            // A full buffer plus the current interval gives eleven samples.
+            // Cap at ten to retain the conservative 0.0001-second full-window
+            // estimate instead of increasing the retarget another ten percent.
+            var zeroWindowAverage = DateExtensions.UnixSecondsResolution / Math.Min(sampleCount, BufferSize);
+            // Coarse zero samples cannot justify a downward adjustment when
+            // the configured target interval is already at/below this estimate.
+            if(targetTime <= zeroWindowAverage)
+            {
+                result = Math.Min(difficulty, maximum);
+                return true;
+            }
+            average = zeroWindowAverage;
+        }
+
+        var product = difficulty * targetTime;
+        var candidate = product / average;
+        if(!double.IsFinite(candidate) || product == 0 || double.IsSubnormal(product))
+        {
+            // Preserve ordinary arithmetic, but avoid intermediate overflow or
+            // underflow when the final proportional result is representable.
+            var d = Math.ILogB(difficulty);
+            var t = Math.ILogB(targetTime);
+            var a = Math.ILogB(average);
+            candidate = Math.ScaleB(Math.ScaleB(difficulty, -d) * Math.ScaleB(targetTime, -t) /
+                Math.ScaleB(average, -a), d + t - a);
+        }
+        result = Math.Min(candidate, maximum);
+        return double.IsFinite(result);
+    }
+
     /// <summary>
     /// Assumes to be called with lock held
     /// </summary>
     private static bool TryApplyNewDiff(ref double newDiff, double oldDiff, double minDiff, double maxDiff, double ts,
-        VarDiffContext ctx, VarDiffConfig options, IMasterClock clock)
+        VarDiffContext ctx, VarDiffConfig options, DateTime now)
     {
         // Max delta
         if(options.MaxDelta is > 0)
@@ -135,9 +206,9 @@ public static class VarDiffManager
             if(delta > options.MaxDelta)
             {
                 if(newDiff > oldDiff)
-                    newDiff -= delta - options.MaxDelta.Value;
+                    newDiff = oldDiff + options.MaxDelta.Value;
                 else if(newDiff < oldDiff)
-                    newDiff += delta - options.MaxDelta.Value;
+                    newDiff = oldDiff - options.MaxDelta.Value;
             }
         }
 
@@ -152,7 +223,7 @@ public static class VarDiffManager
             return false;
 
         ctx.LastRetarget = ts;
-        ctx.LastUpdate = clock.Now;
+        ctx.LastUpdate = now;
 
         // Due to change of diff, Buffer needs to be cleared
         if(ctx.TimeBuffer != null)

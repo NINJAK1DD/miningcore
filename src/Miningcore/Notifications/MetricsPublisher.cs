@@ -49,6 +49,7 @@ public class MetricsPublisher : StartupGatedBackgroundService
     private Counter shareCounter;
     private Summary rpcRequestDurationSummary;
     private Summary stratumRequestDurationSummary;
+    private Counter stratumAdmissionCounter;
     private Summary apiRequestDurationSummary;
     private Counter validShareCounter;
     private Counter invalidShareCounter;
@@ -75,6 +76,9 @@ public class MetricsPublisher : StartupGatedBackgroundService
 
     private void CreateMetrics(IMetricFactory metricFactory)
     {
+        stratumAdmissionCounter = metricFactory.CreateCounter("miningcore_stratum_admission_total",
+            "Stratum admission refusals and terminal disconnects",
+            new CounterConfiguration { LabelNames = new[] { "pool", "outcome" } });
         poolConnectionsGauge = metricFactory.CreateGauge("miningcore_pool_connections", "Number of connections per pool", new GaugeConfiguration
         {
             LabelNames = new[] { "pool" }
@@ -245,6 +249,11 @@ public class MetricsPublisher : StartupGatedBackgroundService
     {
         switch(msg.Category)
         {
+            case TelemetryCategory.StratumAdmission:
+                // Never let miner-supplied strings create metric label cardinality.
+                if(msg.Info is "difficulty-refused" or "difficulty-disconnect" or "duplicate-subscribe" or "publication-failure")
+                    stratumAdmissionCounter.WithLabels(msg.GroupId, msg.Info).Inc();
+                break;
             case TelemetryCategory.Share:
                 shareCounter.WithLabels(msg.GroupId).Inc();
 

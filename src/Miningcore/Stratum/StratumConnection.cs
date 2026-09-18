@@ -72,6 +72,13 @@ public class StratumConnection
     private readonly Pipe receivePipe;
     private readonly BufferBlock<object> sendQueue;
     private WorkerContextBase context;
+    private long responseSequence;
+
+    // Dispatch awaits requests serially. Comparing this sequence before/after a
+    // handler detects a response attempt without retaining miner-controlled IDs.
+    // Notifications do not advance it. Count before enqueue: a failed send must
+    // never make a subsequent error response look safe.
+    internal long ResponseSequence => Interlocked.Read(ref responseSequence);
     private readonly Subject<Unit> terminated = new();
     private bool expectingProxyHeader;
     private bool gpdrCompliantLogging;
@@ -317,6 +324,7 @@ public class StratumConnection
 
     public Task RespondAsync<T>(JsonRpcResponse<T> response)
     {
+        Interlocked.Increment(ref responseSequence);
         return SendAsync(response);
     }
 
@@ -327,12 +335,14 @@ public class StratumConnection
 
     public Task NotifyAsync<T>(JsonRpcRequest<T> request)
     {
+        // Responses must use RespondAsync so ResponseSequence advances.
         return SendAsync(request);
     }
     
     // Beam stratum API: https://github.com/BeamMW/beam/wiki/Beam-mining-protocol-API-(Stratum)
     public Task NotifyAsync(object request)
     {
+        // Raw Beam notifications only; response payloads must use RespondAsync.
         return SendAsync(request);
     }
 
@@ -350,6 +360,8 @@ public class StratumConnection
 
     private Task SendAsync<T>(T payload)
     {
+        // RespondAsync owns response-attempt tracking (one Interlocked increment
+        // per response across pool families); notifications bypass that counter.
         Contract.RequiresNonNull(payload);
 
         if(failStopToken.IsCancellationRequested)
