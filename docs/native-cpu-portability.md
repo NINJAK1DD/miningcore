@@ -62,8 +62,10 @@ The reproduction used the documented Ubuntu 22.04 WSL2 compatibility lab on an
 AMD Ryzen 9 5950X (family 25, model 33), with AVX2, AES and PCLMUL but no AVX-512.
 The kernel was `6.18.33.2-microsoft-standard-WSL2`; GCC was Ubuntu 11.4.0 and GDB
 12.1. The original artifact came from [Release run 35376490779](https://github.com/NINJAK1DD/miningcore/actions/runs/35376490779),
-artifact ID `10561065505`, for source
-`42d9edcebebdd84596508a6d429b49537d65ee9c`.
+artifact ID `10561065505`, for PR head
+`42d9edcebebdd84596508a6d429b49537d65ee9c`. Its embedded `BUILD-INFO` identifies
+merge commit `9d803eaa0bddd4ec6203dd77d9ac57d6c2488663`, whose verified parents
+are that PR head and base `55a7cf044de358ad4bd813a36bf56fcdaf1a28cf`.
 
 Archive: `miningcore-v0.0.0-ci.35376490779.1-linux-x64-ubuntu-22.04.tar.gz`.
 SHA-256: `1c44f2c97f93aa312c21489c5c87cbf2dc0e4eefbf084bfda71a345047528654`.
@@ -136,6 +138,29 @@ separately configured services/daemons; they are not counted as live validation.
 The native probe passed on the actual Ryzen and the emulated baseline without
 AVX/AVX2/AVX-512, with identical hashes. Its negative control rejected AVX-512,
 and the original released libraries failed the new gate as expected.
+
+### CI-built artifact validation
+
+[Release run 35404072578](https://github.com/NINJAK1DD/miningcore/actions/runs/35404072578)
+built PR head `f1b8f436b8e13d46df76bf50abc221deebee3dd2` as merge commit
+`69c64b0322f6b1bfa0dfdb9070185767d29b2ed0` with base
+`4c530abc110eb8c3820dbed0e47b643ce02b8fdb`. Both Ubuntu package jobs passed
+the portability gate and 3,300 tests each. The [normal hosted CI run](https://github.com/NINJAK1DD/miningcore/actions/runs/35404072609)
+passed its AVX2-only portability gate and 3,357 tests, with one skip.
+
+The Ubuntu 22.04 artifact ID is `10572032386`. Its downloaded ZIP matched the
+GitHub artifact SHA-256: `457a8c5ff65de9d9558e8bbb6b9d0fb4cb74b66fe973414cbd2bb80ec3b020a5`.
+The contained release archive SHA-256 is `359e4e911250a1f0cc5e3bbdda3ce3eefbdb895c4416df6973d25ee627d11ca2`.
+All 25 CI-built libraries passed the inventory/relocation audit and native plus
+emulated-baseline probes on the original compatibility lab. With those exact
+libraries, the complete lab suite passed 3,284 tests with 48 skips.
+
+One preceding complete artifact run had a single `Address already in use`
+failure in `RunAsync_BannedClientRejection_AllowsImmediateExclusiveRestart`
+(3,283 passed, one failed, 48 skipped). All crypto tests passed. Five isolated
+repetitions of that socket test and one complete rerun then passed. This
+intermittent Stratum failure is recorded separately; the failed run is not
+counted as successful validation, and this PR changes no Stratum code.
 
 ### References
 
