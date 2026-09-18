@@ -308,8 +308,8 @@ public class StratumDiagnosticTests
     }
 
     [Theory]
-    [InlineData("PROXY TCP4 synthetic-stratum-secret 127.0.0.1 123 456\r\n", "format", false)]
-    [InlineData("PROXY TCP4 127.0.0.1 127.0.0.1 synthetic-stratum-secret 456\r\n", "format", false)]
+    [InlineData("PROXY TCP4 synthetic-stratum-secret 127.0.0.1 123 456\r\n", "invalid-data", false)]
+    [InlineData("PROXY TCP4 127.0.0.1 127.0.0.1 synthetic-stratum-secret 456\r\n", "invalid-data", false)]
     [InlineData("PROXY TCP4 127.0.0.1 127.0.0.1 123 456\r\n", null, true)]
     public async Task Tcp_ProxyHeaders_AreMetadataOnly(string header, string failure, bool valid)
     {

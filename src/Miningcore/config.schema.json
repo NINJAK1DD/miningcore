@@ -418,6 +418,9 @@
         "coin": {
           "type": "string"
         },
+        "connectionAdmission": {
+          "$ref": "#/definitions/StratumAdmissionConfig"
+        },
         "daemons": {
           "type": "array",
           "items": {
@@ -934,6 +937,41 @@
             "integer",
             "null"
           ]
+        }
+      }
+    },
+    "StratumAdmissionConfig": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "burst": {
+          "type": "integer"
+        },
+        "burstPerAddress": {
+          "type": "integer"
+        },
+        "connectionsPerSecond": {
+          "type": "integer"
+        },
+        "connectionsPerSecondPerAddress": {
+          "type": "integer"
+        },
+        "idleExpirySeconds": {
+          "type": "integer"
+        },
+        "maxConcurrentConnections": {
+          "type": "integer"
+        },
+        "maxConcurrentConnectionsPerAddress": {
+          "type": "integer"
+        },
+        "maxTrackedAddresses": {
+          "type": "integer"
+        },
+        "startupTimeoutSeconds": {
+          "type": "integer"
         }
       }
     },

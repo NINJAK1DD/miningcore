@@ -63,6 +63,9 @@ public class StratumConnection
     private readonly CancellationToken failStopToken;
 
     internal Func<object, CancellationToken, Task> SendMessageOverride { get; set; }
+    internal Func<IPAddress, bool> AdmitProxyIdentity { get; set; }
+    internal TimeSpan StartupTimeout { get; set; } = TimeSpan.FromSeconds(10);
+    private Action finishStartup;
 
     private const int MaxInboundRequestLength = 0x8000;
     public static readonly Encoding Encoding = new UTF8Encoding(false);
@@ -130,6 +133,8 @@ public class StratumConnection
             networkStream = new NetworkStream(socket, true);
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(StartupTimeout);
+            finishStartup = () => cts.CancelAfter(Timeout.InfiniteTimeSpan);
 
             using(var disposables = new CompositeDisposable(networkStream))
             {
@@ -283,6 +288,7 @@ public class StratumConnection
 
         finally
         {
+            finishStartup = null;
             this.socket = null;
 
             // Release external observables
@@ -428,7 +434,14 @@ public class StratumConnection
                 {
                     var slice = buffer.Slice(0, position.Value);
 
-                    if(!expectingProxyHeader || !ProcessProxyHeader(slice, proxyProtocol))
+                    var proxyHeader = expectingProxyHeader && ProcessProxyHeader(slice, proxyProtocol);
+                    if(AdmitProxyIdentity != null)
+                    {
+                        if(!AdmitProxyIdentity(RemoteEndpoint.Address))
+                            throw new StratumAdmissionException();
+                        AdmitProxyIdentity = null;
+                    }
+                    if(!proxyHeader)
                         await ProcessRequestAsync(ct, onRequestAsync, slice);
 
                     // Skip consumed section
@@ -534,6 +547,13 @@ public class StratumConnection
         if(request == null)
             throw new JsonException("Unable to deserialize request");
 
+        if(finishStartup != null)
+        {
+            ct.ThrowIfCancellationRequested();
+            finishStartup();
+            finishStartup = null;
+        }
+
         await onRequestAsync(this, request, ct);
     }
 
@@ -549,21 +569,11 @@ public class StratumConnection
 
         if(line.StartsWith("PROXY "))
         {
-            var proxyAddresses = proxyProtocol.ProxyAddresses?.Select(IPAddress.Parse).ToArray();
-            if(proxyAddresses == null || !proxyAddresses.Any())
-                proxyAddresses = new[] { IPAddress.Loopback, IPUtils.IPv4LoopBackOnIPv6, IPAddress.IPv6Loopback };
-
-            if(proxyAddresses.Any(x => x.Equals(peerAddress)))
+            if(StratumProxyProtocol.IsTrustedPeer(proxyProtocol, peerAddress))
             {
                 StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.ProxyHeader, ConnectionId, bytes: seq.Length);
 
-                // split header parts
-                var parts = line.Split(" ");
-                var remoteAddress = parts[2];
-                var remotePort = parts[4];
-
-                // Update client
-                RemoteEndpoint = new IPEndPoint(IPAddress.Parse(remoteAddress), int.Parse(remotePort));
+                RemoteEndpoint = StratumProxyProtocol.Parse(line, RemoteEndpoint);
                 logger.Info(() => $"Real-IP via Proxy-Protocol: {RemoteEndpoint.Address.CensorOrReturn(gpdrCompliantLogging)}");
             }
 

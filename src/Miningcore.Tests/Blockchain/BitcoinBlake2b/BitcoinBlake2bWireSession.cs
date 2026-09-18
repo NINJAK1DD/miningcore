@@ -204,7 +204,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         scope.Dispose();
     }
 
-    private sealed class TestPool : BitcoinBlake2bPool, IWirePool
+    internal sealed class TestPool : BitcoinBlake2bPool, IWirePool
     {
         internal Func<Miningcore.Mining.WorkerContextBase, Task<double?>> NicehashLookup;
         internal Action BeforeConfigure;
@@ -262,6 +262,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
                         new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions())), budgetTimeProvider) { }
 
         public int JobsCreated { get; private set; }
+        internal int ConnectionCount => connections.Count;
         public void SetLogger(NLog.ILogger value) => logger = value;
         protected override object CreateWorkerJob(StratumConnection connection, bool cleanJob)
         {

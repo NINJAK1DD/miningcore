@@ -49,6 +49,23 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: bounded Stratum connection admission
+
+Every internal Stratum pool now limits reconnect startup rate and concurrent dispatches
+across all its ports, with bounded client-address retention and monotonic expiry.
+Defaults allow a 200-connection pool burst and 100 per second, 4,096 active dispatches,
+and a 32-connection burst/two per second/256 active dispatches per client address.
+Configure `pools[].connectionAdmission` for larger shared-address fleets before upgrading.
+Refused transports close immediately without an automatic IP ban or disruption to
+existing miners and owned accounting work. Startup requires a complete request within
+ten seconds, including TLS/PROXY setup; partial bytes no longer keep startup alive.
+
+Trusted PROXY clients are attributed only after strict v1 validation. Invalid framing,
+address-family mismatches, ambiguous IPv4 literals and malformed ports are rejected;
+configure CRLF-terminated headers and explicit trusted proxy addresses. See
+[Stratum connection admission](stratum-connection-admission.md) for operator controls,
+NAT/proxy policy, bounded metrics, firmware reconnect recovery and validation evidence.
+
 ## Unreleased: BLAKE2b difficulty request budget
 
 [#152](https://github.com/NINJAK1DD/miningcore/issues/152) limits miner-requested BLAKE2b

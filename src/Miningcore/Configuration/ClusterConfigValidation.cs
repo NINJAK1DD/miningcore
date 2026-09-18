@@ -65,6 +65,10 @@ public class PoolEndpointValidator : AbstractValidator<PoolEndpoint>
 {
     public PoolEndpointValidator()
     {
+        RuleForEach(j => j.TcpProxyProtocol.ProxyAddresses)
+            .Must(address => IPAddress.TryParse(address, out _))
+            .When(j => j.TcpProxyProtocol?.Enable == true)
+            .WithMessage("Pool Endpoint: proxyAddresses must contain valid literal IP addresses");
         RuleFor(j => j.Difficulty)
             .GreaterThan(0)
             .WithMessage("Pool Endpoint: Difficulty missing or invalid");
@@ -196,6 +200,24 @@ public class VarDiffConfigValidator : AbstractValidator<VarDiffConfig>
     }
 }
 
+public class StratumAdmissionConfigValidator : AbstractValidator<StratumAdmissionConfig>
+{
+    public StratumAdmissionConfigValidator()
+    {
+        RuleFor(x => x.ConnectionsPerSecond).InclusiveBetween(1, 100000);
+        RuleFor(x => x.Burst).InclusiveBetween(1, 100000);
+        RuleFor(x => x.MaxConcurrentConnections).InclusiveBetween(1, 1000000);
+        RuleFor(x => x.ConnectionsPerSecondPerAddress).InclusiveBetween(1, 100000);
+        RuleFor(x => x.BurstPerAddress).InclusiveBetween(1, 100000);
+        RuleFor(x => x.MaxConcurrentConnectionsPerAddress).InclusiveBetween(1, 1000000);
+        RuleFor(x => x.MaxTrackedAddresses).InclusiveBetween(1, 1000000);
+        RuleFor(x => x.IdleExpirySeconds).InclusiveBetween(1, 86400)
+            .Must((x, expiry) => (long) expiry * x.ConnectionsPerSecondPerAddress >= x.BurstPerAddress)
+            .WithMessage("Idle expiry must allow a complete address bucket refill");
+        RuleFor(x => x.StartupTimeoutSeconds).InclusiveBetween(1, 120);
+    }
+}
+
 public class PoolConfigValidator : AbstractValidator<PoolConfig>
 {
     public PoolConfigValidator(bool recoveryMode = false)
@@ -213,6 +235,10 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
         bool ShouldValidateStratumListeners(PoolConfig pool) =>
             !recoveryMode && pool.Enabled &&
             pool.EnableInternalStratum == true;
+
+        RuleFor(x => x.ConnectionAdmission)
+            .SetValidator(new StratumAdmissionConfigValidator())
+            .When(x => ShouldValidateStratumListeners(x) && x.ConnectionAdmission != null);
 
         RuleFor(j => j.Id)
             .NotNull()

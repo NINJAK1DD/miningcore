@@ -74,6 +74,9 @@ public abstract class StratumServer
 
     protected readonly ConcurrentDictionary<string, StratumConnection> connections = new();
     private readonly ConcurrentDictionary<string, Task> connectionTasks = new();
+    internal TimeProvider AdmissionTimeProvider { get; set; } = TimeProvider.System;
+    internal StratumConnectionAdmission ConnectionAdmission { get; private set; }
+    private TimeSpan startupTimeout;
     // Lets lifecycle tests distinguish connection unregistration from completion of the
     // socket-owning dispatch task without widening the production subclass surface.
     internal int TrackedConnectionTaskCount => connectionTasks.Count;
@@ -98,6 +101,13 @@ public abstract class StratumServer
         params StratumListenerReservation[] listeners)
     {
         Contract.RequiresNonNull(listeners);
+
+        var admissionConfig = poolConfig.ConnectionAdmission ?? new StratumAdmissionConfig();
+        startupTimeout = TimeSpan.FromSeconds(admissionConfig.StartupTimeoutSeconds);
+        ConnectionAdmission ??= new StratumConnectionAdmission(admissionConfig,
+            AdmissionTimeProvider, poolConfig.Id, logger);
+        using var expiryTimer = AdmissionTimeProvider.CreateTimer(_ => ConnectionAdmission.SweepIdle(),
+            null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
 
         try
         {
@@ -391,6 +401,7 @@ public abstract class StratumServer
     private void AcceptConnection(Socket socket, StratumEndpoint port, X509Certificate2 cert, CancellationToken ct)
     {
         StratumConnection connection = null;
+        StratumConnectionAdmission.Lease admission = null;
         var registered = false;
         var dispatched = false;
 
@@ -416,10 +427,21 @@ public abstract class StratumServer
             if(DisconnectIfBanned(socket, remoteEndpoint))
                 return;
 
+            var proxy = StratumProxyProtocol.IsTrustedPeer(port.PoolEndpoint.TcpProxyProtocol,
+                remoteEndpoint.Address);
+            if(!ConnectionAdmission.TryAcquire(remoteEndpoint.Address, proxy, out admission))
+            {
+                StratumSocketCleanup.CloseAbortively(socket);
+                return;
+            }
+
             // init connection
             connection = new StratumConnection(logger, rmsm, clock,
                 CreateConnectionId(),
                 clusterConfig.Logging?.GPDRCompliant == true, failStop?.Token ?? default);
+            connection.StartupTimeout = startupTimeout;
+            if(proxy)
+                connection.AdmitProxyIdentity = admission.TrySetIdentity;
 
             logger.Info(() => $"[{connection.ConnectionId}] Accepting connection from {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}:{remoteEndpoint.Port} ...");
 
@@ -439,17 +461,18 @@ public abstract class StratumServer
                 // terminate and observe it without removing the previous task's dictionary entry.
                 connection.Disconnect();
                 _ = ObserveUntrackedConnectionTaskAsync(
-                    connection.ConnectionId, dispatch);
+                    connection.ConnectionId, dispatch, admission);
                 throw new InvalidOperationException(
                     $"Connection task {connection.ConnectionId} is already tracked");
             }
 
-            _ = ObserveConnectionTaskAsync(connection.ConnectionId, dispatch);
+            _ = ObserveConnectionTaskAsync(connection.ConnectionId, dispatch, admission);
         }, ex =>
         {
             if(!dispatched)
             {
                 StratumSocketCleanup.CloseAbortively(socket);
+                admission?.Dispose();
 
                 if(registered)
                     UnregisterConnection(connection);
@@ -464,7 +487,7 @@ public abstract class StratumServer
     }
 
     private async Task ObserveUntrackedConnectionTaskAsync(string connectionId,
-        Task dispatch)
+        Task dispatch, StratumConnectionAdmission.Lease admission)
     {
         try
         {
@@ -474,10 +497,11 @@ public abstract class StratumServer
         {
             StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.UntrackedCompletion, connectionId, ex);
         }
+        finally { admission.Dispose(); }
     }
 
     private async Task ObserveConnectionTaskAsync(string connectionId,
-        Task dispatch)
+        Task dispatch, StratumConnectionAdmission.Lease admission)
     {
         try
         {
@@ -501,6 +525,9 @@ public abstract class StratumServer
             }
 
             connectionTasks.TryRemove(connectionId, out _);
+            // Includes request-handler drain and task-observer cleanup. A peer disconnect
+            // cannot free capacity while an already-owned accounting operation is running.
+            admission.Dispose();
         }
     }
 
@@ -680,6 +707,9 @@ public abstract class StratumServer
 
         switch(ex)
         {
+            case StratumAdmissionException:
+                // The admission controller already counted and rate-limited its diagnostic.
+                break;
             case SocketException sockEx:
                 if(!ignoredSocketErrors.Contains(sockEx.ErrorCode))
                     StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.ConnectionError, connection.ConnectionId, ex);
