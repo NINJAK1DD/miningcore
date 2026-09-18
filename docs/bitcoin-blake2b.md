@@ -230,6 +230,17 @@ requests consume a token and receive Stratum error 20 without assignment or iden
 mutation or authorization RPC. Once exhausted, their
 responses follow the same bounded refusal/disconnect policy. Missing IDs receive error -1
 without charging.
+
+The missing/null-ID exemption is a deliberate compatibility policy: it preserves the
+existing error-only handling for clients with incomplete request IDs without spending
+or resetting their negotiation state. These requests stop before parameter validation,
+address/NiceHash lookups, difficulty mutation or job creation. The allowance bounds
+assignment negotiation, not all request/error traffic: repeated missing-ID requests can
+continue receiving errors. Serial dispatch and the bounded send queue limit queued work,
+but do not rate-limit a client that keeps draining replies. This Stratum behavior is
+distinct from [JSON-RPC 2.0 notification handling](https://www.jsonrpc.org/specification#notification),
+which requires no response when the ID member is absent.
+
 Admission precedes inherited acknowledgments, VarDiff/difficulty changes and work issuance.
 Static-difficulty authorization is parsed once with the inherited parser and passed to the
 authorization handler, including semicolon-separated and legacy embedded `d=` syntax,
