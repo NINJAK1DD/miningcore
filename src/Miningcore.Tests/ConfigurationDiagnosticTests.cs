@@ -21,6 +21,23 @@ public class ConfigurationDiagnosticTests
     private const string Secret = "ISSUE144_SYNTHETIC_SECRET";
 
     [Fact]
+    public void Projection_ConnectionAdmissionReportsNumericControlsWithoutIdentity()
+    {
+        var config = new ClusterConfig
+        {
+            Pools = new[] { new PoolConfig { Id = Secret,
+                ConnectionAdmission = new StratumAdmissionConfig { BurstPerAddress = 64, StartupTimeoutSeconds = 13 } } },
+        };
+        var output = ConfigurationDiagnosticProjection.Serialize(config);
+        var admission = (JObject) JObject.Parse(output)["configuration"]["pools"][0]["connectionAdmission"];
+        Assert.Equal(9, admission.Count);
+        Assert.All(admission.Properties(), field => Assert.Equal(JTokenType.Integer, field.Value.Type));
+        Assert.Equal(64, admission["burstPerAddress"].Value<int>());
+        Assert.Equal(13, admission["startupTimeoutSeconds"].Value<int>());
+        Assert.DoesNotContain(Secret, output);
+    }
+
+    [Fact]
     public async Task PublicDump_ExampleMatchesReviewedGoldenSnapshot()
     {
         var content = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "config.example.json"));

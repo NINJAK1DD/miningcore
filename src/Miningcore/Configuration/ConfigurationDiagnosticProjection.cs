@@ -76,9 +76,17 @@ internal static class ConfigurationDiagnosticProjection
             [typeof(PoolConfig)] = Fields<PoolConfig>(
                 nameof(PoolConfig.Enabled), nameof(PoolConfig.Ports), nameof(PoolConfig.Daemons),
                 nameof(PoolConfig.PaymentProcessing), nameof(PoolConfig.Banning), nameof(PoolConfig.RewardRecipients),
+                nameof(PoolConfig.ConnectionAdmission),
                 nameof(PoolConfig.ClientConnectionTimeout), nameof(PoolConfig.JobRebroadcastTimeout),
                 nameof(PoolConfig.BlockRefreshInterval), nameof(PoolConfig.EnableInternalStratum),
                 nameof(PoolConfig.EnableAsicBoost), nameof(PoolConfig.VardiffIdleSweepInterval)),
+            [typeof(StratumAdmissionConfig)] = Fields<StratumAdmissionConfig>(
+                nameof(StratumAdmissionConfig.ConnectionsPerSecond), nameof(StratumAdmissionConfig.Burst),
+                nameof(StratumAdmissionConfig.MaxConcurrentConnections),
+                nameof(StratumAdmissionConfig.ConnectionsPerSecondPerAddress), nameof(StratumAdmissionConfig.BurstPerAddress),
+                nameof(StratumAdmissionConfig.MaxConcurrentConnectionsPerAddress),
+                nameof(StratumAdmissionConfig.MaxTrackedAddresses), nameof(StratumAdmissionConfig.IdleExpirySeconds),
+                nameof(StratumAdmissionConfig.StartupTimeoutSeconds)),
             [typeof(PoolEndpoint)] = Fields<PoolEndpoint>(
                 nameof(PoolEndpoint.Difficulty), nameof(PoolEndpoint.TcpProxyProtocol),
                 nameof(PoolEndpoint.VarDiff), nameof(PoolEndpoint.Tls), nameof(PoolEndpoint.TlsAuto)),
