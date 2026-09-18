@@ -119,6 +119,10 @@ TargetBits InstructionSets::Supported() {
     if ((xcr0 & 4) == 0) {
       flags &= ~(kBitAVX | kBitAVX2);
     }
+  } else {
+    // CPUID capability alone is insufficient when the OS does not preserve
+    // YMM state. Keep the dispatcher on its baseline implementation.
+    flags &= ~(kBitAVX | kBitAVX2 | kBitFMA);
   }
 
   // Also indicates "supported" has been initialized.

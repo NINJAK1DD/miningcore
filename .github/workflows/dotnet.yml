@@ -104,6 +104,7 @@ jobs:
         scripts/release/test-cryptonote-abi-safety.sh
         scripts/release/test-linux-native-inventory.sh
         scripts/release/test-linux-native-symbol-contracts.sh
+        scripts/release/test-native-cpu-portability.sh
         scripts/release/test-linux-package-targets.sh
         scripts/release/test-msbuild-warning-file-logger.sh
         scripts/release/test-odocrypt-source-inventory.sh
@@ -153,7 +154,7 @@ jobs:
         sudo apt-get -o Acquire::Retries=3 update
         sudo apt-get -o Acquire::Retries=3 install -y \
           cmake ninja-build build-essential libssl-dev pkg-config \
-          libboost-all-dev libsodium-dev libzmq3-dev libgmp-dev
+          libboost-all-dev libsodium-dev libzmq3-dev libgmp-dev qemu-user
 
     - name: Install isolated PostgreSQL TLS test dependency
       shell: bash
@@ -328,6 +329,11 @@ jobs:
         echo
         echo "Miningcore.Tests output libs:"
         find "$TEST_OUT" -maxdepth 1 -type f -name '*.so' -print | sort
+
+    - name: Test native CPU portability
+      if: runner.os == 'Linux'
+      shell: bash
+      run: bash scripts/release/test-native-cpu-portability.sh src/Miningcore/bin/Debug/net10.0
 
     - name: Smoke-test ZeroMQ relay runtime
       if: runner.os == 'Linux'

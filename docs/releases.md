@@ -17,6 +17,11 @@ the root README for those environments.
 | 24.04 LTS x64 | Tested source build; do not use either prebuilt archive |
 | 22.04 LTS x64 | Compatibility release archive or source build |
 
+Linux native builds require **x86-64-v2 plus AES-NI and PCLMULQDQ**. They use a
+fixed compiler baseline instead of inheriting AVX-512 or other optional features
+from the release runner. See [native CPU portability](native-cpu-portability.md)
+for the SIGILL investigation, runtime-dispatch policy and regression checks.
+
 > **Runtime requirement:** install a supported, serviced .NET 10 ASP.NET Core runtime from the
 > documented Ubuntu package source and keep it updated with normal security maintenance.
 

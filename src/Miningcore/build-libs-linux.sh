@@ -55,27 +55,16 @@ export UNAME_S
 UNAME_P=$(uname -m || uname -p)
 export UNAME_P
 
-AES=$("$NativeDir/check_cpu.sh" aes && echo -maes || echo)
-SSE2=$("$NativeDir/check_cpu.sh" sse2 && echo -msse2 || echo)
-SSE3=$("$NativeDir/check_cpu.sh" sse3 && echo -msse3 || echo)
-SSSE3=$("$NativeDir/check_cpu.sh" ssse3 && echo -mssse3 || echo)
-PCLMUL=$("$NativeDir/check_cpu.sh" pclmul && echo -mpclmul || echo)
-AVX=$("$NativeDir/check_cpu.sh" avx && echo -mavx || echo)
-AVX2=$("$NativeDir/check_cpu.sh" avx2 && echo -mavx2 || echo)
-AVX512F=$("$NativeDir/check_cpu.sh" avx512f && echo -mavx512f || echo)
-
-export CPU_FLAGS="$AES $SSE2 $SSE3 $SSSE3 $PCLMUL $AVX $AVX2 $AVX512F"
-
-HAVE_AES=$("$NativeDir/check_cpu.sh" aes && echo -D__AES__ || echo)
-HAVE_SSE2=$("$NativeDir/check_cpu.sh" sse2 && echo -DHAVE_SSE2 || echo)
-HAVE_SSE3=$("$NativeDir/check_cpu.sh" sse3 && echo -DHAVE_SSE3 || echo)
-HAVE_SSSE3=$("$NativeDir/check_cpu.sh" ssse3 && echo -DHAVE_SSSE3 || echo)
-HAVE_PCLMUL=$("$NativeDir/check_cpu.sh" pclmul && echo -DHAVE_PCLMUL || echo)
-HAVE_AVX=$("$NativeDir/check_cpu.sh" avx && echo -DHAVE_AVX || echo)
-HAVE_AVX2=$("$NativeDir/check_cpu.sh" avx2 && echo -DHAVE_AVX2 || echo)
-HAVE_AVX512F=$("$NativeDir/check_cpu.sh" avx512f && echo -DHAVE_AVX512F || echo)
-
-export HAVE_FEATURE="$HAVE_AES $HAVE_SSE2 $HAVE_SSE3 $HAVE_SSSE3 $HAVE_PCLMUL $HAVE_AVX $HAVE_AVX2 $HAVE_AVX512F"
+# A release must not inherit the build runner's optional instruction sets.
+# x86-64-v2 + AES + PCLMUL is the supported Linux x64 native baseline.
+# Optional higher-ISA implementations must perform runtime CPU/OS dispatch.
+if [[ "$UNAME_P" != x86_64 ]]; then
+  echo "Linux native builds currently support x86_64 only (got $UNAME_P)" >&2
+  exit 64
+fi
+export CPU_FLAGS="-march=x86-64-v2 -mtune=generic -maes -mpclmul"
+export HAVE_FEATURE="-DHAVE_SSE2 -DHAVE_SSE3 -DHAVE_SSSE3 -DHAVE_PCLMUL"
+echo "Native CPU baseline: $CPU_FLAGS"
 
 bash "$ScriptDir/../../scripts/release/verify-pinned-source-files.sh" \
   "$NativeDir" "$NativeDir/libodocrypt/upstream.sha256"
@@ -109,7 +98,7 @@ build_nexapow() {
     cd secp256k1
     git checkout 04fabb44590c10a19e35f044d11eb5058aac65b2
     cmake -S . -B build -GNinja \
-      -DCMAKE_C_FLAGS=-fPIC \
+      "-DCMAKE_C_FLAGS=-fPIC $CPU_FLAGS" \
       -DSECP256K1_ENABLE_MODULE_RECOVERY=OFF \
       -DSECP256K1_ENABLE_COVERAGE=OFF \
       -DSECP256K1_ENABLE_MODULE_SCHNORR=ON
@@ -148,9 +137,9 @@ build_randomx_family() {
       git apply "$ScriptDir/$source_patch"
     fi
     cmake -S . -B build \
-      -DARCH=native \
-      -DCMAKE_C_FLAGS=-Wa,--noexecstack \
-      -DCMAKE_CXX_FLAGS=-Wa,--noexecstack
+      -DARCH=default \
+      "-DCMAKE_C_FLAGS=-Wa,--noexecstack $CPU_FLAGS" \
+      "-DCMAKE_CXX_FLAGS=-Wa,--noexecstack $CPU_FLAGS"
     if [[ -n "$build_target" ]]; then
       cmake --build build --target "$build_target" -j"$(nproc)"
     else

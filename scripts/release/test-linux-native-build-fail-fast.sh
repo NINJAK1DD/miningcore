@@ -222,7 +222,9 @@ done
 
 cat > "$work_dir/src/Native/check_cpu.sh" <<'SH'
 #!/usr/bin/env sh
-exit 1
+# Pretend that the builder has every optional feature, including AVX-512.
+# Portable output must not inherit these capabilities.
+exit 0
 SH
 chmod +x "$work_dir/src/Native/check_cpu.sh"
 
@@ -283,6 +285,13 @@ fi
 if ! grep -Fq 'Building native component: libmultihash' "$work_dir/output"; then
   echo "Native build driver did not reach the injected first component" >&2
   cat "$work_dir/output" >&2
+  exit 1
+fi
+
+if ! grep -Fq -- 'CPU_FLAGS=-march=x86-64-v2 -mtune=generic -maes -mpclmul' "$work_dir/trace" ||
+    grep -Eq -- '-mavx|-march=native|HAVE_AVX' "$work_dir/trace"; then
+  echo "Native build inherited optional CPU capabilities from its builder" >&2
+  cat "$work_dir/trace" >&2
   exit 1
 fi
 

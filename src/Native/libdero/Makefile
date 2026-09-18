@@ -5,7 +5,7 @@ ifneq ($($(UNAME_P),aarch64),$($(UNAME_P),arm64))
         CFLAGS += -mfloat-abi=hard -march=armv7-a -mfpu=neon
         CXXFLAGS += -mfloat-abi=hard -march=armv7-a -mfpu=neon
 else
-        CXXFLAGS += -march=native -m64 
+        CXXFLAGS += -m64
 endif
 
 LDFLAGS += -shared -Wl,--no-undefined
@@ -26,9 +26,10 @@ OBJECTS = include/highwayhash/arch_specific.o include/highwayhash/c_bindings.o i
         include/libsais/libsais.o 
 
 ifeq ($(UNAME_P),x86_64)
-        ifneq (,$(findstring -DHAVE_AVX2,$(HAVE_FEATURE)))
-                OBJECTS += include/highwayhash/hh_avx2.o 
-        endif
+        # HighwayHash dispatch references both implementations regardless of
+        # the baseline. Only this translation unit may contain AVX2.
+        OBJECTS += include/highwayhash/hh_avx2.o
+        include/highwayhash/hh_avx2.o: CXXFLAGS += -mavx2
         OBJECTS += include/highwayhash/hh_sse41.o 
 else ifneq ($($(UNAME_P),aarch64),$($(UNAME_P),arm64))
         OBJECTS += include/highwayhash/hh_neon.o 
