@@ -49,6 +49,54 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: bounded Stratum connection admission
+
+Every internal Stratum pool now limits reconnect startup rate and concurrent dispatches
+across all its ports, with bounded client-address retention and monotonic expiry.
+Defaults allow a 200-connection pool burst and 100 per second, 4,096 active dispatches,
+and a 32-connection burst/two per second/256 active dispatches per client address.
+**Upgrade action:** these defaults apply to existing configurations too. Before upgrading,
+configure `pools[].connectionAdmission` for pools exceeding **4,096 concurrent miners**,
+farms exceeding **256 miners behind one address**, or larger restart bursts. Every pool
+logs its effective limits at startup and exports limits and occupancy for advance alerts.
+There is no unbounded/disabled mode; choose measured finite limits. Raising pool rate,
+burst, concurrent capacity or idle retention also requires sufficient `maxTrackedAddresses`
+(`maxConcurrentConnections + burst + connectionsPerSecond * idleExpirySeconds`).
+Invalid combinations fail configuration validation rather than silently starving new identities.
+The default tracked-address cap is 32,768, providing headroom above the default
+16,296-entry sizing requirement. Startup trust lists are parsed once into an immutable
+normalized lookup shared by admission and header processing; trust changes require restart.
+Advisory and refusal warnings each have their own one-per-minute budget, and attempts
+reaching a stopped admission controller are counted separately as `stopped`, without
+warning during routine shutdown. Both Prometheus packages are updated to 8.2.1 to
+fix concurrent scrape/collector-registration failures during pool startup.
+Real HTTP tests cover the production exporter overload on shared and dedicated
+listeners, including admission samples, content type and protected response headers.
+Host shutdown and financial fail-stop take precedence over simultaneous parser errors
+before the first request owns its handler, without masking failures after ownership.
+The same rule applies to the outer setup/teardown catch, so shutdown cannot hide an
+established connection's teardown failure.
+
+**Reverse proxies:** without a usable trusted PROXY v1 identity, all miners behind a
+front-end share its per-address rate and concurrent cap. Configure explicit trusted peers
+and mandatory valid headers, or deliberately size the shared-address limits for the whole
+fleet. Trusted transports awaiting identity have a separate 256-slot pool-wide
+`maxPendingIdentities` cap; size it for handshake latency and protect the front-end too.
+Refused transports close immediately without an automatic IP ban or disruption to
+existing miners and owned accounting work. Startup requires a complete request within
+ten seconds, including TLS/PROXY setup; partial bytes no longer keep startup alive.
+Expiry is counted as `startup-timeout`, without an error-level message or IP ban.
+
+Trusted PROXY clients are attributed only after strict v1 validation. Invalid framing,
+address-family mismatches, ambiguous IPv4 literals and malformed ports are rejected;
+configure CRLF-terminated headers and explicit trusted proxy addresses. LF-only headers
+are now rejected, the 107-byte wire limit is checked before decoding (including partial
+headers), and `PROXY UNKNOWN` retains the transport peer. Trust matching normalizes
+IPv4-mapped IPv6 on both sides, so an IPv4 allowlist entry also matches its mapped peer.
+Invalid trust-list entries now fail configuration validation. See
+[Stratum connection admission](stratum-connection-admission.md) for operator controls,
+NAT/proxy policy, bounded metrics, firmware reconnect recovery and validation evidence.
+
 ## Unreleased: BLAKE2b difficulty request budget
 
 [#152](https://github.com/NINJAK1DD/miningcore/issues/152) limits miner-requested BLAKE2b

@@ -32,6 +32,7 @@ internal enum StratumConnectionCompletionReason
     HostShutdown,
     MiningFailStop,
     IndependentCancellation,
+    StartupTimeout,
 }
 
 public class StratumConnection
@@ -63,6 +64,10 @@ public class StratumConnection
     private readonly CancellationToken failStopToken;
 
     internal Func<object, CancellationToken, Task> SendMessageOverride { get; set; }
+    internal Func<IPAddress, bool> AdmitProxyIdentity { get; set; }
+    internal StratumProxyPolicy ProxyPolicy { get; init; }
+    internal TimeSpan StartupTimeout { get; set; } = TimeSpan.FromSeconds(10);
+    private Action finishStartup;
 
     private const int MaxInboundRequestLength = 0x8000;
     public static readonly Encoding Encoding = new UTF8Encoding(false);
@@ -116,12 +121,31 @@ public class StratumConnection
         using var failStopRegistration = failStopToken.Register(() =>
             StratumSocketCleanup.ConfigureAbortiveClose(socket));
 
-        expectingProxyHeader = endpoint.PoolEndpoint.TcpProxyProtocol?.Enable == true;
-
         var terminalCallbackSignalled = false;
+        // Exactly one of first-request admission and deadline expiry wins. Disarming
+        // a timer alone cannot prevent an already queued callback cancelling a handler.
+        var startupState = 0; // 0 pending, 1 complete, 2 expired
+        bool StartupCancellationWins()
+        {
+            // Use the same ownership boundary for task failures and exceptions
+            // escaping setup/teardown. Shutdown must not hide an owned failure.
+            var finalStartupState = Volatile.Read(ref startupState);
+            return finalStartupState == 2 ||
+                (finalStartupState == 0 && (ct.IsCancellationRequested || failStopToken.IsCancellationRequested));
+        }
+
+        StratumConnectionCompletionReason CancellationCompletion() =>
+            failStopToken.IsCancellationRequested ? StratumConnectionCompletionReason.MiningFailStop :
+            ct.IsCancellationRequested ? StratumConnectionCompletionReason.HostShutdown :
+            Volatile.Read(ref startupState) == 2 ? StratumConnectionCompletionReason.StartupTimeout :
+            StratumConnectionCompletionReason.IndependentCancellation;
 
         try
         {
+            // Standalone dispatch callers have no accept loop. Production supplies the
+            // already frozen listener policy used for transport admission above.
+            var proxyPolicy = ProxyPolicy ?? new StratumProxyPolicy(endpoint.PoolEndpoint.TcpProxyProtocol);
+            expectingProxyHeader = proxyPolicy.Enabled;
             // prepare socket
             socket.NoDelay = true;
             socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
@@ -129,7 +153,25 @@ public class StratumConnection
             // create stream
             networkStream = new NetworkStream(socket, true);
 
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            // Link fail-stop directly so TLS setup can stop before pipe tasks exist.
+            // Established handlers already received this cancellation via the send-task
+            // completion path; this removes a scheduling hop, without ending their drain.
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct, failStopToken);
+            using var startupDeadline = new CancellationTokenSource();
+            // Declaration order is intentional: registration disposal waits for an
+            // in-flight callback before either CTS it touches can be disposed.
+            using var startupRegistration = startupDeadline.Token.Register(() =>
+            {
+                if(Interlocked.CompareExchange(ref startupState, 2, 0) == 0)
+                    cts.Cancel();
+            });
+            startupDeadline.CancelAfter(StartupTimeout);
+            finishStartup = () =>
+            {
+                if(Interlocked.CompareExchange(ref startupState, 1, 0) != 0)
+                    throw new OperationCanceledException(cts.Token);
+                startupDeadline.CancelAfter(Timeout.InfiniteTimeSpan);
+            };
 
             using(var disposables = new CompositeDisposable(networkStream))
             {
@@ -170,7 +212,7 @@ public class StratumConnection
                 // Async I/O loop(s)
                 var receiveTask = FillReceivePipeAsync(cts.Token);
                 var processTask = ProcessReceivePipeAsync(cts.Token,
-                    endpoint.PoolEndpoint.TcpProxyProtocol, onRequestAsync);
+                    proxyPolicy, onRequestAsync);
                 var sendTask = ProcessSendQueueAsync(cts.Token);
                 var tasks = new[]
                 {
@@ -186,6 +228,7 @@ public class StratumConnection
                 // server-side failure and must retain the default abortive close.
                 var peerEof = ReferenceEquals(completedTask, receiveTask) &&
                     receiveTask.IsCompletedSuccessfully &&
+                    Volatile.Read(ref startupState) != 2 &&
                     !ct.IsCancellationRequested &&
                     !failStopToken.IsCancellationRequested;
 
@@ -214,12 +257,16 @@ public class StratumConnection
                 await receivePipe.Writer.CompleteAsync();
 
                 // Signal completion or error
-                if(error == null)
+                // Server cancellation wins a simultaneous startup/parser failure, but
+                // must not hide a failure from a handler that already owns its request.
+                // Preserve the suppressed startup failure category at Debug.
+                if(error == null || StartupCancellationWins())
                 {
                     // A peer-driven clean EOF may close gracefully. Host shutdown and the
                     // independent financial fail-stop gate remain abortive so accepted sockets
                     // cannot delay exclusive listener reacquisition.
                     if(peerEof &&
+                        Volatile.Read(ref startupState) != 2 &&
                         !ct.IsCancellationRequested &&
                         !failStopToken.IsCancellationRequested)
                     {
@@ -227,20 +274,19 @@ public class StratumConnection
 
                         // Cancellation can arrive between the checks above and the linger
                         // update. Re-arm abortive close if either server-owned token won.
-                        if(ct.IsCancellationRequested ||
+                        if(Volatile.Read(ref startupState) == 2 || ct.IsCancellationRequested ||
                             failStopToken.IsCancellationRequested)
                         {
                             StratumSocketCleanup.ConfigureAbortiveClose(socket);
                         }
                     }
 
-                    CompletionReason = failStopToken.IsCancellationRequested
-                        ? StratumConnectionCompletionReason.MiningFailStop
-                        : ct.IsCancellationRequested
-                            ? StratumConnectionCompletionReason.HostShutdown
-                            : peerEof
-                                ? StratumConnectionCompletionReason.PeerEof
-                                : StratumConnectionCompletionReason.IndependentCancellation;
+                    CompletionReason = peerEof && !ct.IsCancellationRequested &&
+                        !failStopToken.IsCancellationRequested && Volatile.Read(ref startupState) != 2
+                        ? StratumConnectionCompletionReason.PeerEof : CancellationCompletion();
+                    if(error != null)
+                        StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.CancelledFailure,
+                            ConnectionId, error, completion: CompletionReason);
                     // Set this before invoking external callback code. If the callback or later
                     // stream teardown throws, the outer catch must not signal this connection a
                     // second time and mask the original failure with duplicate unregistration.
@@ -269,7 +315,18 @@ public class StratumConnection
             if(!terminalCallbackSignalled)
             {
                 terminalCallbackSignalled = true;
-                onError(this, ex);
+                // TLS setup precedes the pipe tasks, but teardown can also reach
+                // this catch after first-request ownership. Suppress startup failures
+                // during server cancellation without hiding owned teardown failures.
+                if(StartupCancellationWins())
+                {
+                    CompletionReason = CancellationCompletion();
+                    StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.CancelledFailure,
+                        ConnectionId, ex, completion: CompletionReason);
+                    onCompleted(this);
+                }
+                else
+                    onError(this, ex);
             }
             else
             {
@@ -283,6 +340,7 @@ public class StratumConnection
 
         finally
         {
+            finishStartup = null;
             this.socket = null;
 
             // Release external observables
@@ -402,7 +460,7 @@ public class StratumConnection
     }
 
     private async Task ProcessReceivePipeAsync(CancellationToken ct,
-        TcpProxyProtocolConfig proxyProtocol,
+        StratumProxyPolicy proxyProtocol,
         Func<StratumConnection, JsonRpcRequest, CancellationToken, Task> onRequestAsync)
     {
         while(!ct.IsCancellationRequested)
@@ -424,11 +482,23 @@ public class StratumConnection
                 // Scan buffer for line terminator
                 position = buffer.PositionOf((byte) '\n');
 
+                // Bound a PROXY line while it is still wire bytes, even if a sender
+                // withholds LF. Optional ordinary JSON retains its normal line limit.
+                if(expectingProxyHeader)
+                    ValidateProxyWireLength(position == null ? buffer : buffer.Slice(0, position.Value), proxyProtocol);
+
                 if(position != null)
                 {
                     var slice = buffer.Slice(0, position.Value);
 
-                    if(!expectingProxyHeader || !ProcessProxyHeader(slice, proxyProtocol))
+                    var proxyHeader = expectingProxyHeader && ProcessProxyHeader(slice, proxyProtocol);
+                    if(AdmitProxyIdentity != null)
+                    {
+                        if(!AdmitProxyIdentity(RemoteEndpoint.Address))
+                            throw new StratumAdmissionException();
+                        AdmitProxyIdentity = null;
+                    }
+                    if(!proxyHeader)
                         await ProcessRequestAsync(ct, onRequestAsync, slice);
 
                     // Skip consumed section
@@ -534,36 +604,34 @@ public class StratumConnection
         if(request == null)
             throw new JsonException("Unable to deserialize request");
 
+        if(finishStartup != null)
+        {
+            ct.ThrowIfCancellationRequested();
+            finishStartup();
+            finishStartup = null;
+        }
+
         await onRequestAsync(this, request, ct);
     }
 
     /// <summary>
     /// Returns true if the line was consumed
     /// </summary>
-    private bool ProcessProxyHeader(ReadOnlySequence<byte> seq, TcpProxyProtocolConfig proxyProtocol)
+    private bool ProcessProxyHeader(ReadOnlySequence<byte> seq, StratumProxyPolicy proxyProtocol)
     {
         expectingProxyHeader = false;
 
+        ValidateProxyWireLength(seq, proxyProtocol);
         var line = seq.AsString(Encoding);
         var peerAddress = RemoteEndpoint.Address;
 
         if(line.StartsWith("PROXY "))
         {
-            var proxyAddresses = proxyProtocol.ProxyAddresses?.Select(IPAddress.Parse).ToArray();
-            if(proxyAddresses == null || !proxyAddresses.Any())
-                proxyAddresses = new[] { IPAddress.Loopback, IPUtils.IPv4LoopBackOnIPv6, IPAddress.IPv6Loopback };
-
-            if(proxyAddresses.Any(x => x.Equals(peerAddress)))
+            if(proxyProtocol.IsTrustedPeer(peerAddress))
             {
                 StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.ProxyHeader, ConnectionId, bytes: seq.Length);
 
-                // split header parts
-                var parts = line.Split(" ");
-                var remoteAddress = parts[2];
-                var remotePort = parts[4];
-
-                // Update client
-                RemoteEndpoint = new IPEndPoint(IPAddress.Parse(remoteAddress), int.Parse(remotePort));
+                RemoteEndpoint = StratumProxyProtocol.Parse(line, RemoteEndpoint);
                 logger.Info(() => $"Real-IP via Proxy-Protocol: {RemoteEndpoint.Address.CensorOrReturn(gpdrCompliantLogging)}");
             }
 
@@ -581,5 +649,13 @@ public class StratumConnection
         }
 
         return false;
+    }
+
+    private static void ValidateProxyWireLength(ReadOnlySequence<byte> seq, StratumProxyPolicy proxyProtocol)
+    {
+        // The dispatcher strips LF; the remaining header (including CR) is <=106 bytes.
+        if(seq.Length > 106 && (proxyProtocol.Mandatory ||
+            seq.Slice(0, 6).ToSpan().SequenceEqual("PROXY "u8)))
+            throw new InvalidDataException("PROXY v1 header exceeds 107 wire bytes");
     }
 }

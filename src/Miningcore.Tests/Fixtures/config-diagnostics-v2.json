@@ -103,6 +103,7 @@
         "blockRefreshInterval": 1000,
         "clientConnectionTimeout": 600,
         "coin": "[set]",
+        "connectionAdmission": null,
         "daemons": [
           {
             "category": null,
@@ -191,6 +192,7 @@
         "blockRefreshInterval": 1000,
         "clientConnectionTimeout": 600,
         "coin": "[set]",
+        "connectionAdmission": null,
         "daemons": [
           {
             "category": null,
@@ -250,6 +252,7 @@
         "blockRefreshInterval": 1000,
         "clientConnectionTimeout": 600,
         "coin": "[set]",
+        "connectionAdmission": null,
         "daemons": [
           {
             "category": null,

@@ -418,9 +418,9 @@ the connection with weak keys and has no per-IP history, timer or deferred work 
 Elapsed time uses `TimeProvider.System.GetTimestamp`, independent of wall-clock/NTP
 adjustments and miner timestamps. This bounds these three difficulty-request paths per
 connection and rejects repeat subscription; it is not a global connection or general
-Stratum denial-of-service limit. Fresh connections receive fresh allowances. Cross-connection
-churn defenses, including shared-proxy/NAT and trusted client-address policy, are tracked in
-[issue #180](https://github.com/NINJAK1DD/miningcore/issues/180).
+Stratum denial-of-service limit. Fresh admitted connections receive fresh allowances;
+the separate [connection admission policy](stratum-connection-admission.md) bounds
+cross-connection churn and defines shared-proxy/NAT and trusted client-address handling.
 
 Enforcement emits one Info-level structured `DifficultyBudgetDisconnect`,
 `DuplicateSubscription` or `AssignmentPublicationFailure` event per closed connection,
@@ -526,8 +526,9 @@ PostgreSQL ledger test additionally requires `MININGCORE_TEST_POSTGRES`.
   to retry closes the connection on the eighth consecutive refusal. Initial static-difficulty
   authorization can be refused if earlier negotiation already exhausted the allowance.
   Retry after refill if the connection is retained; firmware may instead treat an authorize
-  error as fatal and reconnect, receiving a fresh budget (the residual path tracked in
-  [#180](https://github.com/NINJAK1DD/miningcore/issues/180)). Do not assume authentication
+  error as fatal and reconnect. Each admitted connection receives a fresh budget, but
+  reconnects are subject to [connection admission](stratum-connection-admission.md) and
+  may receive TCP EOF/reset before any protocol reply. Do not assume authentication
   from an earlier subscribe response. Avoid periodic reauthorization with `d=` when the miner only needs
   ordinary authentication, and let server VarDiff handle adaptive retargeting where supported.
   Update or reconfigure firmware/proxies that continually renegotiate; commission their

@@ -182,7 +182,6 @@ internal static class RpcConsumerOperations
         "PayoutManager.ProcessPoolsAsync",
         "PayoutManager.TryNotifyPostCommit",
         "PayoutManager.UpdatePoolBalancesAsync",
-        "PoolBase.EnsureNoZombieClient",
         "PoolBase.ForEachMinerAsync",
         "PoolBase.LoadStatsAsync",
         "PoolBase.RunAsync",

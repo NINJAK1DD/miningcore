@@ -2362,6 +2362,42 @@ public class ApiListenerConfigurationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task MetricsExporter_DefaultRegistryServesAdmissionSamplesOverHttp(bool shared)
+    {
+        var poolId = "http-scrape-" + Guid.NewGuid().ToString("N");
+        var admission = new StratumConnectionAdmission(new StratumAdmissionConfig(),
+            TimeProvider.System, poolId, NLog.LogManager.CreateNullLogger());
+        try
+        {
+            Assert.True(admission.TryAcquire(IPAddress.Loopback, false, out var lease));
+            using(lease)
+            {
+                await using var host = await StartRouteTestHostWithRetryAsync(shared,
+                    useDefaultMetricsRegistry: true);
+                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                using var response = await client.GetAsync(
+                    $"http://127.0.0.1:{host.Ports.MetricsPort}/metrics");
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                Assert.Equal("text/plain", response.Content.Headers.ContentType?.MediaType);
+                AssertProtectedResponseHeaders(response);
+                var body = await response.Content.ReadAsStringAsync();
+                Assert.Contains("# TYPE miningcore_stratum_admission_active gauge", body);
+                Assert.Contains($"miningcore_stratum_admission_active{{pool=\"{poolId}\"}} 1",
+                    body.Split('\n').Select(x => x.TrimEnd('\r')));
+                Assert.Contains("prometheus_net_metric_families{", body);
+                if(!shared)
+                    await AssertStatusAsync(client, host.Ports.PublicPort, "/metrics", HttpStatusCode.NotFound);
+            }
+        }
+        finally
+        {
+            admission.Stop();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task CorsAndProtectedResourcePolicies_WorkOnDedicatedAndSharedListeners(
         bool shared)
     {
@@ -2576,7 +2612,8 @@ public class ApiListenerConfigurationTests
             bool configureAdminCredential = true,
             ApiRateLimitConfig rateLimiting = null,
             bool enableExceptionHandling = false,
-            bool throwApiException = false)
+            bool throwApiException = false,
+            bool useDefaultMetricsRegistry = false)
     {
         Exception lastError = null;
 
@@ -2593,7 +2630,7 @@ public class ApiListenerConfigurationTests
             {
                 var host = await StartRouteTestHostAsync(ports, certificate,
                     configureAdminCredential, rateLimiting,
-                    enableExceptionHandling, throwApiException);
+                    enableExceptionHandling, throwApiException, useDefaultMetricsRegistry);
                 return new RunningRouteTestHost(host, ports);
             }
             catch(Exception ex) when(IsAddressInUse(ex))
@@ -2612,13 +2649,13 @@ public class ApiListenerConfigurationTests
         bool configureAdminCredential = true,
         ApiRateLimitConfig rateLimiting = null,
         bool enableExceptionHandling = false,
-        bool throwApiException = false)
+        bool throwApiException = false,
+        bool useDefaultMetricsRegistry = false)
     {
         var adminCredential = AdminApiCredential.Create(
             configureAdminCredential ? TestAdminToken : null);
-        // The complete suite exercises process-global production metrics in
-        // parallel. Give this real exporter its own registry so unrelated
-        // collectors cannot make an integration scrape intermittently fail.
+        // Most route tests use an isolated registry for deterministic samples.
+        // The default-registry regression selects the production exporter overload.
         var registry = Metrics.NewCustomRegistry();
         Metrics.WithCustomRegistry(registry)
             .CreateCounter("miningcore_listener_test_scrapes_total",
@@ -2654,9 +2691,12 @@ public class ApiListenerConfigurationTests
                         afterAccessControl: pipeline =>
                         {
                             pipeline.UseWebSockets();
-                            pipeline.UseMetricServer(
-                                settings => settings.Registry = registry,
-                                Program.MetricsRoutePrefix);
+                            if(useDefaultMetricsRegistry)
+                                pipeline.UseMetricServer(Program.MetricsRoutePrefix);
+                            else
+                                pipeline.UseMetricServer(
+                                    settings => settings.Registry = registry,
+                                    Program.MetricsRoutePrefix);
                             pipeline.Run(async context =>
                             {
                                 if(throwApiException)

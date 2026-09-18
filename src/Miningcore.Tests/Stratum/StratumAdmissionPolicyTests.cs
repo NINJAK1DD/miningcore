@@ -1,0 +1,284 @@
+using System;
+using System.Linq;
+using System.Net;
+using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
+using Miningcore.Configuration;
+using Miningcore.Stratum;
+using NLog;
+using NSubstitute;
+using Xunit;
+
+namespace Miningcore.Tests.Stratum;
+
+public partial class StratumAdmissionTests
+{
+    [Fact]
+    public void ProxyPolicy_FreezesLargeNormalizedTrustSetAndFlags()
+    {
+        var addresses = Enumerable.Range(0, 10000)
+            .Select(i => $"192.0.{i >> 8}.{i & 255}").ToArray();
+        addresses[0] = "::ffff:127.0.0.1";
+        var config = new TcpProxyProtocolConfig { Enable = true, Mandatory = true, ProxyAddresses = addresses };
+        var policy = new StratumProxyPolicy(config);
+        Array.Fill(addresses, "invalid-after-startup");
+        config.ProxyAddresses = new[] { "203.0.113.1" };
+        config.Enable = config.Mandatory = false;
+        Assert.True(policy.Enabled);
+        Assert.True(policy.Mandatory);
+        Assert.True(policy.IsTrustedPeer(IPAddress.Loopback));
+        Assert.True(policy.IsTrustedPeer(IPAddress.Parse("::ffff:127.0.0.1")));
+        Assert.True(policy.IsTrustedPeer(IPAddress.Parse("192.0.39.15")));
+        Assert.False(policy.IsTrustedPeer(IPAddress.Parse("203.0.113.1")));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ProxyPolicy_EmptyOrOmittedTrustList_UsesOnlyLoopback(bool empty)
+    {
+        var policy = new StratumProxyPolicy(new TcpProxyProtocolConfig
+            { Enable = true, ProxyAddresses = empty ? Array.Empty<string>() : null });
+        Assert.True(policy.IsTrustedPeer(IPAddress.Loopback));
+        Assert.True(policy.IsTrustedPeer(IPAddress.IPv6Loopback));
+        Assert.True(policy.IsTrustedPeer(IPAddress.Parse("::ffff:127.0.0.1")));
+        Assert.False(policy.IsTrustedPeer(IPAddress.Parse("127.0.0.2")));
+        Assert.False(policy.IsTrustedPeer(IPAddress.Parse("192.0.2.1")));
+        Assert.False(new StratumProxyPolicy(null).IsTrustedPeer(IPAddress.Loopback));
+        Assert.False(new StratumProxyPolicy(new TcpProxyProtocolConfig
+            { ProxyAddresses = new[] { "invalid" } }).Enabled);
+        Assert.Throws<InvalidOperationException>(() => new StratumProxyPolicy(new TcpProxyProtocolConfig
+            { Enable = true, ProxyAddresses = new[] { "invalid" } }));
+    }
+
+    [Fact]
+    public async Task ProxyPolicy_AcceptAndHeaderUseSameSnapshotDespiteConfigurationMutation()
+    {
+        var proxy = new TcpProxyProtocolConfig
+            { Enable = true, Mandatory = true, ProxyAddresses = new[] { "::ffff:127.0.0.1" } };
+        await using var server = new Server(new StratumAdmissionConfig { MaxPendingIdentities = 1 }, proxy: proxy);
+        proxy.ProxyAddresses[0] = "invalid-after-startup";
+        proxy.Enable = proxy.Mandatory = false;
+        using(var pending = await server.Connect())
+        {
+            await Until(() => server.Accepted == 1);
+            await server.Rejected(); // Still classified as trusted and charged a pending slot.
+            await Send(pending, Header("192.0.2.1"), false);
+            var response = await Exchange(pending);
+            Assert.Contains("192.0.2.1", response); // Header uses the same frozen trust set.
+        }
+        await server.Empty();
+        await server.Rejected(header: ""); // Mandatory flag is also frozen.
+        Assert.Equal(1, server.Requests);
+    }
+
+    [Fact]
+    public async Task ProxyPolicy_MutationCannotTurnAnUntrustedPeerIntoATrustedProxy()
+    {
+        var proxy = new TcpProxyProtocolConfig
+            { Enable = true, Mandatory = true, ProxyAddresses = new[] { "192.0.2.1" } };
+        await using var server = new Server(new StratumAdmissionConfig(), proxy: proxy);
+        proxy.ProxyAddresses[0] = "127.0.0.1";
+        await server.Rejected(header: Header("203.0.113.1"));
+        Assert.Equal(0, server.Requests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ProxyClientJunkBan_IsEnforcedOnReconnectWithoutBanningOtherForwardedClients(bool mapped)
+    {
+        await using var server = new Server(new StratumAdmissionConfig(),
+            proxy: new TcpProxyProtocolConfig { Enable = true, Mandatory = true });
+        var source = IPAddress.Parse("192.0.2.1");
+        var banned = 0;
+        server.Bans.When(x => x.Ban(source, TimeSpan.FromMinutes(3)))
+            .Do(_ => Interlocked.Exchange(ref banned, 1));
+        server.Bans.IsBanned(source).Returns(_ => Volatile.Read(ref banned) == 1);
+        var header = mapped ? "PROXY TCP6 ::ffff:192.0.2.1 ::1 123 3333\r\n" : Header(source.ToString());
+        using(var junk = await server.Connect())
+        {
+            await Send(junk, header + "{]");
+            await Closed(junk);
+        }
+        await server.Empty();
+        server.Bans.Received(1).Ban(source, TimeSpan.FromMinutes(3));
+        await server.Rejected(header: header);
+        Assert.Equal(0, server.Requests); // The existing request gate checks forwarded identity.
+        await server.Exchange(header: Header("192.0.2.2"));
+        Assert.Equal(1, server.Requests);
+        server.Bans.DidNotReceive().Ban(IPAddress.Loopback, Arg.Any<TimeSpan>());
+    }
+
+    [Fact]
+    public async Task InvalidProxyPolicy_ReleasesAllListenerReservations()
+    {
+        var server = new Server(new StratumAdmissionConfig(), ports: 2,
+            proxy: new TcpProxyProtocolConfig { Enable = true, ProxyAddresses = new[] { "invalid" } });
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => server.Run);
+        Assert.Equal("Enabled PROXY trust lists require valid literal IP addresses", error.Message);
+        foreach(var endpoint in server.Endpoints)
+        {
+            using var rebound = StratumServer.CreateBoundSocket(endpoint);
+        }
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await server.DisposeAsync());
+    }
+
+    [Fact]
+    public async Task RejectedSecondRun_PreservesReusedReservationsAndDisposesOnlyNewOnes()
+    {
+        await using var server = new Server(new StratumAdmissionConfig(), ports: 2);
+        var reusedError = await Assert.ThrowsAsync<InvalidOperationException>(() => server.RunAsync(CancellationToken.None, server.Reservations));
+        Assert.Contains("can only run once", reusedError.Message);
+        using var socket = StratumServer.CreateBoundSocket(new IPEndPoint(IPAddress.Loopback, 0));
+        var endpoint = new StratumEndpoint((IPEndPoint) socket.LocalEndPoint, new PoolEndpoint());
+        using var fresh = new StratumListenerReservation(server.PoolId, endpoint, socket);
+        fresh.Activate();
+        var mixedError = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            server.RunAsync(CancellationToken.None, server.Reservations[0], fresh));
+        Assert.Equal(reusedError.Message, mixedError.Message);
+        using var rebound = StratumServer.CreateBoundSocket(endpoint.IPEndPoint);
+        await server.Exchange(0);
+        await server.Exchange(1);
+    }
+
+    [Fact]
+    public async Task StoppedAdmission_CountsTransportAndPendingIdentityRefusalsWithoutChangingOccupancy()
+    {
+        using var logs = new LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(LogLevel.Warn, LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        var id = Guid.NewGuid().ToString("N");
+        var admission = new StratumConnectionAdmission(new StratumAdmissionConfig(),
+            new ManualTimeProvider(), id, logs.GetLogger("stopped-admission"));
+        Assert.True(admission.TryAcquire(IPAddress.Loopback, true, out var pending));
+        admission.Stop();
+        for(var i = 0; i < 3; i++)
+            Assert.False(admission.TryAcquire(IPAddress.Loopback, false, out _));
+        Assert.False(pending.TrySetIdentity(IPAddress.Parse("192.0.2.1")));
+        Assert.Equal((1, 0), admission.Snapshot);
+        pending.Dispose();
+        Assert.False(pending.TrySetIdentity(IPAddress.Loopback)); // Already-disposed misuse is not a new refusal.
+        Assert.Equal((0, 0), admission.Snapshot);
+        Assert.Contains(await Series(id), x => x.Contains("reason=\"stopped\"") && x.EndsWith(" 4"));
+        Assert.Empty(target.Logs);
+    }
+
+    [Fact]
+    public void AdmissionSnapshot_RemainsSafeForMemberwiseClone()
+    {
+        // A reference-valued setting needs a deep-copy implementation and a mutation
+        // regression before this contract can be relaxed.
+        var settings = typeof(StratumAdmissionConfig).GetProperties(BindingFlags.Instance | BindingFlags.Public);
+        Assert.NotEmpty(settings);
+        Assert.All(settings, setting => Assert.True(setting.PropertyType.IsValueType,
+            $"{setting.Name} needs explicit deep-copy coverage in Snapshot"));
+        Assert.All(typeof(StratumAdmissionConfig).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic),
+            field => Assert.True(field.FieldType.IsValueType, $"{field.Name} needs explicit deep-copy coverage in Snapshot"));
+    }
+
+    [Fact]
+    public async Task AdvisoryWarnings_CannotSuppressRefusals_AndBothBudgetsRemainBounded()
+    {
+        using var logs = new LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(LogLevel.Warn, LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        var time = new ManualTimeProvider();
+        await using var server = new Server(new StratumAdmissionConfig
+            { MaxConcurrentConnectionsPerAddress = 2, BurstPerAddress = 100 }, time, log: logs.GetLogger("budgets"));
+        using var first = await server.Connect();
+        Assert.NotNull(await Exchange(first));
+        for(var i = 0; i < 3; i++)
+        {
+            using(var second = await server.Connect())
+            {
+                Assert.NotNull(await Exchange(second));
+                await server.Rejected();
+            }
+            await Until(() => server.ConnectionAdmission.Snapshot.Active == 1);
+        }
+        Assert.Equal(2, target.Logs.Count);
+        Assert.Contains(target.Logs, x => x.Contains("address-near-capacity"));
+        Assert.Contains(target.Logs, x => x.Contains("address-concurrency"));
+        time.MoveWallClock(TimeSpan.FromDays(100));
+        time.AdvanceMonotonic(TimeSpan.FromMinutes(1));
+        using(var second = await server.Connect())
+        {
+            Assert.NotNull(await Exchange(second));
+            await server.Rejected();
+        }
+        Assert.Equal(4, target.Logs.Count);
+        Assert.All(target.Logs.Skip(2), x => Assert.Contains("suppressed since last category summary: 2", x));
+        Assert.DoesNotContain(target.Logs, x => x.Contains("127.0.0.1"));
+    }
+
+    [Fact]
+    public void IdleLedgerFixture_RejectsInvalidOrLiveStateWithoutMutation()
+    {
+        var config = new StratumAdmissionConfig
+        {
+            MaxConcurrentConnections = 2, Burst = 2, ConnectionsPerSecond = 1,
+            IdleExpirySeconds = 1, BurstPerAddress = 1, MaxTrackedAddresses = 5,
+        };
+        var admission = new StratumConnectionAdmission(config, new ManualTimeProvider(),
+            Guid.NewGuid().ToString("N"), LogManager.CreateNullLogger());
+        var identity = new[] { IPAddress.Loopback };
+        Assert.Throws<InvalidOperationException>(() => admission.SeedIdleIdentitiesForTesting(
+            Enumerable.Range(1, 6).Select(n => IPAddress.Parse($"192.0.2.{n}")).ToArray()));
+        Assert.Throws<ArgumentException>(() => admission.SeedIdleIdentitiesForTesting(
+            new[] { IPAddress.Loopback, IPAddress.Loopback.MapToIPv6() }));
+        Assert.Equal((0, 0), admission.Snapshot);
+        Assert.True(admission.TryAcquire(IPAddress.Loopback, true, out var pending));
+        Assert.Throws<InvalidOperationException>(() => admission.SeedIdleIdentitiesForTesting(identity));
+        Assert.Equal((1, 0), admission.Snapshot);
+        pending.Dispose();
+        admission.SeedIdleIdentitiesForTesting(identity);
+        Assert.Throws<InvalidOperationException>(() => admission.SeedIdleIdentitiesForTesting(identity));
+        Assert.Equal((0, 1), admission.Snapshot);
+        admission.Stop();
+        Assert.Throws<InvalidOperationException>(() => admission.SeedIdleIdentitiesForTesting(identity));
+        Assert.Equal((0, 0), admission.Snapshot);
+    }
+
+    [Fact]
+    public async Task AddressCapacity_DefensiveFullLedgerRefusesNewIdentitiesAndPreservesExisting()
+    {
+        var config = new StratumAdmissionConfig
+        {
+            MaxConcurrentConnections = 2, Burst = 2, ConnectionsPerSecond = 1,
+            IdleExpirySeconds = 1, BurstPerAddress = 1, MaxTrackedAddresses = 5,
+        };
+        var id = Guid.NewGuid().ToString("N");
+        var time = new ManualTimeProvider();
+        var admission = new StratumConnectionAdmission(config, time, id, LogManager.CreateNullLogger());
+        // Sizing validation conservatively keeps normal traffic below this defensive
+        // ceiling. The narrow helper seeds a valid idle ledger under the controller's
+        // lock, without exposing its collections or bypassing configuration validation.
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(10));
+        admission.SeedIdleIdentitiesForTesting(Enumerable.Range(1, 5)
+            .Select(n => IPAddress.Parse($"192.0.2.{n}")).ToArray());
+        Assert.Contains(await Series(id), x => x.StartsWith("miningcore_stratum_admission_addresses{") && x.EndsWith(" 5"));
+        Assert.False(admission.TryAcquire(IPAddress.Parse("192.0.2.6"), false, out _));
+        Assert.Equal((0, 5), admission.Snapshot);
+        Assert.True(admission.TryAcquire(IPAddress.Loopback, true, out var pending));
+        Assert.False(pending.TrySetIdentity(IPAddress.Parse("192.0.2.6")));
+        Assert.Equal((1, 5), admission.Snapshot); // Failed identity keeps its pending lease.
+        Assert.Contains(await Series(id), x => x.Contains("reason=\"address-capacity\"") && x.EndsWith(" 2"));
+        // Refusal did not consume the pool token or evict an existing entry.
+        Assert.True(admission.TryAcquire(IPAddress.Parse("192.0.2.1"), false, out var existing));
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(1));
+        admission.SweepIdle();
+        Assert.Equal((2, 1), admission.Snapshot); // Active identity cannot expire; pending transport still owns capacity.
+        pending.Dispose();
+        Assert.True(admission.TryAcquire(IPAddress.Parse("192.0.2.6"), false, out var recovered));
+        existing.Dispose();
+        recovered.Dispose();
+        admission.Stop();
+        Assert.Equal((0, 0), admission.Snapshot);
+    }
+}

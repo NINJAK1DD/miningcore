@@ -116,35 +116,8 @@ public abstract class PoolBase : StratumServer,
         context.Init(poolEndpoint.Difficulty, varDiff, clock);
         connection.SetContext(context);
 
-        // expect miner to establish communication within a certain time
-        EnsureNoZombieClient(connection);
-    }
-
-    private void EnsureNoZombieClient(StratumConnection connection)
-    {
-        Observable.Timer(clock.Now.AddSeconds(10))
-            .TakeUntil(connection.Terminated)
-            .Where(_ => connection.IsAlive)
-            .Subscribe(_ =>
-            {
-                try
-                {
-                    if(connection.LastReceive == null)
-                    {
-                        logger.Info(() => $"[{connection.ConnectionId}] Booting zombie-worker (post-connect silence)");
-
-                        Disconnect(connection);
-                    }
-                }
-
-                catch(Exception ex)
-                {
-                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.EnsureNoZombieClient", failure: ex);
-                }
-            }, ex =>
-            {
-                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.EnsureNoZombieClient", failure: ex);
-            });
+        // StratumConnection bounds TLS, PROXY framing and the first complete request with
+        // a relative startup deadline; partial bytes no longer defeat the silence check.
     }
 
     #region VarDiff

@@ -74,6 +74,11 @@ public abstract class StratumServer
 
     protected readonly ConcurrentDictionary<string, StratumConnection> connections = new();
     private readonly ConcurrentDictionary<string, Task> connectionTasks = new();
+    internal TimeProvider AdmissionTimeProvider { get; set; } = TimeProvider.System;
+    internal StratumConnectionAdmission ConnectionAdmission { get; private set; }
+    private TimeSpan startupTimeout = TimeSpan.FromSeconds(10);
+    private readonly object runGate = new();
+    private HashSet<StratumListenerReservation> ownedListeners;
     // Lets lifecycle tests distinguish connection unregistration from completion of the
     // socket-owning dispatch task without widening the production subclass surface.
     internal int TrackedConnectionTaskCount => connectionTasks.Count;
@@ -94,35 +99,67 @@ public abstract class StratumServer
     internal TimeSpan ConnectionDrainTimeout { get; set; } =
         TimeSpan.FromSeconds(5);
 
+    // Takes ownership of incoming reservations, including fresh ones on a rejected
+    // second call. Reservations already owned by the first run remain with that run.
     internal async Task RunAsync(CancellationToken ct,
         params StratumListenerReservation[] listeners)
     {
         Contract.RequiresNonNull(listeners);
 
+        var cleanupListeners = listeners.ToArray();
+        var ownsRun = false;
         try
         {
-            if(listeners.Any(listener => !listener.IsActivated))
+            lock(runGate)
+            {
+                if(ownedListeners == null)
+                {
+                    ownedListeners = new HashSet<StratumListenerReservation>(cleanupListeners,
+                        ReferenceEqualityComparer.Instance);
+                    ownsRun = true;
+                }
+                else
+                    cleanupListeners = cleanupListeners.Where(x => !ownedListeners.Contains(x)).ToArray();
+            }
+            if(!ownsRun)
+                throw new InvalidOperationException("A Stratum server instance can only run once; restart with a new instance to change admission policy");
+
+            // Accept, cancellation, and final cleanup all use our copied reservation array.
+            var ports = cleanupListeners.Select(listener => (Listener: listener,
+                Proxy: new StratumProxyPolicy(listener.Endpoint.PoolEndpoint.TcpProxyProtocol))).ToArray();
+            var admissionConfig = (poolConfig.ConnectionAdmission ?? new StratumAdmissionConfig()).Snapshot();
+            startupTimeout = TimeSpan.FromSeconds(admissionConfig.StartupTimeoutSeconds);
+            ConnectionAdmission = new StratumConnectionAdmission(admissionConfig,
+                AdmissionTimeProvider, poolConfig.Id, logger);
+            using var expiryTimer = AdmissionTimeProvider.CreateTimer(_ => ConnectionAdmission.SweepIdle(),
+                null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+
+            if(cleanupListeners.Any(listener => !listener.IsActivated))
                 throw new InvalidOperationException(
                     "Stratum listeners must be activated before the pool is announced online");
 
-            logger.Info(() => $"Stratum ports {string.Join(", ", listeners.Select(x => $"{x.Endpoint.IPEndPoint.Address}:{x.Endpoint.IPEndPoint.Port}").ToArray())} online");
+            logger.Info(() => $"Stratum ports {string.Join(", ", cleanupListeners.Select(x => $"{x.Endpoint.IPEndPoint.Address}:{x.Endpoint.IPEndPoint.Port}").ToArray())} online");
 
             using var registration = ct.Register(() =>
             {
-                foreach(var listener in listeners)
+                foreach(var listener in cleanupListeners)
                     listener.Dispose();
             });
 
-            await Task.WhenAll(listeners.Select(x =>
-                Listen(x.Socket, x.Endpoint, ct)));
+            await Task.WhenAll(ports.Select(x =>
+                Listen(x.Listener.Socket, x.Listener.Endpoint, x.Proxy, ct)));
         }
 
         finally
         {
-            foreach(var listener in listeners)
+            foreach(var listener in cleanupListeners)
                 listener.Dispose();
 
-            await DrainConnectionsAsync();
+            if(ownsRun)
+            {
+                ConnectionAdmission?.Stop();
+                await DrainConnectionsAsync();
+            }
         }
     }
 
@@ -355,7 +392,7 @@ public abstract class StratumServer
         }
     }
 
-    private async Task Listen(Socket server, StratumEndpoint port, CancellationToken ct)
+    private async Task Listen(Socket server, StratumEndpoint port, StratumProxyPolicy proxyPolicy, CancellationToken ct)
     {
         var cert = GetTlsCert(port);
 
@@ -365,7 +402,7 @@ public abstract class StratumServer
             {
                 var socket = await server.AcceptAsync(ct);
 
-                AcceptConnection(socket, port, cert, ct);
+                AcceptConnection(socket, port, cert, proxyPolicy, ct);
             }
 
             catch(OperationCanceledException)
@@ -388,9 +425,11 @@ public abstract class StratumServer
         }
     }
 
-    private void AcceptConnection(Socket socket, StratumEndpoint port, X509Certificate2 cert, CancellationToken ct)
+    private void AcceptConnection(Socket socket, StratumEndpoint port, X509Certificate2 cert,
+        StratumProxyPolicy proxyPolicy, CancellationToken ct)
     {
         StratumConnection connection = null;
+        StratumConnectionAdmission.Lease admission = null;
         var registered = false;
         var dispatched = false;
 
@@ -416,10 +455,23 @@ public abstract class StratumServer
             if(DisconnectIfBanned(socket, remoteEndpoint))
                 return;
 
+            var proxy = proxyPolicy.IsTrustedPeer(remoteEndpoint.Address);
+            if(!ConnectionAdmission.TryAcquire(remoteEndpoint.Address, proxy, out admission))
+            {
+                StratumSocketCleanup.CloseAbortively(socket);
+                return;
+            }
+
             // init connection
             connection = new StratumConnection(logger, rmsm, clock,
                 CreateConnectionId(),
-                clusterConfig.Logging?.GPDRCompliant == true, failStop?.Token ?? default);
+                clusterConfig.Logging?.GPDRCompliant == true, failStop?.Token ?? default)
+            {
+                StartupTimeout = startupTimeout,
+                ProxyPolicy = proxyPolicy,
+            };
+            if(proxy)
+                connection.AdmitProxyIdentity = admission.TrySetIdentity;
 
             logger.Info(() => $"[{connection.ConnectionId}] Accepting connection from {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}:{remoteEndpoint.Port} ...");
 
@@ -439,17 +491,18 @@ public abstract class StratumServer
                 // terminate and observe it without removing the previous task's dictionary entry.
                 connection.Disconnect();
                 _ = ObserveUntrackedConnectionTaskAsync(
-                    connection.ConnectionId, dispatch);
+                    connection.ConnectionId, dispatch, admission);
                 throw new InvalidOperationException(
                     $"Connection task {connection.ConnectionId} is already tracked");
             }
 
-            _ = ObserveConnectionTaskAsync(connection.ConnectionId, dispatch);
+            _ = ObserveConnectionTaskAsync(connection.ConnectionId, dispatch, admission);
         }, ex =>
         {
             if(!dispatched)
             {
                 StratumSocketCleanup.CloseAbortively(socket);
+                admission?.Dispose();
 
                 if(registered)
                     UnregisterConnection(connection);
@@ -464,7 +517,7 @@ public abstract class StratumServer
     }
 
     private async Task ObserveUntrackedConnectionTaskAsync(string connectionId,
-        Task dispatch)
+        Task dispatch, StratumConnectionAdmission.Lease admission)
     {
         try
         {
@@ -474,10 +527,11 @@ public abstract class StratumServer
         {
             StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.UntrackedCompletion, connectionId, ex);
         }
+        finally { admission.Dispose(); }
     }
 
     private async Task ObserveConnectionTaskAsync(string connectionId,
-        Task dispatch)
+        Task dispatch, StratumConnectionAdmission.Lease admission)
     {
         try
         {
@@ -501,6 +555,9 @@ public abstract class StratumServer
             }
 
             connectionTasks.TryRemove(connectionId, out _);
+            // Includes request-handler drain and task-observer cleanup. A peer disconnect
+            // cannot free capacity while an already-owned accounting operation is running.
+            admission.Dispose();
         }
     }
 
@@ -680,6 +737,9 @@ public abstract class StratumServer
 
         switch(ex)
         {
+            case StratumAdmissionException:
+                // The admission controller already counted and rate-limited its diagnostic.
+                break;
             case SocketException sockEx:
                 if(!ignoredSocketErrors.Contains(sockEx.ErrorCode))
                     StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.ConnectionError, connection.ConnectionId, ex);
@@ -748,8 +808,11 @@ public abstract class StratumServer
 
     protected void OnConnectionComplete(StratumConnection connection)
     {
+        if(connection.CompletionReason == StratumConnectionCompletionReason.StartupTimeout)
+            ConnectionAdmission.RecordStartupTimeout();
         var completion = connection.CompletionReason switch
         {
+            StratumConnectionCompletionReason.StartupTimeout => "Connection startup deadline expired",
             StratumConnectionCompletionReason.PeerEof => "Received EOF",
             StratumConnectionCompletionReason.HostShutdown =>
                 "Connection completed during host shutdown",

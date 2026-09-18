@@ -291,6 +291,15 @@ IPv4-mapped equivalents, and any pairing covered by an IPv4 or dual-stack wildca
 before pools start. Startup reports every overlapping pair in one validation pass and identifies
 both conflicting pools and their effective endpoints.
 
+### Stratum connection admission
+
+All ports of a pool share a default connection admission policy. Configure
+`pools[].connectionAdmission` to size rate, burst, concurrent-connection and retained
+identity limits for the fleet. Defaults permit 200 pool-wide startups and 100 more
+per second, with 4,096 live dispatches; one client address gets a 32-startup burst,
+two per second and 256 concurrent dispatches. See [Stratum connection admission](stratum-connection-admission.md)
+for all controls, PROXY trust, NAT sizing, expiry, metrics and recovery.
+
 ### Stratum listener reservation
 
 #### Reservation lifecycle
