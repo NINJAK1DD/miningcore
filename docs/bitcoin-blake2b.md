@@ -237,9 +237,11 @@ or resetting their negotiation state. These requests stop before parameter valid
 address/NiceHash lookups, difficulty mutation or job creation. The allowance bounds
 assignment negotiation, not all request/error traffic: repeated missing-ID requests can
 continue receiving errors. Serial dispatch and the bounded send queue limit queued work,
-but do not rate-limit a client that keeps draining replies. This Stratum behavior is
-distinct from [JSON-RPC 2.0 notification handling](https://www.jsonrpc.org/specification#notification),
-which requires no response when the ID member is absent.
+but do not rate-limit a client that keeps draining replies. For these Stratum methods,
+the pool treats an absent ID and an explicit `"id": null` identically, replying with error -1.
+Under [JSON-RPC 2.0](https://www.jsonrpc.org/specification#notification), only an absent
+ID member denotes a notification and forbids a response. An explicit null ID is discouraged
+but does not make the request a notification; replying to that shape is permitted.
 
 Admission precedes inherited acknowledgments, VarDiff/difficulty changes and work issuance.
 Static-difficulty authorization is parsed once with the inherited parser and passed to the
