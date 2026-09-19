@@ -62,7 +62,8 @@ change. The exact-membership contract pins the addition.
 | 3 | Repeat at `b9d856471` | 3334 | 6 | 41 | 37 / 0 | 274.99 |
 | 4 | `8daaecf3b`, cleanup cases extracted | 3348 | 2 | 41 | 42 / 0 | 276.65 |
 | 5 | Same `8daaecf3b`, publication membership reverted | 3346 | 4 | 41 | 41 / 1 | 275.69 |
-| 6 | Final BLAKE2b/domain closure follow-up | 3348 | 4 | 41 | 42 / 0 | 276.63 |
+| 6 | BLAKE2b/domain closure at `04f9a23c5` | 3348 | 4 | 41 | 42 / 0 | 276.63 |
+| 7 | Independent BLAKE2b broadcast cleanup/reporting | 3347 | 7 | 41 | 42 / 0 | 278.89 |
 
 The initial measured whole-suite cost was +1.09 seconds (about 0.4%). The repeat
 was 2.03 seconds faster than baseline. This small sample cannot prove flake
@@ -127,17 +128,30 @@ limit, but deliberately omits whole-assembly contention and cannot establish a
 root cause for their intermittent full-suite deadlines. Its local evidence is
 `deadline-triage.trx` and `deadline-triage.log`.
 
-The final row measures the production and test changes shipped with this table,
+Row 6 measures the production and test state at `04f9a23c5`,
 including the public domain exception and both new BLAKE2b broadcast regressions.
 Both BLAKE2b cases passed in their existing parallel fixture; all 42 publication
 cases passed in the deadline collection. Four failures remained: idle Stratum
 listener shutdown, pool shutdown without internal Stratum, the orphaned payout
 completion case, and notification snapshot delivery. Metrics export passed.
-This final constrained run is not green and does not resolve those other
+That constrained run is not green and does not resolve those other
 fixtures' deadline behavior. Its evidence is `deadline-final-1.trx` and
 `deadline-final-1.log`; it is distinct from the reviewed-head comparison and the
-focused four-case triage run. No production code, test assertions, watchdogs or
-collection membership changed after this measurement.
+focused four-case triage run. Later independent BLAKE2b broadcast-failure cleanup
+and reporting changes are not represented by this historical row.
+
+Row 7 measures the subsequent independent BLAKE2b broadcast-failure cleanup and
+reporting implementation, including both new live-registry failure cases. All
+four BLAKE2b broadcast cases passed in their existing parallel fixture, as did
+all 42 publication cases. Seven failures remained: Stratum request cancellation
+did not throw the expected cancellation exception; the BLAKE2b malformed numeric
+string case (`"2,0"`) disconnected before its expected response; metrics export,
+notification snapshot delivery, idle listener shutdown, pool shutdown and
+orphaned payout completion exhausted their deadlines. This constrained run is
+not green and does not establish the causes of those failures. No watchdog,
+assertion or collection membership was changed. Its evidence is
+`deadline-round6-final-1.trx` and `deadline-round6-final-1.log` in the same ignored
+local artifact directories. No production or test changes followed this run.
 
 ## Background-service startup context
 

@@ -75,7 +75,9 @@ Terminal cleanup closes the worker's job registry under the same monitor used by
 canonical and direct-SOLO insertion. A broadcast already constructing work cannot
 reinsert it after cleanup. Dispatch and job producers also check the connection
 latch before starting work; BLAKE2b retains its assignment gate.
-Direct-SOLO insertion continues to return `false` when the registry is closed.
+Direct-SOLO insertion returns `false` only when authorization is absent or its
+generation changed while the registry remains open. A permanently closed registry
+throws `BitcoinJobRegistryClosedException` and must not trigger another coinbase build.
 A broadcast encountering an already-disconnected connection finishes cleanup without
 promoting transport-owned cancellation to an Error-level broadcast failure.
 
@@ -125,13 +127,20 @@ registry under the insertion lock using the public domain exception
 `BitcoinJobRegistryClosedException`, which derives from `OperationCanceledException`.
 The worker context does not depend on a transport exception; external consumers of
 `AddJob()` can catch the domain type explicitly. Pool publication boundaries treat
-it and transport-owned closure as quiet terminal cancellation. Direct authorization
-mismatches alone return `false` and may rebuild; closure cannot trigger another
+it and transport-owned closure as quiet terminal cancellation. An open registry
+returns `false` for absent or changed direct authorization; callers may rebuild
+only from a current authorization snapshot. Closure cannot trigger another
 coinbase build. Broadcast and idle VarDiff cleanup consume neither the publication
 report allowance nor an Error-level diagnostic when construction finishes after an
 invalid-share ban. This also applies to BLAKE2b's separate broadcast path while
-its assignment gate is held; its catch remains limited to explicit terminal types
-and always releases the gate. Independent construction exceptions still report normally.
+its assignment gate is held; only explicit terminal types take the quiet catch.
+Other broadcast construction or notification failures close the worker registry
+and connection in both families and attempt the once-per-connection diagnostic
+and publication-failure metric, subject to the shutdown-cancellation rules above.
+BLAKE2b also closes its difficulty-request budget while holding the assignment
+gate, then releases the gate in `finally`. Independent failures are rethrown to
+the shared per-connection handler for its Error diagnostic; they do not fault the
+whole BLAKE2b pool.
 The public `ClearJobs()` method remains available for downstream compatibility;
 it removes existing work without changing whether the registry accepts new work.
 Both expected and unexpected exception diagnostics remain redacted at every level;
@@ -179,8 +188,11 @@ the current destination. Pure fail-stop cleanup and registry-lifetime cases run 
 the separate, parallel `BitcoinPublicationCleanupTests` fixture.
 BLAKE2b broadcast regressions hold construction behind a barrier while a real
 unknown-job submit triggers invalid-share banning. They distinguish quiet registry
-closure from an independent construction error, check gate release and preserve
-the allowance for a later genuine publication-failure report.
+closure from an independent construction error and check gate release. Quiet
+closure preserves the report allowance; independent errors consume it exactly
+once, even after a concurrent ban. Additional live-session cases exercise I/O
+failure and unrelated cancellation after a pending difficulty commits, proving
+permanent registry closure, one report, no job reinsertion and no pool-wide fault.
 
 The unrelated Windows recovery-fixture correction remains in its own test commit.
 Its cleanup tolerates a completed provider cancellation, while timeouts still escape

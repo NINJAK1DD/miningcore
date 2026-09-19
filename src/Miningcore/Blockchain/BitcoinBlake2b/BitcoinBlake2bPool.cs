@@ -313,6 +313,15 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 // can close the registry while this broadcast constructs work.
                 CloseAssignmentPublicationFailure(connection, ex, reportFailure: false);
             }
+            catch(Exception ex)
+            {
+                // A difficulty notification may already have been queued. Close
+                // this worker's budget and jobs before releasing the assignment
+                // gate, even when failure came from work construction itself.
+                CloseAssignmentPublicationFailure(connection, ex,
+                    !(ex is OperationCanceledException && ct.IsCancellationRequested));
+                throw;
+            }
             finally { gate.Release(); }
         });
         await Guard(BroadcastAsync);
