@@ -9,8 +9,8 @@ The 19 September 2026 real-service regtest case used assigned difficulty `1e-10`
 network difficulty `4.65e-10`, 50 test BTC reward and 99% miner retention. Version 0
 produces `10.64516129032258064516129`; version 1 produces
 `10.645161290322581103779573`. Across 40 shares the difference is
-`0.00000000000001834473132` test BTC. Backup SHA-256:
-`910f2fa0743c021533ac866efc3f241d4b8a5b0d5de7624f119d0530cd7ad411`.
+`0.00000000000001834473132` test BTC.
+Backup SHA-256: `910f2fa0743c021533ac866efc3f241d4b8a5b0d5de7624f119d0530cd7ad411`.
 These numbers are regression evidence, not production exposure estimates.
 
 ## Explicit, one-way activation
