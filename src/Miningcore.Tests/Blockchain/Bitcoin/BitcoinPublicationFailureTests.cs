@@ -68,6 +68,7 @@ public partial class BitcoinPublicationFailureTests : TestBase
         internal int Submissions;
         internal Share AcceptedShare;
         internal bool IsCandidate;
+        internal StratumException ValidationFailure;
         internal Action BeforeGetJob;
         public override Task<bool> ValidateAddressAsync(string address, CancellationToken ct) => Task.FromResult(true);
         public override BitcoinJob GetJobForStratum()
@@ -78,6 +79,8 @@ public partial class BitcoinPublicationFailureTests : TestBase
         public override ValueTask<Share> SubmitShareAsync(StratumConnection connection, object submission, CancellationToken ct)
         {
             Submissions++;
+            if(ValidationFailure != null)
+                throw ValidationFailure;
             connection.ContextAs<BitcoinWorkerContext>().MarkProofAccepted();
             AcceptedShare = new Share
             {

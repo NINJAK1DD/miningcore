@@ -425,8 +425,11 @@ public class BitcoinPool : PoolBase
                 if(share.IsBlockCandidate)
                     poolStats.LastPoolBlockTime = clock.Now;
 
-                PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, true);
-                logger.Info(() => $"[{connection.ConnectionId}] Share accepted: D={Math.Round(share.Difficulty * coin.ShareMultiplier, 3)}");
+                // Observability must not veto acknowledgement of an admitted share.
+                GuardPublicationCleanup(connection, () =>
+                    PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, true));
+                GuardPublicationCleanup(connection, () =>
+                    logger.Info(() => $"[{connection.ConnectionId}] Share accepted: D={Math.Round(share.Difficulty * coin.ShareMultiplier, 3)}"));
             });
 
         // Work publication after acceptance is not proof validation. Its failure
@@ -721,6 +724,12 @@ public class BitcoinPool : PoolBase
 
                 await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
             }
+            catch(StratumConnectionClosedException ex)
+            {
+                // A concurrent disconnect owns this cancellation. Finish cleanup
+                // without promoting ordinary connection churn to a broadcast error.
+                CloseRequestPublicationFailure(connection, ex, reportFailure: false);
+            }
             catch(Exception ex)
             {
                 CloseRequestPublicationFailure(connection, ex,
@@ -948,16 +957,18 @@ public class BitcoinPool : PoolBase
 
         catch(StratumException ex)
         {
-            await OnRequestErrorAsync(connection, request, ex, false);
+            await OnRequestErrorAsync(connection, request, ex, false, ct);
         }
     }
 
     protected virtual async Task OnRequestErrorAsync(StratumConnection connection, JsonRpcRequest request,
-        StratumException error, bool responseStarted)
+        StratumException error, bool responseStarted, CancellationToken ct)
     {
         if(responseStarted || connection.IsDisconnectRequested)
         {
-            CloseRequestPublicationFailure(connection, error);
+            // An intentional ban before any response needs terminal cleanup, but
+            // must leave the report allowance available for a concrete failure.
+            CloseRequestPublicationFailure(connection, error, reportFailure: responseStarted);
             return;
         }
 
@@ -969,7 +980,8 @@ public class BitcoinPool : PoolBase
         {
             // The recovery response can itself fail to enqueue. It is still the
             // sole attempt for this request; there is no safe second error reply.
-            CloseRequestPublicationFailure(connection, ex);
+            CloseRequestPublicationFailure(connection, ex,
+                !(ex is OperationCanceledException && ct.IsCancellationRequested));
             throw;
         }
     }
@@ -983,24 +995,27 @@ public class BitcoinPool : PoolBase
         {
             GuardPublicationCleanup(connection, () =>
                 connection.ContextAs<BitcoinWorkerContext>().CloseJobs());
-            GuardPublicationCleanup(connection, () =>
-            {
-                if(reportFailure && publicationFailures.GetValue(connection, static _ => new()).TryReport())
-                {
-                    GuardPublicationCleanup(connection, () =>
-                        StratumDiagnostics.Write(logger, NLog.LogLevel.Info,
-                            StratumDiagnostics.Event.AssignmentPublicationFailure, connection.ConnectionId, failure: failure));
-                    GuardPublicationCleanup(connection, () =>
-                        PublishTelemetry(TelemetryCategory.StratumAdmission, "publication-failure", TimeSpan.Zero));
-                }
-            });
+            if(reportFailure)
+                GuardPublicationCleanup(connection, () => ReportPublicationFailureOnce(connection, failure));
         }
         finally { GuardPublicationCleanup(connection, () => Disconnect(connection)); }
     }
 
+    private void ReportPublicationFailureOnce(StratumConnection connection, Exception failure)
+    {
+        if(!publicationFailures.GetValue(connection, static _ => new()).TryReport())
+            return;
+
+        GuardPublicationCleanup(connection, () =>
+            StratumDiagnostics.Write(logger, NLog.LogLevel.Info,
+                StratumDiagnostics.Event.AssignmentPublicationFailure, connection.ConnectionId, failure: failure));
+        GuardPublicationCleanup(connection, () =>
+            PublishTelemetry(TelemetryCategory.StratumAdmission, "publication-failure", TimeSpan.Zero));
+    }
+
     protected void GuardPublicationCleanup(StratumConnection connection, Action cleanup)
     {
-        Guard(cleanup, error => Guard(() => StratumDiagnostics.Write(logger, LogLevel.Debug,
+        Guard(cleanup, error => Guard(() => StratumDiagnostics.Write(logger, NLog.LogLevel.Debug,
             StratumDiagnostics.Event.PublicationCleanupFailure, connection.ConnectionId, error)));
     }
 

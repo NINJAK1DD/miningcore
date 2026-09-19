@@ -158,6 +158,12 @@ candidate work can throw. Admitted shares keep their valid-share and block-time
 bookkeeping even when acknowledgement fails. Terminal job insertion is permanently
 closed, including broadcasts already constructing work. Cleanup preserves the
 original error and its report flag is independent of earlier disconnects.
+Ordinary invalid-share bans and recovery-response shutdown cancellation do not
+consume that report flag. A faulty accepted-share telemetry or logging observer
+cannot prevent acknowledgement. Accounting or work-publication failures after proof
+acceptance still close the session without a rejection response: operators may see
+miner resets with only a bounded diagnostic category, and should investigate the
+accounting/publication path rather than treat those resets as invalid proofs.
 
 Shared transport hardening applies to **all pool families**: balanced pipe reads,
 buffered-line disconnect checks, synchronous queue admission, and explicit

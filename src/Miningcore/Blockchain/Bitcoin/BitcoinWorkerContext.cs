@@ -129,7 +129,7 @@ public class BitcoinWorkerContext : WorkerContextBase
 
         lock(this)
         {
-            if(directPayoutAuthorization == null ||
+            if(jobsClosed || directPayoutAuthorization == null ||
                job.DirectPayoutGeneration !=
                directPayoutAuthorization.Generation)
                 return false;

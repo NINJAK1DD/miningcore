@@ -60,6 +60,9 @@ Successful-share counts, accepted telemetry and block-time bookkeeping occur aft
 enqueue cannot erase those statistics or cause republishing. A merged share already
 owned by persistence retains this bookkeeping even if fail-stop closes before the
 pool attempts its response. Failed persistence admission does not count as success.
+Accepted-share telemetry and logging are best-effort observers: each is guarded
+independently after the statistics update so a faulty observer cannot prevent the
+acknowledgement. Observer failures are not retried or classified as publication failures.
 
 `Disconnect` latches before closing I/O. The receive loop checks the latch before
 every buffered line, and cancellation after processing a line prevents dispatch
@@ -72,6 +75,9 @@ Terminal cleanup closes the worker's job registry under the same monitor used by
 canonical and direct-SOLO insertion. A broadcast already constructing work cannot
 reinsert it after cleanup. Dispatch and job producers also check the connection
 latch before starting work; BLAKE2b retains its assignment gate.
+Direct-SOLO insertion continues to return `false` when the registry is closed.
+A broadcast encountering an already-disconnected connection finishes cleanup without
+promoting transport-owned cancellation to an Error-level broadcast failure.
 
 These transport changes apply to every pool family. Queue admission uses synchronous
 [`Post`](https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.dataflow.dataflowblock.post?view=net-10.0)
@@ -96,15 +102,18 @@ JSON-RPC/NiceHash response formatting is preserved.
 Each connection attempts at most one `AssignmentPublicationFailure` diagnostic and
 one `miningcore_stratum_admission_total` outcome `publication-failure`. A dedicated
 report flag is independent of disconnect and BLAKE2b budget closure: a prior ban or
-disconnect cannot suppress a later genuine failure. Cleanup always closes jobs and
+disconnect cannot suppress a later genuine failure. An invalid-proof ban before any
+response performs terminal cleanup without consuming the report flag. Intentional
+terminal state alone is not a publication failure. Cleanup always closes jobs and
 attempts disconnect, even if context cleanup, a logger or a telemetry subscriber
 throws. Neither sink's failure prevents the other from being attempted; failed sinks
 are not retried. Bounded Debug `PublicationCleanupFailure` records describe secondary
-cleanup failures without replacing the original exception. The primary diagnostic
+cleanup or accepted-share observer failures without replacing the original exception
+or preventing acknowledgement. The primary diagnostic
 uses a server-generated connection ID, a bounded
 failure category and an optional allowlisted code. It excludes exception text,
 request IDs, credentials, payout addresses and raw payloads. Metrics use configured
-pool and fixed outcome labels, never miner-selected labels. At the post-response
+pool and fixed outcome labels, never miner-selected labels. At request, recovery-error
 and VarDiff boundaries, cancellation owned by the operation's shutdown token does
 not emit publication-failure telemetry. Neither does cancellation from already-owned
 transport teardown. A distinct non-cancellation failure during teardown still reports.

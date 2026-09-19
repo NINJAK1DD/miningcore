@@ -151,9 +151,12 @@ an anonymity guarantee, and does not authorize raw identity or credential loggin
 This also applies to expected and unexpected publication exceptions at Debug level.
 `AssignmentPublicationFailure` retains a bounded cause/code and an independent
 once-per-connection reporting flag. A bounded Debug `PublicationCleanupFailure`
-describes a secondary cleanup/sink failure without replacing the original cause;
-neither event attaches raw exceptions. Normal transport-owned teardown cancellation
-does not count as a publication failure.
+describes a secondary cleanup/sink failure without replacing the original cause.
+It also describes accepted-share telemetry/logging failures, which cannot veto the
+share acknowledgement. Neither event attaches raw exceptions. An ordinary pre-response
+invalid-share ban and shutdown cancellation during recovery-error publication do not
+consume the publication report flag. Normal transport-owned teardown cancellation
+does not count as a publication failure either.
 Connection initialization and acceptance logging also tolerate an absent `Logging`
 object, treating censoring as not enabled, consistently with the banned-IP paths.
 This removes an incidental null-reference connection rejection for that configuration;

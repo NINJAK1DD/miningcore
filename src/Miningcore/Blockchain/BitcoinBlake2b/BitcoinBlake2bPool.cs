@@ -487,12 +487,12 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         }
         catch(StratumException ex)
         {
-            await OnRequestErrorAsync(connection, request.Value, ex, connection.ResponseSequence != responseSequence);
+            await OnRequestErrorAsync(connection, request.Value, ex, connection.ResponseSequence != responseSequence, ct);
         }
     }
 
     protected override Task OnRequestErrorAsync(StratumConnection connection, JsonRpcRequest request,
-        StratumException error, bool responseStarted)
+        StratumException error, bool responseStarted, CancellationToken ct)
     {
         if(responseStarted || IsAdmissionClosed(connection))
         {
@@ -500,11 +500,11 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             // that happens, a publication failure is terminal: never send a second
             // response or retain a live, partially published assignment. Also latch
             // admission closed so requests already buffered cannot resume this session.
-            CloseAssignmentPublicationFailure(connection, error);
+            CloseAssignmentPublicationFailure(connection, error, reportFailure: responseStarted);
             return Task.CompletedTask;
         }
 
-        return base.OnRequestErrorAsync(connection, request, error, false);
+        return base.OnRequestErrorAsync(connection, request, error, false, ct);
     }
 
     protected override void CloseRequestPublicationFailure(StratumConnection connection, Exception failure,

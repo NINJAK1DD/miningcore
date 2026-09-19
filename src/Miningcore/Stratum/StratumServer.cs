@@ -683,9 +683,11 @@ public abstract class StratumServer
 
     /// <summary>
     /// Admits an accepted share to the accounting pipeline before its positive Stratum response.
-    /// Both steps take concurrent healthy admissions against the exclusive mining fail-stop
-    /// transition. A gate closure between them leaves the share published but deliberately
-    /// unacknowledged; response queue admission itself is synchronous.
+    /// New share publication and response enqueue each enter the healthy-admission gate
+    /// independently; no admission lock is held across the persistence await or callback.
+    /// An already-published share keeps its existing persistence ownership and requires a
+    /// new healthy admission only for its response. A gate closure leaves the owned share
+    /// deliberately unacknowledged; response queue admission itself is synchronous.
     /// onAdmitted runs once after persistence admission and before acknowledgement admission,
     /// including for an already-published merged share whose later response is rejected.
     /// </summary>
