@@ -120,6 +120,14 @@ transport teardown. A distinct non-cancellation failure during teardown still re
 Fail-stop cancellation is also recognized by its originating token, even before
 the linked request token observes shutdown. An unrelated cancellation does not
 qualify merely because the fail-stop gate is closed.
+Canonical and direct-SOLO insertion classify a permanently closed job registry as
+connection-owned cancellation under the insertion lock. Direct authorization
+mismatches alone return `false` and may rebuild; closure cannot trigger another
+coinbase build. Broadcast and idle VarDiff cleanup consume neither the publication
+report allowance nor an Error-level diagnostic when construction finishes after an
+invalid-share ban. Independent construction exceptions still report normally.
+The public `ClearJobs()` method remains available for downstream compatibility;
+it removes existing work without changing whether the registry accepts new work.
 Both expected and unexpected exception diagnostics remain redacted at every level;
 the IP-censor/GDPR flag does not authorize raw exception or credential logging. Existing transport
 diagnostics may separately describe teardown. See [Stratum diagnostics](stratum-diagnostics.md).
@@ -157,6 +165,12 @@ The publication fixture runs in the existing integration-deadline collection aft
 full-suite CI and a two-CPU baseline reproduced disconnect-watchdog failures under
 parallel load. Watchdogs and protocol assertions are unchanged; the exact-membership
 contract and [scheduling evidence](integration-deadline-tests.md) constrain the change.
+Construction barriers also overlap a real invalid-share ban with canonical and
+direct-SOLO broadcasts and idle VarDiff. They check quiet closure, no insertion or
+redundant direct build, and preservation of independent failures and the report
+allowance. A live authorization-change case verifies direct jobs still rebuild for
+the current destination. Pure fail-stop cleanup and registry-lifetime cases run in
+the separate, parallel `BitcoinPublicationCleanupTests` fixture.
 
 The unrelated Windows recovery-fixture correction remains in its own test commit.
 Its cleanup tolerates a completed provider cancellation, while timeouts still escape

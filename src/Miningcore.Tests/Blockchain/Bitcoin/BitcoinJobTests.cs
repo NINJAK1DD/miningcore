@@ -655,9 +655,10 @@ public class BitcoinJobTests : TestBase
         Assert.Same(jobA, context.GetJob(jobA.JobId));
         Assert.Null(context.GetJob(jobB.JobId));
         context.CloseJobs();
-        Assert.False(context.TryAddDirectJob(jobA, 4));
+        Assert.Throws<StratumConnectionClosedException>(() => context.TryAddDirectJob(jobA, 4));
         Assert.Empty(context.validJobs);
         context.SetDirectPayoutAuthorization(minerB.ToString(), minerB);
+        Assert.Throws<StratumConnectionClosedException>(() => context.TryAddDirectJob(jobA, 4));
         Assert.Equal(minerA.ToString(), jobA.DirectPayoutAddress);
         Assert.Null(context.GetJob(jobA.JobId));
     }

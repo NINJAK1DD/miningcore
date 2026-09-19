@@ -291,6 +291,9 @@ public class BitcoinPool : PoolBase
             // current at insertion time; otherwise rebuild from the new snapshot.
             for(var attempt = 0; attempt < 2; attempt++)
             {
+                if(connection.IsDisconnectRequested)
+                    throw new StratumConnectionClosedException();
+
                 var authorization = context.GetDirectPayoutAuthorization() ??
                     throw new StratumException(StratumError.JobNotFound,
                         "Direct SOLO worker has no payout authorization");
@@ -1036,6 +1039,12 @@ public class BitcoinPool : PoolBase
 
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
                 await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
+            }
+            catch(StratumConnectionClosedException ex)
+            {
+                // Construction can finish after a concurrent ban closed jobs.
+                // This is terminal cleanup, not an idle VarDiff failure.
+                CloseRequestPublicationFailure(connection, ex, reportFailure: false);
             }
             catch(Exception ex)
             {

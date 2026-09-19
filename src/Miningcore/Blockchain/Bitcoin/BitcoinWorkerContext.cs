@@ -4,6 +4,7 @@ using System.Reactive.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Miningcore.Mining;
+using Miningcore.Stratum;
 using NBitcoin;
 
 namespace Miningcore.Blockchain.Bitcoin;
@@ -129,7 +130,12 @@ public class BitcoinWorkerContext : WorkerContextBase
 
         lock(this)
         {
-            if(jobsClosed || directPayoutAuthorization == null ||
+            // A terminal refusal must not look like an authorization race:
+            // callers may rebuild only when a live session changed destination.
+            if(jobsClosed)
+                throw new StratumConnectionClosedException();
+
+            if(directPayoutAuthorization == null ||
                job.DirectPayoutGeneration !=
                directPayoutAuthorization.Generation)
                 return false;
@@ -142,7 +148,7 @@ public class BitcoinWorkerContext : WorkerContextBase
     private void AddJobCore(BitcoinJob job, int maxActiveJobs)
     {
         if(jobsClosed)
-            throw new InvalidOperationException("Worker job assignment is closed");
+            throw new StratumConnectionClosedException();
 
         if(!validJobs.Contains(job))
             validJobs.Enqueue(job);
@@ -167,6 +173,10 @@ public class BitcoinWorkerContext : WorkerContextBase
         }
     }
 
+    /// <summary>
+    /// Retained for downstream compatibility: clears existing work without
+    /// closing an open registry or reopening a permanently closed registry.
+    /// </summary>
     public void ClearJobs()
     {
         lock(this)

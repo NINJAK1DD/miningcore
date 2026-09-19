@@ -9,6 +9,7 @@ using System.Threading.Tasks.Dataflow;
 using Autofac;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
@@ -17,6 +18,7 @@ using Miningcore.Stratum;
 using Miningcore.Tests.Blockchain.BitcoinBlake2b;
 using Miningcore.Time;
 using Miningcore.VarDiff;
+using NBitcoin;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NLog;
@@ -43,7 +45,7 @@ public partial class BitcoinPublicationFailureTests : TestBase
         _ => Array.Empty<object>(),
     };
 
-    private (PoolConfig Config, TestManager Manager, IMasterClock Clock, IMessageBus Bus) Fixture()
+    private (PoolConfig Config, TestManager Manager, IMasterClock Clock, IMessageBus Bus) Fixture(bool direct = false)
     {
         var clock = Substitute.For<IMasterClock>();
         clock.Now.Returns(DateTime.UtcNow);
@@ -55,9 +57,12 @@ public partial class BitcoinPublicationFailureTests : TestBase
             Template = ModuleInitializer.CoinTemplates["bitcoin"],
             Daemons = new[] { new DaemonEndpointConfig() },
             Banning = new PoolShareBasedBanningConfig { Enabled = true, CheckThreshold = 1, InvalidPercent = 1 },
+            Extra = new Dictionary<string, object> { ["soloCoinbasePayout"] = direct },
         };
         var manager = new TestManager(container, clock, bus);
         manager.Configure(config, new ClusterConfig());
+        if(direct)
+            manager.SeedDirectTemplate();
         return (config, manager, clock, bus);
     }
 
@@ -71,6 +76,24 @@ public partial class BitcoinPublicationFailureTests : TestBase
         internal bool IsCandidate;
         internal StratumException ValidationFailure;
         internal Action BeforeGetJob;
+        internal void SeedDirectTemplate()
+        {
+            network = Network.RegTest;
+            poolAddressDestination = new KeyId(new byte[20]);
+            currentJob = new BitcoinJob();
+            InitializeJob(currentJob, new BlockTemplate
+            {
+                Version = 0x20000000, PreviousBlockhash = new string('0', 64),
+                CoinbaseValue = 5_000_000_000, Target = "7" + new string('f', 63),
+                CurTime = 1_700_000_000, Bits = "207fffff", Height = 101,
+                Transactions = Array.Empty<BitcoinBlockTransaction>(),
+            });
+        }
+        protected override BitcoinJob CreateJob()
+        {
+            BeforeGetJob?.Invoke();
+            return base.CreateJob();
+        }
         public override Task<bool> ValidateAddressAsync(string address, CancellationToken ct) => Task.FromResult(true);
         public override BitcoinJob GetJobForStratum()
         {

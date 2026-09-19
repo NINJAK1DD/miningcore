@@ -23,10 +23,13 @@ observed failure motivating isolation here. `RpcSubscriptionLifetimeTests` also
 remains parallel. Investigate new failures in these classes before changing their
 scheduling; do not infer immunity from their omission.
 
-The whole of the selected classes is isolated, including pure unit cases. This
-avoids a large fixture extraction and its review risk, but can lengthen the serial
-phase. Split pure cases into separate classes if measurements show material cost
-or the fixtures grow substantially; raw test counts are not a runtime measurement.
+The selected classes are isolated as units. Most retain pure cases because a
+large fixture extraction has review cost, but these cases can lengthen the serial
+phase. The four pure publication fail-stop cleanup cases now run in the separate,
+parallel `BitcoinPublicationCleanupTests` class, alongside the registry-lifetime
+contract. Its TCP construction-race cases remain in the deadline fixture. Consider
+further extraction if measurements show material cost or fixtures grow
+substantially; raw test counts are not a runtime measurement.
 
 In the pinned xUnit 2.4.2 runner, non-parallel collections run after the parallel
 group. The assembly's concurrency synchronization context still applies: this
@@ -56,18 +59,26 @@ change. The exact-membership contract pins the addition.
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | 1 | Baseline `193733c0a` | 3336 | 4 | 41 | 36 / 1 | 277.02 |
 | 2 | Scoped collection patch | 3334 | 6 | 41 | 37 / 0 | 278.11 |
+| 3 | Repeat at `b9d856471` | 3334 | 6 | 41 | 37 / 0 | 274.99 |
 
-The measured whole-suite cost was +1.09 seconds (about 0.4%). One pair cannot prove
-flake elimination or a causal runtime difference. Both runs retain failures outside
+The initial measured whole-suite cost was +1.09 seconds (about 0.4%). The repeat
+was 2.03 seconds faster than baseline. This small sample cannot prove flake
+elimination or a causal runtime difference. All runs retain failures outside
 the selected fixture: Bitcoin notification snapshots, BLAKE2b admission and Stratum
 listener shutdown. The patched run also failed hosted metrics startup, payout
-commit-admission and pool startup deadlines. These fixtures remain parallel and
-require separate diagnosis; neither constrained full-suite run is claimed as green.
+commit-admission and pool startup deadlines. The repeat reproduces all six patched
+failures, including those three additional failures; it does not establish that
+they are noise or causally independent of the scheduling change. These fixtures
+remain parallel and require separate diagnosis. No constrained full-suite run in
+this table is claimed as green.
 The change targets the reproduced publication fixture without expanding collection
 membership to unrelated tests. Normal full-suite CI remains a separate required check.
 
 Local evidence is retained in `build/issue183/results/deadline-baseline-1.trx` and
-`deadline-patched-1.trx`, with matching logs under `build/issue183/`. These ignored
+`deadline-patched-1.trx` and `deadline-patched-2.trx`, with matching logs under
+`build/issue183/`. The repeat used the same `b9d856471` binaries before the later
+terminal-refusal fix, new race regressions and pure-cleanup extraction were built,
+so it measures the original scheduling change on the same 37 cases. These ignored
 local artifacts are not included in the PR; the table is a measurement summary.
 
 ## Background-service startup context
