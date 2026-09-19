@@ -560,6 +560,11 @@
         "ppsShareRetentionDays": {
           "type": "integer",
           "default": 7
+        },
+        "ppsBinary64Activation": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "Optional microsecond-aligned UTC cutoff for exact PPS arithmetic version 1. Must match the administrator-activated immutable database transition; null retains legacy arithmetic."
         }
       }
     },

@@ -9,6 +9,7 @@ orphaning a later block does not change that credit.
 | Decide whether PPS is suitable | [Economic and support boundary](#economic-and-support-boundary) |
 | Prepare an existing database | [Database prerequisites](#database-prerequisites) |
 | Configure a direct pool | [Direct configuration](#direct-configuration) |
+| Opt in to exact binary64 arithmetic | [PPS arithmetic migration](pps-arithmetic-migration.md) |
 | Use PPS with LTC/DOGE | [Merged-mining PPS](#merged-mining-pps) |
 | Commission and monitor it | [Pre-production checklist](#pre-production-checklist) |
 | Respond to an accounting incident | [Recovery and rollback](#recovery-and-rollback) |
@@ -31,8 +32,11 @@ reward-recipient fraction `f`, Miningcore calculates:
 
 The assigned difficulty is used; an unusually lucky share does not receive a larger PPS credit.
 The fraction `f` may be zero, but must remain below one so the retained reward fraction is positive.
-The exact liability is retained at 24 decimal places, the payable balance is rounded down to 12
-decimal places, and the sub-unit remainder is carried per pool and miner.
+The liability is retained at 24 decimal places, the payable balance is rounded down to 12
+decimal places, and the sub-unit remainder is carried per pool and miner. Arithmetic version 0
+retains the historical binary64-to-decimal conversion; version 1 uses exact binary64 ratios
+with one final scale-24 truncation. Version 1 requires the explicit configuration and database
+cutoff in the [migration runbook](pps-arithmetic-migration.md); historical credits stay unchanged.
 
 Current support is deliberately narrow:
 
