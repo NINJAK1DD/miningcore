@@ -26,6 +26,13 @@ def require(condition, message):
         raise SystemExit(message)
 
 
+def read_policy_text(path):
+    try:
+        return path.read_text(encoding='utf-8')
+    except UnicodeDecodeError:
+        raise SystemExit(f'{path}: native policy files must be valid UTF-8') from None
+
+
 def violations(name, content):
     errors = []
     # A continued flag must not inherit a target-specific rule's exemption.
@@ -59,7 +66,7 @@ def check_tree(native, inactive):
     active = 0
     for path in files:
         name = path.relative_to(native).as_posix()
-        content = path.read_text(encoding='utf-8')
+        content = read_policy_text(path)
         top_level = len(path.relative_to(native).parts) == 2
         if top_level and path.name.lower() in {'gnumakefile', 'makefile'} and path.name != 'Makefile':
             errors.append(f'{name}: shadow Makefile is forbidden, including inactive allowances')
@@ -83,8 +90,11 @@ def check_contract(driver, package):
     require(f'export CPU_FLAGS="{BASELINE}"' in driver, 'Driver CPU baseline changed')
     require('-DARCH=default' in driver and '-DARCH=native' not in driver, 'RandomX ARCH policy changed')
     require(f'Native CPU baseline: {BASELINE}' in package, 'BUILD-INFO CPU baseline changed')
-    invocations = re.findall(r'^\s*make\b[^\n]*', driver, re.MULTILINE)
-    require(invocations and all(re.match(r'\s*make -f Makefile(?:\s|$)', line) for line in invocations),
+    # Deliberately conservative text guard, not a shell parser. Count wrapped
+    # and chained calls too; a valid line must not hide an implicit invocation.
+    invocations = re.findall(r'(?<![\w-])make\b', driver)
+    guarded = re.findall(r'(?<![\w-])make -f Makefile(?:\s|$)', driver)
+    require(invocations and len(invocations) == len(guarded),
             'Every native Make invocation must explicitly select -f Makefile')
 
 
@@ -98,7 +108,7 @@ def update_manifest(native, inactive, names):
         require(not Path(name).is_absolute() and '..' not in Path(name).parts and
                 path.resolve().is_relative_to(native.resolve()) and path.is_file(),
                 f'{name}: expected an existing file inside src/Native')
-        updated[name]['sha256'] = hashlib.sha256(path.read_text(encoding='utf-8').encode()).hexdigest()
+        updated[name]['sha256'] = hashlib.sha256(read_policy_text(path).encode()).hexdigest()
     errors, _, _ = check_tree(native, updated)
     require(not errors, '\n'.join(errors))
     return updated
@@ -167,17 +177,36 @@ def self_test():
             else:
                 raise SystemExit('Refresh accepted unreviewed files or unrelated tree violations')
         unknown.unlink()
+        for invalid in (native / 'lib/Makefile', nested):
+            original = invalid.read_bytes()
+            invalid.write_bytes(b'CFLAGS += \xff\n')
+            for check in (lambda: check_tree(native, updated),
+                          lambda: update_manifest(native, updated, list(updated))):
+                try:
+                    check()
+                except SystemExit as error:
+                    require(str(error) == f'{invalid}: native policy files must be valid UTF-8',
+                            'Invalid UTF-8 did not produce a path-specific policy error')
+                else:
+                    raise SystemExit('Non-UTF-8 build file accepted')
+            invalid.write_bytes(original)
         nested.unlink()
         require(check_tree(native, entry)[0], 'Stale allowance accepted')
     valid_driver = f'export CPU_FLAGS="{BASELINE}"\ncmake -DARCH=default\nmake -f Makefile clean\nmake -f Makefile "$@"'
     valid_package = f'Native CPU baseline: {BASELINE}'
     check_contract(valid_driver, valid_package)
-    for call in ('make clean', 'make "$@"', 'make'):
+    for call in ('make clean', 'make "$@"', 'make', 'cd d && make',
+                 '(cd d; make)', 'exec make', 'nice make', 'env make',
+                 'true || make', 'printf x | make', '/usr/bin/make'):
         try:
             check_contract(valid_driver + '\n  ' + call, valid_package)
         except SystemExit:
             continue
         raise SystemExit('Implicit Makefile selection accepted')
+    for call in ('cd d && make -f Makefile', '(cd d; make -f Makefile clean)',
+                 'exec make -f Makefile', 'nice make -f Makefile',
+                 'cmake --build build', 'echo cmake cross-make remake'):
+        check_contract(valid_driver + '\n' + call, valid_package)
     for driver, package in (('', f'Native CPU baseline: {BASELINE}'),
                             (f'export CPU_FLAGS="{BASELINE}"', ''),
                             (f'export CPU_FLAGS="{BASELINE}" -DARCH=default', '')):
@@ -201,16 +230,16 @@ def main():
         return
     manifest = Path(__file__).with_name('native-inactive-build-files.json')
     require(manifest.is_file(), 'Inactive build-file manifest missing')
-    inactive = json.loads(manifest.read_text(encoding='utf-8'))
+    inactive = json.loads(read_policy_text(manifest))
     if args.update:
-        check_contract((ROOT / 'src/Miningcore/build-libs-linux.sh').read_text(),
-                       (ROOT / 'scripts/release/package-linux-x64.sh').read_text())
+        check_contract(read_policy_text(ROOT / 'src/Miningcore/build-libs-linux.sh'),
+                       read_policy_text(ROOT / 'scripts/release/package-linux-x64.sh'))
         inactive = update_manifest(ROOT / 'src/Native', inactive, args.update)
         manifest.write_text(json.dumps(inactive, indent=2) + '\n', encoding='utf-8')
         print('Refreshed reviewed entries: ' + ', '.join(args.update))
     errors, active, nested = check_tree(ROOT / 'src/Native', inactive)
-    check_contract((ROOT / 'src/Miningcore/build-libs-linux.sh').read_text(),
-                   (ROOT / 'scripts/release/package-linux-x64.sh').read_text())
+    check_contract(read_policy_text(ROOT / 'src/Miningcore/build-libs-linux.sh'),
+                   read_policy_text(ROOT / 'scripts/release/package-linux-x64.sh'))
     require(not errors, '\n'.join(errors))
     print(f'Native CPU policy passed: {active} active Makefiles, {nested} pinned inactive build files and BUILD-INFO')
 

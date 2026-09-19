@@ -62,7 +62,12 @@ wrappers. Top-level shadow names are forbidden even with an inactive allowance.
 Nineteen inactive upstream build files have explicit reasons
 and content hashes in `scripts/release/native-inactive-build-files.json`; changes,
 new files, stale allowances and unreviewed recursive build invocations require
-review. Validation uses explicit errors, including under optimized Python.
+review. Validation uses explicit errors, including under optimized Python. Build
+files must be UTF-8; invalid encodings produce a path-specific policy error in
+both validation and manifest refresh. The driver guard counts every standalone
+`make` spelling, including calls after shell separators or wrappers such as
+`exec` and `nice`, and requires an explicit `-f Makefile` for each. It is a
+conservative text guard, not a shell parser or arbitrary-script sandbox.
 
 After reviewing a vendored change's flags and confirming that the driver still
 does not execute that nested build file, refresh only its selected manifest entry:
@@ -93,6 +98,10 @@ The build-driver fixture rejects 19 inherited override variables before any nati
 tool runs, fails on any attempt to probe the builder CPU, and checks
 the fixed baseline on the initial component invocation. Real GNU Make fixtures
 also prove that neither shadow filename replaces the reviewed clean/build targets.
+For each shadow name, the committed fixture also runs a temporary driver copy
+with `-f Makefile` removed. It requires GNU Make's parse-error exit code and the
+shadow filename in the diagnostic, with no reviewed recipe or later component
+executed. The real driver remains unchanged; this control runs in normal CI.
 The static policy guard
 also examines all 25 top-level native Makefiles, allowing reviewed optional flags
 only on their specific translation units. The native probe runs
@@ -270,6 +279,21 @@ Both GNU Make shadow names were tested against real clean/build recipes. Restori
 implicit Makefile selection in a temporary driver made the fixture fail when
 GNU Make parsed the shadow file. Optimized-Python fixtures also rejected pinned
 shadow allowances, unknown nested GNUmakefiles and unsafe manifest refreshes.
+
+### Hosted validation of shadow-file hardening (`7d618e58`)
+
+Head `7d618e586892061e158305cb7fef0fd631db5fcd` passed
+[normal CI](https://github.com/NINJAK1DD/miningcore/actions/runs/35418415781)
+with **3,357 passed and one skipped**, including the strict Ubuntu 24.04 gate,
+Ubuntu 26.04 source build and Windows checks. Both
+[release targets](https://github.com/NINJAK1DD/miningcore/actions/runs/35418415819)
+passed strict portability gates and **3,300 tests each, 32 skipped**; source and
+packaged container checks passed. The
+[Stratum portability workflow](https://github.com/NINJAK1DD/miningcore/actions/runs/35418415773)
+also passed. These results cover the shadow-file production fix and independent
+Verus/Zano vectors at that exact head. The temporary-driver mutation was a local
+lab check at that revision; the committed fixture described above now includes
+that control for both shadow names.
 
 ### CI-built artifact validation
 

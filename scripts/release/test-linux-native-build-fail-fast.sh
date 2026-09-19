@@ -288,7 +288,7 @@ for inherited in CFLAGS=-mavx512f CXXFLAGS=-mfma CPPFLAGS=-DHAVE_AVX512F \
   fi
 done
 
-check_driver_failure() {
+run_fixture_driver() {
   : > "$work_dir/trace"
   set +e
   (
@@ -296,11 +296,14 @@ check_driver_failure() {
     PATH="$work_dir/bin:$PATH" \
       MININGCORE_NATIVE_TEST_MAKE="$real_make" \
       MININGCORE_NATIVE_TEST_TRACE="$work_dir/trace" \
-      bash build-libs-linux.sh "$work_dir/out"
+      bash "${1:-build-libs-linux.sh}" "$work_dir/out"
   ) > "$work_dir/output" 2>&1
   status=$?
   set -e
+}
 
+check_driver_failure() {
+  run_fixture_driver
   if [[ "$status" -eq 0 ]]; then
     echo "Native build driver reported success after the injected component failure" >&2
     cat "$work_dir/output" >&2
@@ -341,6 +344,15 @@ check_driver_failure() {
 }
 
 check_driver_failure
+# Mutate only a temporary copy, retaining the same directory and dependencies.
+# This control proves rejection comes from GNU Make parsing the shadow file,
+# rather than the assertion about the current driver's argument spelling.
+sed 's/make -f Makefile/make/g' "$driver" \
+  > "$work_dir/src/Miningcore/build-libs-implicit.sh"
+if cmp -s "$driver" "$work_dir/src/Miningcore/build-libs-implicit.sh"; then
+  echo 'Negative control did not remove explicit Makefile selection' >&2
+  exit 1
+fi
 # Exercise each default-search shadow independently with real GNU Make. An
 # implicit invocation fails at parse time before the reviewed recipes run.
 for shadow in GNUmakefile makefile; do
@@ -348,6 +360,15 @@ for shadow in GNUmakefile makefile; do
   printf '%s\n' '$(error unreviewed shadow Makefile selected)' \
     > "$work_dir/src/Native/libmultihash/$shadow"
   check_driver_failure
+  run_fixture_driver build-libs-implicit.sh
+  if [[ "$status" -ne 2 || $(wc -l < "$work_dir/trace") -ne 1 ]] ||
+      ! grep -Fxq 'libmultihash clean' "$work_dir/trace" ||
+      ! grep -Fq "$shadow:1: *** unreviewed shadow Makefile selected." "$work_dir/output"; then
+    echo "Implicit Makefile negative control did not fail on $shadow before running recipes" >&2
+    cat "$work_dir/output" "$work_dir/trace" >&2
+    exit 1
+  fi
+  echo "Native Make shadow negative control passed: $shadow"
   rm -- "$work_dir/src/Native/libmultihash/$shadow"
 done
 echo "Native build driver selected the reviewed Makefile and stopped at its injected failure (both shadow names tested)"
