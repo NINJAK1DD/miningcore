@@ -113,18 +113,36 @@ public class ShareRepository : IShareRepository
                 WHERE conrelid IN (to_regclass('pps_arithmetic_transitions'), to_regclass('pps_share_credits'))
             )
             SELECT NOT EXISTS(SELECT 1 FROM missing_columns)
+            -- Old writers omit the new column: only a literal zero default is safe.
+            AND EXISTS (
+                SELECT 1 FROM pg_attribute a JOIN pg_attrdef d
+                  ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+                WHERE a.attrelid=to_regclass('pps_share_credits') AND a.attname='arithmeticversion'
+                  AND NOT a.attisdropped AND a.attgenerated='' AND a.attidentity=''
+                  AND regexp_replace(pg_get_expr(d.adbin,d.adrelid,true),
+                      '[[:space:]()]', '', 'g') IN ('0', '0::smallint'))
+            AND EXISTS (
+                SELECT 1 FROM arithmetic_constraints c
+                WHERE c.conrelid=to_regclass('pps_arithmetic_transitions')
+                  AND c.contype='p' AND c.convalidated AND NOT c.condeferrable
+                  AND c.conkey=ARRAY[(SELECT attnum FROM pg_attribute
+                      WHERE attrelid=c.conrelid AND attname='poolid')]::smallint[])
             AND NOT EXISTS (
                 SELECT 1 FROM (VALUES
-                    ('pps_arithmetic_transitions', 'p', 'PRIMARY KEY (poolid)'),
-                    ('pps_arithmetic_transitions', 'c', 'CHECK ((version = 1))'),
-                    ('pps_arithmetic_transitions', 'c', 'CHECK (isfinite(effectivefrom))'),
-                    ('pps_share_credits', 'c', 'CHECK ((arithmeticversion = ANY (ARRAY[0, 1])))')
-                ) required(relation, kind, definition)
+                    ('pps_arithmetic_transitions', 'version', 'version=1'),
+                    ('pps_arithmetic_transitions', 'effectivefrom', 'isfiniteeffectivefrom'),
+                    ('pps_share_credits', 'arithmeticversion', 'arithmeticversion=anyarray[0,1]')
+                ) required(relation, column_name, expression)
                 WHERE NOT EXISTS (
                     SELECT 1 FROM arithmetic_constraints c
-                    WHERE c.conrelid=to_regclass(required.relation) AND c.contype::text=required.kind
+                    WHERE c.conrelid=to_regclass(required.relation) AND c.contype='c'
                       AND c.convalidated AND NOT c.condeferrable
-                      AND pg_get_constraintdef(c.oid)=required.definition))
+                      AND c.conkey=ARRAY[(SELECT attnum FROM pg_attribute
+                          WHERE attrelid=c.conrelid AND attname=required.column_name)]::smallint[]
+                      -- Ignore deparser whitespace, redundant parentheses and ANY casing;
+                      -- retain every operator, literal and column so weakened checks fail.
+                      AND regexp_replace(lower(pg_get_expr(c.conbin,c.conrelid,true)),
+                          '[[:space:]()]', '', 'g')=required.expression))
             AND NOT EXISTS (
                 SELECT 1 FROM (VALUES
                     ('pps_share_credits', 'trg_pps_arithmetic_credit', 7, 'guard_pps_arithmetic_credit', @creditGuard),
@@ -332,10 +350,10 @@ public class ShareRepository : IShareRepository
                 transitionGuard = PpsArithmeticSchemaContract.TransitionGuard,
                 activationBody = PpsArithmeticSchemaContract.Activation,
             }, cancellationToken: ct));
-        if(!structureReady)
+        if(!structureReady || !await HasPpsArithmeticPrivilegesAsync(con, ct))
             return false;
 
-        // Keep this as a second query. Referencing the table directly in the structural query
+        // Keep this query separate. Referencing the table directly in the structural query
         // would make a completely missing migration fail during PostgreSQL parse analysis rather
         // than returning the false preflight result expected by startup diagnostics.
         const string pruneStateQuery = @"SELECT EXISTS(
@@ -345,6 +363,43 @@ public class ShareRepository : IShareRepository
                     OR (cursorcreated IS NOT NULL AND cursoraccountingid IS NOT NULL)))";
         return await con.QuerySingleAsync<bool>(new CommandDefinition(
             pruneStateQuery, cancellationToken: ct));
+    }
+
+    private static Task<bool> HasPpsArithmeticPrivilegesAsync(IDbConnection con, CancellationToken ct)
+    {
+        const string query = @"WITH boundary AS (
+                SELECT oid, relowner, relacl FROM pg_class
+                WHERE oid=to_regclass('pps_arithmetic_transitions')
+            ), routines AS (
+                SELECT oid, proowner, proacl FROM pg_proc
+                WHERE oid IN (to_regprocedure('guard_pps_arithmetic_credit()'),
+                    to_regprocedure('guard_pps_arithmetic_transition()'),
+                    to_regprocedure('activate_pps_binary64(text,timestamptz)'))
+            ), runtime_roles AS (
+                -- Check the table owner even when preflight runs under an administrator.
+                -- Superuser-only fixtures/administrative sessions have no enforceable ACL boundary.
+                SELECT oid FROM pg_roles WHERE NOT rolsuper AND
+                    (rolname=current_user OR oid=(SELECT relowner FROM pg_class
+                        WHERE oid=to_regclass('pps_share_credits')))
+            )
+            SELECT EXISTS (SELECT 1 FROM boundary)
+              AND NOT EXISTS (SELECT 1 FROM routines r CROSS JOIN boundary b WHERE r.proowner<>b.relowner)
+              AND NOT EXISTS (
+                SELECT 1 FROM boundary b, LATERAL aclexplode(COALESCE(b.relacl,acldefault('r',b.relowner))) acl
+                WHERE acl.grantee=0 AND acl.privilege_type<>'SELECT')
+              AND NOT EXISTS (
+                SELECT 1 FROM routines r, LATERAL aclexplode(COALESCE(r.proacl,acldefault('f',r.proowner))) acl
+                WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE')
+              AND NOT EXISTS (
+                SELECT 1 FROM runtime_roles role CROSS JOIN boundary b
+                WHERE pg_has_role(role.oid,b.relowner,'MEMBER')
+                   OR NOT has_table_privilege(role.oid,b.oid,'SELECT')
+                   OR has_table_privilege(role.oid,b.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+                   OR has_any_column_privilege(role.oid,b.oid,'INSERT,UPDATE,REFERENCES')
+                   OR EXISTS (SELECT 1 FROM routines r
+                       WHERE has_function_privilege(role.oid,r.oid,'EXECUTE')))";
+
+        return con.ExecuteScalarAsync<bool>(new CommandDefinition(query, cancellationToken: ct));
     }
 
     public async Task<string[]> GetMissingSharePartitionsAsync(IDbConnection con,

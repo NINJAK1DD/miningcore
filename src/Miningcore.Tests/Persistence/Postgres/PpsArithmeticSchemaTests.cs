@@ -33,6 +33,9 @@ public class PpsArithmeticSchemaTests
             Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
             var damage = new[]
             {
+                "ALTER TABLE pps_share_credits ALTER COLUMN arithmeticversion SET DEFAULT 1",
+                "ALTER TABLE pps_share_credits ALTER COLUMN arithmeticversion DROP DEFAULT",
+                "ALTER TABLE pps_share_credits ALTER COLUMN arithmeticversion SET DEFAULT NULL",
                 "ALTER TABLE pps_share_credits DISABLE TRIGGER trg_pps_arithmetic_credit",
                 "DROP TRIGGER trg_pps_arithmetic_credit ON pps_share_credits",
                 "DROP TRIGGER trg_pps_arithmetic_credit ON pps_share_credits; CREATE TRIGGER trg_pps_arithmetic_credit AFTER INSERT ON pps_share_credits FOR EACH ROW EXECUTE FUNCTION guard_pps_arithmetic_credit()",
@@ -62,10 +65,53 @@ public class PpsArithmeticSchemaTests
                 }
                 Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None), sql);
             }
+            foreach(var change in new[] { "SET DEFAULT 1", "DROP DEFAULT" })
+            {
+                await db.ExecuteAsync("ALTER TABLE pps_share_credits ALTER COLUMN arithmeticversion " + change);
+                Assert.False(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
+                await db.ExecuteAsync(Script("add_pps_arithmetic_version.sql"));
+                Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
+            }
         }
         finally
         {
             await db.ExecuteAsync($"SET search_path TO public; DROP SCHEMA {schema} CASCADE");
+        }
+    }
+
+    [PostgresIntegrationFact]
+    public async Task ApplicationMigrationFailsBeforeDdlForFreshPartialAndCompleteSchemas()
+    {
+        await using var db = new NpgsqlConnection(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"));
+        await db.OpenAsync();
+        foreach(var state in new[] { "fresh", "partial", "complete" })
+        {
+            var schema = "pps_admin_" + Guid.NewGuid().ToString("N");
+            var app = "pps_login_" + Guid.NewGuid().ToString("N");
+            try
+            {
+                await db.ExecuteAsync($"CREATE ROLE {app}; CREATE SCHEMA {schema}; GRANT ALL ON SCHEMA {schema} TO {app}; SET search_path TO {schema}, public; SET ROLE {app}");
+                await db.ExecuteAsync(Script("createdb.sql").Split("-- BEGIN GENERATED PPS ARITHMETIC MIGRATION")[0]);
+                await db.ExecuteAsync("RESET ROLE");
+                if(state == "partial")
+                    await db.ExecuteAsync("CREATE TABLE pps_arithmetic_transitions(poolid text PRIMARY KEY, effectivefrom timestamptz, version smallint)");
+                else if(state == "complete")
+                    await db.ExecuteAsync(Script("add_pps_arithmetic_version.sql"));
+                await db.ExecuteAsync($"SET SESSION AUTHORIZATION {app}");
+                var error = await Assert.ThrowsAsync<PostgresException>(() =>
+                    db.ExecuteAsync(Script("add_pps_arithmetic_version.sql")));
+                // The script's failed BEGIN needs rollback before restoring the administrator.
+                await db.ExecuteAsync("ROLLBACK; RESET SESSION AUTHORIZATION");
+                Assert.Equal(PostgresErrorCodes.RaiseException, error.SqlState);
+                Assert.Equal("Run the PPS arithmetic migration as a separate database administrator", error.MessageText);
+                Assert.Equal(state == "complete", await db.ExecuteScalarAsync<bool>(@"
+                    SELECT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid='pps_share_credits'::regclass
+                        AND attname='arithmeticversion' AND NOT attisdropped)"));
+            }
+            finally
+            {
+                await db.ExecuteAsync($"RESET SESSION AUTHORIZATION; RESET ROLE; SET search_path TO public; DROP SCHEMA IF EXISTS {schema} CASCADE; DROP ROLE {app}");
+            }
         }
     }
 
@@ -98,6 +144,16 @@ public class PpsArithmeticSchemaTests
             await Assert.ThrowsAsync<PoolStartupException>(Check);
             pool.PaymentProcessing.PpsBinary64Activation = null;
             await Assert.ThrowsAsync<PoolStartupException>(Check);
+            // Another active PPS pool keeps schema preflight enabled, so this tests
+            // the reconciliation filter rather than the method's early return.
+            config.Pools = new[] { pool, new PoolConfig { Id = "doge", Enabled = true,
+                PaymentProcessing = new() { Enabled = true, PayoutScheme = PayoutScheme.PPS } } };
+            pool.PaymentProcessing.Enabled = false;
+            await Check();
+            pool.PaymentProcessing.Enabled = true;
+            await Assert.ThrowsAsync<PoolStartupException>(Check);
+            pool.Enabled = false;
+            await Check();
         }
         finally
         {
@@ -133,6 +189,36 @@ public class PpsArithmeticSchemaTests
                 var repository = new ShareRepository(AutoMapperFactory.CreateMapper());
                 Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
                 Assert.True(await repository.HasMatchingPpsArithmeticTransitionAsync(db, "ltc", Cutoff, CancellationToken.None));
+                await db.ExecuteAsync("RESET ROLE");
+                foreach(var damage in new[]
+                {
+                    $"ALTER TABLE pps_arithmetic_transitions OWNER TO {app}",
+                    $"ALTER FUNCTION guard_pps_arithmetic_credit() OWNER TO {app}",
+                    $"ALTER FUNCTION guard_pps_arithmetic_transition() OWNER TO {app}",
+                    $"ALTER FUNCTION activate_pps_binary64(text,timestamptz) OWNER TO {app}",
+                    $"REVOKE SELECT ON pps_arithmetic_transitions FROM {app}",
+                    $"GRANT INSERT ON pps_arithmetic_transitions TO {app}",
+                    $"GRANT UPDATE ON pps_arithmetic_transitions TO {app}",
+                    $"GRANT DELETE ON pps_arithmetic_transitions TO {app}",
+                    $"GRANT TRUNCATE ON pps_arithmetic_transitions TO {app}",
+                    $"GRANT UPDATE(effectivefrom) ON pps_arithmetic_transitions TO {app}",
+                    $"CREATE ROLE {app}_writer; GRANT UPDATE ON pps_arithmetic_transitions TO {app}_writer; GRANT {app}_writer TO {app}",
+                    $"DO $$ BEGIN EXECUTE format('GRANT %I TO {app}',session_user); END $$",
+                    $"GRANT EXECUTE ON FUNCTION activate_pps_binary64(text,timestamptz) TO {app}",
+                    $"GRANT EXECUTE ON FUNCTION guard_pps_arithmetic_credit() TO {app}",
+                    $"GRANT EXECUTE ON FUNCTION guard_pps_arithmetic_transition() TO {app}",
+                    "GRANT TRUNCATE ON pps_arithmetic_transitions TO PUBLIC",
+                    "GRANT EXECUTE ON FUNCTION activate_pps_binary64(text,timestamptz) TO PUBLIC",
+                })
+                {
+                    await using var tx = await db.BeginTransactionAsync();
+                    await db.ExecuteAsync(damage, transaction: tx);
+                    await db.ExecuteAsync($"SET LOCAL ROLE {app}", transaction: tx);
+                    Assert.False(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None), damage);
+                    await tx.RollbackAsync();
+                }
+                await db.ExecuteAsync($"SET ROLE {app}");
+                Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
                 foreach(var sql in new[]
                 {
                     "TRUNCATE pps_arithmetic_transitions",
@@ -157,6 +243,32 @@ public class PpsArithmeticSchemaTests
                 await Assert.ThrowsAsync<PostgresException>(() => db.ExecuteAsync(credit, new { id, Cutoff, version = 0 }));
                 await db.ExecuteAsync(credit, new { id, Cutoff, version = 1 });
                 await db.ExecuteAsync("DROP TABLE pg_temp.pps_arithmetic_transitions");
+                // A real old writer never sends the version column. Its implicit
+                // zero works before the boundary and is rejected at/after it.
+                const string oldCredit = @"INSERT INTO pps_share_credits
+                    (poolid,accountingid,address,calculatedamount,creditedamount,difficulty,networkdifficulty,rewardbasissatoshis,created)
+                    VALUES ('ltc',@legacyId,'miner',1,1,1,1,100000000,@created)";
+                foreach(var created in new[] { Cutoff.AddTicks(-10), Cutoff, Cutoff.AddTicks(10) })
+                {
+                    var legacyId = Guid.NewGuid();
+                    await db.ExecuteAsync("INSERT INTO share_accounting_groups VALUES (@legacyId,1,@hash,@created)",
+                        new { legacyId, created, hash = new string('B', 64) });
+                    if(created < Cutoff)
+                    {
+                        await db.ExecuteAsync(oldCredit, new { legacyId, created });
+                        Assert.Equal(0, await db.ExecuteScalarAsync<short>(
+                            "SELECT arithmeticversion FROM pps_share_credits WHERE accountingid=@legacyId", new { legacyId }));
+                    }
+                    else
+                    {
+                        var rejected = await Assert.ThrowsAsync<PostgresException>(() =>
+                            db.ExecuteAsync(oldCredit, new { legacyId, created }));
+                        Assert.Contains("PPS arithmetic version conflicts", rejected.MessageText);
+                        Assert.Equal(0, await db.ExecuteScalarAsync<int>(
+                            "SELECT count(*) FROM pps_share_credits WHERE accountingid=@legacyId", new { legacyId }));
+                    }
+                }
+
             }
             finally
             {

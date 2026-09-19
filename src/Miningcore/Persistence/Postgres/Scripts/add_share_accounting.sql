@@ -152,7 +152,17 @@ DO $$ BEGIN
     PERFORM set_config('search_path', format('%I, pg_catalog', current_schema()), true);
 END $$;
 SET LOCAL ROLE NONE;
+-- Check the session login before touching a fresh, partial or existing installation.
+DO $$ DECLARE app_role NAME; admin_role NAME := session_user; BEGIN
+    SELECT pg_get_userbyid(relowner) INTO app_role FROM pg_class WHERE oid='pps_share_credits'::regclass;
+    IF app_role = admin_role AND NOT EXISTS (
+        SELECT 1 FROM pg_roles WHERE rolname=admin_role AND rolsuper) THEN
+        RAISE EXCEPTION 'Run the PPS arithmetic migration as a separate database administrator';
+    END IF;
+END $$;
 ALTER TABLE pps_share_credits ADD COLUMN IF NOT EXISTS arithmeticversion SMALLINT NOT NULL DEFAULT 0;
+-- Repair default drift without rewriting any existing credit or amount.
+ALTER TABLE pps_share_credits ALTER COLUMN arithmeticversion SET DEFAULT 0;
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='pps_share_credits'::regclass AND conname='ck_pps_arithmetic_version') THEN
         ALTER TABLE pps_share_credits ADD CONSTRAINT ck_pps_arithmetic_version CHECK(arithmeticversion IN (0,1));
@@ -211,10 +221,6 @@ REVOKE ALL ON FUNCTION activate_pps_binary64(TEXT,TIMESTAMPTZ) FROM PUBLIC;
 -- An application login must never own or activate the administrative boundary.
 DO $$ DECLARE app_role NAME; admin_role NAME := session_user; routine TEXT; BEGIN
     SELECT pg_get_userbyid(relowner) INTO app_role FROM pg_class WHERE oid='pps_share_credits'::regclass;
-    IF app_role = admin_role AND NOT EXISTS (
-        SELECT 1 FROM pg_roles WHERE rolname=admin_role AND rolsuper) THEN
-        RAISE EXCEPTION 'Run the PPS arithmetic migration as a separate database administrator';
-    END IF;
     EXECUTE format('ALTER TABLE pps_arithmetic_transitions OWNER TO %I', admin_role);
     REVOKE ALL ON pps_arithmetic_transitions FROM PUBLIC;
     EXECUTE format('REVOKE ALL ON pps_arithmetic_transitions FROM %I', app_role);

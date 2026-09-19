@@ -77,11 +77,32 @@ cutoff and version 1 at/after it. The database insert guard independently checks
 that choice. Startup checks each enabled PPS pool before admission: no configured
 cutoff requires no durable row; a configured cutoff requires version 1 at exactly
 that instant. A missing row, differently cased pool ID or one-microsecond mismatch
-fails startup with a pool-specific reconciliation error. Preflight also verifies
-the constraints, trigger types, enabled state and function bodies against the
-shipped contract.
+fails startup with a pool-specific reconciliation error. Reconciliation considers
+only enabled PPS payment processing; existing deployment validation still rejects
+accepting PPS work with payment processing disabled.
 
-The public diagnostic config includes `ppsBinary64Activation`. Monitor
+Preflight also verifies the constraints, trigger types, enabled state and function
+bodies against the shipped contract. The version column must have a literal
+`DEFAULT 0`: an old writer omits that column entirely, so default drift can
+mislabel legacy amounts. Reapplying the migration repairs the default for future
+inserts without changing stored credits. If a wrong default was in use, keep
+writers stopped and reconcile affected evidence before restarting.
+
+Ownership and effective permissions are checked for the credit-table owner and
+the connecting non-superuser role, including inherited and column-level grants.
+The transition table and routines must share an administrator owner. Runtime
+roles must have SELECT but no write, activation, routine execution or administrator
+membership; PUBLIC must have no write/execute grants. Superuser administrative
+sessions and fixtures remain usable, but a superuser runtime login has no
+enforceable privilege boundary and is not a supported deployment policy.
+
+Primary-key membership is checked in the catalogs. Arithmetic CHECK expressions
+are compared after removing deparser whitespace and redundant parentheses, while
+retaining their columns, operators and constants. CI exercises this contract on
+PostgreSQL 15, 16, 17 and 18; a future major requires the same compatibility checks.
+
+The public diagnostic config includes `ppsBinary64Activation` in UTC with at most
+six fractional digits, so the cutoff can be copied back into configuration. Monitor
 `miningcore_pps_arithmetic_credits_total{pool="bitcoin-pps-lab",version="1"}`
 for newly committed version-1 liabilities; suppressed replays do not increment it.
 

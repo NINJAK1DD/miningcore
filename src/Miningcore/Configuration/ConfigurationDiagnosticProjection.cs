@@ -297,7 +297,8 @@ internal static class ConfigurationDiagnosticProjection
             int item => new JValue(item),
             double item when double.IsFinite(item) => new JValue(item),
             decimal item => new JValue(item),
-            DateTime item when item.Kind == DateTimeKind.Utc => new JValue(item.ToString("O", CultureInfo.InvariantCulture)),
+            DateTime item when item.Kind == DateTimeKind.Utc && item.Ticks % 10 == 0 =>
+                new JValue(item.ToString("yyyy-MM-dd'T'HH:mm:ss.FFFFFF'Z'", CultureInfo.InvariantCulture)),
             _ => new JValue(Omitted),
         };
     }

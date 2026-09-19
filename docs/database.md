@@ -46,6 +46,8 @@ documented migration order.
 
 Use a currently supported PostgreSQL release. PostgreSQL 15 or newer is a sensible baseline for a
 new pool even if the schema remains technically compatible with older versions.
+The PPS arithmetic schema contract is tested on PostgreSQL 15, 16, 17 and 18.
+Validate a future PostgreSQL major with the same compatibility tests before upgrading.
 
 ```console
 sudo -u postgres psql

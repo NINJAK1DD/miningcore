@@ -20,12 +20,15 @@ internal static class PpsArithmeticSchemaContract
         return reader.ReadToEnd().Replace("\r\n", "\n");
     }
 
-    private static string Body(string name)
+    private static string Body(string name) => ReadBody(Migration, name);
+
+    internal static string ReadBody(string migration, string name)
     {
-        var match = Regex.Match(Migration,
-            @"CREATE OR REPLACE FUNCTION " + name + @"\([^$]*?AS \$\$(.*?)\$\$;",
+        var match = Regex.Match(migration,
+            @"CREATE OR REPLACE FUNCTION " + Regex.Escape(name) +
+            @"\([^;]*?\bAS\s+(?<delimiter>\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$)(?<body>.*?)\k<delimiter>;",
             RegexOptions.Singleline | RegexOptions.CultureInvariant);
-        return match.Success ? match.Groups[1].Value.Trim() :
+        return match.Success ? match.Groups["body"].Value.Trim() :
             throw new InvalidOperationException("Missing PPS arithmetic routine: " + name);
     }
 }

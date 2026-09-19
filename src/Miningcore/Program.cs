@@ -1413,7 +1413,10 @@ public class Program : ProcessStatusBackgroundService
 
         var document = JObject.Parse(generator.Generate(typeof(ClusterConfig)).ToString());
         PostgresConnectionPolicy.AddSchemaRules(document);
-        document.SelectToken("definitions.PoolPaymentProcessingConfig.properties.ppsBinary64Activation")!["pattern"] =
+        var activationSchema = document.SelectToken(
+            "definitions.PoolPaymentProcessingConfig.properties.ppsBinary64Activation") as JObject ??
+            throw new InvalidOperationException("Generated configuration schema is missing the PPS activation property; review schema generation before publishing.");
+        activationSchema["pattern"] =
             @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$";
         return document;
     }
@@ -2662,10 +2665,11 @@ public class Program : ProcessStatusBackgroundService
             shareRepo.HasShareAccountingSchemaAsync(con, ct));
         if(!schemaReady)
             throw new PoolStartupException(
-                "PPS and merged-mining pooled payouts require the transactional share-accounting schema. Apply add_share_accounting.sql as the database administrator and verify application-role SELECT privileges on pps_arithmetic_transitions before enabling them.");
+                "PPS and merged-mining pooled payouts require the transactional share-accounting schema. Apply add_share_accounting.sql as the database administrator and verify the zero arithmetic-version default and administrator ownership/SELECT-only application privileges on pps_arithmetic_transitions before enabling them.");
 
         foreach(var pool in config.Pools.Where(pool => pool.Enabled &&
-            pool.PaymentProcessing?.PayoutScheme == PayoutScheme.PPS))
+            pool.PaymentProcessing?.Enabled == true &&
+            pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS))
         {
             var matches = await cf.Run(con => shareRepo.HasMatchingPpsArithmeticTransitionAsync(
                 con, pool.Id, pool.PaymentProcessing.PpsBinary64Activation, ct));
