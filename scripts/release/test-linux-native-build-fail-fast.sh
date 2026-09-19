@@ -293,7 +293,9 @@ run_fixture_driver() {
   set +e
   (
     cd "$work_dir/src/Miningcore"
+    # The shadow control asserts GNU Make's diagnostic below.
     PATH="$work_dir/bin:$PATH" \
+      LC_ALL=C \
       MININGCORE_NATIVE_TEST_MAKE="$real_make" \
       MININGCORE_NATIVE_TEST_TRACE="$work_dir/trace" \
       bash "${1:-build-libs-linux.sh}" "$work_dir/out"
