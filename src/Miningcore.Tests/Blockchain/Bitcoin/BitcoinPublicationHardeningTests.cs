@@ -7,7 +7,9 @@ using Autofac;
 using Microsoft.IO;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Configuration;
 using Miningcore.Notifications.Messages;
+using Miningcore.Persistence.Repositories;
 using Miningcore.Stratum;
 using Miningcore.Tests.Blockchain.BitcoinBlake2b;
 using Newtonsoft.Json.Linq;
@@ -69,18 +71,28 @@ public partial class BitcoinPublicationFailureTests
         var (config, manager, clock, bus) = Fixture();
         if(!canonical)
             config.Template = ModuleInitializer.CoinTemplates["bitcoin-blake2b"];
-        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: canonical);
+        using var scope = container.BeginLifetimeScope(builder =>
+        {
+            builder.RegisterInstance(Substitute.For<IBlockRepository>());
+            builder.RegisterInstance(Substitute.For<IShareRepository>());
+        });
+        var streams = container.Resolve<RecyclableMemoryStreamManager>();
+        BitcoinBlake2bWireSession.IWirePool pool = canonical ?
+            new BitcoinBlake2bWireSession.CanonicalPool(scope, clock, bus, streams) :
+            new BitcoinBlake2bWireSession.TestPool(scope, clock, bus, streams, TimeProvider.System);
+        pool.Configure(config, new ClusterConfig());
+        pool.SetManager(manager);
         using var stop = new CancellationTokenSource();
         // No transport loop: force the precise SendAsync fail-stop gate rather
         // than allowing concurrent socket teardown to win this deterministic race.
         var connection = new StratumConnection(new NLog.NullLogger(NLog.LogManager.LogFactory),
-            container.Resolve<RecyclableMemoryStreamManager>(), clock, "recovery-fail-stop", false, stop.Token);
+            streams, clock, "recovery-fail-stop", false, stop.Token);
         var context = new BitcoinWorkerContext();
         context.Init(1, null, clock);
         context.AddJob(new TestJob(), 4);
         connection.SetContext(context);
         stop.Cancel();
-        var failure = await Assert.ThrowsAsync<OperationCanceledException>(() => wire.Reject(connection,
+        var failure = await Assert.ThrowsAsync<OperationCanceledException>(() => pool.Reject(connection,
             new StratumException(StratumError.Other, "recoverable rejection"), stop.Token));
         Assert.Equal(stop.Token, failure.CancellationToken);
         Assert.Equal(1, connection.ResponseSequence);
@@ -88,9 +100,9 @@ public partial class BitcoinPublicationFailureTests
         Assert.Empty(context.validJobs);
         bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "publication-failure"), Arg.Any<string>());
         // Terminal cleanup still cannot turn another rejection into a report.
-        await wire.Reject(connection, new StratumException(StratumError.Other, "closed"), stop.Token);
+        await pool.Reject(connection, new StratumException(StratumError.Other, "closed"), stop.Token);
         Assert.Equal(1, connection.ResponseSequence);
-        wire.ClosePublicationFailure(new IOException("independent publication failure"), connection);
+        pool.ClosePublicationFailure(connection, new IOException("independent publication failure"));
         bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "publication-failure"), Arg.Any<string>());
     }
 

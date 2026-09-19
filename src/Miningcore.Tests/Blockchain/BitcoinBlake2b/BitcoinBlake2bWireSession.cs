@@ -47,12 +47,9 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal CancellationToken RequestCancellation { get; private set; }
     internal Exception DispatchError => dispatchError;
     internal void SendEof() => client.Client.Shutdown(SocketShutdown.Send);
-    internal void ClosePublicationFailure(Exception error, StratumConnection connection = null) =>
-        pool.ClosePublicationFailure(connection ?? Connection, error);
+    internal void ClosePublicationFailure(Exception error) => pool.ClosePublicationFailure(Connection, error);
     internal CanonicalPool Canonical => (CanonicalPool) pool;
     internal Miningcore.Banning.IBanManager EnableInvalidShareBanning() => pool.EnableInvalidShareBanning();
-    internal Task Reject(StratumConnection connection, StratumException error, CancellationToken ct) =>
-        pool.Reject(connection, error, ct);
     internal int JobsCreated => pool.JobsCreated;
     internal void SetLogger(NLog.ILogger value) => pool.SetLogger(value);
     internal Func<Miningcore.Mining.WorkerContextBase, Task<double?>> NicehashLookup { set => ((TestPool) pool).NicehashLookup = value; }
