@@ -17,14 +17,35 @@ The driver passes `-march=x86-64-v2 -mtune=generic -maes -mpclmul` to the native
 Makefile components and external CMake builds. It does not inspect the builder's
 CPU to choose the distributed instruction set. The CryptoNote, Zano, Cortex and
 Dero Makefiles no longer append `-march=native`. All four RandomX-family builds
-use `ARCH=default`, retaining upstream runtime dispatch and JIT behavior.
+use `ARCH=default`, retaining runtime dispatch and JIT behavior. A shared patch,
+verified against the SHA-256 of each fork's identical pinned `cpu.cpp`, additionally
+requires CPU AVX/XSAVE, OSXSAVE and XCR0 XMM/YMM state before AVX2 Argon2 selection.
+The upstream CPUID-only detector was insufficient on an OS that disables XSAVE.
 
 Optional instructions are confined to dispatched implementations. For example,
 BLAKE3 includes AVX-512 assembly, RandomX includes its AVX2 Argon2 implementation,
-and Dero builds HighwayHash's AVX2 translation unit with `-mavx2`. The latter's
-dispatcher also requires OS XSAVE support before selecting AVX2. Searching a
-whole shared object for AVX-512 instructions would reject legitimate, guarded
+and Dero builds HighwayHash's AVX2 translation unit with `-mavx2`, with an explicit
+`-msse4.1` on its SSE4.1 unit. Both implementations are linked even on non-AVX2
+builders, avoiding unresolved dispatch references. Its dispatcher also requires
+CPU/OS XSAVE and XMM/YMM state before selecting AVX2. The reviewed vendored sources
+are hash-verified; [maintenance notes](../src/Native/libdero/HIGHWAYHASH.md) record
+the corresponding upstream fix, which already exists and needs no duplicate PR.
+Searching a whole shared object for AVX-512 instructions would reject legitimate, guarded
 implementations and would not prove that ordinary entry points are portable.
+
+CryptoNight's vendored Argon2 is different: `impl-select.c` initializes the selected
+implementation to `fill_segment_default`, its automatic selector is disabled with
+`#if 0`, and Miningcore does not call the manual by-name selector. The fixed build
+leaves the AVX2/AVX-512 translation units as stubs; it does not remove an active
+optimized dispatch path or force a new SSSE3 fallback. The Chukwa probe checks the
+selected implementation and a known hash on host and baseline CPUs. Enabling those
+dormant implementations would require separate selector, thread-safety and vector
+validation; it is not part of this portability correction.
+
+Every release archive's `BUILD-INFO` records the declared native CPU baseline beside
+the source commit, build image and target. Build-policy checks guard that metadata
+against drift from the driver and inspect every top-level native Makefile for
+host-specific or unreviewed general AVX flags.
 
 ## Regression gate
 
@@ -32,24 +53,47 @@ Install `qemu-user` and run against the actual built library directory:
 
 ```bash
 bash scripts/release/test-linux-native-build-fail-fast.sh
+python3 scripts/release/test-native-cpu-policy.py --self-test
+python3 scripts/release/test-native-cpu-policy.py
+bash scripts/release/test-randomx-cpu-os-state.sh "${TMPDIR:-/tmp}"
 bash scripts/release/test-native-cpu-portability.sh src/Miningcore/bin/Release/net10.0
 ```
 
-The build-driver fixture advertises every CPU feature, including AVX-512, and
-checks that the driver still supplies the fixed baseline. The native probe runs
+The build-driver fixture fails on any attempt to probe the builder CPU and checks
+the fixed baseline on the initial component invocation. The static policy guard
+also examines all 25 top-level native Makefiles, allowing reviewed optional flags
+only on their specific translation units. The native probe runs
 RandomX and RandomARQ known-answer hashes, Panthera and SCash cross-CPU hash
-comparisons, CryptoNote integrated-address decoding, GhostRider, Argon2d250,
-BLAKE3 and HighwayHash vectors. It runs on the host and under QEMU's
+comparisons, CryptoNote integrated-address decoding, GhostRider, Chukwa, Argon2d250,
+BLAKE3 and HighwayHash vectors. It also executes Cortex header hashing/SipHash and
+duplicate-edge rejection, and all four Zano exports with a malformed block. These
+last checks cover rejection paths, not successful Zano consensus hashing or valid
+Cortex proofs. In total the probe directly executes ten libraries, including all
+four whose Makefiles previously specified `-march=native`. It runs on the host and under QEMU's
 `Nehalem-v1,+aes,+pclmulqdq` model, without AVX, AVX2 or AVX-512. The hosted
 Ubuntu 26.04 development runner uses `amd64v3` system-library packages, which
 cannot start on a pre-AVX CPU; that job explicitly selects `--avx2-userspace`
-(`Haswell-v1`, still without AVX-512). Both release containers and the lab keep
-the stricter baseline gate. A separate fixture compiles the real HighwayHash
-dispatcher with a controlled CPUID provider advertising AVX2 but no OS XSAVE,
-and asserts that it selects SSE4.1 instead. An AVX-512 negative control must
-terminate with SIGILL; otherwise
-the gate fails. Crashes, timeouts, missing symbols/libraries and differing hashes
+(`Haswell-v1`, still without AVX-512). The required Ubuntu 24.04 source-build lane
+now runs the strict baseline on every CI push and PR, including direct `dev` pushes;
+both release containers and the lab also keep that strict gate. There is no silent
+fallback from strict testing to the weaker model. A separate fixture compiles the real HighwayHash
+dispatcher with a controlled CPUID provider advertising AVX2 without CPU or OS XSAVE,
+and asserts that it selects SSE4.1 instead. An AVX-512 negative control (and an
+AVX2 `vpbroadcastd` negative control on the strict baseline) must terminate with
+SIGILL; otherwise the gate fails. These controls check specific instructions,
+not the accuracy of every opcode in the emulator. Crashes, timeouts, missing symbols/libraries and differing hashes
 also fail the gate.
+
+The RandomX CPU-state fixture runs nine cases against each fork's actual patched
+`Cpu` implementation: missing CPU XSAVE, OSXSAVE or AVX; missing XMM/YMM state;
+missing AVX2; and enabled optimized dispatch. It verifies that XGETBV is never
+queried without the required CPU/OS capability. ELF interposition replaces only
+the CPUID/XCR0 observations; the constructor's decision logic is unchanged. This
+avoids QEMU versions that cannot advertise the inconsistent AVX2/OSXSAVE combination.
+It uses the four source directories retained by the driver under `TMPDIR`; artifact-only
+validation can run the native portability probe without those source directories.
+Native execution is bounded to five minutes and emulated execution to ten minutes,
+allowing for all four RandomX cache initializations on slower runners.
 
 Both the normal Linux CI build and each Ubuntu release-package build run this
 gate before the complete managed test suite. Emulation complements the real
@@ -139,6 +183,24 @@ The native probe passed on the actual Ryzen and the emulated baseline without
 AVX/AVX2/AVX-512, with identical hashes. Its negative control rejected AVX-512,
 and the original released libraries failed the new gate as expected.
 
+### Review hardening validation (2026-09-19)
+
+After the review changes, all 25 native libraries were rebuilt in the same Ubuntu
+22.04 compatibility lab and passed the 241-entry-point inventory/relocation audit.
+The expanded ten-library probe passed on the physical Ryzen CPU and strict
+emulated baseline with identical results, including Chukwa, Cortex and Zano.
+Both AVX2 and AVX-512 negative controls terminated with SIGILL. The complete
+managed suite using these rebuilt libraries passed **3,284 tests, with 48 skipped
+and zero failures** (3,332 total).
+
+All 36 RandomX CPU/OS-state cases passed against the four patched source trees;
+the same fixture rejected the unpatched detector for missing OSXSAVE. The extended
+HighwayHash fixture rejected the previous dispatcher for missing CPU XSAVE and
+passed with the current guard. Build failure propagation, all-Makefile policy,
+release packaging/metadata, shell lint, workflow pins and documentation links were
+also checked. This paragraph describes the local rebuild; the following artifact
+evidence is historical and identifies the exact earlier revision it validated.
+
 ### CI-built artifact validation
 
 [Release run 35404072578](https://github.com/NINJAK1DD/miningcore/actions/runs/35404072578)
@@ -151,8 +213,9 @@ passed its AVX2-only portability gate and 3,357 tests, with one skip.
 The Ubuntu 22.04 artifact ID is `10572032386`. Its downloaded ZIP matched the
 GitHub artifact SHA-256: `457a8c5ff65de9d9558e8bbb6b9d0fb4cb74b66fe973414cbd2bb80ec3b020a5`.
 The contained release archive SHA-256 is `359e4e911250a1f0cc5e3bbdda3ce3eefbdb895c4416df6973d25ee627d11ca2`.
-All 25 CI-built libraries passed the inventory/relocation audit and native plus
-emulated-baseline probes on the original compatibility lab. With those exact
+All 25 CI-built libraries passed the inventory/relocation audit. The eight libraries
+and entry points covered by that revision's portability probe passed native and
+emulated-baseline execution on the original compatibility lab. With those exact
 libraries, the complete lab suite passed 3,284 tests with 48 skips.
 
 One preceding complete artifact run had a single `Address already in use`

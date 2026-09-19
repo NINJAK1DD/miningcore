@@ -171,6 +171,13 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
     exit 1
   fi
 
+  recorded_cpu_baseline=$(tar -xOf "$output_dir/$archive" "$package_root/BUILD-INFO" |
+    sed -n 's/^Native CPU baseline: //p')
+  if [[ "$recorded_cpu_baseline" != '-march=x86-64-v2 -mtune=generic -maes -mpclmul' ]]; then
+    echo "$archive records an unexpected native CPU baseline: $recorded_cpu_baseline" >&2
+    exit 1
+  fi
+
   recorded_build_image=$(tar -xOf "$output_dir/$archive" "$package_root/BUILD-INFO" |
     sed -n 's/^Build image: //p')
   if [[ "$recorded_build_image" != "$build_image" ]]; then

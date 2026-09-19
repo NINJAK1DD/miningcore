@@ -16,13 +16,17 @@ work_dir=$(mktemp -d)
 trap 'rm -rf -- "$work_dir"' EXIT
 ulimit -c 0
 
-command -v qemu-x86_64 >/dev/null
+command -v qemu-x86_64 >/dev/null || {
+  echo 'qemu-user is required (apt-get install qemu-user)' >&2
+  exit 1
+}
 g++ -std=c++11 -O2 -march=x86-64 -Wall -Wextra -Werror \
   -I "$repository_root/src/Native/libdero/include" \
   "$repository_root/src/Native/libdero/include/highwayhash/instruction_sets.cc" \
   "$repository_root/scripts/release/fixtures/highwayhash-osxsave.cpp" \
   -o "$work_dir/osxsave"
 "$work_dir/osxsave"
+"$work_dir/osxsave" --no-cpu-xsave
 # Build the probe without optional instructions; test the actual shipped DSOs.
 g++ -std=c++11 -O2 -march=x86-64 -Wall -Wextra -Werror \
   "$repository_root/scripts/release/fixtures/native-cpu-portability.cpp" \
@@ -35,7 +39,7 @@ int main(void) { __asm__ volatile("vpxord %zmm0, %zmm0, %zmm0"); return 0; }
 C
 gcc -march=x86-64 "$work_dir/unsupported.c" -o "$work_dir/unsupported"
 set +e
-qemu-x86_64 -cpu "$cpu" "$work_dir/unsupported" > "$work_dir/control.log" 2>&1
+timeout 30 qemu-x86_64 -cpu "$cpu" "$work_dir/unsupported" > "$work_dir/control.log" 2>&1
 status=$?
 set -e
 if [[ $status -ne 132 ]]; then
@@ -44,9 +48,25 @@ if [[ $status -ne 132 ]]; then
   exit 1
 fi
 
+if [[ $cpu == Nehalem-v1,* ]]; then
+  cat > "$work_dir/unsupported-avx2.c" <<'C'
+int main(void) { __asm__ volatile("vpbroadcastd %xmm0, %ymm0"); return 0; }
+C
+  gcc -march=x86-64 "$work_dir/unsupported-avx2.c" -o "$work_dir/unsupported-avx2"
+  set +e
+  timeout 30 qemu-x86_64 -cpu "$cpu" "$work_dir/unsupported-avx2" > "$work_dir/control-avx2.log" 2>&1
+  status=$?
+  set -e
+  if [[ $status -ne 132 ]]; then
+    cat "$work_dir/control-avx2.log" >&2
+    echo "AVX2 negative control returned $status instead of SIGILL (132)" >&2
+    exit 1
+  fi
+fi
+
 export LD_LIBRARY_PATH="$library_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 echo 'Testing native runner CPU'
-timeout 180 "$work_dir/probe" "$library_dir" | tee "$work_dir/native.log"
+timeout 300 "$work_dir/probe" "$library_dir" | tee "$work_dir/native.log"
 echo "Testing CPU portability with QEMU $cpu (no AVX-512)"
-timeout 300 qemu-x86_64 -cpu "$cpu" "$work_dir/probe" "$library_dir" | tee "$work_dir/emulated.log"
+timeout 600 qemu-x86_64 -cpu "$cpu" "$work_dir/probe" "$library_dir" | tee "$work_dir/emulated.log"
 diff -u "$work_dir/native.log" "$work_dir/emulated.log"

@@ -82,6 +82,8 @@ build_native_library libverushash libverushash.so
 build_native_library libfiropow libfiropow.so
 build_native_library libkawpow libkawpow.so
 build_native_library libmeowpow libmeowpow.so
+bash "$ScriptDir/../../scripts/release/verify-pinned-source-files.sh" \
+  "$NativeDir" "$NativeDir/libdero/highwayhash.sha256"
 build_native_library libdero libdero.so
 build_native_library libcortexcuckoocycle libcortexcuckoocycle.so
 build_native_library libprogpowz libprogpowz.so
@@ -136,6 +138,12 @@ build_randomx_family() {
       git apply --check "$ScriptDir/$source_patch"
       git apply "$ScriptDir/$source_patch"
     fi
+    # All four pinned forks share this CPU detector. Validate its source before
+    # requiring CPU AVX/XSAVE, OSXSAVE and XCR0 XMM/YMM state for AVX2 dispatch.
+    bash "$ScriptDir/../../scripts/release/verify-pinned-source-files.sh" \
+      . "$ScriptDir/patches/randomx-cpu-os-state.sha256"
+    git apply --check "$ScriptDir/patches/randomx-cpu-os-state.patch"
+    git apply "$ScriptDir/patches/randomx-cpu-os-state.patch"
     cmake -S . -B build \
       -DARCH=default \
       "-DCMAKE_C_FLAGS=-Wa,--noexecstack $CPU_FLAGS" \

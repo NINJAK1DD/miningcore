@@ -222,9 +222,9 @@ done
 
 cat > "$work_dir/src/Native/check_cpu.sh" <<'SH'
 #!/usr/bin/env sh
-# Pretend that the builder has every optional feature, including AVX-512.
-# Portable output must not inherit these capabilities.
-exit 0
+# CPU probing must never participate in the distributed ISA policy.
+echo 'unexpected-cpu-probe' >> "$MININGCORE_NATIVE_TEST_TRACE"
+exit 98
 SH
 chmod +x "$work_dir/src/Native/check_cpu.sh"
 
@@ -288,8 +288,8 @@ if ! grep -Fq 'Building native component: libmultihash' "$work_dir/output"; then
   exit 1
 fi
 
-if ! grep -Fq -- 'CPU_FLAGS=-march=x86-64-v2 -mtune=generic -maes -mpclmul' "$work_dir/trace" ||
-    grep -Eq -- '-mavx|-march=native|HAVE_AVX' "$work_dir/trace"; then
+if ! grep -Fq -- 'libmultihash CPU_FLAGS=-march=x86-64-v2 -mtune=generic -maes -mpclmul' "$work_dir/trace" ||
+    grep -Eq -- '^libmultihash .*(-mavx|-march=native|HAVE_AVX)|unexpected-cpu-probe' "$work_dir/trace"; then
   echo "Native build inherited optional CPU capabilities from its builder" >&2
   cat "$work_dir/trace" >&2
   exit 1

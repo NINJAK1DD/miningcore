@@ -117,6 +117,14 @@ int main(int argc, char** argv)
     uint8_t output[32];
     require(hash(input.data(), input.size(), reinterpret_cast<char*>(output), 0x6c150000, 0, context), "GhostRider failed");
     check_hash(output, "84402e62b6bedafcd65f6ba13b59ff19ad7f273900c59fa49bfbb5f67e10030f");
+    std::puts("Testing CryptoNight Chukwa default implementation");
+    auto impl = symbol<const char* (*)()>(lib, "argon2_get_impl_name");
+    require(std::strcmp(impl(), "default") == 0, "unexpected CryptoNight Argon2 implementation");
+    auto chukwa = symbol<bool (*)(const uint8_t*, size_t, char*, int, uint64_t, void*)>(lib, "argon_export");
+    input = unhex("0305a0dbd6bf05cf16e503f3a66f78007cbf34144332ecbfc22ed95c8700383b309ace1923a0964b00000008ba939a62724c0d7581fce5761e9d8a0e6a1c3f924fdd8493d1115649c05eb601");
+    require(chukwa(input.data(), input.size(), reinterpret_cast<char*>(output), 0x61130000, 10, context), "Chukwa failed");
+    check_hash(output, "c158a105ae75c7561cfd029083a47a87653d51f914128e21c1971d8b10c49034");
+    require(std::strcmp(impl(), "default") == 0, "CryptoNight Argon2 selector changed during hashing");
     release(context);
     dlclose(lib);
 
@@ -131,5 +139,33 @@ int main(int argc, char** argv)
     check_hash(output, "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262");
     dlclose(lib);
     highwayhash(directory);
+
+    std::puts("Testing Cortex header and SipHash proof rejection");
+    lib = open_library(directory, "libcortexcuckoocycle.so");
+    auto cortex = symbol<int32_t (*)(const char*, int, const char*)>(lib, "cortexcuckoocycle_export");
+    uint32_t edges[42] = {};
+    char header[32] = {};
+    // Edge zero is hashed before the repeated second edge is rejected.
+    require(cortex(header, sizeof(header), reinterpret_cast<const char*>(edges)) == 3,
+        "Cortex duplicate-edge rejection differs");
+    dlclose(lib);
+
+    std::puts("Testing Zano malformed-block parsing through all managed exports");
+    lib = open_library(directory, "libzanonote.so");
+    const char malformed[] = {static_cast<char>(0xff)}; // truncated varint
+    uint8_t blob[256] = {};
+    unsigned blob_size = sizeof(blob);
+    auto convert = symbol<bool (*)(const char*, unsigned, uint8_t*, unsigned*)>(lib, "convert_blob_export");
+    require(!convert(malformed, sizeof(malformed), blob, &blob_size) && blob_size == 0,
+        "Zano malformed hashing-blob rejection differs");
+    auto convert_block = symbol<bool (*)(const char*, unsigned, uint8_t*, unsigned*, uint64_t)>(lib, "convert_block_export");
+    blob_size = sizeof(blob);
+    require(!convert_block(malformed, sizeof(malformed), blob, &blob_size, 0) && blob_size == 0,
+        "Zano malformed block rejection differs");
+    for(const char* name : {"get_blob_id_export", "get_block_id_export"}) {
+        auto id = symbol<bool (*)(const char*, unsigned, uint8_t*)>(lib, name);
+        require(!id(malformed, sizeof(malformed), output), "Zano malformed block ID rejection differs");
+    }
+    dlclose(lib);
     std::puts("Native CPU portability vectors passed");
 }

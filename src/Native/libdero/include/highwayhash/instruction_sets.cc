@@ -92,6 +92,7 @@ TargetBits InstructionSets::Supported() {
   flags |= IsBitSet(abcd[2], 20) ? kBitSSE42 : 0;
   flags |= IsBitSet(abcd[2], 12) ? kBitFMA : 0;
   flags |= IsBitSet(abcd[2], 28) ? kBitAVX : 0;
+  const bool has_xsave = IsBitSet(abcd[2], 26);
   const bool has_osxsave = IsBitSet(abcd[2], 27);
 
   // Extended feature flags
@@ -108,16 +109,12 @@ TargetBits InstructionSets::Supported() {
 
   // Verify OS support for XSAVE, without which XMM/YMM registers are not
   // preserved across context switches and are not safe to use.
-  if (has_osxsave) {
+  if (has_xsave && has_osxsave) {
     const uint32_t xcr0 = ReadXCR0();
-    // XMM
-    if ((xcr0 & 2) == 0) {
-      flags &= ~(kBitSSE | kBitSSE2 | kBitSSE3 | kBitSSSE3 | kBitSSE41 |
-                 kBitSSE42 | kBitAVX | kBitAVX2 | kBitFMA);
-    }
-    // YMM
-    if ((xcr0 & 4) == 0) {
-      flags &= ~(kBitAVX | kBitAVX2);
+    // Baseline XMM state is preserved on x86-64 independently of XSAVE.
+    // AVX/FMA require both XMM and YMM state enabled through XCR0.
+    if ((xcr0 & 6) != 6) {
+      flags &= ~(kBitAVX | kBitAVX2 | kBitFMA);
     }
   } else {
     // CPUID capability alone is insufficient when the OS does not preserve

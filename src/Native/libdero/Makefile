@@ -1,12 +1,10 @@
 CFLAGS += -g -Wall -c -O3 -fPIC -DNDEBUG -Wno-deprecated-declarations -Wno-maybe-uninitialized -flax-vector-conversions -Wno-unused-variable -Wunused-but-set-variable -Wno-unused-function $(CPU_FLAGS) $(HAVE_FEATURE)
 CXXFLAGS += -g -Wall -O3 -fPIC -fpermissive -Wuninitialized -DNDEBUG -Wno-deprecated-declarations -Wno-maybe-uninitialized -flax-vector-conversions -Wno-unused-variable -Wunused-but-set-variable -Wno-unused-function -Wno-sign-compare -std=c++17 $(CPU_FLAGS) $(HAVE_FEATURE)
 
-ifneq ($($(UNAME_P),aarch64),$($(UNAME_P),arm64))
-        CFLAGS += -mfloat-abi=hard -march=armv7-a -mfpu=neon
-        CXXFLAGS += -mfloat-abi=hard -march=armv7-a -mfpu=neon
-else
-        CXXFLAGS += -m64
+ifneq ($(UNAME_P),x86_64)
+        $(error libdero Linux builds support x86_64 only)
 endif
+CXXFLAGS += -m64
 
 LDFLAGS += -shared -Wl,--no-undefined
 LDLIBS = -lboost_atomic -lboost_context -lboost_chrono -lboost_program_options -lboost_thread -lpthread -lssl -lcrypto
@@ -25,17 +23,11 @@ OBJECTS = include/highwayhash/arch_specific.o include/highwayhash/c_bindings.o i
         include/libkeccak/libkeccak_unhex.o include/libkeccak/libkeccak_zerocopy_chunksize.o \
         include/libsais/libsais.o 
 
-ifeq ($(UNAME_P),x86_64)
-        # HighwayHash dispatch references both implementations regardless of
-        # the baseline. Only this translation unit may contain AVX2.
-        OBJECTS += include/highwayhash/hh_avx2.o
-        include/highwayhash/hh_avx2.o: CXXFLAGS += -mavx2
-        OBJECTS += include/highwayhash/hh_sse41.o 
-else ifneq ($($(UNAME_P),aarch64),$($(UNAME_P),arm64))
-        OBJECTS += include/highwayhash/hh_neon.o 
-else
-        OBJECTS += include/highwayhash/hh_vsx.o 
-endif
+# Dispatch references both implementations even on a non-AVX2 builder.
+# Optional code generation is scoped to these translation units.
+OBJECTS += include/highwayhash/hh_avx2.o include/highwayhash/hh_sse41.o
+include/highwayhash/hh_avx2.o: CXXFLAGS += -mavx2
+include/highwayhash/hh_sse41.o: CXXFLAGS += -msse4.1
 
 OBJECTS += astro_aarch64.o astrobwtv3.o exports.o 
 
