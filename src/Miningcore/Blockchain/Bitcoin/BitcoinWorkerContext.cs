@@ -16,6 +16,22 @@ public class BitcoinWorkerContext : WorkerContextBase
     private DirectPayoutAuthorization directPayoutAuthorization;
     private long directPayoutGeneration;
     private readonly SemaphoreSlim directPayoutOperationGate = new(1, 1);
+    private long acceptedProofSequence;
+    private bool jobsClosed;
+
+    // Requests are serial per connection. Managers mark this immediately after
+    // proof validation, before accounting, candidate submission or observers run.
+    internal long AcceptedProofSequence => Interlocked.Read(ref acceptedProofSequence);
+    internal void MarkProofAccepted() => Interlocked.Increment(ref acceptedProofSequence);
+
+    internal void CloseJobs()
+    {
+        lock(this)
+        {
+            jobsClosed = true;
+            validJobs.Clear();
+        }
+    }
 
     /// <summary>
     /// Usually a wallet address
@@ -125,6 +141,9 @@ public class BitcoinWorkerContext : WorkerContextBase
 
     private void AddJobCore(BitcoinJob job, int maxActiveJobs)
     {
+        if(jobsClosed)
+            throw new InvalidOperationException("Worker job assignment is closed");
+
         if(!validJobs.Contains(job))
             validJobs.Enqueue(job);
 

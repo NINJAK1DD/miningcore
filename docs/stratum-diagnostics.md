@@ -61,8 +61,9 @@ ports remain typed numeric metadata, not copies of password-control strings.
 
 New transport records start with `Stratum diagnostic ` followed by compact JSON:
 
-For BLAKE2b, `AssignmentPublicationFailure` is a bounded Info event for a terminal
-publication error after a response started, or an error observed after pool isolation.
+For Bitcoin-family pools, `AssignmentPublicationFailure` is a bounded Info event for a terminal
+publication error after a response started or during idle VarDiff. BLAKE2b also uses it
+for an error observed after pool isolation.
 The connection closes without sending another response for the same request. Its payload
 contains the event and server-generated connection ID, with no miner identity or request
 parameters. It is distinct from the negotiation-budget and duplicate-subscription events.
@@ -147,6 +148,12 @@ identities, block metadata, difficulty, counts and timing remain operational met
 The existing IP-censor flag is now honored consistently by both early banned-IP and
 already-connected banned-client messages. It remains partial address masking, not
 an anonymity guarantee, and does not authorize raw identity or credential logging.
+This also applies to expected and unexpected publication exceptions at Debug level.
+`AssignmentPublicationFailure` retains a bounded cause/code and an independent
+once-per-connection reporting flag. A bounded Debug `PublicationCleanupFailure`
+describes a secondary cleanup/sink failure without replacing the original cause;
+neither event attaches raw exceptions. Normal transport-owned teardown cancellation
+does not count as a publication failure.
 Connection initialization and acceptance logging also tolerate an absent `Logging`
 object, treating censoring as not enabled, consistently with the banned-IP paths.
 This removes an incidental null-reference connection rejection for that configuration;

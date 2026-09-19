@@ -1719,14 +1719,28 @@ public class ShareRecorderTests
         }
         finally
         {
-            // This test proves the captured fail-stop set, not a one-second shutdown SLA.
-            // Give the deliberately faulted providers a bounded cleanup window before the
-            // outer guard decides that deleting their retained recovery directory is unsafe.
-            recorder.ShutdownPersistenceDrainTimeout = TimeSpan.FromSeconds(5);
-            recorder.ShutdownRecoveryCompletionTimeout = TimeSpan.FromSeconds(5);
             releaseFinalLatch.TrySetResult();
             releaseJournal.TrySetResult();
             releaseDatabase.TrySetResult();
+
+            // Releasing the providers only schedules their continuations. Wait for the
+            // faulted pipeline (including its durable fatal evidence) to actually finish
+            // before StopAsync starts its short shutdown deadlines. Slow Windows storage
+            // must not turn fixture cleanup into an uncertain-commit shutdown scenario.
+            // A timeout still escapes before deletion, preserving any live worker's files.
+            if(recorder.ExecuteTask is { } processing)
+            {
+                try
+                {
+                    await processing.WaitAsync(TimeSpan.FromSeconds(30));
+                }
+                catch(Exception ex) when(processing.IsCompleted && ex is not TimeoutException)
+                {
+                    // Faulted or cancelled providers are terminal. A timeout must
+                    // still escape because underlying recovery work may be live.
+                }
+            }
+
             await StopRecorderBeforeFixtureCleanupAsync(recorder);
 
             if(Directory.Exists(directory))
