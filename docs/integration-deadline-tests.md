@@ -1,8 +1,9 @@
 # Integration deadline test scheduling
 
 `IntegrationDeadlineCollection` uses xUnit's collection-level
-`DisableParallelization` setting for `ProgramPoolTemplateTests` and
-`MergedMiningManagerReorgTests`. It changes test scheduling, not production
+`DisableParallelization` setting for `ProgramPoolTemplateTests`,
+`MergedMiningManagerReorgTests`, and `BitcoinPublicationFailureTests`.
+It changes test scheduling, not production
 deadlines or test assertions. The definition and its contract tests live at the
 test-project root because the collection spans the root and Blockchain namespaces.
 
@@ -22,7 +23,7 @@ observed failure motivating isolation here. `RpcSubscriptionLifetimeTests` also
 remains parallel. Investigate new failures in these classes before changing their
 scheduling; do not infer immunity from their omission.
 
-The whole of both selected classes is isolated, including pure unit cases. This
+The whole of the selected classes is isolated, including pure unit cases. This
 avoids a large fixture extraction and its review risk, but can lengthen the serial
 phase. Split pure cases into separate classes if measurements show material cost
 or the fixtures grow substantially; raw test counts are not a runtime measurement.
@@ -33,6 +34,41 @@ removes cross-collection contention, not every possible delay within one test.
 If a timeout recurs, inspect host/IO progress and intra-test continuation scheduling
 before considering a test watchdog change. Do not automatically relax deadlines.
 Revisit this isolation when upgrading xUnit to its conservative scheduler.
+
+## Bitcoin publication fixture scheduling
+
+At `193733c0a`, the [full .NET CI suite](https://github.com/NINJAK1DD/miningcore/actions/runs/35461023613/attempts/2)
+timed out in `BitcoinPublicationFailureTests.FullSendQueue_ResponseOrNotificationFailure_NeverRetries`
+while awaiting disconnect after a saturated-queue configure request. Other completed
+tests in the same log show delayed continuations. Focused runs and the unconstrained
+Linux suite had passed. This is consistent with scheduler contention, not a trace
+proving which continuation was delayed.
+
+A whole-assembly comparison on 2026-09-19 used Ubuntu 22.04 WSL, process-local
+`DOTNET_PROCESSOR_COUNT=2`, identical native libraries and Bitcoin Core 28.1, with
+PostgreSQL unset. The baseline reproduced the same publication-fixture watchdog
+failure for a saturated-queue suggestion request. The patch admits only this
+fixture to the existing collection; all 37 cases move together, including its
+small unit cases. Neither production behavior, watchdogs nor protocol assertions
+change. The exact-membership contract pins the addition.
+
+| Run order | Scheduling | Passed | Failed | Skipped | Publication passed/failed | TRX elapsed seconds |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | Baseline `193733c0a` | 3336 | 4 | 41 | 36 / 1 | 277.02 |
+| 2 | Scoped collection patch | 3334 | 6 | 41 | 37 / 0 | 278.11 |
+
+The measured whole-suite cost was +1.09 seconds (about 0.4%). One pair cannot prove
+flake elimination or a causal runtime difference. Both runs retain failures outside
+the selected fixture: Bitcoin notification snapshots, BLAKE2b admission and Stratum
+listener shutdown. The patched run also failed hosted metrics startup, payout
+commit-admission and pool startup deadlines. These fixtures remain parallel and
+require separate diagnosis; neither constrained full-suite run is claimed as green.
+The change targets the reproduced publication fixture without expanding collection
+membership to unrelated tests. Normal full-suite CI remains a separate required check.
+
+Local evidence is retained in `build/issue183/results/deadline-baseline-1.trx` and
+`deadline-patched-1.trx`, with matching logs under `build/issue183/`. These ignored
+local artifacts are not included in the PR; the table is a measurement summary.
 
 ## Background-service startup context
 

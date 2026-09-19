@@ -153,6 +153,10 @@ subscriber errors after validation and assert candidate persistence remains exac
 once with no invalid-share telemetry or ban. Accepted block/non-block tests saturate
 the response queue and verify valid-share counts and block time. Real Ethereum
 dispatch is drained through peer EOF and host stop to cover transport-wide behavior.
+The publication fixture runs in the existing integration-deadline collection after
+full-suite CI and a two-CPU baseline reproduced disconnect-watchdog failures under
+parallel load. Watchdogs and protocol assertions are unchanged; the exact-membership
+contract and [scheduling evidence](integration-deadline-tests.md) constrain the change.
 
 The unrelated Windows recovery-fixture correction remains in its own test commit.
 Its cleanup tolerates a completed provider cancellation, while timeouts still escape

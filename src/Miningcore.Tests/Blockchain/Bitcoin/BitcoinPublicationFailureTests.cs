@@ -25,6 +25,7 @@ using Xunit;
 
 namespace Miningcore.Tests.Blockchain.Bitcoin;
 
+[Collection(IntegrationDeadlineCollection.Name)]
 public partial class BitcoinPublicationFailureTests : TestBase
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
