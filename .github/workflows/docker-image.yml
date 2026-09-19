@@ -16,9 +16,9 @@ jobs:
 
   build:
 
-    # Docker supplies the Ubuntu 26.04 build userspace. Keep generic publication
-    # orchestration on GitHub's current stable runner image.
-    runs-on: ubuntu-latest
+    # Docker supplies the Ubuntu 26.04 build userspace. Pin orchestration to
+    # Ubuntu 24.04 so ubuntu-latest migrations do not change the release host.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     steps:
