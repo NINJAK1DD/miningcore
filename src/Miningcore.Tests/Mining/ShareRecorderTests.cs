@@ -1734,9 +1734,10 @@ public class ShareRecorderTests
                 {
                     await processing.WaitAsync(TimeSpan.FromSeconds(30));
                 }
-                catch(IOException) when(processing.IsCompleted)
+                catch(Exception ex) when(processing.IsCompleted && ex is not TimeoutException)
                 {
-                    // Both providers deliberately fail with IOException above.
+                    // Faulted or cancelled providers are terminal. A timeout must
+                    // still escape because underlying recovery work may be live.
                 }
             }
 
