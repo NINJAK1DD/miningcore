@@ -71,7 +71,6 @@ internal static class RpcConsumerOperations
         "BitcoinPool.HandleJobPipelineFailure",
         "BitcoinPool.OnRequestAsync",
         "BitcoinPool.OnSubmitAsync",
-        "BitcoinPool.OnSuggestDifficultyAsync",
         "BitcoinPool.ReadSuggestedDifficulty",
         "BitcoinPool.SetupJobManager",
         "CandidatePersistenceFailureHandler.StopClusterAsync",

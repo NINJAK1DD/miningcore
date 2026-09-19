@@ -143,6 +143,16 @@ BLAKE2b templates must disable version rolling. Cross-connection churn defenses 
 tracked separately in [#180](https://github.com/NINJAK1DD/miningcore/issues/180).
 See the [policy and validation evidence](bitcoin-blake2b.md#miner-requested-difficulty-budget).
 
+## Unreleased: Bitcoin-family response publication failures
+
+[#183](https://github.com/NINJAK1DD/miningcore/issues/183) closes a Bitcoin-family
+connection when work publication fails after its response has started. It does
+not send a second response, including when the first attempt failed to enqueue.
+Buffered requests cannot restart the session. Valid accepted shares retain their
+accounting and do not acquire invalid-share or ban penalties from later publication
+failures. Successful canonical Bitcoin/direct-SOLO ordering and immutable credit
+binding are preserved. See the [handler audit and reconnect policy](bitcoin-response-publication.md).
+
 ## Unreleased: BLAKE2b assignment ordering
 
 [#182](https://github.com/NINJAK1DD/miningcore/issues/182) serializes worker difficulty
@@ -168,8 +178,8 @@ Unexpected unrepresentable post-acknowledgment assignments use the same terminal
 and invalidate jobs. The `publication-failure` admission-counter outcome counts each
 terminal publication failure once. Accepted shares remain credited and do not acquire
 an invalid-share count or ban penalty when subsequent VarDiff publication fails.
-Canonical Bitcoin's post-response policy is tracked separately in
-[#183](https://github.com/NINJAK1DD/miningcore/issues/183).
+Canonical Bitcoin's post-response policy is documented in the
+[Bitcoin-family publication policy](bitcoin-response-publication.md).
 BLAKE2b continues to reject canonical direct-coinbase SOLO options at startup.
 
 Omitted BLAKE2b VarDiff maxima now use the highest representable difficulty as an effective

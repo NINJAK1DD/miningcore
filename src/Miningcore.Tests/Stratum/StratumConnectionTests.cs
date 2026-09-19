@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -33,6 +34,42 @@ public class StratumConnectionTests : TestBase
     private static readonly RecyclableMemoryStreamManager rmsm = ModuleInitializer.Container.Resolve<RecyclableMemoryStreamManager>();
     private static readonly IMasterClock clock = ModuleInitializer.Container.Resolve<IMasterClock>();
     private static readonly ILogger logger = new NullLogger(LogManager.LogFactory);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BufferedRequests_StopAtEachLineAfterDisconnectOrCancellation(bool cancel)
+    {
+        var connection = new StratumConnection(logger, rmsm, clock, ConnectionId, false);
+        var wrapper = new PrivateObject(connection);
+        var pipe = (Pipe) wrapper.GetField("receivePipe");
+        // Fill a single ReadResult deterministically. TCP tests separately drive
+        // the real transport; they cannot guarantee OS packet coalescing.
+        await pipe.Writer.WriteAsync(Encoding.UTF8.GetBytes(string.Concat(
+            "{\"id\":42,\"method\":\"mining.subscribe\"}\n",
+            "{\"id\":42,\"method\":\"mining.authorize\"}\n",
+            "{\"id\":42,\"method\":\"mining.submit\"}\n")));
+        await pipe.Writer.CompleteAsync();
+        using var stop = new CancellationTokenSource();
+        var dispatched = 0;
+        Func<StratumConnection, JsonRpcRequest, CancellationToken, Task> handler = (worker, _, _) =>
+        {
+            dispatched++;
+            if(cancel)
+                stop.Cancel();
+            else
+                worker.Disconnect();
+            return Task.CompletedTask;
+        };
+        var processing = (Task) wrapper.Invoke("ProcessReceivePipeAsync", stop.Token,
+            new StratumProxyPolicy(null), handler);
+        if(cancel)
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => processing.WaitAsync(TestTimeout));
+        else
+            await processing.WaitAsync(TestTimeout);
+        Assert.Equal(1, dispatched);
+        await pipe.Reader.CompleteAsync();
+    }
 
     [Fact]
     public void RespondAsync_FailStopTokenRejectsAcknowledgement()

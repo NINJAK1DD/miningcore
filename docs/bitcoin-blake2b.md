@@ -400,8 +400,9 @@ live connection with a partial assignment. The same terminal latch covers unexpe
 post-acknowledgment unrepresentable targets, including external autodiff values, and clears
 active jobs. An accepted share remains accepted if its subsequent VarDiff publication
 fails: accounting is preserved, with no extra invalid-share count or ban consideration.
-Canonical Bitcoin's response policy is unchanged and tracked in
-[#183](https://github.com/NINJAK1DD/miningcore/issues/183). The shared transport tracks
+Canonical Bitcoin and merged mining now use the same post-response terminal
+decision; see the [Bitcoin-family publication policy](bitcoin-response-publication.md)
+for the audited paths and compatibility boundaries. The shared transport tracks
 response attempts with one interlocked increment per response; notification writes do
 not change that counter. All response payloads must use `RespondAsync`.
 

@@ -69,7 +69,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         return gate;
     }
 
-    private bool IsAdmissionClosed(StratumConnection connection) => operations.IsClosed ||
+    private bool IsAdmissionClosed(StratumConnection connection) => connection.IsDisconnectRequested || operations.IsClosed ||
         difficultyBudgets.TryGetValue(connection, out var budget) && budget.IsClosed;
 
     // Weak connection keys retain no disconnected-miner/IP history. Suggest,
@@ -354,7 +354,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> request, CancellationToken ct)
     {
-        if(operations.IsClosed)
+        if(connection.IsDisconnectRequested || operations.IsClosed)
         {
             Disconnect(connection);
             return;
@@ -462,8 +462,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                         // hook do not customize this pool's subscription dispatch.
                         await OnSubscribeCoreAsync(connection, request, subscription);
                     else
-                        await OnSuggestDifficultyAsync(connection, request, new ParsedSuggestedDifficulty(suggestedDifficulty),
-                            propagatePublicationFailures: true);
+                        await OnSuggestDifficultyAsync(connection, request, new ParsedSuggestedDifficulty(suggestedDifficulty));
                     await CompleteAssignmentAsync(connection, previousDifficulty, request.Value.Method);
                 }
                 catch(Exception ex)
@@ -507,6 +506,9 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
 
         return base.OnRequestErrorAsync(connection, request, error, false);
     }
+
+    protected override void CloseRequestPublicationFailure(StratumConnection connection, Exception failure,
+        bool reportFailure = true) => CloseAssignmentPublicationFailure(connection, failure, reportFailure);
 
     private void CloseAssignmentPublicationFailure(StratumConnection connection, Exception failure, bool reportFailure = true)
     {

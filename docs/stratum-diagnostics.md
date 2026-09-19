@@ -61,8 +61,9 @@ ports remain typed numeric metadata, not copies of password-control strings.
 
 New transport records start with `Stratum diagnostic ` followed by compact JSON:
 
-For BLAKE2b, `AssignmentPublicationFailure` is a bounded Info event for a terminal
-publication error after a response started, or an error observed after pool isolation.
+For Bitcoin-family pools, `AssignmentPublicationFailure` is a bounded Info event for a terminal
+publication error after a response started or during idle VarDiff. BLAKE2b also uses it
+for an error observed after pool isolation.
 The connection closes without sending another response for the same request. Its payload
 contains the event and server-generated connection ID, with no miner identity or request
 parameters. It is distinct from the negotiation-budget and duplicate-subscription events.

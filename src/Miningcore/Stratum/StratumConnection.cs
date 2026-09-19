@@ -78,6 +78,10 @@ public class StratumConnection
     private readonly BufferBlock<object> sendQueue;
     private WorkerContextBase context;
     private long responseSequence;
+    private int disconnectRequested;
+
+    internal bool IsDisconnectRequested => Volatile.Read(ref disconnectRequested) != 0;
+    internal bool TryBeginDisconnect() => Interlocked.Exchange(ref disconnectRequested, 1) == 0;
 
     // Dispatch awaits requests serially. Comparing this sequence before/after a
     // handler detects a response attempt without retaining miner-controlled IDs.
@@ -406,6 +410,9 @@ public class StratumConnection
 
     public void Disconnect()
     {
+        // Closing the socket does not discard lines already read into the pipe.
+        // Latch before touching I/O so the receive loop cannot resume this session.
+        TryBeginDisconnect();
         var activeSocket = socket;
 
         if(activeSocket != null)
@@ -430,7 +437,13 @@ public class StratumConnection
         if(sendQueue.Count >= SendQueueCapacity)
             throw new IOException("Sendqueue stalled");
 
-        return sendQueue.SendAsync(payload);
+        return EnqueueAsync();
+
+        async Task EnqueueAsync()
+        {
+            if(!await sendQueue.SendAsync(payload))
+                throw new IOException("Stratum send queue is closed");
+        }
     }
 
     private async Task FillReceivePipeAsync(CancellationToken ct)
@@ -479,6 +492,9 @@ public class StratumConnection
 
             do
             {
+                if(IsDisconnectRequested)
+                    return;
+
                 // Scan buffer for line terminator
                 position = buffer.PositionOf((byte) '\n');
 
@@ -500,6 +516,8 @@ public class StratumConnection
                     }
                     if(!proxyHeader)
                         await ProcessRequestAsync(ct, onRequestAsync, slice);
+
+                    ct.ThrowIfCancellationRequested();
 
                     // Skip consumed section
                     buffer = buffer.Slice(buffer.GetPosition(1, position.Value));
