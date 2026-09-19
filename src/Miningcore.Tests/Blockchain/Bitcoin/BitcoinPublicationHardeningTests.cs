@@ -64,9 +64,12 @@ public partial class BitcoinPublicationFailureTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task RecoveryResponse_MiningFailStop_ClosesWithoutConsumingFailureReport(bool canonical)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task RecoveryResponse_MiningFailStop_ClosesWithoutConsumingFailureReport(bool canonical,
+        bool requestCancellationPropagated)
     {
         var (config, manager, clock, bus) = Fixture();
         if(!canonical)
@@ -92,8 +95,9 @@ public partial class BitcoinPublicationFailureTests
         context.AddJob(new TestJob(), 4);
         connection.SetContext(context);
         stop.Cancel();
+        var requestToken = requestCancellationPropagated ? stop.Token : CancellationToken.None;
         var failure = await Assert.ThrowsAsync<OperationCanceledException>(() => pool.Reject(connection,
-            new StratumException(StratumError.Other, "recoverable rejection"), stop.Token));
+            new StratumException(StratumError.Other, "recoverable rejection"), requestToken));
         Assert.Equal(stop.Token, failure.CancellationToken);
         Assert.Equal(1, connection.ResponseSequence);
         Assert.True(connection.IsDisconnectRequested);
@@ -102,7 +106,8 @@ public partial class BitcoinPublicationFailureTests
         // Terminal cleanup still cannot turn another rejection into a report.
         await pool.Reject(connection, new StratumException(StratumError.Other, "closed"), stop.Token);
         Assert.Equal(1, connection.ResponseSequence);
-        pool.ClosePublicationFailure(connection, new IOException("independent publication failure"));
+        // An unrelated cancellation must still report even though fail-stop is active.
+        pool.ClosePublicationFailure(connection, new OperationCanceledException("independent publication failure"));
         bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "publication-failure"), Arg.Any<string>());
     }
 

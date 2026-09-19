@@ -117,6 +117,9 @@ pool and fixed outcome labels, never miner-selected labels. At request, recovery
 and VarDiff boundaries, cancellation owned by the operation's shutdown token does
 not emit publication-failure telemetry. Neither does cancellation from already-owned
 transport teardown. A distinct non-cancellation failure during teardown still reports.
+Fail-stop cancellation is also recognized by its originating token, even before
+the linked request token observes shutdown. An unrelated cancellation does not
+qualify merely because the fail-stop gate is closed.
 Both expected and unexpected exception diagnostics remain redacted at every level;
 the IP-censor/GDPR flag does not authorize raw exception or credential logging. Existing transport
 diagnostics may separately describe teardown. See [Stratum diagnostics](stratum-diagnostics.md).

@@ -989,7 +989,8 @@ public class BitcoinPool : PoolBase
     protected virtual void CloseRequestPublicationFailure(StratumConnection connection, Exception failure,
         bool reportFailure = true)
     {
-        reportFailure &= failure is not StratumConnectionClosedException;
+        reportFailure &= failure is not StratumConnectionClosedException &&
+            !connection.IsMiningFailStopCancellation(failure);
         connection.TryBeginDisconnect();
         try
         {
