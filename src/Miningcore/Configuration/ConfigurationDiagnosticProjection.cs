@@ -180,7 +180,10 @@ internal static class ConfigurationDiagnosticProjection
             [typeof(PoolConfig)] = Fields<PoolConfig>(nameof(PoolConfig.Extra), nameof(PoolConfig.Template)),
             [typeof(DaemonEndpointConfig)] = Fields<DaemonEndpointConfig>(nameof(DaemonEndpointConfig.Extra)),
             [typeof(PoolPaymentProcessingConfig)] = Fields<PoolPaymentProcessingConfig>(
-                nameof(PoolPaymentProcessingConfig.Extra), nameof(PoolPaymentProcessingConfig.PayoutSchemeConfig)),
+                nameof(PoolPaymentProcessingConfig.Extra), nameof(PoolPaymentProcessingConfig.PayoutSchemeConfig),
+                // Operator cutover history belongs in private config/database reconciliation,
+                // not the public diagnostic projection.
+                nameof(PoolPaymentProcessingConfig.PpsBinary64Activation)),
             [typeof(ApiRateLimitConfig)] = Fields<ApiRateLimitConfig>(nameof(ApiRateLimitConfig.Rules)),
         };
 

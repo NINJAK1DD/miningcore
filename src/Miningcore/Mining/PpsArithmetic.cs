@@ -10,10 +10,12 @@ internal static class PpsArithmetic
 
     private static (BigInteger N, BigInteger D) Binary64(double value)
     {
-        if(!double.IsFinite(value) || value <= 0)
-            throw new InvalidDataException("PPS difficulty must be positive finite binary64");
         var bits = BitConverter.DoubleToUInt64Bits(value);
         var exponent = (int) ((bits >> 52) & 2047);
+        // Native hashing may enable denormals-are-zero on this thread. Validate
+        // the wire bits without floating-point comparisons or arithmetic.
+        if((bits >> 63) != 0 || bits == 0 || exponent == 2047)
+            throw new InvalidDataException("PPS difficulty must be positive finite binary64");
         var significand = new BigInteger(bits & ((1UL << 52) - 1));
         if(exponent != 0) significand += BigInteger.One << 52;
         var shift = exponent == 0 ? -1074 : exponent - 1075;
