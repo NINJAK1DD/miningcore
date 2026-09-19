@@ -100,7 +100,8 @@ internal static class ConfigurationDiagnosticProjection
                 nameof(DaemonEndpointConfig.Port), nameof(DaemonEndpointConfig.Ssl), nameof(DaemonEndpointConfig.Http2)),
             [typeof(PoolPaymentProcessingConfig)] = Fields<PoolPaymentProcessingConfig>(
                 nameof(PoolPaymentProcessingConfig.Enabled), nameof(PoolPaymentProcessingConfig.MinimumPayment),
-                nameof(PoolPaymentProcessingConfig.PayoutScheme), nameof(PoolPaymentProcessingConfig.PpsShareRetentionDays)),
+                nameof(PoolPaymentProcessingConfig.PayoutScheme), nameof(PoolPaymentProcessingConfig.PpsShareRetentionDays),
+                nameof(PoolPaymentProcessingConfig.PpsBinary64Activation)),
             [typeof(PoolShareBasedBanningConfig)] = Fields<PoolShareBasedBanningConfig>(
                 nameof(PoolShareBasedBanningConfig.Enabled), nameof(PoolShareBasedBanningConfig.CheckThreshold),
                 nameof(PoolShareBasedBanningConfig.InvalidPercent), nameof(PoolShareBasedBanningConfig.Time),
@@ -180,10 +181,7 @@ internal static class ConfigurationDiagnosticProjection
             [typeof(PoolConfig)] = Fields<PoolConfig>(nameof(PoolConfig.Extra), nameof(PoolConfig.Template)),
             [typeof(DaemonEndpointConfig)] = Fields<DaemonEndpointConfig>(nameof(DaemonEndpointConfig.Extra)),
             [typeof(PoolPaymentProcessingConfig)] = Fields<PoolPaymentProcessingConfig>(
-                nameof(PoolPaymentProcessingConfig.Extra), nameof(PoolPaymentProcessingConfig.PayoutSchemeConfig),
-                // Operator cutover history belongs in private config/database reconciliation,
-                // not the public diagnostic projection.
-                nameof(PoolPaymentProcessingConfig.PpsBinary64Activation)),
+                nameof(PoolPaymentProcessingConfig.Extra), nameof(PoolPaymentProcessingConfig.PayoutSchemeConfig)),
             [typeof(ApiRateLimitConfig)] = Fields<ApiRateLimitConfig>(nameof(ApiRateLimitConfig.Rules)),
         };
 
@@ -299,6 +297,7 @@ internal static class ConfigurationDiagnosticProjection
             int item => new JValue(item),
             double item when double.IsFinite(item) => new JValue(item),
             decimal item => new JValue(item),
+            DateTime item when item.Kind == DateTimeKind.Utc => new JValue(item.ToString("O", CultureInfo.InvariantCulture)),
             _ => new JValue(Omitted),
         };
     }

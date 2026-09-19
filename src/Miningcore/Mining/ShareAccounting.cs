@@ -238,7 +238,9 @@ internal static class ShareAccounting
            !double.IsFinite(share.ActualDifficulty) || share.ActualDifficulty <= 0 ||
            !double.IsFinite(share.NetworkDifficulty) || share.NetworkDifficulty <= 0 ||
            share.RewardBasisSatoshis <= 0 ||
-           share.PpsCalculatedAmount is <= 0)
+           share.PpsCalculatedAmount is <= 0 ||
+           share.PpsArithmeticVersion is not (0 or 1) ||
+           (share.PpsArithmeticVersion != 0 && !share.PpsCalculatedAmount.HasValue))
             throw new InvalidDataException(
                 $"Accounting share for pool '{share.PoolId}' is incomplete or non-finite");
     }

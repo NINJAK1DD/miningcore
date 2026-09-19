@@ -51,6 +51,16 @@ public class ShareRepository : IShareRepository
         public Guid? CursorAccountingId { get; set; }
     }
 
+    public Task<bool> HasMatchingPpsArithmeticTransitionAsync(IDbConnection con,
+        string poolId, DateTime? activation, CancellationToken ct) =>
+        con.ExecuteScalarAsync<bool>(new CommandDefinition(@"
+            SELECT CASE WHEN @activation::timestamptz IS NULL THEN
+                NOT EXISTS(SELECT 1 FROM pps_arithmetic_transitions WHERE poolid=@poolId)
+            ELSE
+                EXISTS(SELECT 1 FROM pps_arithmetic_transitions
+                    WHERE poolid=@poolId AND version=1 AND effectivefrom=@activation)
+            END", new { poolId, activation }, cancellationToken: ct));
+
     public async Task<bool> HasShareAccountingSchemaAsync(IDbConnection con,
         CancellationToken ct)
     {
@@ -97,12 +107,50 @@ public class ShareRepository : IShareRepository
                       (actual.numeric_precision = required.numeric_precision AND
                        actual.numeric_scale = required.numeric_scale))
                 WHERE actual.column_name IS NULL
+            ), arithmetic_constraints AS MATERIALIZED (
+                -- Scope before deparsing: another schema may be dropped concurrently.
+                SELECT * FROM pg_constraint
+                WHERE conrelid IN (to_regclass('pps_arithmetic_transitions'), to_regclass('pps_share_credits'))
             )
             SELECT NOT EXISTS(SELECT 1 FROM missing_columns)
-            AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('pps_share_credits')
-                AND tgname='trg_pps_arithmetic_credit' AND tgenabled='O')
-            AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('pps_share_credits')
-                AND conname='ck_pps_arithmetic_version' AND convalidated)
+            AND NOT EXISTS (
+                SELECT 1 FROM (VALUES
+                    ('pps_arithmetic_transitions', 'p', 'PRIMARY KEY (poolid)'),
+                    ('pps_arithmetic_transitions', 'c', 'CHECK ((version = 1))'),
+                    ('pps_arithmetic_transitions', 'c', 'CHECK (isfinite(effectivefrom))'),
+                    ('pps_share_credits', 'c', 'CHECK ((arithmeticversion = ANY (ARRAY[0, 1])))')
+                ) required(relation, kind, definition)
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM arithmetic_constraints c
+                    WHERE c.conrelid=to_regclass(required.relation) AND c.contype::text=required.kind
+                      AND c.convalidated AND NOT c.condeferrable
+                      AND pg_get_constraintdef(c.oid)=required.definition))
+            AND NOT EXISTS (
+                SELECT 1 FROM (VALUES
+                    ('pps_share_credits', 'trg_pps_arithmetic_credit', 7, 'guard_pps_arithmetic_credit', @creditGuard),
+                    ('pps_arithmetic_transitions', 'trg_pps_arithmetic_transition_immutable', 27, 'guard_pps_arithmetic_transition', @transitionGuard),
+                    ('pps_arithmetic_transitions', 'trg_pps_arithmetic_transition_truncate', 34, 'guard_pps_arithmetic_transition', @transitionGuard)
+                ) required(relation, trigger_name, trigger_type, function_name, body)
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid
+                    JOIN pg_language l ON l.oid=p.prolang
+                    WHERE t.tgrelid=to_regclass(required.relation) AND t.tgname=required.trigger_name
+                      AND t.tgenabled='O' AND t.tgtype=required.trigger_type
+                      AND NOT t.tgisinternal AND t.tgqual IS NULL AND t.tgnargs=0
+                      AND t.tgattr::text='' AND NOT t.tgdeferrable
+                      AND p.proname=required.function_name
+                      AND p.pronamespace=(SELECT oid FROM pg_namespace WHERE nspname=current_schema())
+                      AND p.pronargs=0 AND p.prorettype='trigger'::regtype AND NOT p.prosecdef
+                      AND l.lanname='plpgsql'
+                      AND p.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp', current_schema())]
+                      AND btrim(replace(p.prosrc, chr(13)||chr(10), chr(10)), chr(32)||chr(9)||chr(10)||chr(13))=required.body))
+            AND EXISTS (
+                SELECT 1 FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang
+                WHERE p.oid=to_regprocedure('activate_pps_binary64(text,timestamptz)')
+                  AND p.pronamespace=(SELECT oid FROM pg_namespace WHERE nspname=current_schema())
+                  AND p.prorettype='void'::regtype AND NOT p.prosecdef AND l.lanname='plpgsql'
+                  AND p.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp', current_schema())]
+                  AND btrim(replace(p.prosrc, chr(13)||chr(10), chr(10)), chr(32)||chr(9)||chr(10)||chr(13))=@activationBody)
             AND EXISTS (
                 SELECT 1 FROM pg_index index_record
                 WHERE index_record.indrelid = to_regclass('shares')
@@ -278,7 +326,12 @@ public class ShareRepository : IShareRepository
                       AND index_record.indisready))";
 
         var structureReady = await con.QuerySingleAsync<bool>(
-            new CommandDefinition(query, cancellationToken: ct));
+            new CommandDefinition(query, new
+            {
+                creditGuard = PpsArithmeticSchemaContract.CreditGuard,
+                transitionGuard = PpsArithmeticSchemaContract.TransitionGuard,
+                activationBody = PpsArithmeticSchemaContract.Activation,
+            }, cancellationToken: ct));
         if(!structureReady)
             return false;
 

@@ -1413,6 +1413,8 @@ public class Program : ProcessStatusBackgroundService
 
         var document = JObject.Parse(generator.Generate(typeof(ClusterConfig)).ToString());
         PostgresConnectionPolicy.AddSchemaRules(document);
+        document.SelectToken("definitions.PoolPaymentProcessingConfig.properties.ppsBinary64Activation")!["pattern"] =
+            @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$";
         return document;
     }
 
@@ -2439,6 +2441,18 @@ public class Program : ProcessStatusBackgroundService
                 throw new PoolStartupException(
                     $"Pool '{pool.Id}' uses PPS but reward recipients leave no positive operator-funded reward basis",
                     pool.Id);
+            if(pool.PaymentProcessing.PpsBinary64Activation.HasValue)
+            {
+                try
+                {
+                    PpsArithmetic.ValidateRetainedPercent(100m - recipientPercent);
+                }
+                catch(InvalidDataException ex)
+                {
+                    throw new PoolStartupException(
+                        $"Pool '{pool.Id}': {ex.Message}", pool.Id, ex);
+                }
+            }
         }
 
         if(ppsPools.Length > 0 && config.Persistence?.Postgres == null)
@@ -2648,7 +2662,19 @@ public class Program : ProcessStatusBackgroundService
             shareRepo.HasShareAccountingSchemaAsync(con, ct));
         if(!schemaReady)
             throw new PoolStartupException(
-                "PPS and merged-mining pooled payouts require the transactional share-accounting schema. Apply add_share_accounting.sql before enabling them.");
+                "PPS and merged-mining pooled payouts require the transactional share-accounting schema. Apply add_share_accounting.sql as the database administrator and verify application-role SELECT privileges on pps_arithmetic_transitions before enabling them.");
+
+        foreach(var pool in config.Pools.Where(pool => pool.Enabled &&
+            pool.PaymentProcessing?.PayoutScheme == PayoutScheme.PPS))
+        {
+            var matches = await cf.Run(con => shareRepo.HasMatchingPpsArithmeticTransitionAsync(
+                con, pool.Id, pool.PaymentProcessing.PpsBinary64Activation, ct));
+            if(!matches)
+                throw new PoolStartupException(
+                    $"Pool '{pool.Id}': ppsBinary64Activation does not match the durable PPS arithmetic transition. " +
+                    "Use the exact pool ID and identical UTC cutoff on every producer, relay and recorder; " +
+                    "a missing configuration cutoff requires no database transition.", pool.Id);
+        }
     }
 
     internal static async Task EnsureBitcoinDirectSoloSchemaAsync(

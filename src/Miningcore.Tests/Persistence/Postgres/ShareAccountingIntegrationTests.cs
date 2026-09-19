@@ -286,8 +286,8 @@ public class ShareAccountingIntegrationTests
                   AND tablename IN ('share_accounting_groups',
                       'share_accounting_prune_state', 'pps_share_credits',
                       'pps_credit_remainders')
-                  AND tableowner = (SELECT pg_get_userbyid(datdba)
-                      FROM pg_database WHERE datname = current_database())"));
+                  AND tableowner = (SELECT pg_get_userbyid(relowner)
+                      FROM pg_class WHERE oid = 'shares'::regclass)"));
 
             await Assert.ThrowsAsync<PostgresException>(() =>
                 connection.ExecuteAsync(@"INSERT INTO shares(poolid, blockheight,
@@ -688,6 +688,9 @@ public class ShareAccountingIntegrationTests
             var old = CreateBatch(Guid.NewGuid(), 0.0000000000006m, 'A');
             Assert.Equal(ShareAccountingInsertResult.Inserted, await InsertAsync(repository, connection, old));
             var cutoff = old.Created.AddMinutes(1);
+            var premature = CreateBatch(Guid.NewGuid(), 0.25m, 'D');
+            premature = premature with { PpsCredits = new[] { premature.PpsCredits[0] with { ArithmeticVersion = 1 } } };
+            await Assert.ThrowsAsync<PostgresException>(() => InsertAsync(repository, connection, premature));
             await Assert.ThrowsAsync<PostgresException>(() => connection.ExecuteAsync(
                 "SELECT activate_pps_binary64('ltc',@cutoff)", new { cutoff = old.Created.AddSeconds(-1) }));
             await connection.ExecuteAsync("SELECT activate_pps_binary64('ltc',@cutoff)", new { cutoff });
@@ -725,7 +728,7 @@ public class ShareAccountingIntegrationTests
         }
         finally
         {
-            await connection.ExecuteAsync("ROLLBACK; SET search_path TO public");
+            await connection.ExecuteAsync("SET search_path TO public");
             await connection.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
         }
     }

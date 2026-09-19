@@ -174,9 +174,13 @@ Choose the candidate directory that exactly matches the verified version and hos
 upgrade migrations through the stable `/opt/miningcore` symlink: it must continue pointing to the
 old release until every required candidate migration succeeds.
 
-The ownership and share-accounting migrations assign their new tables to the owner of the current
-database. Confirm that this is the same role configured under `persistence.postgres.user` and
-inspect the resulting owners before restarting Miningcore:
+The payout ownership migration assigns its tables to the database owner. The share-accounting
+migration uses the existing `shares` table owner as the application role. Its cumulative
+`add_share_accounting.sql` includes `add_pps_arithmetic_version.sql`, whose transition table
+and guard/activation functions remain owned by the migration administrator. That boundary grants
+the credit-table owner SELECT only, including when the database has a different owner.
+Confirm the application role matches `persistence.postgres.user` and inspect the owners before
+restarting Miningcore. See the [PPS arithmetic rollout](pps-arithmetic-migration.md) for activation:
 
 ```console
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore -c "
@@ -194,14 +198,16 @@ WHERE tablename IN (
   'share_accounting_groups',
   'share_accounting_prune_state',
   'pps_share_credits',
-  'pps_credit_remainders'
+  'pps_credit_remainders',
+  'pps_arithmetic_transitions'
 )
 ORDER BY schemaname, tablename;"
 ```
 
-If the database owner is not the configured application role, correct the database ownership or
-grant that application role the required table privileges before startup. Do not solve this by
-making the Miningcore runtime role a PostgreSQL superuser.
+For payout/recovery tables, if the database owner is not the configured application role,
+correct the ownership or grant that application role the required privileges before startup.
+Keep `pps_arithmetic_transitions` and its functions owned by the administrator; runtime roles
+need only SELECT on that table. Do not make the Miningcore runtime role a PostgreSQL superuser.
 
 The payout ownership migration is required wherever payment processing is enabled and for recorder or
 recovery-only deployments using the `-rs` importer. The AuxPoW and share-accounting migrations are

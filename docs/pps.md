@@ -65,7 +65,7 @@ in order, and activates that candidate only after they all succeed:
 
 1. `add_auxpow_block_idempotency.sql`
 2. `add_payout_manager_ownership.sql`
-3. `add_share_accounting.sql`
+3. `add_share_accounting.sql` (includes `add_pps_arithmetic_version.sql`)
 
 These migrations provide synchronous accepted-block idempotency, one durable payout owner, and the
 atomic receipt/credit/remainder ledger. Startup checks them before accepting PPS work. Do not create

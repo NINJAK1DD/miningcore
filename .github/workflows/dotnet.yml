@@ -51,6 +51,9 @@ jobs:
       shell: bash
       run: bash scripts/release/test-release-install-docs.sh
 
+    - name: Check generated PPS arithmetic migration
+      run: python3 scripts/release/sync-pps-arithmetic-migration.py --check
+
     - name: Test PostgreSQL systemd ordering helper
       shell: bash
       run: sudo bash scripts/release/test-systemd-postgresql-ordering.sh

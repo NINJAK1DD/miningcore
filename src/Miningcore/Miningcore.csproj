@@ -235,4 +235,7 @@
             <ContentWithTargetPath Include="@(Libs->'%(FullPath)')" RelativePath="%(Libs.Identity)" TargetPath="%(Libs.Filename)%(Libs.Extension)" CopyToPublishDirectory="PreserveNewest" />
         </ItemGroup>
     </Target>
+    <ItemGroup>
+        <EmbeddedResource Include="Persistence/Postgres/Scripts/add_pps_arithmetic_version.sql" />
+    </ItemGroup>
 </Project>

@@ -247,7 +247,7 @@ public class HostedServiceStartupTests
                 new ShareAccountingProjectionTelemetry("doge",
                     ShareAccountingRole.Auxiliary),
             },
-            new[] { new ShareAccountingPpsTelemetry("doge", 0.125m) }));
+            new[] { new ShareAccountingPpsTelemetry("doge", 0.125m, 1) }));
         attribution.OnNext(new MergedMiningAttributionRejectedTelemetryEvent(
             "ltc", "doge", MergedMiningAttributionRejection.Missing));
         accounting.OnNext(new ShareAccountingTelemetryEvent(Guid.NewGuid(),
@@ -259,7 +259,7 @@ public class HostedServiceStartupTests
                 new ShareAccountingProjectionTelemetry("doge",
                     ShareAccountingRole.Auxiliary),
             },
-            new[] { new ShareAccountingPpsTelemetry("doge", 0.125m) }));
+            new[] { new ShareAccountingPpsTelemetry("doge", 0.125m, 1) }));
 
         var metrics = await WaitForMetricsAsync(registry, text =>
             text.Contains("miningcore_share_accounting_batches_total{outcome=\"inserted\"} 1") &&
@@ -268,6 +268,7 @@ public class HostedServiceStartupTests
             text.Contains("miningcore_share_accounting_projections_total{pool=\"doge\",role=\"auxiliary\",outcome=\"inserted\"} 1") &&
             text.Contains("miningcore_pps_share_credits_total{pool=\"doge\",outcome=\"replay_suppressed\"} 1") &&
             text.Contains("miningcore_pps_liability_coin_total{pool=\"doge\"} 0.125") &&
+            text.Contains("miningcore_pps_arithmetic_credits_total{pool=\"doge\",version=\"1\"} 1") &&
             text.Contains("miningcore_merged_mining_attribution_rejections_total{pool=\"ltc\",aux_pool=\"doge\",reason=\"missing\"} 1"),
             timeout.Token);
 

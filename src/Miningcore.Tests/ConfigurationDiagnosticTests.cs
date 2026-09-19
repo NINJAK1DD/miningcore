@@ -21,6 +21,16 @@ public class ConfigurationDiagnosticTests
     private const string Secret = "ISSUE144_SYNTHETIC_SECRET";
 
     [Fact]
+    public void Projection_ReportsUtcPpsCutoffForReconciliation()
+    {
+        var cutoff = new DateTime(2026, 9, 21, 0, 0, 0, DateTimeKind.Utc).AddTicks(1234560);
+        var config = new ClusterConfig { Pools = new[] { new PoolConfig
+            { PaymentProcessing = new() { PpsBinary64Activation = cutoff } } } };
+        Assert.Contains(cutoff.ToString("O", CultureInfo.InvariantCulture),
+            ConfigurationDiagnosticProjection.Serialize(config));
+    }
+
+    [Fact]
     public void Projection_ConnectionAdmissionReportsNumericControlsWithoutIdentity()
     {
         var config = new ClusterConfig
@@ -143,7 +153,7 @@ public class ConfigurationDiagnosticTests
         var objects = ConfigurationDiagnosticProjection.ReviewedObjectTypes.ToHashSet();
         var supported = new HashSet<Type>(objects)
         {
-            typeof(bool), typeof(byte), typeof(int), typeof(double), typeof(decimal),
+            typeof(bool), typeof(byte), typeof(int), typeof(double), typeof(decimal), typeof(DateTime),
             typeof(PayoutScheme), typeof(BanManagerKind), typeof(PostgresSslMode), typeof(PoolConfig[]),
             typeof(DaemonEndpointConfig[]), typeof(RewardRecipient[]),
             typeof(ShareRelayEndpointConfig[]), typeof(Dictionary<int, PoolEndpoint>),

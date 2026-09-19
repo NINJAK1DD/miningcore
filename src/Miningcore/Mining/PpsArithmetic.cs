@@ -7,6 +7,23 @@ internal static class PpsArithmetic
 {
     internal const short LegacyDecimal = 0;
     internal const short CoreDrpBinary64V1 = 1;
+    private static readonly BigInteger LiabilityScale = BigInteger.Pow(10, 24);
+    private static readonly BigInteger LiabilityLimit = BigInteger.Pow(10, 38);
+    private static readonly BigInteger RewardPercentageDivisor = new(10_000_000_000L);
+
+    internal static void ValidateRetainedPercent(decimal retainedPercent)
+    {
+        if(retainedPercent <= 0 || retainedPercent > 100)
+            throw new InvalidDataException("Invalid PPS retained percentage");
+        var (coefficient, denominator) = Decimal(retainedPercent);
+        while(denominator > 1 && coefficient % 10 == 0)
+        {
+            coefficient /= 10;
+            denominator /= 10;
+        }
+        if(denominator > LiabilityScale)
+            throw new InvalidDataException("PPSLiabilityV1 retained percentage exceeds 24 fractional digits");
+    }
 
     private static (BigInteger N, BigInteger D) Binary64(double value)
     {
@@ -37,13 +54,14 @@ internal static class PpsArithmetic
     {
         if(rewardSatoshis <= 0 || retainedPercent <= 0 || retainedPercent > 100)
             throw new InvalidDataException("Invalid PPS reward or retained percentage");
+        ValidateRetainedPercent(retainedPercent);
         var (a, ad) = Binary64(assigned);
         var (n, nd) = Binary64(network);
         var (p, pd) = Decimal(retainedPercent);
         var numerator = rewardSatoshis * a * nd * p;
-        var denominator = new BigInteger(10_000_000_000L) * ad * n * pd;
-        var scaled = numerator * BigInteger.Pow(10, 24) / denominator;
-        if(scaled <= 0 || scaled >= BigInteger.Pow(10, 38))
+        var denominator = RewardPercentageDivisor * ad * n * pd;
+        var scaled = numerator * LiabilityScale / denominator;
+        if(scaled <= 0 || scaled >= LiabilityLimit)
             throw new InvalidDataException("PPSLiabilityV1 is outside positive NUMERIC(38,24)");
         byte scale = 24;
         while(scale > 0 && scaled % 10 == 0) { scaled /= 10; scale--; }

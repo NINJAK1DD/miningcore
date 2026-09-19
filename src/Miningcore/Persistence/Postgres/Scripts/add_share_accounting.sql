@@ -109,21 +109,21 @@ CREATE TABLE IF NOT EXISTS pps_credit_remainders
         CHECK(amount >= 0 AND amount < 0.000000000001)
 );
 
--- Upgrade commands are run by an administrator, but Miningcore connects as the database owner.
+-- Upgrade commands run as administrator; use the existing shares owner as the application role.
 -- Align newly created or pre-existing accounting relations with that application role.
 DO $$
 DECLARE
-    database_owner NAME;
+    application_owner NAME;
     target_schema NAME := current_schema();
     relation_name NAME;
 BEGIN
-    SELECT pg_get_userbyid(datdba)
-    INTO database_owner
-    FROM pg_database
-    WHERE datname = current_database();
+    SELECT pg_get_userbyid(relowner)
+    INTO application_owner
+    FROM pg_class
+    WHERE oid = 'shares'::regclass;
 
-    IF database_owner IS NULL THEN
-        RAISE EXCEPTION 'Could not resolve the owner of database %', current_database();
+    IF application_owner IS NULL THEN
+        RAISE EXCEPTION 'Could not resolve the application owner of shares';
     END IF;
 
     FOREACH relation_name IN ARRAY ARRAY[
@@ -134,15 +134,24 @@ BEGIN
     ]
     LOOP
         EXECUTE format('ALTER TABLE %I.%I OWNER TO %I',
-            target_schema, relation_name, database_owner);
+            target_schema, relation_name, application_owner);
     END LOOP;
 END $$;
 
 COMMIT;
 
+-- BEGIN GENERATED PPS ARITHMETIC MIGRATION
+-- Source: add_pps_arithmetic_version.sql; run scripts/release/sync-pps-arithmetic-migration.py
 -- Stop all share producers/relays and drain recovery journals before upgrading.
 -- Additive metadata only: existing amounts, balances, remainders and hashes stay unchanged.
 BEGIN;
+-- The session login is the migration administrator, even when createdb.sql
+-- selected the application role. SET LOCAL restores the caller's role at COMMIT.
+-- Preserve the target schema before changing the role ($user may otherwise resolve differently).
+DO $$ BEGIN
+    PERFORM set_config('search_path', format('%I, pg_catalog', current_schema()), true);
+END $$;
+SET LOCAL ROLE NONE;
 ALTER TABLE pps_share_credits ADD COLUMN IF NOT EXISTS arithmeticversion SMALLINT NOT NULL DEFAULT 0;
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='pps_share_credits'::regclass AND conname='ck_pps_arithmetic_version') THEN
@@ -154,6 +163,7 @@ CREATE TABLE IF NOT EXISTS pps_arithmetic_transitions (
     effectivefrom TIMESTAMPTZ NOT NULL CHECK(isfinite(effectivefrom)),
     version SMALLINT NOT NULL CHECK(version=1)
 );
+DROP TRIGGER IF EXISTS trg_pps_arithmetic_transition_truncate ON pps_arithmetic_transitions;
 CREATE OR REPLACE FUNCTION guard_pps_arithmetic_transition() RETURNS trigger
 LANGUAGE plpgsql AS $$ BEGIN
     RAISE EXCEPTION 'PPS arithmetic transitions are immutable; reconcile explicitly';
@@ -161,8 +171,10 @@ END $$;
 DROP TRIGGER IF EXISTS trg_pps_arithmetic_transition_immutable ON pps_arithmetic_transitions;
 CREATE TRIGGER trg_pps_arithmetic_transition_immutable BEFORE UPDATE OR DELETE ON pps_arithmetic_transitions
 FOR EACH ROW EXECUTE FUNCTION guard_pps_arithmetic_transition();
+CREATE TRIGGER trg_pps_arithmetic_transition_truncate BEFORE TRUNCATE ON pps_arithmetic_transitions
+FOR EACH STATEMENT EXECUTE FUNCTION guard_pps_arithmetic_transition();
 CREATE OR REPLACE FUNCTION guard_pps_arithmetic_credit() RETURNS trigger
-LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+LANGUAGE plpgsql AS $$
 DECLARE cutoff TIMESTAMPTZ; expected SMALLINT;
 BEGIN
     SELECT effectivefrom INTO cutoff FROM pps_arithmetic_transitions WHERE poolid=NEW.poolid;
@@ -176,7 +188,7 @@ DROP TRIGGER IF EXISTS trg_pps_arithmetic_credit ON pps_share_credits;
 CREATE TRIGGER trg_pps_arithmetic_credit BEFORE INSERT ON pps_share_credits
 FOR EACH ROW EXECUTE FUNCTION guard_pps_arithmetic_credit();
 CREATE OR REPLACE FUNCTION activate_pps_binary64(scope TEXT, cutoff TIMESTAMPTZ) RETURNS void
-LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+LANGUAGE plpgsql AS $$
 DECLARE previous TIMESTAMPTZ;
 BEGIN
     IF scope IS NULL OR scope='' OR cutoff IS NULL OR NOT isfinite(cutoff) THEN
@@ -195,9 +207,24 @@ BEGIN
     INSERT INTO pps_arithmetic_transitions VALUES(scope,cutoff,1);
 END $$;
 REVOKE ALL ON FUNCTION activate_pps_binary64(TEXT,TIMESTAMPTZ) FROM PUBLIC;
--- Give the database application owner access to transition reads used by the trigger.
-DO $$ DECLARE owner_name NAME; BEGIN
-    SELECT pg_get_userbyid(datdba) INTO owner_name FROM pg_database WHERE datname=current_database();
-    EXECUTE format('GRANT SELECT ON pps_arithmetic_transitions TO %I',owner_name);
+-- The credit table owner is the application role; the database owner may differ.
+-- An application login must never own or activate the administrative boundary.
+DO $$ DECLARE app_role NAME; admin_role NAME := session_user; routine TEXT; BEGIN
+    SELECT pg_get_userbyid(relowner) INTO app_role FROM pg_class WHERE oid='pps_share_credits'::regclass;
+    IF app_role = admin_role AND NOT EXISTS (
+        SELECT 1 FROM pg_roles WHERE rolname=admin_role AND rolsuper) THEN
+        RAISE EXCEPTION 'Run the PPS arithmetic migration as a separate database administrator';
+    END IF;
+    EXECUTE format('ALTER TABLE pps_arithmetic_transitions OWNER TO %I', admin_role);
+    REVOKE ALL ON pps_arithmetic_transitions FROM PUBLIC;
+    EXECUTE format('REVOKE ALL ON pps_arithmetic_transitions FROM %I', app_role);
+    EXECUTE format('GRANT SELECT ON pps_arithmetic_transitions TO %I', app_role);
+    FOREACH routine IN ARRAY ARRAY['guard_pps_arithmetic_transition()', 'guard_pps_arithmetic_credit()',
+        'activate_pps_binary64(text,timestamptz)'] LOOP
+        EXECUTE format('ALTER FUNCTION %s OWNER TO %I', routine, admin_role);
+        EXECUTE format('ALTER FUNCTION %s SET search_path TO pg_catalog, %I, pg_temp', routine, current_schema());
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', routine);
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I', routine, app_role);
+    END LOOP;
 END $$;
 COMMIT;
