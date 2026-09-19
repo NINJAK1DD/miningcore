@@ -10,7 +10,8 @@ difficulty notification that may already be visible to the miner.
 The audit covers `BitcoinPool`, its `MergedMiningBitcoinPool` subclass, and the
 overrides in `BitcoinBlake2bPool`. Other algorithms with independent `PoolBase`
 dispatchers are outside this Bitcoin handler policy. They share the transport's
-disconnect latch and completed-queue rejection.
+disconnect latch and completed-queue rejection. The independent handler audit is
+tracked in [#192](https://github.com/NINJAK1DD/miningcore/issues/192).
 
 | Path | Publication boundary and policy |
 | --- | --- |
@@ -21,7 +22,7 @@ disconnect latch and completed-queue rejection.
 | Configure | Canonical version-rolling/minimum-difficulty negotiation still precedes its sole response, with no new canonical notify. A failed response enqueue or an override failing after responding is terminal. BLAKE2b retains its gated matching difficulty/notify publication. |
 | Suggest difficulty | Malformed suggestions retain the existing acknowledged no-op behavior. Valid suggestions still acknowledge before changing difficulty. Publication errors now propagate to the terminal boundary instead of being logged and ignored. |
 | Extranonce subscribe and unsupported requests | Each attempts one response. Failure of that attempt closes the connection; recovery does not try another response. Existing ignored methods remain ignored. |
-| Merged mining | Inherits the audited dispatcher and publication handlers. Its auxiliary-address validation remains before acknowledgement. Manager-owned candidate outcomes and the pre-published statistical share retain their existing ownership and deduplication. |
+| Merged mining | Managers explicitly mark proof acceptance immediately after validation, before accounting construction, synchronous statistical observers or candidate submission. Later failures cannot enter invalid-proof/ban handling, including a subscriber's `StratumException`. Candidate ownership and the pre-published statistical share retain their existing ordering and deduplication. |
 | BLAKE2b overrides | Retain staged subscription lookup, assignment gate, admission budget and terminal budget latch from #179/#182. The shared response boundary delegates cleanup to that existing policy. |
 
 Normal canonical difficulty/notify layouts, chain `nBits`, clean-job flags,
@@ -43,8 +44,22 @@ their existing propagation to transport teardown.
 
 This tracks attempts, not delivery: abortive TCP close may discard queued bytes.
 Repeated miner-selected IDs belong to separate serial requests and remain valid.
-There is no ID set, dictionary or request history; state is one counter and one
-terminal bit per connection. All response payloads must use `RespondAsync`.
+There is no ID set or request history. State is bounded per connection: response
+and accepted-proof counters, disconnect/transport/job closure flags, and one
+publication-report flag held through a weak connection key. All response payloads
+must use `RespondAsync`.
+
+Both canonical and merged managers advance the accepted-proof counter immediately
+after successful proof validation. Serial dispatch observes that milestone even if
+the manager subsequently throws before returning. Failures after acceptance close
+the session without a rejection response. Before acceptance, protocol errors retain
+their existing recovery and invalid-share policy.
+
+Successful-share counts, accepted telemetry and block-time bookkeeping occur after
+`PersistenceAdmission` completes and before acknowledgement admission. Failed wire
+enqueue cannot erase those statistics or cause republishing. A merged share already
+owned by persistence retains this bookkeeping even if fail-stop closes before the
+pool attempts its response. Failed persistence admission does not count as success.
 
 `Disconnect` latches before closing I/O. The receive loop checks the latch before
 every buffered line, and cancellation after processing a line prevents dispatch
@@ -52,6 +67,22 @@ of the next one. Pool dispatch also checks the latch for already decoded calls.
 Closing a socket alone is insufficient because the pipe may already contain
 several complete requests. In-flight accounting retains its existing drain
 semantics; a later buffered request cannot restart a closed session.
+
+Terminal cleanup closes the worker's job registry under the same monitor used by
+canonical and direct-SOLO insertion. A broadcast already constructing work cannot
+reinsert it after cleanup. Dispatch and job producers also check the connection
+latch before starting work; BLAKE2b retains its assignment gate.
+
+These transport changes apply to every pool family. Queue admission uses synchronous
+[`Post`](https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.dataflow.dataflowblock.post?view=net-10.0)
+because the existing BufferBlock is unbounded; declined admission remains observable.
+Transport-owned teardown is marked before cancellation and queue completion. Sends
+during that teardown throw cancellation, so ordinary peer EOF or host stop does not
+become a queue-closed connection failure. Unexpected queue closure still throws I/O
+failure. Independent handler failures remain visible and take precedence over
+secondary socket errors caused by terminal cleanup. Every successful pipe read is
+balanced by `AdvanceTo` in `finally`, following the
+[pipeline contract](https://learn.microsoft.com/en-us/dotnet/standard/io/pipelines).
 
 The design follows [JSON-RPC response correlation](https://www.jsonrpc.org/specification#response_object)
 and preserves the successful negotiation shapes from
@@ -62,14 +93,23 @@ JSON-RPC/NiceHash response formatting is preserved.
 
 ## Diagnostics and reconnect behavior
 
-Each terminal publication failure emits at most one `AssignmentPublicationFailure`
-diagnostic and one `miningcore_stratum_admission_total` outcome `publication-failure`
-for its connection. The diagnostic uses a server-generated connection ID, a bounded
+Each connection attempts at most one `AssignmentPublicationFailure` diagnostic and
+one `miningcore_stratum_admission_total` outcome `publication-failure`. A dedicated
+report flag is independent of disconnect and BLAKE2b budget closure: a prior ban or
+disconnect cannot suppress a later genuine failure. Cleanup always closes jobs and
+attempts disconnect, even if context cleanup, a logger or a telemetry subscriber
+throws. Neither sink's failure prevents the other from being attempted; failed sinks
+are not retried. Bounded Debug `PublicationCleanupFailure` records describe secondary
+cleanup failures without replacing the original exception. The primary diagnostic
+uses a server-generated connection ID, a bounded
 failure category and an optional allowlisted code. It excludes exception text,
 request IDs, credentials, payout addresses and raw payloads. Metrics use configured
 pool and fixed outcome labels, never miner-selected labels. At the post-response
 and VarDiff boundaries, cancellation owned by the operation's shutdown token does
-not emit publication-failure telemetry. Existing transport
+not emit publication-failure telemetry. Neither does cancellation from already-owned
+transport teardown. A distinct non-cancellation failure during teardown still reports.
+Both expected and unexpected exception diagnostics remain redacted at every level;
+the IP-censor/GDPR flag does not authorize raw exception or credential logging. Existing transport
 diagnostics may separately describe teardown. See [Stratum diagnostics](stratum-diagnostics.md).
 
 Firmware/proxies may see success, a notification prefix, EOF or TCP reset. They
@@ -93,6 +133,18 @@ accounting and invalid-share statistics are asserted separately. The receive-loo
 test preloads one pipe read with multiple complete lines to prove the boundary
 without relying on OS packet coalescing. Existing BLAKE2b tests protect its override
 and cancellation behavior.
+
+Additional barriers cover peer EOF during an in-flight handler, genuine failure
+after a ban/disconnect, simultaneous broadcast insertion and terminal cleanup, and
+faulting cleanup/telemetry sinks. Merged pool regressions inject synchronous accounting
+subscriber errors after validation and assert candidate persistence remains exactly
+once with no invalid-share telemetry or ban. Accepted block/non-block tests saturate
+the response queue and verify valid-share counts and block time. Real Ethereum
+dispatch is drained through peer EOF and host stop to cover transport-wide behavior.
+
+The unrelated Windows recovery-fixture correction remains in its own test commit.
+Its cleanup tolerates a completed provider cancellation, while timeouts still escape
+before deleting any directory that could have a live recovery owner.
 
 `BitcoinPublicationRegtestTests` obtains real Bitcoin Core templates and validates
 real non-block proofs through the production job manager over TCP, in custodial

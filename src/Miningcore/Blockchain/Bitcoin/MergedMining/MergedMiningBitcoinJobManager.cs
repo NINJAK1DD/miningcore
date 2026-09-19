@@ -695,6 +695,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         using var candidatePreparation = BeginCandidatePreparation();
         var result = ProcessMergedShare(job, worker, extraNonce2, nTime, nonce, versionBits);
+        context.MarkProofAccepted();
         var share = result.Share;
 
         share.PoolId = poolConfig.Id;

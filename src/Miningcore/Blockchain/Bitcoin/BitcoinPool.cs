@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Reactive;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
+using System.Runtime.CompilerServices;
 using Autofac;
 using AutoMapper;
 using Microsoft.IO;
@@ -43,6 +44,13 @@ public class BitcoinPool : PoolBase
     protected BitcoinJobManager manager;
     private BitcoinTemplate coin;
     private int directJobPipelineFailed;
+    private readonly ConditionalWeakTable<StratumConnection, PublicationFailureState> publicationFailures = new();
+
+    private sealed class PublicationFailureState
+    {
+        private int reported;
+        internal bool TryReport() => Interlocked.Exchange(ref reported, 1) == 0;
+    }
     internal bool DirectJobPipelineFailed =>
         Volatile.Read(ref directJobPipelineFailed) != 0;
 
@@ -267,6 +275,9 @@ public class BitcoinPool : PoolBase
     protected virtual object CreateWorkerJob(StratumConnection connection,
         bool cleanJob)
     {
+        if(connection.IsDisconnectRequested)
+            throw new StratumConnectionClosedException();
+
         if(manager.DirectCoinbasePayoutEnabled &&
            Volatile.Read(ref directJobPipelineFailed) != 0)
             throw new StratumException(StratumError.JobNotFound,
@@ -306,6 +317,7 @@ public class BitcoinPool : PoolBase
         var request = tsRequest.Value;
         var context = connection.ContextAs<BitcoinWorkerContext>();
 
+        var acceptedProofSequence = context.AcceptedProofSequence;
         Share share;
         try
         {
@@ -359,7 +371,7 @@ public class BitcoinPool : PoolBase
                     requestParams, ct);
         }
 
-        catch(StratumException ex)
+        catch(StratumException ex) when(context.AcceptedProofSequence == acceptedProofSequence)
         {
             PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, false);
             context.Stats.InvalidShares++;
@@ -405,19 +417,17 @@ public class BitcoinPool : PoolBase
         // statistical share entered the accounting pipeline.
         await PublishShareAndAcknowledgeAsync(share,
             () => connection.RespondAsync(response),
-            ShouldPublishStatisticalShare(share));
+            ShouldPublishStatisticalShare(share), onAdmitted: () =>
+            {
+                // Persistence ownership, not successful wire delivery, is the
+                // acceptance milestone. Count it once even if acknowledgement fails.
+                context.Stats.ValidShares++;
+                if(share.IsBlockCandidate)
+                    poolStats.LastPoolBlockTime = clock.Now;
 
-        // telemetry
-        PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, true);
-
-        logger.Info(() => $"[{connection.ConnectionId}] Share accepted: D={Math.Round(share.Difficulty * coin.ShareMultiplier, 3)}");
-
-        // update pool stats
-        if(share.IsBlockCandidate)
-            poolStats.LastPoolBlockTime = clock.Now;
-
-        // update client stats
-        context.Stats.ValidShares++;
+                PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, true);
+                logger.Info(() => $"[{connection.ConnectionId}] Share accepted: D={Math.Round(share.Difficulty * coin.ShareMultiplier, 3)}");
+            });
 
         // Work publication after acceptance is not proof validation. Its failure
         // must not count the accepted share again as invalid or feed miner bans.
@@ -696,17 +706,27 @@ public class BitcoinPool : PoolBase
 
         async Task BroadcastAsync() => await ForEachMinerAsync(async (connection, ct) =>
         {
+            if(connection.IsDisconnectRequested)
+                return;
             var context = connection.ContextAs<BitcoinWorkerContext>();
             if(manager.DirectCoinbasePayoutEnabled && !context.IsAuthorized)
                 return;
-            var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
+            try
+            {
+                var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
 
-            // varDiff: if the client has a pending difficulty change, apply it now
-            if(context.ApplyPendingDifficulty())
-                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                // varDiff: if the client has a pending difficulty change, apply it now
+                if(context.ApplyPendingDifficulty())
+                    await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
 
-            // send job
-            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
+                await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
+            }
+            catch(Exception ex)
+            {
+                CloseRequestPublicationFailure(connection, ex,
+                    !(ex is OperationCanceledException && ct.IsCancellationRequested));
+                throw;
+            }
         });
 
         await Guard(BroadcastAsync);
@@ -736,13 +756,13 @@ public class BitcoinPool : PoolBase
             {
                 try
                 {
-                    connection.ContextAs<BitcoinWorkerContext>().ClearJobs();
-                    Disconnect(connection);
+                    connection.ContextAs<BitcoinWorkerContext>().CloseJobs();
                 }
                 catch(Exception invalidateError)
                 {
                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPool.HandleJobPipelineFailure", failure: invalidateError);
                 }
+                finally { GuardPublicationCleanup(connection, () => Disconnect(connection)); }
             }
         }
 
@@ -845,10 +865,15 @@ public class BitcoinPool : PoolBase
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         if(connection.IsDisconnectRequested)
+        {
+            Guard(() => Disconnect(connection));
             return;
+        }
 
         var request = tsRequest.Value;
         var responseSequence = connection.ResponseSequence;
+        var workerContext = connection.ContextAs<BitcoinWorkerContext>();
+        var acceptedProofSequence = workerContext.AcceptedProofSequence;
 
         try
         {
@@ -908,10 +933,13 @@ public class BitcoinPool : PoolBase
             }
         }
 
-        catch(Exception ex) when(connection.ResponseSequence != responseSequence)
+        catch(Exception ex) when(connection.ResponseSequence != responseSequence ||
+            workerContext.AcceptedProofSequence != acceptedProofSequence)
         {
             // A response attempt owns this request even if enqueue failed. Never
             // follow it with an error or keep a partially published session alive.
+            // A validated proof likewise cannot become a rejection because later
+            // accounting/candidate work failed, even before any response attempt.
             CloseRequestPublicationFailure(connection, ex,
                 !(ex is OperationCanceledException && ct.IsCancellationRequested));
             if(ex is not StratumException)
@@ -920,7 +948,7 @@ public class BitcoinPool : PoolBase
 
         catch(StratumException ex)
         {
-            await OnRequestErrorAsync(connection, request, ex, connection.ResponseSequence != responseSequence);
+            await OnRequestErrorAsync(connection, request, ex, false);
         }
     }
 
@@ -949,20 +977,31 @@ public class BitcoinPool : PoolBase
     protected virtual void CloseRequestPublicationFailure(StratumConnection connection, Exception failure,
         bool reportFailure = true)
     {
+        reportFailure &= failure is not StratumConnectionClosedException;
+        connection.TryBeginDisconnect();
         try
         {
-            if(connection.TryBeginDisconnect())
+            GuardPublicationCleanup(connection, () =>
+                connection.ContextAs<BitcoinWorkerContext>().CloseJobs());
+            GuardPublicationCleanup(connection, () =>
             {
-                connection.ContextAs<BitcoinWorkerContext>().ClearJobs();
-                if(reportFailure)
+                if(reportFailure && publicationFailures.GetValue(connection, static _ => new()).TryReport())
                 {
-                    StratumDiagnostics.Write(logger, NLog.LogLevel.Info,
-                        StratumDiagnostics.Event.AssignmentPublicationFailure, connection.ConnectionId, failure: failure);
-                    PublishTelemetry(TelemetryCategory.StratumAdmission, "publication-failure", TimeSpan.Zero);
+                    GuardPublicationCleanup(connection, () =>
+                        StratumDiagnostics.Write(logger, NLog.LogLevel.Info,
+                            StratumDiagnostics.Event.AssignmentPublicationFailure, connection.ConnectionId, failure: failure));
+                    GuardPublicationCleanup(connection, () =>
+                        PublishTelemetry(TelemetryCategory.StratumAdmission, "publication-failure", TimeSpan.Zero));
                 }
-            }
+            });
         }
-        finally { Disconnect(connection); }
+        finally { GuardPublicationCleanup(connection, () => Disconnect(connection)); }
+    }
+
+    protected void GuardPublicationCleanup(StratumConnection connection, Action cleanup)
+    {
+        Guard(cleanup, error => Guard(() => StratumDiagnostics.Write(logger, LogLevel.Debug,
+            StratumDiagnostics.Event.PublicationCleanupFailure, connection.ConnectionId, error)));
     }
 
     protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken ct)

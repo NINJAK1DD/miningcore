@@ -68,6 +68,12 @@ public class StratumConnectionTests : TestBase
         else
             await processing.WaitAsync(TestTimeout);
         Assert.Equal(1, dispatched);
+        // A fresh read must be legal even when the loop exits mid-buffer.
+        // It must also expose only the two undispatched lines.
+        var remaining = await pipe.Reader.ReadAsync().AsTask().WaitAsync(TestTimeout);
+        Assert.Equal(2, Encoding.UTF8.GetString(remaining.Buffer.ToArray()).Split('\n',
+            StringSplitOptions.RemoveEmptyEntries).Length);
+        pipe.Reader.AdvanceTo(remaining.Buffer.End);
         await pipe.Reader.CompleteAsync();
     }
 

@@ -153,6 +153,19 @@ accounting and do not acquire invalid-share or ban penalties from later publicat
 failures. Successful canonical Bitcoin/direct-SOLO ordering and immutable credit
 binding are preserved. See the [handler audit and reconnect policy](bitcoin-response-publication.md).
 
+Managers now witness proof acceptance before merged statistical accounting or
+candidate work can throw. Admitted shares keep their valid-share and block-time
+bookkeeping even when acknowledgement fails. Terminal job insertion is permanently
+closed, including broadcasts already constructing work. Cleanup preserves the
+original error and its report flag is independent of earlier disconnects.
+
+Shared transport hardening applies to **all pool families**: balanced pipe reads,
+buffered-line disconnect checks, synchronous queue admission, and explicit
+teardown cancellation for peer EOF/host stop. Unexpected queue closure still fails;
+normal teardown does not create a new connection/publication error. Independent
+handler failures remain visible. Family-specific policies outside Bitcoin are
+tracked in [#192](https://github.com/NINJAK1DD/miningcore/issues/192).
+
 ## Unreleased: BLAKE2b assignment ordering
 
 [#182](https://github.com/NINJAK1DD/miningcore/issues/182) serializes worker difficulty

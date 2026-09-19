@@ -148,6 +148,12 @@ identities, block metadata, difficulty, counts and timing remain operational met
 The existing IP-censor flag is now honored consistently by both early banned-IP and
 already-connected banned-client messages. It remains partial address masking, not
 an anonymity guarantee, and does not authorize raw identity or credential logging.
+This also applies to expected and unexpected publication exceptions at Debug level.
+`AssignmentPublicationFailure` retains a bounded cause/code and an independent
+once-per-connection reporting flag. A bounded Debug `PublicationCleanupFailure`
+describes a secondary cleanup/sink failure without replacing the original cause;
+neither event attaches raw exceptions. Normal transport-owned teardown cancellation
+does not count as a publication failure.
 Connection initialization and acceptance logging also tolerate an absent `Logging`
 object, treating censoring as not enabled, consistently with the banned-IP paths.
 This removes an incidental null-reference connection rejection for that configuration;

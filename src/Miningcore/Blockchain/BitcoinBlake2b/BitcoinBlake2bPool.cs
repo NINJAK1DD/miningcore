@@ -356,7 +356,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     {
         if(connection.IsDisconnectRequested || operations.IsClosed)
         {
-            Disconnect(connection);
+            GuardPublicationCleanup(connection, () => Disconnect(connection));
             return;
         }
 
@@ -514,19 +514,15 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     {
         // Even a submit-only session needs the latch: disconnect alone does not
         // prevent dispatch of further lines already in the receive buffer.
-        if(!difficultyBudgets.TryGetValue(connection, out var budget))
-            budget = difficultyBudgets.GetValue(connection, createDifficultyBudget);
-        if(budget.TryClose())
+        try
         {
-            connection.ContextAs<BitcoinWorkerContext>().ClearJobs();
-            if(reportFailure)
+            GuardPublicationCleanup(connection, () =>
             {
-                StratumDiagnostics.Write(logger, NLog.LogLevel.Info,
-                    StratumDiagnostics.Event.AssignmentPublicationFailure, connection.ConnectionId, failure: failure);
-                PublishTelemetry(TelemetryCategory.StratumAdmission, "publication-failure", TimeSpan.Zero);
-            }
+                var budget = difficultyBudgets.GetValue(connection, createDifficultyBudget);
+                budget.TryClose();
+            });
         }
-        Disconnect(connection);
+        finally { base.CloseRequestPublicationFailure(connection, failure, reportFailure); }
     }
 
     private async Task<bool> ValidateProposedDifficultyAsync(StratumConnection connection, JsonRpcRequest request,

@@ -31,6 +31,38 @@ public class StratumServerTests
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PrepublishedMergedShare_AdmittedBeforeFailStop_StillCountsAcceptance(bool alreadyStopped)
+    {
+        using var coordinator = new MiningFailStopCoordinator(new ProcessStatus(),
+            Substitute.For<IHostApplicationLifetime>());
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance<IMiningFailStopCoordinator>(coordinator);
+        using var container = builder.Build();
+        var server = new TestStratumServer(container, new MessageBus(coordinator));
+        var persistence = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var share = new Share { StatisticalRecordEmitted = true };
+        share.SetPersistenceAdmission(persistence.Task);
+        var admitted = 0;
+        var acknowledged = false;
+        if(alreadyStopped)
+            coordinator.BeginFailStop(ProcessExitCodes.GeneralFailure);
+        var result = server.AdmitAsync(share, () =>
+        {
+            acknowledged = true;
+            return Task.CompletedTask;
+        }, false, () => admitted++);
+        Assert.Equal(0, admitted);
+        Assert.False(result.IsCompleted);
+        coordinator.BeginFailStop(ProcessExitCodes.GeneralFailure);
+        persistence.TrySetResult();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => result.WaitAsync(TestTimeout));
+        Assert.Equal(1, admitted);
+        Assert.False(acknowledged);
+    }
+
     [Fact]
     public async Task PrepublishedMergedShare_WaitsForPropagatedJournalAdmissionBeforeResponse()
     {
@@ -798,8 +830,8 @@ public class StratumServerTests
         }
 
         public Task AdmitAsync(Share share, Func<Task> acknowledge,
-            bool publishShare) =>
-            PublishShareAndAcknowledgeAsync(share, acknowledge, publishShare);
+            bool publishShare, Action onAdmitted = null) =>
+            PublishShareAndAcknowledgeAsync(share, acknowledge, publishShare, onAdmitted);
 
         public Func<StratumConnection, Timestamped<JsonRpcRequest>,
             CancellationToken, Task> RequestHandler { get; set; }

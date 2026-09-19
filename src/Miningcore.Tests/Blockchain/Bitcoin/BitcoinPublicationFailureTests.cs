@@ -25,7 +25,7 @@ using Xunit;
 
 namespace Miningcore.Tests.Blockchain.Bitcoin;
 
-public class BitcoinPublicationFailureTests : TestBase
+public partial class BitcoinPublicationFailureTests : TestBase
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
     private static TaskCompletionSource Barrier() => new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -67,14 +67,22 @@ public class BitcoinPublicationFailureTests : TestBase
 
         internal int Submissions;
         internal Share AcceptedShare;
+        internal bool IsCandidate;
+        internal Action BeforeGetJob;
         public override Task<bool> ValidateAddressAsync(string address, CancellationToken ct) => Task.FromResult(true);
-        public override BitcoinJob GetJobForStratum() => new TestJob();
+        public override BitcoinJob GetJobForStratum()
+        {
+            BeforeGetJob?.Invoke();
+            return new TestJob();
+        }
         public override ValueTask<Share> SubmitShareAsync(StratumConnection connection, object submission, CancellationToken ct)
         {
             Submissions++;
+            connection.ContextAs<BitcoinWorkerContext>().MarkProofAccepted();
             AcceptedShare = new Share
             {
                 PoolId = poolConfig.Id, Miner = "immutable-miner", Worker = "immutable-worker", Difficulty = 1,
+                IsBlockCandidate = IsCandidate,
             };
             return ValueTask.FromResult(AcceptedShare);
         }
@@ -269,8 +277,10 @@ public class BitcoinPublicationFailureTests : TestBase
         wire.Connection.Context.IsAuthorized = true;
         bus.When(x => x.SendMessage(Arg.Any<Share>(), Arg.Any<string>()))
             .Do(_ => throw new StratumException(StratumError.Other, "accounting failure"));
+        var responses = wire.Connection.ResponseSequence;
         await wire.SendRawAsync(Request("mining.submit"));
-        Assert.NotNull((await wire.ReadAsync())["error"]);
+        await wire.AssertDisconnectedAsync();
+        Assert.Equal(responses, wire.Connection.ResponseSequence);
         Assert.Equal(0, wire.Connection.Context.Stats.InvalidShares);
         Assert.Equal(1, manager.Submissions);
     }
@@ -292,10 +302,13 @@ public class BitcoinPublicationFailureTests : TestBase
         bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "publication-failure"), Arg.Any<string>());
     }
 
-    [Fact]
-    public async Task AcceptedShare_FailedResponseEnqueue_DoesNotRepublishOrCountInvalid()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AcceptedShare_FailedResponseEnqueue_DoesNotRepublishOrCountInvalid(bool candidate)
     {
         var (config, manager, clock, bus) = Fixture();
+        manager.IsCandidate = candidate;
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: true);
         await Subscribe(wire);
         wire.Connection.Context.IsAuthorized = true;
@@ -315,6 +328,10 @@ public class BitcoinPublicationFailureTests : TestBase
         Assert.Equal(responses + 1, wire.Connection.ResponseSequence);
         Assert.Equal(1, manager.Submissions);
         Assert.Equal(0, wire.Connection.Context.Stats.InvalidShares);
+        Assert.Equal(1, wire.Connection.Context.Stats.ValidShares);
+        Assert.Equal(candidate ? clock.Now : (DateTime?) null, wire.Canonical.LastPoolBlockTime);
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
+            x.Category == TelemetryCategory.Share && x.Success == true), Arg.Any<string>());
         bus.Received(1).SendMessage(Arg.Any<Share>(), Arg.Any<string>());
     }
 }
