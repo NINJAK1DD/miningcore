@@ -13,6 +13,15 @@ source revisions. Direct component Makefile invocations with custom flags are
 developer builds, not verified portable release builds. CPU portability does
 not make the Ubuntu 26.04 archive usable on Ubuntu 22.04.
 
+The driver rejects non-empty inherited `CFLAGS`, `CXXFLAGS`, `CPPFLAGS`,
+`ASFLAGS`, `LDFLAGS`, `LDLIBS`, Make control variables (`MAKEFLAGS`, `MFLAGS`,
+`GNUMAKEFLAGS`, `MAKEOVERRIDES`, `MAKEFILES`), compiler/tool command overrides
+(`CC`, `CXX`, `CPP`, `AS`, `LD`, `AR`, `RANLIB`) and `CMAKE_TOOLCHAIN_FILE` before
+invoking build tools. Unset the named variable and retry. A later `-march` does
+not cancel explicitly enabled `-m` features inherited through Make's `+=` rules.
+This contract assumes trusted compiler executables and build tools on `PATH`;
+it is not a hermetic toolchain or a sandbox for arbitrary build code.
+
 The driver passes `-march=x86-64-v2 -mtune=generic -maes -mpclmul` to the native
 Makefile components and external CMake builds. It does not inspect the builder's
 CPU to choose the distributed instruction set. The CryptoNote, Zano, Cortex and
@@ -44,8 +53,13 @@ validation; it is not part of this portability correction.
 
 Every release archive's `BUILD-INFO` records the declared native CPU baseline beside
 the source commit, build image and target. Build-policy checks guard that metadata
-against drift from the driver and inspect every top-level native Makefile for
-host-specific or unreviewed general AVX flags.
+against drift from the driver. The scanner allows only reviewed baseline-compatible
+machine flags and exact per-target exceptions in active Makefiles; all explicit
+`-march`/`-mtune` choices belong to the driver. It recursively discovers Makefiles
+and CMakeLists files. Nineteen inactive upstream build files have explicit reasons
+and content hashes in `scripts/release/native-inactive-build-files.json`; changes,
+new files, stale allowances and unreviewed recursive build invocations require
+review. Validation uses explicit errors, including under optimized Python.
 
 ## Regression gate
 
@@ -53,22 +67,25 @@ Install `qemu-user` and run against the actual built library directory:
 
 ```bash
 bash scripts/release/test-linux-native-build-fail-fast.sh
-python3 scripts/release/test-native-cpu-policy.py --self-test
+python3 -O scripts/release/test-native-cpu-policy.py --self-test
 python3 scripts/release/test-native-cpu-policy.py
 bash scripts/release/test-randomx-cpu-os-state.sh "${TMPDIR:-/tmp}"
 bash scripts/release/test-native-cpu-portability.sh src/Miningcore/bin/Release/net10.0
 ```
 
-The build-driver fixture fails on any attempt to probe the builder CPU and checks
+The build-driver fixture rejects 19 inherited override variables before any native
+tool runs, fails on any attempt to probe the builder CPU, and checks
 the fixed baseline on the initial component invocation. The static policy guard
 also examines all 25 top-level native Makefiles, allowing reviewed optional flags
 only on their specific translation units. The native probe runs
 RandomX and RandomARQ known-answer hashes, Panthera and SCash cross-CPU hash
 comparisons, CryptoNote integrated-address decoding, GhostRider, Chukwa, Argon2d250,
-BLAKE3 and HighwayHash vectors. It also executes Cortex header hashing/SipHash and
-duplicate-edge rejection, and all four Zano exports with a malformed block. These
-last checks cover rejection paths, not successful Zano consensus hashing or valid
-Cortex proofs. In total the probe directly executes ten libraries, including all
+BLAKE3, HighwayHash and VerusHash 2.2 vectors. It also executes Cortex header hashing/SipHash
+and duplicate-edge rejection, and all four Zano exports with both malformed input
+and the mainnet genesis block. Zano checks positive serialization, hashing-blob,
+mining-hash and block-ID results; Cortex still covers rejection rather than valid
+proofs. [Vector provenance](../scripts/release/fixtures/native-cpu-vectors.md) records
+the added inputs and reference results. In total the probe directly executes eleven libraries, including all
 four whose Makefiles previously specified `-march=native`. It runs on the host and under QEMU's
 `Nehalem-v1,+aes,+pclmulqdq` model, without AVX, AVX2 or AVX-512. The hosted
 Ubuntu 26.04 development runner uses `amd64v3` system-library packages, which
@@ -77,8 +94,8 @@ cannot start on a pre-AVX CPU; that job explicitly selects `--avx2-userspace`
 now runs the strict baseline on every CI push and PR, including direct `dev` pushes;
 both release containers and the lab also keep that strict gate. There is no silent
 fallback from strict testing to the weaker model. A separate fixture compiles the real HighwayHash
-dispatcher with a controlled CPUID provider advertising AVX2 without CPU or OS XSAVE,
-and asserts that it selects SSE4.1 instead. An AVX-512 negative control (and an
+dispatcher with controlled CPUID/XCR0 observations across nine CPU/OS-state cases,
+including missing XMM/YMM state and valid AVX2 selection. An AVX-512 negative control (and an
 AVX2 `vpbroadcastd` negative control on the strict baseline) must terminate with
 SIGILL; otherwise the gate fails. These controls check specific instructions,
 not the accuracy of every opcode in the emulator. Crashes, timeouts, missing symbols/libraries and differing hashes
@@ -92,6 +109,7 @@ the CPUID/XCR0 observations; the constructor's decision logic is unchanged. This
 avoids QEMU versions that cannot advertise the inconsistent AVX2/OSXSAVE combination.
 It uses the four source directories retained by the driver under `TMPDIR`; artifact-only
 validation can run the native portability probe without those source directories.
+Missing sources fail with a targeted instruction to run the native build first.
 Native execution is bounded to five minutes and emulated execution to ten minutes,
 allowing for all four RandomX cache initializations on slower runners.
 

@@ -20,13 +20,18 @@ command -v qemu-x86_64 >/dev/null || {
   echo 'qemu-user is required (apt-get install qemu-user)' >&2
   exit 1
 }
-g++ -std=c++11 -O2 -march=x86-64 -Wall -Wextra -Werror \
+g++ -std=c++11 -O2 -fno-inline -fPIC -shared -march=x86-64 -Wall -Wextra -Werror \
   -I "$repository_root/src/Native/libdero/include" \
   "$repository_root/src/Native/libdero/include/highwayhash/instruction_sets.cc" \
+  -o "$work_dir/libdispatch.so"
+g++ -std=c++11 -O2 -march=x86-64 -Wall -Wextra -Werror \
+  -I "$repository_root/src/Native/libdero/include" \
   "$repository_root/scripts/release/fixtures/highwayhash-osxsave.cpp" \
-  -o "$work_dir/osxsave"
-"$work_dir/osxsave"
-"$work_dir/osxsave" --no-cpu-xsave
+  -L "$work_dir" -ldispatch -Wl,--export-dynamic,-rpath,"$work_dir" -o "$work_dir/osxsave"
+# Each process starts with an empty capability cache.
+for state in {0..8}; do
+  timeout 30 "$work_dir/osxsave" "$state"
+done
 # Build the probe without optional instructions; test the actual shipped DSOs.
 g++ -std=c++11 -O2 -march=x86-64 -Wall -Wextra -Werror \
   "$repository_root/scripts/release/fixtures/native-cpu-portability.cpp" \

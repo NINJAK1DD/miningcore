@@ -7,6 +7,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include "zano-genesis.h"
 
 static void require(bool ok, const char* message)
 {
@@ -140,6 +141,15 @@ int main(int argc, char** argv)
     dlclose(lib);
     highwayhash(directory);
 
+    std::puts("Testing VerusHash 2.2 Haraka/CLHash dispatch");
+    lib = open_library(directory, "libverushash.so");
+    auto verus = symbol<void (*)(char*, char*, int)>(lib, "verushash2b2o_export");
+    input.resize(80);
+    for(size_t i = 0; i < input.size(); ++i) input[i] = static_cast<uint8_t>(i);
+    verus(reinterpret_cast<char*>(input.data()), reinterpret_cast<char*>(output), input.size());
+    check_hash(output, "b670b52b5d8afbbe5418a2e1a6465f58f1ccf6a9d3a167fb888c956505d2d3a7");
+    dlclose(lib);
+
     std::puts("Testing Cortex header and SipHash proof rejection");
     lib = open_library(directory, "libcortexcuckoocycle.so");
     auto cortex = symbol<int32_t (*)(const char*, int, const char*)>(lib, "cortexcuckoocycle_export");
@@ -166,6 +176,24 @@ int main(int argc, char** argv)
         auto id = symbol<bool (*)(const char*, unsigned, uint8_t*)>(lib, name);
         require(!id(malformed, sizeof(malformed), output), "Zano malformed block ID rejection differs");
     }
+    std::puts("Testing Zano genesis serialization and hashing");
+    input = unhex(zano_genesis_hex);
+    auto mining_id = symbol<bool (*)(const char*, unsigned, uint8_t*)>(lib, "get_blob_id_export");
+    auto block_id = symbol<bool (*)(const char*, unsigned, uint8_t*)>(lib, "get_block_id_export");
+    require(mining_id(reinterpret_cast<const char*>(input.data()), input.size(), output), "Zano genesis mining hash failed");
+    check_hash(output, "2f4667d8e7190a7fcc1e5de7e93d6c97fe9e883caed5ab35281f9a9deef5c595");
+    require(block_id(reinterpret_cast<const char*>(input.data()), input.size(), output), "Zano genesis block ID failed");
+    check_hash(output, "cc608f59f8080e2fbfe3c8c80eb6e6a953d47cf2d6aebd345bada3a1cab99852");
+    const auto expected_blob = unhex("019db2b984170000000000000000000000000000000000000000000000000000000000000000000000000000a3f7f244c40d44eaf987d11a66e88b513785768b9675b535ce398f90913acf7301");
+    blob_size = sizeof(blob);
+    require(convert(reinterpret_cast<const char*>(input.data()), input.size(), blob, &blob_size) &&
+        blob_size == expected_blob.size() && std::memcmp(blob, expected_blob.data(), blob_size) == 0,
+        "Zano genesis hashing blob differs");
+    std::vector<uint8_t> serialized(input.size());
+    blob_size = serialized.size();
+    require(convert_block(reinterpret_cast<const char*>(input.data()), input.size(), serialized.data(),
+        &blob_size, 101011010205ULL) && blob_size == input.size() && serialized == input,
+        "Zano genesis block round trip differs");
     dlclose(lib);
     std::puts("Native CPU portability vectors passed");
 }

@@ -590,7 +590,7 @@ jobs:
       - name: Test native CPU portability
         shell: bash
         run: |
-          python3 scripts/release/test-native-cpu-policy.py --self-test
+          python3 -O scripts/release/test-native-cpu-policy.py --self-test
           python3 scripts/release/test-native-cpu-policy.py
           bash scripts/release/test-native-cpu-portability.sh src/Miningcore/bin/Release/net10.0
 

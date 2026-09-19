@@ -254,6 +254,30 @@ SH
   chmod +x "$work_dir/bin/$tool"
 done
 
+# No inherited compiler/preprocessor/linker flags or Make precedence controls
+# may reach even the first native tool. Include compiler-command flag injection.
+for inherited in CFLAGS=-mavx512f CXXFLAGS=-mfma CPPFLAGS=-DHAVE_AVX512F \
+    ASFLAGS=-march=skylake-avx512 LDFLAGS=-mavx512f LDLIBS=-mavx2 \
+    'MAKEFLAGS=-e CFLAGS=-mavx512f' MFLAGS=-e GNUMAKEFLAGS=-e \
+    MAKEOVERRIDES=CXXFLAGS=-mbmi2 MAKEFILES=/untrusted.mk \
+    'CC=gcc -mavx512f' 'CXX=g++ -mavx2' 'CPP=gcc -E -mavx2' \
+    AS=untrusted LD=untrusted AR=untrusted RANLIB=untrusted \
+    CMAKE_TOOLCHAIN_FILE=/untrusted.cmake; do
+  set +e
+  env "$inherited" PATH="$work_dir/bin:$PATH" \
+    MININGCORE_NATIVE_TEST_TRACE="$work_dir/trace" \
+    bash "$work_dir/src/Miningcore/build-libs-linux.sh" "$work_dir/out" \
+    > "$work_dir/rejected-output" 2>&1
+  rejected_status=$?
+  set -e
+  if [[ "$rejected_status" -ne 64 || -s "$work_dir/trace" ]] ||
+      ! grep -Fq "rejects inherited ${inherited%%=*}; unset it" "$work_dir/rejected-output"; then
+    echo "Native driver did not reject ${inherited%%=*} before invoking tools" >&2
+    cat "$work_dir/rejected-output" >&2
+    exit 1
+  fi
+done
+
 set +e
 (
   cd "$work_dir/src/Miningcore"

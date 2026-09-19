@@ -85,7 +85,7 @@ jobs:
       shell: bash
       run: |
         bash scripts/release/test-linux-native-build-fail-fast.sh
-        python3 scripts/release/test-native-cpu-policy.py --self-test
+        python3 -O scripts/release/test-native-cpu-policy.py --self-test
         python3 scripts/release/test-native-cpu-policy.py
 
     - name: Validate Odocrypt native source inventory

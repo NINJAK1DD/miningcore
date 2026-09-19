@@ -1,0 +1,78 @@
+{
+  "libcryptonight/xmrig/3rdparty/argon2/CMakeLists.txt": {
+    "sha256": "5a9e013bc5fb40019cfbaaba3e8e8a7eb133d3ebfef71b2adceb42e1daebc0a3",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libcryptonight/xmrig/3rdparty/libethash/CMakeLists.txt": {
+    "sha256": "636474e00bafbe2c3e7659ed83e8990ecabadfefb4bc31eee11fed87345f4adf",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libcryptonight/xmrig/crypto/ghostrider/CMakeLists.txt": {
+    "sha256": "a6e8e05fa6033632e4ed902cab9ebae3e0433771a7bee70f715831c86faf8389",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libfiropow/ethash/CMakeLists.txt": {
+    "sha256": "d44e2165d59c67a35ded135d9c86f13c6f78d9a404be2e053b1626e2649aaacf",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libfiropow/keccak/CMakeLists.txt": {
+    "sha256": "6f0bfb690a1677f29eefefa37ecf4415ba34b1fd7600930c11a35117023bc5d3",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libkawpow/ethash/CMakeLists.txt": {
+    "sha256": "d44e2165d59c67a35ded135d9c86f13c6f78d9a404be2e053b1626e2649aaacf",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libkawpow/keccak/CMakeLists.txt": {
+    "sha256": "6f0bfb690a1677f29eefefa37ecf4415ba34b1fd7600930c11a35117023bc5d3",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libmeowpow/ethash/CMakeLists.txt": {
+    "sha256": "d44e2165d59c67a35ded135d9c86f13c6f78d9a404be2e053b1626e2649aaacf",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libmeowpow/keccak/CMakeLists.txt": {
+    "sha256": "6f0bfb690a1677f29eefefa37ecf4415ba34b1fd7600930c11a35117023bc5d3",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libmerakipow/ethash/CMakeLists.txt": {
+    "sha256": "d44e2165d59c67a35ded135d9c86f13c6f78d9a404be2e053b1626e2649aaacf",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libmerakipow/keccak/CMakeLists.txt": {
+    "sha256": "6f0bfb690a1677f29eefefa37ecf4415ba34b1fd7600930c11a35117023bc5d3",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libmultihash/blake2/ref/makefile": {
+    "sha256": "e386902b58cd1dbe58f25bd8d639d39132fbfcbdd9b6724b7809b23814043e50",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libmultihash/blake3/makefile": {
+    "sha256": "41a090e776717642f619dd578791406e312672af660eedb54ed6bf865aa297fd",
+    "reason": "Unused upstream build; parent Makefile compiles the dispatched BLAKE3 assembly directly."
+  },
+  "libphihash/ethash/CMakeLists.txt": {
+    "sha256": "0d6b2aab6aa25ecad21f4e463e1a272bf3670f1adfd9b5e271363c65aaf7e1bc",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libphihash/keccak/CMakeLists.txt": {
+    "sha256": "6f0bfb690a1677f29eefefa37ecf4415ba34b1fd7600930c11a35117023bc5d3",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libprogpowz/ethash/CMakeLists.txt": {
+    "sha256": "d44e2165d59c67a35ded135d9c86f13c6f78d9a404be2e053b1626e2649aaacf",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libprogpowz/keccak/CMakeLists.txt": {
+    "sha256": "6f0bfb690a1677f29eefefa37ecf4415ba34b1fd7600930c11a35117023bc5d3",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libsccpow/ethash/CMakeLists.txt": {
+    "sha256": "d44e2165d59c67a35ded135d9c86f13c6f78d9a404be2e053b1626e2649aaacf",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  },
+  "libsccpow/keccak/CMakeLists.txt": {
+    "sha256": "6f0bfb690a1677f29eefefa37ecf4415ba34b1fd7600930c11a35117023bc5d3",
+    "reason": "Unused by the Linux driver; parent Makefile compiles these sources directly."
+  }
+}

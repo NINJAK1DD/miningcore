@@ -1,8 +1,11 @@
 CFLAGS += -g -Wall -c -O3 -fPIC -DNDEBUG -Wno-deprecated-declarations -Wno-maybe-uninitialized -flax-vector-conversions -Wno-unused-variable -Wunused-but-set-variable -Wno-unused-function $(CPU_FLAGS) $(HAVE_FEATURE)
 CXXFLAGS += -g -Wall -O3 -fPIC -fpermissive -Wuninitialized -DNDEBUG -Wno-deprecated-declarations -Wno-maybe-uninitialized -flax-vector-conversions -Wno-unused-variable -Wunused-but-set-variable -Wno-unused-function -Wno-sign-compare -std=c++17 $(CPU_FLAGS) $(HAVE_FEATURE)
 
+UNAME_P ?= $(shell uname -m)
+ifneq ($(MAKECMDGOALS),clean)
 ifneq ($(UNAME_P),x86_64)
         $(error libdero Linux builds support x86_64 only)
+endif
 endif
 CXXFLAGS += -m64
 

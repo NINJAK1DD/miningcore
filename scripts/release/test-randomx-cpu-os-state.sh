@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source_root=$(realpath "${1:?usage: test-randomx-cpu-os-state.sh SOURCE_ROOT}")
+source_root=${1:?usage: test-randomx-cpu-os-state.sh SOURCE_ROOT}
+for fork in RandomX RandomARQ Panthera RandomXSCash; do
+  for source in cpu.cpp cpu.hpp; do
+    if [[ ! -f "$source_root/$fork/src/$source" ]]; then
+      echo "Missing $source_root/$fork/src/$source; run the native build first and pass its TMPDIR as SOURCE_ROOT" >&2
+      exit 1
+    fi
+  done
+done
+source_root=$(realpath "$source_root")
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work_dir=$(mktemp -d)
 trap 'rm -rf -- "$work_dir"' EXIT

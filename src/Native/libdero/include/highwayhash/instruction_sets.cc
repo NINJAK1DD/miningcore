@@ -23,12 +23,6 @@
 
 namespace highwayhash {
 
-namespace {
-
-bool IsBitSet(const uint32_t reg, const int index) {
-  return (reg & (1U << index)) != 0;
-}
-
 // Returns the lower 32 bits of extended control register 0.
 // Requires CPU support for "OSXSAVE" (see below).
 uint32_t ReadXCR0() {
@@ -42,6 +36,12 @@ uint32_t ReadXCR0() {
                : "c"(index));
   return xcr0;
 #endif
+}
+
+namespace {
+
+bool IsBitSet(const uint32_t reg, const int index) {
+  return (reg & (1U << index)) != 0;
 }
 
 // 0 iff not yet initialized by Supported().
@@ -111,15 +111,17 @@ TargetBits InstructionSets::Supported() {
   // preserved across context switches and are not safe to use.
   if (has_xsave && has_osxsave) {
     const uint32_t xcr0 = ReadXCR0();
-    // Baseline XMM state is preserved on x86-64 independently of XSAVE.
-    // AVX/FMA require both XMM and YMM state enabled through XCR0.
-    if ((xcr0 & 6) != 6) {
-      flags &= ~(kBitAVX | kBitAVX2 | kBitFMA);
+    // XMM/YMM
+    if ((xcr0 & 2) == 0 || (xcr0 & 4) == 0) {
+      flags &= ~(kBitAVX | kBitAVX2);
     }
   } else {
-    // CPUID capability alone is insufficient when the OS does not preserve
-    // YMM state. Keep the dispatcher on its baseline implementation.
-    flags &= ~(kBitAVX | kBitAVX2 | kBitFMA);
+    // Clear the AVX/AVX2 bits if the CPU or OS does not support XSAVE.
+    //
+    // The lower 128 bits of XMM0-XMM15 are guaranteed to be preserved across
+    // context switches on x86_64 and any modern 32-bit system, so only AVX2
+    // needs to be disabled.
+    flags &= ~(kBitAVX | kBitAVX2);
   }
 
   // Also indicates "supported" has been initialized.

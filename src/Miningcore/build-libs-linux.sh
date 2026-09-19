@@ -2,6 +2,18 @@
 
 set -euo pipefail
 
+# Make's += assignments retain environment flags; a later -march does not
+# cancel explicit -m feature switches. Reject overrides before invoking tools.
+# Do not print their values (MAKEFLAGS/MAKEFILES may contain arbitrary input).
+for native_override in CFLAGS CXXFLAGS CPPFLAGS ASFLAGS LDFLAGS LDLIBS \
+    MAKEFLAGS MFLAGS GNUMAKEFLAGS MAKEOVERRIDES MAKEFILES \
+    CC CXX CPP AS LD AR RANLIB CMAKE_TOOLCHAIN_FILE; do
+  if [[ -n "${!native_override:-}" ]]; then
+    echo "Portable native build rejects inherited $native_override; unset it and rerun the native build" >&2
+    exit 64
+  fi
+done
+
 OutDir=${1:?usage: build-libs-linux.sh OUTPUT_DIRECTORY}
 ScriptDir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 NativeDir=$(cd "$ScriptDir/../Native" && pwd)
