@@ -1240,6 +1240,9 @@ public partial class PoolPaymentProcessingConfig
     public PayoutScheme PayoutScheme { get; set; }
     public JToken PayoutSchemeConfig { get; set; }
 
+    // Explicit UTC cutover, matching the immutable database transition. Null keeps legacy arithmetic.
+    public DateTime? PpsBinary64Activation { get; set; }
+
     /// <summary>
     /// Time-based statistical-share retention for PPS pools. PPS liabilities are journaled at
     /// acceptance and do not depend on finding a block, so cleanup must not depend on pool luck.

@@ -30,6 +30,7 @@ public class ShareRepository : IShareRepository
         public Guid AccountingId { get; set; }
         public string Address { get; set; }
         public decimal CalculatedAmount { get; set; }
+        public short ArithmeticVersion { get; set; }
         public decimal CreditedAmount { get; set; }
         public double Difficulty { get; set; }
         public double NetworkDifficulty { get; set; }
@@ -66,9 +67,13 @@ public class ShareRepository : IShareRepository
                 ('share_accounting_prune_state', 'singletonid', 'int2', false, NULL, NULL),
                 ('share_accounting_prune_state', 'cursorcreated', 'timestamptz', true, NULL, NULL),
                 ('share_accounting_prune_state', 'cursoraccountingid', 'uuid', true, NULL, NULL),
+                ('pps_arithmetic_transitions', 'poolid', 'text', false, NULL, NULL),
+                ('pps_arithmetic_transitions', 'effectivefrom', 'timestamptz', false, NULL, NULL),
+                ('pps_arithmetic_transitions', 'version', 'int2', false, NULL, NULL),
                 ('pps_share_credits', 'poolid', 'text', false, NULL, NULL),
                 ('pps_share_credits', 'accountingid', 'uuid', false, NULL, NULL),
                 ('pps_share_credits', 'address', 'text', false, NULL, NULL),
+                ('pps_share_credits', 'arithmeticversion', 'int2', false, NULL, NULL),
                 ('pps_share_credits', 'calculatedamount', 'numeric', false, 38, 24),
                 ('pps_share_credits', 'creditedamount', 'numeric', false, 28, 12),
                 ('pps_share_credits', 'difficulty', 'float8', false, NULL, NULL),
@@ -94,6 +99,10 @@ public class ShareRepository : IShareRepository
                 WHERE actual.column_name IS NULL
             )
             SELECT NOT EXISTS(SELECT 1 FROM missing_columns)
+            AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('pps_share_credits')
+                AND tgname='trg_pps_arithmetic_credit' AND tgenabled='O')
+            AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('pps_share_credits')
+                AND conname='ck_pps_arithmetic_version' AND convalidated)
             AND EXISTS (
                 SELECT 1 FROM pg_index index_record
                 WHERE index_record.indrelid = to_regclass('shares')
@@ -560,7 +569,7 @@ public class ShareRepository : IShareRepository
            (batch.NewReceiptNotBefore != DateTime.MinValue &&
                batch.NewReceiptNotBefore.Kind != DateTimeKind.Utc) ||
            batch.PpsCredits.Any(x => x == null ||
-               x.AccountingId != batch.AccountingId ||
+               x.AccountingId != batch.AccountingId || x.ArithmeticVersion is not (0 or 1) ||
                string.IsNullOrWhiteSpace(x.PoolId) ||
                string.IsNullOrWhiteSpace(x.Address) || x.CalculatedAmount <= 0 ||
                !double.IsFinite(x.Difficulty) || x.Difficulty <= 0 ||
@@ -668,9 +677,9 @@ public class ShareRepository : IShareRepository
                     @Addresses::text[], @CalculatedAmounts::numeric[],
                     @Difficulties::double precision[],
                     @NetworkDifficulties::double precision[],
-                    @RewardBases::bigint[], @CreatedValues::timestamptz[])
+                    @RewardBases::bigint[], @CreatedValues::timestamptz[], @ArithmeticVersions::smallint[])
                 AS value(poolid, accountingid, address, calculatedamount,
-                    difficulty, networkdifficulty, rewardbasissatoshis, created)
+                    difficulty, networkdifficulty, rewardbasissatoshis, created, arithmeticversion)
             ), running AS (
                 SELECT input.*, remainder.amount +
                         sum(calculatedamount) OVER recipient_window AS accumulated,
@@ -691,10 +700,10 @@ public class ShareRepository : IShareRepository
             ), inserted_credits AS (
                 INSERT INTO pps_share_credits(poolid, accountingid, address,
                     calculatedamount, creditedamount, difficulty,
-                    networkdifficulty, rewardbasissatoshis, created)
+                    networkdifficulty, rewardbasissatoshis, created, arithmeticversion)
                 SELECT poolid, accountingid, address, calculatedamount,
                     creditedamount, difficulty, networkdifficulty,
-                    rewardbasissatoshis, created
+                    rewardbasissatoshis, created, arithmeticversion
                 FROM calculated
                 RETURNING *
             ), inserted_changes AS (
@@ -739,6 +748,7 @@ public class ShareRepository : IShareRepository
             PoolIds = credits.Select(x => x.PoolId).ToArray(),
             AccountingIds = credits.Select(x => x.AccountingId).ToArray(),
             Addresses = credits.Select(x => x.Address).ToArray(),
+            ArithmeticVersions = credits.Select(x => x.ArithmeticVersion).ToArray(),
             CalculatedAmounts = credits.Select(x => x.CalculatedAmount).ToArray(),
             Difficulties = credits.Select(x => x.Difficulty).ToArray(),
             NetworkDifficulties = credits.Select(x => x.NetworkDifficulty).ToArray(),
@@ -839,6 +849,7 @@ public class ShareRepository : IShareRepository
             if(actual == null || actual.AccountingId != expected.AccountingId ||
                !string.Equals(actual.Address, expected.Address, StringComparison.Ordinal) ||
                actual.CalculatedAmount != expected.CalculatedAmount ||
+               actual.ArithmeticVersion != expected.ArithmeticVersion ||
                actual.Difficulty != expected.Difficulty ||
                actual.NetworkDifficulty != expected.NetworkDifficulty ||
                actual.RewardBasisSatoshis != expected.RewardBasisSatoshis ||

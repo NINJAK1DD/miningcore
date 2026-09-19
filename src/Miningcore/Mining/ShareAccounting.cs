@@ -44,7 +44,7 @@ internal static class ShareAccounting
             if(envelope.PairedShare != null || !string.IsNullOrEmpty(envelope.AccountingId) ||
                envelope.AccountingRole != ShareAccountingRole.None ||
                envelope.RewardBasisSatoshis != 0 ||
-               envelope.PpsCalculatedAmount.HasValue)
+               envelope.PpsCalculatedAmount.HasValue || envelope.PpsArithmeticVersion != 0)
                 throw new InvalidDataException(
                     "Block-only records must not carry ordinary share-accounting data");
 
@@ -62,7 +62,7 @@ internal static class ShareAccounting
             if(envelope.PairedShare != null ||
                envelope.AccountingRole != ShareAccountingRole.None ||
                envelope.RewardBasisSatoshis != 0 ||
-               envelope.PpsCalculatedAmount.HasValue)
+               envelope.PpsCalculatedAmount.HasValue || envelope.PpsArithmeticVersion != 0)
                 throw new InvalidDataException(
                     "Unidentified shares must not carry partial accounting data");
 
@@ -279,9 +279,11 @@ internal static class ShareAccounting
            pool.PaymentProcessing.PayoutScheme != PayoutScheme.PPS)
         {
             share.PpsCalculatedAmount = null;
+            share.PpsArithmeticVersion = 0;
             return;
         }
 
+        share.PpsArithmeticVersion = ArithmeticVersionAt(pool, share.Created);
         share.PpsCalculatedAmount = CalculatePpsAmount(pool, share);
     }
 
@@ -290,6 +292,10 @@ internal static class ShareAccounting
     {
         ArgumentNullException.ThrowIfNull(pool);
         ArgumentNullException.ThrowIfNull(share);
+
+        if(share.PpsArithmeticVersion is not (0 or 1) ||
+           (!share.PpsCalculatedAmount.HasValue && share.PpsArithmeticVersion != 0))
+            throw new InvalidDataException("Unknown or incomplete PPS arithmetic evidence");
 
         var hasPaymentConfiguration = pool.PaymentProcessing != null;
         var configuredPps = pool.PaymentProcessing?.PayoutScheme ==
@@ -317,7 +323,8 @@ internal static class ShareAccounting
         ValidatePpsCalculatedAmount(pool.Id, calculated, true);
         if(hasPaymentConfiguration)
         {
-            if(calculated != CalculatePpsAmount(pool, share))
+            if(share.PpsArithmeticVersion != ArithmeticVersionAt(pool, share.Created) ||
+               calculated != CalculatePpsAmount(pool, share))
                 throw new InvalidDataException(
                     $"PPS liability evidence for pool '{pool.Id}' conflicts with its accepting configuration");
         }
@@ -332,11 +339,20 @@ internal static class ShareAccounting
             AccountingId = ParseCanonicalId(share.AccountingId),
             Address = share.Miner,
             CalculatedAmount = calculated,
+            ArithmeticVersion = share.PpsArithmeticVersion,
             Difficulty = share.Difficulty,
             NetworkDifficulty = share.NetworkDifficulty,
             RewardBasisSatoshis = share.RewardBasisSatoshis,
             Created = share.Created,
         };
+    }
+
+    internal static short ArithmeticVersionAt(PoolConfig pool, DateTime created)
+    {
+        var activation = pool.PaymentProcessing?.PpsBinary64Activation;
+        if(activation.HasValue && (activation.Value.Kind != DateTimeKind.Utc || activation.Value.Ticks % 10 != 0 || created.Kind != DateTimeKind.Utc))
+            throw new InvalidDataException("PPS arithmetic cutover must be microsecond-aligned UTC and share timestamps must be UTC");
+        return activation.HasValue && created >= activation.Value ? PpsArithmetic.CoreDrpBinary64V1 : PpsArithmetic.LegacyDecimal;
     }
 
     private static decimal CalculatePpsAmount(PoolConfig pool, Share share)
@@ -365,6 +381,12 @@ internal static class ShareAccounting
             throw new InvalidDataException(
                 $"Pool '{pool.Id}' must retain a positive reward fraction for PPS");
 
+        if(share.PpsArithmeticVersion == PpsArithmetic.CoreDrpBinary64V1)
+            return PpsArithmetic.Calculate(share.RewardBasisSatoshis, share.Difficulty,
+                share.NetworkDifficulty, 100m - recipientPercent);
+        if(share.PpsArithmeticVersion != PpsArithmetic.LegacyDecimal)
+            throw new InvalidDataException("Unsupported PPS arithmetic version");
+
         decimal retainedReward;
         decimal calculated;
 
@@ -391,6 +413,10 @@ internal static class ShareAccounting
         Share share, decimal calculated, bool allowUnavailableTemplate)
     {
         ValidatePpsTemplateContract(pool, allowUnavailableTemplate);
+
+        if(share.PpsArithmeticVersion == PpsArithmetic.CoreDrpBinary64V1)
+            return PpsArithmetic.WithinMaximum(calculated, share.RewardBasisSatoshis,
+                share.Difficulty, share.NetworkDifficulty);
 
         decimal difficulty;
         decimal networkDifficulty;
@@ -496,6 +522,9 @@ internal static class ShareAccounting
 
         foreach(var credit in credits.OrderBy(x => x.PoolId, StringComparer.Ordinal))
         {
+            // Preserve historical version-0 receipt bytes exactly.
+            if(credit.ArithmeticVersion != 0)
+                builder.Append("pps-arithmetic|").Append(credit.ArithmeticVersion).Append('\n');
             builder.Append("pps|").Append(credit.PoolId).Append('|')
                 .Append(credit.Address).Append('|')
                 .Append(credit.CalculatedAmount.ToString(CultureInfo.InvariantCulture)).Append('|')
