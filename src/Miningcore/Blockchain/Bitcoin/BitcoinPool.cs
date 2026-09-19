@@ -727,7 +727,7 @@ public class BitcoinPool : PoolBase
 
                 await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
             }
-            catch(StratumConnectionClosedException ex)
+            catch(OperationCanceledException ex) when(ex is StratumConnectionClosedException or BitcoinJobRegistryClosedException)
             {
                 // A concurrent disconnect owns this cancellation. Finish cleanup
                 // without promoting ordinary connection churn to a broadcast error.
@@ -992,7 +992,7 @@ public class BitcoinPool : PoolBase
     protected virtual void CloseRequestPublicationFailure(StratumConnection connection, Exception failure,
         bool reportFailure = true)
     {
-        reportFailure &= failure is not StratumConnectionClosedException &&
+        reportFailure &= failure is not (StratumConnectionClosedException or BitcoinJobRegistryClosedException) &&
             !connection.IsMiningFailStopCancellation(failure);
         connection.TryBeginDisconnect();
         try
@@ -1040,7 +1040,7 @@ public class BitcoinPool : PoolBase
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
                 await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
             }
-            catch(StratumConnectionClosedException ex)
+            catch(OperationCanceledException ex) when(ex is StratumConnectionClosedException or BitcoinJobRegistryClosedException)
             {
                 // Construction can finish after a concurrent ban closed jobs.
                 // This is terminal cleanup, not an idle VarDiff failure.

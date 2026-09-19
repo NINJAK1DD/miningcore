@@ -278,7 +278,7 @@ public partial class BitcoinPublicationFailureTests
         Assert.Equal(jobs, wire.JobsCreated);
         var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
         Assert.Empty(context.validJobs);
-        Assert.Throws<StratumConnectionClosedException>(() => context.AddJob(new TestJob(), 4));
+        Assert.Throws<BitcoinJobRegistryClosedException>(() => context.AddJob(new TestJob(), 4));
         await wire.AnnounceJobAsync(new object[] { "later", false });
         Assert.Empty(context.validJobs);
         bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "publication-failure"), Arg.Any<string>());

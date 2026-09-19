@@ -60,17 +60,20 @@ change. The exact-membership contract pins the addition.
 | 1 | Baseline `193733c0a` | 3336 | 4 | 41 | 36 / 1 | 277.02 |
 | 2 | Scoped collection patch | 3334 | 6 | 41 | 37 / 0 | 278.11 |
 | 3 | Repeat at `b9d856471` | 3334 | 6 | 41 | 37 / 0 | 274.99 |
+| 4 | `8daaecf3b`, cleanup cases extracted | 3348 | 2 | 41 | 42 / 0 | 276.65 |
+| 5 | Same `8daaecf3b`, publication membership reverted | 3346 | 4 | 41 | 41 / 1 | 275.69 |
+| 6 | Final BLAKE2b/domain closure follow-up | 3348 | 4 | 41 | 42 / 0 | 276.63 |
 
 The initial measured whole-suite cost was +1.09 seconds (about 0.4%). The repeat
 was 2.03 seconds faster than baseline. This small sample cannot prove flake
-elimination or a causal runtime difference. All runs retain failures outside
+elimination or a causal runtime difference. The first three runs retain failures outside
 the selected fixture: Bitcoin notification snapshots, BLAKE2b admission and Stratum
 listener shutdown. The patched run also failed hosted metrics startup, payout
 commit-admission and pool startup deadlines. The repeat reproduces all six patched
 failures, including those three additional failures; it does not establish that
 they are noise or causally independent of the scheduling change. These fixtures
-remain parallel and require separate diagnosis. No constrained full-suite run in
-this table is claimed as green.
+remain parallel and require separate diagnosis. None of those first three
+constrained full-suite runs is claimed as green.
 The change targets the reproduced publication fixture without expanding collection
 membership to unrelated tests. Normal full-suite CI remains a separate required check.
 
@@ -80,6 +83,61 @@ Local evidence is retained in `build/issue183/results/deadline-baseline-1.trx` a
 terminal-refusal fix, new race regressions and pure-cleanup extraction were built,
 so it measures the original scheduling change on the same 37 cases. These ignored
 local artifacts are not included in the PR; the table is a measurement summary.
+
+The next controlled comparison measured `8daaecf3b` with its 42 publication cases
+and five parallel cleanup cases. The membership-reverted run changed only the
+publication class's collection attribute and the matching expected-member entry;
+production code, assertions, watchdogs, dependencies and process-local two-CPU
+setting were identical. Both were whole-assembly runs. The temporary membership
+change was restored before implementing the subsequent BLAKE2b closure follow-up.
+
+With membership retained, notification snapshot delivery and pool shutdown timed
+out. With membership reverted, metrics export, payout completion and Stratum
+admission timed out; a publication construction/ban race also failed with a broken
+pipe while sending its test submission. The scoped fixture passed 42/42 versus
+41/42 with membership reverted. This pair supports retaining its narrow isolation,
+but does not establish a general runtime or reliability benefit for other fixtures.
+
+Triage of the three previously additional failures:
+
+- `MetricsPublisher_ExportsBoundedShareAccountingOutcomes` exhausted its shared
+  cancellation deadline while exporting metrics. It passed at `8daaecf3b` with
+  membership retained and failed with membership reverted, so the failure is not
+  specific to the publication collection addition.
+- `IsolatedFault_AfterCommitAdmissionRetainsOwnedDatabaseTransition(Orphaned)`
+  timed out awaiting the payout cycle after releasing its controlled repository
+  barrier. It likewise passed with membership retained and failed with membership
+  reverted. This is a completion timeout, not a failed accounting assertion.
+- `RunAsync_WithoutInternalStratum_RemainsOnlineUntilCancellation` timed out
+  awaiting shutdown after cancelling the pool. It failed with membership retained
+  and passed with membership reverted in this pair. That association remains
+  unresolved; one pair does not establish that membership caused the timeout.
+
+These outcomes do not show three deterministic new failures caused by the
+collection change, nor do they prove contention is their only cause. Keep normal
+full-suite CI required; do not broaden isolation or relax
+watchdogs on this evidence. Local comparison artifacts are
+`deadline-head-1.trx` and `deadline-membership-reverted-1.trx` in the same ignored
+results directory, with matching logs.
+
+A focused two-CPU run on the subsequent BLAKE2b closure follow-up passed all four
+cases from the three scenarios above (the payout test has two theory rows), with
+zero failures or skips. This checks their basic behavior under the same processor
+limit, but deliberately omits whole-assembly contention and cannot establish a
+root cause for their intermittent full-suite deadlines. Its local evidence is
+`deadline-triage.trx` and `deadline-triage.log`.
+
+The final row measures the production and test changes shipped with this table,
+including the public domain exception and both new BLAKE2b broadcast regressions.
+Both BLAKE2b cases passed in their existing parallel fixture; all 42 publication
+cases passed in the deadline collection. Four failures remained: idle Stratum
+listener shutdown, pool shutdown without internal Stratum, the orphaned payout
+completion case, and notification snapshot delivery. Metrics export passed.
+This final constrained run is not green and does not resolve those other
+fixtures' deadline behavior. Its evidence is `deadline-final-1.trx` and
+`deadline-final-1.log`; it is distinct from the reviewed-head comparison and the
+focused four-case triage run. No production code, test assertions, watchdogs or
+collection membership changed after this measurement.
 
 ## Background-service startup context
 

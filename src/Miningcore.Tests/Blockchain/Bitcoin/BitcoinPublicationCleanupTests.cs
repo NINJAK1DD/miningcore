@@ -82,9 +82,9 @@ public class BitcoinPublicationCleanupTests : TestBase
 
         context.CloseJobs();
         context.ClearJobs();
-        Assert.Throws<StratumConnectionClosedException>(() => context.AddJob(new BitcoinJob(), 4));
+        Assert.Throws<BitcoinJobRegistryClosedException>(() => context.AddJob(new BitcoinJob(), 4));
         // Closure takes precedence even when no payout authorization exists.
-        Assert.Throws<StratumConnectionClosedException>(() => context.TryAddDirectJob(new BitcoinJob(), 4));
+        Assert.Throws<BitcoinJobRegistryClosedException>(() => context.TryAddDirectJob(new BitcoinJob(), 4));
         Assert.Empty(context.validJobs);
     }
 }

@@ -120,12 +120,18 @@ transport teardown. A distinct non-cancellation failure during teardown still re
 Fail-stop cancellation is also recognized by its originating token, even before
 the linked request token observes shutdown. An unrelated cancellation does not
 qualify merely because the fail-stop gate is closed.
-Canonical and direct-SOLO insertion classify a permanently closed job registry as
-connection-owned cancellation under the insertion lock. Direct authorization
+Canonical, direct-SOLO and BLAKE2b insertion classify a permanently closed job
+registry under the insertion lock using the public domain exception
+`BitcoinJobRegistryClosedException`, which derives from `OperationCanceledException`.
+The worker context does not depend on a transport exception; external consumers of
+`AddJob()` can catch the domain type explicitly. Pool publication boundaries treat
+it and transport-owned closure as quiet terminal cancellation. Direct authorization
 mismatches alone return `false` and may rebuild; closure cannot trigger another
 coinbase build. Broadcast and idle VarDiff cleanup consume neither the publication
 report allowance nor an Error-level diagnostic when construction finishes after an
-invalid-share ban. Independent construction exceptions still report normally.
+invalid-share ban. This also applies to BLAKE2b's separate broadcast path while
+its assignment gate is held; its catch remains limited to explicit terminal types
+and always releases the gate. Independent construction exceptions still report normally.
 The public `ClearJobs()` method remains available for downstream compatibility;
 it removes existing work without changing whether the registry accepts new work.
 Both expected and unexpected exception diagnostics remain redacted at every level;
@@ -171,6 +177,10 @@ redundant direct build, and preservation of independent failures and the report
 allowance. A live authorization-change case verifies direct jobs still rebuild for
 the current destination. Pure fail-stop cleanup and registry-lifetime cases run in
 the separate, parallel `BitcoinPublicationCleanupTests` fixture.
+BLAKE2b broadcast regressions hold construction behind a barrier while a real
+unknown-job submit triggers invalid-share banning. They distinguish quiet registry
+closure from an independent construction error, check gate release and preserve
+the allowance for a later genuine publication-failure report.
 
 The unrelated Windows recovery-fixture correction remains in its own test commit.
 Its cleanup tolerates a completed provider cancellation, while timeouts still escape

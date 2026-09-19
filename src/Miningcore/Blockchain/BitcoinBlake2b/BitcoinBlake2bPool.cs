@@ -307,6 +307,12 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify,
                     CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]));
             }
+            catch(OperationCanceledException ex) when(ex is StratumConnectionClosedException or BitcoinJobRegistryClosedException)
+            {
+                // Submissions do not take the assignment gate. A concurrent ban
+                // can close the registry while this broadcast constructs work.
+                CloseAssignmentPublicationFailure(connection, ex, reportFailure: false);
+            }
             finally { gate.Release(); }
         });
         await Guard(BroadcastAsync);

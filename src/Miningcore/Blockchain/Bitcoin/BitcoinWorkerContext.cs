@@ -4,7 +4,6 @@ using System.Reactive.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Miningcore.Mining;
-using Miningcore.Stratum;
 using NBitcoin;
 
 namespace Miningcore.Blockchain.Bitcoin;
@@ -116,6 +115,10 @@ public class BitcoinWorkerContext : WorkerContextBase
     /// </summary>
     public Queue<BitcoinJob> validJobs { get; private set; } = new();
 
+    /// <summary>Adds work to an open worker registry.</summary>
+    /// <exception cref="BitcoinJobRegistryClosedException">
+    /// The registry is permanently closed; stop assigning work to this worker.
+    /// </exception>
     public virtual void AddJob(BitcoinJob job, int maxActiveJobs)
     {
         ArgumentNullException.ThrowIfNull(job);
@@ -124,6 +127,15 @@ public class BitcoinWorkerContext : WorkerContextBase
             AddJobCore(job, maxActiveJobs);
     }
 
+    /// <summary>Adds work only if its payout authorization is still current.</summary>
+    /// <returns>
+    /// True if added; false if authorization is absent or its generation changed.
+    /// Only a false result permits rebuilding from a new authorization snapshot.
+    /// </returns>
+    /// <exception cref="BitcoinJobRegistryClosedException">
+    /// The registry is permanently closed. This takes precedence over an
+    /// authorization mismatch and must not trigger a rebuild.
+    /// </exception>
     internal bool TryAddDirectJob(BitcoinJob job, int maxActiveJobs)
     {
         ArgumentNullException.ThrowIfNull(job);
@@ -133,7 +145,7 @@ public class BitcoinWorkerContext : WorkerContextBase
             // A terminal refusal must not look like an authorization race:
             // callers may rebuild only when a live session changed destination.
             if(jobsClosed)
-                throw new StratumConnectionClosedException();
+                throw new BitcoinJobRegistryClosedException();
 
             if(directPayoutAuthorization == null ||
                job.DirectPayoutGeneration !=
@@ -148,7 +160,7 @@ public class BitcoinWorkerContext : WorkerContextBase
     private void AddJobCore(BitcoinJob job, int maxActiveJobs)
     {
         if(jobsClosed)
-            throw new StratumConnectionClosedException();
+            throw new BitcoinJobRegistryClosedException();
 
         if(!validJobs.Contains(job))
             validJobs.Enqueue(job);
