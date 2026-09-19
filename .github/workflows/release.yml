@@ -72,8 +72,8 @@ jobs:
 
   source-container-check:
     name: Test source container
-    # Docker supplies the Ubuntu 26.04 userspace under test. Stable orchestration
-    # avoids coupling a generic container job to preview-runner capacity.
+    # Docker supplies the Ubuntu 26.04 userspace under test. Keep orchestration
+    # pinned independently of the container's target operating system.
     runs-on: ubuntu-24.04
     # A clean source-container build can exceed 30 minutes when hosted-runner
     # CPU allocation is constrained; retain a bounded budget without cancelling

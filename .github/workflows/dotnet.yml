@@ -362,8 +362,8 @@ jobs:
 
   build-ubuntu-source:
     name: Build Ubuntu ${{ matrix.ubuntu }} source
-    # The 26.04 hosted image is currently a public preview. Keep both claimed source-build
-    # targets required so a regression cannot be hidden by success on the primary lane.
+    # Keep both supported source-build targets required so a regression cannot
+    # be hidden by success on the primary lane.
     runs-on: ubuntu-${{ matrix.ubuntu }}
     timeout-minutes: 45
     strategy:
