@@ -80,6 +80,7 @@ Source commit: $source_commit
 Target: Ubuntu $ubuntu_version x64
 Build image: $build_image
 Framework: net10.0 framework-dependent
+Native CPU baseline: -march=x86-64-v2 -mtune=generic -maes -mpclmul
 Build epoch: $source_date_epoch
 EOF
 

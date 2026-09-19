@@ -1,0 +1,43 @@
+--- a/src/cpu.cpp
++++ b/src/cpu.cpp
+@@ -48,19 +48,39 @@
+ 
+ namespace randomx {
+ 
++	// Like cpuid(), isolate the hardware read from the feature-selection policy.
++	// The caller must check OSXSAVE before executing XGETBV.
++	unsigned readXcr0() {
++#if defined(_M_X64) || defined(__x86_64__)
++	#if defined(_MSC_VER)
++		return static_cast<unsigned>(_xgetbv(0));
++	#else
++		unsigned low, high;
++		__asm__ volatile("xgetbv" : "=a"(low), "=d"(high) : "c"(0));
++		return low;
++	#endif
++#else
++		return 0;
++#endif
++	}
++
++
+ 	Cpu::Cpu() : aes_(false), ssse3_(false), avx2_(false) {
+ #ifdef HAVE_CPUID
+ 		int info[4];
+ 		cpuid(info, 0);
+ 		int nIds = info[0];
++		bool avxState = false;
+ 		if (nIds >= 0x00000001) {
+ 			cpuid(info, 0x00000001);
+ 			ssse3_ = (info[2] & (1 << 9)) != 0;
+ 			aes_ = (info[2] & (1 << 25)) != 0;
++			const int avxMask = (1 << 26) | (1 << 27) | (1 << 28);
++			avxState = (info[2] & avxMask) == avxMask && (readXcr0() & 6) == 6;
+ 		}
+ 		if (nIds >= 0x00000007) {
+ 			cpuid(info, 0x00000007);
+-			avx2_ = (info[1] & (1 << 5)) != 0;
++			avx2_ = avxState && (info[1] & (1 << 5)) != 0;
+ 		}
+ #elif defined(__aarch64__)
+ 	#if defined(HWCAP_AES)

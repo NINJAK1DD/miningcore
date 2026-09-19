@@ -23,14 +23,9 @@
 
 namespace highwayhash {
 
-namespace {
-
-bool IsBitSet(const uint32_t reg, const int index) {
-  return (reg & (1U << index)) != 0;
-}
-
 // Returns the lower 32 bits of extended control register 0.
 // Requires CPU support for "OSXSAVE" (see below).
+// External linkage lets the dispatch fixture interpose hardware observations.
 uint32_t ReadXCR0() {
 #if HH_MSC_VERSION
   return static_cast<uint32_t>(_xgetbv(0));
@@ -42,6 +37,12 @@ uint32_t ReadXCR0() {
                : "c"(index));
   return xcr0;
 #endif
+}
+
+namespace {
+
+bool IsBitSet(const uint32_t reg, const int index) {
+  return (reg & (1U << index)) != 0;
 }
 
 // 0 iff not yet initialized by Supported().
@@ -92,6 +93,7 @@ TargetBits InstructionSets::Supported() {
   flags |= IsBitSet(abcd[2], 20) ? kBitSSE42 : 0;
   flags |= IsBitSet(abcd[2], 12) ? kBitFMA : 0;
   flags |= IsBitSet(abcd[2], 28) ? kBitAVX : 0;
+  const bool has_xsave = IsBitSet(abcd[2], 26);
   const bool has_osxsave = IsBitSet(abcd[2], 27);
 
   // Extended feature flags
@@ -108,17 +110,19 @@ TargetBits InstructionSets::Supported() {
 
   // Verify OS support for XSAVE, without which XMM/YMM registers are not
   // preserved across context switches and are not safe to use.
-  if (has_osxsave) {
+  if (has_xsave && has_osxsave) {
     const uint32_t xcr0 = ReadXCR0();
-    // XMM
-    if ((xcr0 & 2) == 0) {
-      flags &= ~(kBitSSE | kBitSSE2 | kBitSSE3 | kBitSSSE3 | kBitSSE41 |
-                 kBitSSE42 | kBitAVX | kBitAVX2 | kBitFMA);
-    }
-    // YMM
-    if ((xcr0 & 4) == 0) {
+    // XMM/YMM
+    if ((xcr0 & 2) == 0 || (xcr0 & 4) == 0) {
       flags &= ~(kBitAVX | kBitAVX2);
     }
+  } else {
+    // Clear the AVX/AVX2 bits if the CPU or OS does not support XSAVE.
+    //
+    // The lower 128 bits of XMM0-XMM15 are guaranteed to be preserved across
+    // context switches on x86_64 and any modern 32-bit system, so only AVX2
+    // needs to be disabled.
+    flags &= ~(kBitAVX | kBitAVX2);
   }
 
   // Also indicates "supported" has been initialized.

@@ -2,6 +2,18 @@
 
 set -euo pipefail
 
+# Make's += assignments retain environment flags; a later -march does not
+# cancel explicit -m feature switches. Reject overrides before invoking tools.
+# Do not print their values (MAKEFLAGS/MAKEFILES may contain arbitrary input).
+for native_override in CFLAGS CXXFLAGS CPPFLAGS ASFLAGS LDFLAGS LDLIBS \
+    MAKEFLAGS MFLAGS GNUMAKEFLAGS MAKEOVERRIDES MAKEFILES \
+    CC CXX CPP AS LD AR RANLIB CMAKE_TOOLCHAIN_FILE; do
+  if [[ -n "${!native_override:-}" ]]; then
+    echo "Portable native build rejects inherited $native_override; unset it and rerun the native build" >&2
+    exit 64
+  fi
+done
+
 OutDir=${1:?usage: build-libs-linux.sh OUTPUT_DIRECTORY}
 ScriptDir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 NativeDir=$(cd "$ScriptDir/../Native" && pwd)
@@ -31,8 +43,8 @@ build_native_library() {
 
   (
     cd "$NativeDir/$component"
-    make clean
-    make "$@"
+    make -f Makefile clean
+    make -f Makefile "$@"
   )
 
   stage_native_library "$component" "$library"
@@ -55,27 +67,16 @@ export UNAME_S
 UNAME_P=$(uname -m || uname -p)
 export UNAME_P
 
-AES=$("$NativeDir/check_cpu.sh" aes && echo -maes || echo)
-SSE2=$("$NativeDir/check_cpu.sh" sse2 && echo -msse2 || echo)
-SSE3=$("$NativeDir/check_cpu.sh" sse3 && echo -msse3 || echo)
-SSSE3=$("$NativeDir/check_cpu.sh" ssse3 && echo -mssse3 || echo)
-PCLMUL=$("$NativeDir/check_cpu.sh" pclmul && echo -mpclmul || echo)
-AVX=$("$NativeDir/check_cpu.sh" avx && echo -mavx || echo)
-AVX2=$("$NativeDir/check_cpu.sh" avx2 && echo -mavx2 || echo)
-AVX512F=$("$NativeDir/check_cpu.sh" avx512f && echo -mavx512f || echo)
-
-export CPU_FLAGS="$AES $SSE2 $SSE3 $SSSE3 $PCLMUL $AVX $AVX2 $AVX512F"
-
-HAVE_AES=$("$NativeDir/check_cpu.sh" aes && echo -D__AES__ || echo)
-HAVE_SSE2=$("$NativeDir/check_cpu.sh" sse2 && echo -DHAVE_SSE2 || echo)
-HAVE_SSE3=$("$NativeDir/check_cpu.sh" sse3 && echo -DHAVE_SSE3 || echo)
-HAVE_SSSE3=$("$NativeDir/check_cpu.sh" ssse3 && echo -DHAVE_SSSE3 || echo)
-HAVE_PCLMUL=$("$NativeDir/check_cpu.sh" pclmul && echo -DHAVE_PCLMUL || echo)
-HAVE_AVX=$("$NativeDir/check_cpu.sh" avx && echo -DHAVE_AVX || echo)
-HAVE_AVX2=$("$NativeDir/check_cpu.sh" avx2 && echo -DHAVE_AVX2 || echo)
-HAVE_AVX512F=$("$NativeDir/check_cpu.sh" avx512f && echo -DHAVE_AVX512F || echo)
-
-export HAVE_FEATURE="$HAVE_AES $HAVE_SSE2 $HAVE_SSE3 $HAVE_SSSE3 $HAVE_PCLMUL $HAVE_AVX $HAVE_AVX2 $HAVE_AVX512F"
+# A release must not inherit the build runner's optional instruction sets.
+# x86-64-v2 + AES + PCLMUL is the supported Linux x64 native baseline.
+# Optional higher-ISA implementations must perform runtime CPU/OS dispatch.
+if [[ "$UNAME_P" != x86_64 ]]; then
+  echo "Linux native builds currently support x86_64 only (got $UNAME_P)" >&2
+  exit 64
+fi
+export CPU_FLAGS="-march=x86-64-v2 -mtune=generic -maes -mpclmul"
+export HAVE_FEATURE="-DHAVE_SSE2 -DHAVE_SSE3 -DHAVE_SSSE3 -DHAVE_PCLMUL"
+echo "Native CPU baseline: $CPU_FLAGS"
 
 bash "$ScriptDir/../../scripts/release/verify-pinned-source-files.sh" \
   "$NativeDir" "$NativeDir/libodocrypt/upstream.sha256"
@@ -93,6 +94,8 @@ build_native_library libverushash libverushash.so
 build_native_library libfiropow libfiropow.so
 build_native_library libkawpow libkawpow.so
 build_native_library libmeowpow libmeowpow.so
+bash "$ScriptDir/../../scripts/release/verify-pinned-source-files.sh" \
+  "$NativeDir" "$NativeDir/libdero/highwayhash.sha256"
 build_native_library libdero libdero.so
 build_native_library libcortexcuckoocycle libcortexcuckoocycle.so
 build_native_library libprogpowz libprogpowz.so
@@ -109,15 +112,15 @@ build_nexapow() {
     cd secp256k1
     git checkout 04fabb44590c10a19e35f044d11eb5058aac65b2
     cmake -S . -B build -GNinja \
-      -DCMAKE_C_FLAGS=-fPIC \
+      "-DCMAKE_C_FLAGS=-fPIC $CPU_FLAGS" \
       -DSECP256K1_ENABLE_MODULE_RECOVERY=OFF \
       -DSECP256K1_ENABLE_COVERAGE=OFF \
       -DSECP256K1_ENABLE_MODULE_SCHNORR=ON
     cmake --build build
     cd "$NativeDir/libnexapow"
     cp "${TMPDIR:-/tmp}/secp256k1/build/libsecp256k1.a" .
-    make clean
-    make
+    make -f Makefile clean
+    make -f Makefile
   )
 }
 
@@ -147,10 +150,16 @@ build_randomx_family() {
       git apply --check "$ScriptDir/$source_patch"
       git apply "$ScriptDir/$source_patch"
     fi
+    # All four pinned forks share this CPU detector. Validate its source before
+    # requiring CPU AVX/XSAVE, OSXSAVE and XCR0 XMM/YMM state for AVX2 dispatch.
+    bash "$ScriptDir/../../scripts/release/verify-pinned-source-files.sh" \
+      . "$ScriptDir/patches/randomx-cpu-os-state.sha256"
+    git apply --check "$ScriptDir/patches/randomx-cpu-os-state.patch"
+    git apply "$ScriptDir/patches/randomx-cpu-os-state.patch"
     cmake -S . -B build \
-      -DARCH=native \
-      -DCMAKE_C_FLAGS=-Wa,--noexecstack \
-      -DCMAKE_CXX_FLAGS=-Wa,--noexecstack
+      -DARCH=default \
+      "-DCMAKE_C_FLAGS=-Wa,--noexecstack $CPU_FLAGS" \
+      "-DCMAKE_CXX_FLAGS=-Wa,--noexecstack $CPU_FLAGS"
     if [[ -n "$build_target" ]]; then
       cmake --build build --target "$build_target" -j"$(nproc)"
     else
@@ -158,8 +167,8 @@ build_randomx_family() {
     fi
     cd "$NativeDir/$component"
     cp "${TMPDIR:-/tmp}/$source_name/build/librandomx.a" .
-    make clean
-    make
+    make -f Makefile clean
+    make -f Makefile
   )
 }
 

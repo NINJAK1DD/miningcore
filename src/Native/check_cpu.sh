@@ -1,3 +1,5 @@
+# Host-capability helper for development tests (currently Xelis AES comparison).
+# Release ISA selection belongs to build-libs-linux.sh and must not call this.
 set -e
 QUERY="$1"
 

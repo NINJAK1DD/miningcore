@@ -83,7 +83,10 @@ jobs:
 
     - name: Test Linux native build failure propagation
       shell: bash
-      run: bash scripts/release/test-linux-native-build-fail-fast.sh
+      run: |
+        bash scripts/release/test-linux-native-build-fail-fast.sh
+        python3 -O scripts/release/test-native-cpu-policy.py --self-test
+        python3 scripts/release/test-native-cpu-policy.py
 
     - name: Validate Odocrypt native source inventory
       shell: bash
@@ -104,6 +107,8 @@ jobs:
         scripts/release/test-cryptonote-abi-safety.sh
         scripts/release/test-linux-native-inventory.sh
         scripts/release/test-linux-native-symbol-contracts.sh
+        scripts/release/test-native-cpu-portability.sh
+        scripts/release/test-randomx-cpu-os-state.sh
         scripts/release/test-linux-package-targets.sh
         scripts/release/test-msbuild-warning-file-logger.sh
         scripts/release/test-odocrypt-source-inventory.sh
@@ -153,7 +158,7 @@ jobs:
         sudo apt-get -o Acquire::Retries=3 update
         sudo apt-get -o Acquire::Retries=3 install -y \
           cmake ninja-build build-essential libssl-dev pkg-config \
-          libboost-all-dev libsodium-dev libzmq3-dev libgmp-dev
+          libboost-all-dev libsodium-dev libzmq3-dev libgmp-dev qemu-user
 
     - name: Install isolated PostgreSQL TLS test dependency
       shell: bash
@@ -329,6 +334,15 @@ jobs:
         echo "Miningcore.Tests output libs:"
         find "$TEST_OUT" -maxdepth 1 -type f -name '*.so' -print | sort
 
+    - name: Test native CPU portability
+      if: runner.os == 'Linux'
+      shell: bash
+      run: bash scripts/release/test-native-cpu-portability.sh src/Miningcore/bin/Debug/net10.0 --avx2-userspace
+
+    - name: Test RandomX CPU and OS dispatch
+      shell: bash
+      run: bash scripts/release/test-randomx-cpu-os-state.sh "${TMPDIR:-/tmp}"
+
     - name: Smoke-test ZeroMQ relay runtime
       if: runner.os == 'Linux'
       shell: bash
@@ -391,6 +405,17 @@ jobs:
       run: >-
         bash scripts/release/test-ubuntu-native-vectors.sh
         "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
+
+    # Required on every push as well as PRs. The 24.04 userspace supports the
+    # strict pre-AVX model, unlike the 26.04 hosted runner's amd64v3 libraries.
+    - name: Test strict native CPU baseline and OS dispatch
+      if: matrix.ubuntu == '24.04'
+      shell: bash
+      run: |
+        sudo apt-get -o Acquire::Retries=3 update
+        sudo apt-get -o Acquire::Retries=3 install -y qemu-user
+        bash scripts/release/test-native-cpu-portability.sh "$GITHUB_WORKSPACE/build/ubuntu-24.04"
+        bash scripts/release/test-randomx-cpu-os-state.sh "${TMPDIR:-/tmp}"
 
   build-windows:
     name: Build Windows x64

@@ -14,6 +14,7 @@
 ##### Linux
 *.sh text eol=lf
 *.sha256 text eol=lf
+*.patch text eol=lf
 *.so binary
 
 # Byte-pinned Odocrypt inputs must hash identically on Windows and Unix.
