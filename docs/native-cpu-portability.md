@@ -56,10 +56,26 @@ the source commit, build image and target. Build-policy checks guard that metada
 against drift from the driver. The scanner allows only reviewed baseline-compatible
 machine flags and exact per-target exceptions in active Makefiles; all explicit
 `-march`/`-mtune` choices belong to the driver. It recursively discovers Makefiles
-and CMakeLists files. Nineteen inactive upstream build files have explicit reasons
+(`GNUmakefile`, `makefile`, `Makefile`) and CMakeLists files. Every driver Make
+invocation selects `-f Makefile`, including clean targets and NexaPow/RandomX
+wrappers. Top-level shadow names are forbidden even with an inactive allowance.
+Nineteen inactive upstream build files have explicit reasons
 and content hashes in `scripts/release/native-inactive-build-files.json`; changes,
 new files, stale allowances and unreviewed recursive build invocations require
 review. Validation uses explicit errors, including under optimized Python.
+
+After reviewing a vendored change's flags and confirming that the driver still
+does not execute that nested build file, refresh only its selected manifest entry:
+
+```bash
+python3 scripts/release/test-native-cpu-policy.py --update libmultihash/blake3/makefile
+```
+
+New entries first need a manually supplied, nonempty `reason` in the manifest.
+The updater never discovers and approves new entries automatically; it validates
+the entire tree before writing, rejecting shadows, missing files, stale entries,
+and any unreviewed or changed files outside the selection. Review the resulting
+manifest diff alongside the dependency update. Hashes normalize line endings to LF.
 
 ## Regression gate
 
@@ -75,7 +91,9 @@ bash scripts/release/test-native-cpu-portability.sh src/Miningcore/bin/Release/n
 
 The build-driver fixture rejects 19 inherited override variables before any native
 tool runs, fails on any attempt to probe the builder CPU, and checks
-the fixed baseline on the initial component invocation. The static policy guard
+the fixed baseline on the initial component invocation. Real GNU Make fixtures
+also prove that neither shadow filename replaces the reviewed clean/build targets.
+The static policy guard
 also examines all 25 top-level native Makefiles, allowing reviewed optional flags
 only on their specific translation units. The native probe runs
 RandomX and RandomARQ known-answer hashes, Panthera and SCash cross-CPU hash
@@ -218,6 +236,40 @@ passed with the current guard. Build failure propagation, all-Makefile policy,
 release packaging/metadata, shell lint, workflow pins and documentation links were
 also checked. This paragraph describes the local rebuild; the following artifact
 evidence is historical and identifies the exact earlier revision it validated.
+
+### Override and policy hardening validation (`627fddca`, 2026-09-19)
+
+The exact head `627fddcad38314758a4d8b246b30cd41210e455e` passed
+[normal CI](https://github.com/NINJAK1DD/miningcore/actions/runs/35415364892),
+including Ubuntu 24.04 strict-baseline and Ubuntu 26.04 source-build lanes, and
+[both release package jobs](https://github.com/NINJAK1DD/miningcore/actions/runs/35415364959).
+The normal suite passed 3,357 tests with one skip; each release target passed
+3,300 tests with 32 skips. The
+[Stratum listener portability workflow](https://github.com/NINJAK1DD/miningcore/actions/runs/35415364906)
+also passed.
+
+The Ubuntu 22.04 lab rebuilt all 25 libraries from this revision and verified all
+241 native entry points. Its expanded eleven-library probe passed on the physical
+CPU and strict emulated baseline, along with 36 RandomX CPU/OS-state cases and
+nine HighwayHash cases. The complete managed suite passed **3,284 tests, with
+48 skipped and zero failures**. These results validate the override rejection,
+allowlist policy, pinned upstream dispatcher and new Verus/Zano fixtures at this
+revision; they are separate from the earlier artifact evidence below.
+
+### Shadow-file hardening lab validation (2026-09-19)
+
+After selecting `-f Makefile` in all six driver invocations, the Ubuntu 22.04 lab
+rebuilt all 25 native libraries and passed the 241-entry-point inventory/relocation
+audit. The eleven-library probe passed on both the physical CPU and strict
+emulated baseline, including the independently published Verus PBaaS vector and
+upstream-confirmed Zano genesis ID. All nine HighwayHash and 36 RandomX CPU/OS
+state cases passed. The full managed suite passed **3,284 tests, 48 skipped and
+zero failures** (3,332 total).
+
+Both GNU Make shadow names were tested against real clean/build recipes. Restoring
+implicit Makefile selection in a temporary driver made the fixture fail when
+GNU Make parsed the shadow file. Optimized-Python fixtures also rejected pinned
+shadow allowances, unknown nested GNUmakefiles and unsafe manifest refreshes.
 
 ### CI-built artifact validation
 

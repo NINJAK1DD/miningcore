@@ -43,8 +43,8 @@ build_native_library() {
 
   (
     cd "$NativeDir/$component"
-    make clean
-    make "$@"
+    make -f Makefile clean
+    make -f Makefile "$@"
   )
 
   stage_native_library "$component" "$library"
@@ -119,8 +119,8 @@ build_nexapow() {
     cmake --build build
     cd "$NativeDir/libnexapow"
     cp "${TMPDIR:-/tmp}/secp256k1/build/libsecp256k1.a" .
-    make clean
-    make
+    make -f Makefile clean
+    make -f Makefile
   )
 }
 
@@ -167,8 +167,8 @@ build_randomx_family() {
     fi
     cd "$NativeDir/$component"
     cp "${TMPDIR:-/tmp}/$source_name/build/librandomx.a" .
-    make clean
-    make
+    make -f Makefile clean
+    make -f Makefile
   )
 }
 

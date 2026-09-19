@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "zano-genesis.h"
+#include "verus-v22.h"
 
 static void require(bool ok, const char* message)
 {
@@ -148,6 +149,11 @@ int main(int argc, char** argv)
     for(size_t i = 0; i < input.size(); ++i) input[i] = static_cast<uint8_t>(i);
     verus(reinterpret_cast<char*>(input.data()), reinterpret_cast<char*>(output), input.size());
     check_hash(output, "b670b52b5d8afbbe5418a2e1a6465f58f1ccf6a9d3a167fb888c956505d2d3a7");
+    // Upstream PBaaS block vector uses header canonicalization before hashing.
+    auto verus_block = symbol<void (*)(char*, char*, int)>(lib, "verushash2b2_export");
+    input.assign(verus_v22_pbaas_header, verus_v22_pbaas_header + sizeof(verus_v22_pbaas_header));
+    verus_block(reinterpret_cast<char*>(input.data()), reinterpret_cast<char*>(output), input.size());
+    check_hash(output, "3501fee3bb23f5858d4dc9469677d9ad5aace1b64bd74668856e740989000000");
     dlclose(lib);
 
     std::puts("Testing Cortex header and SipHash proof rejection");

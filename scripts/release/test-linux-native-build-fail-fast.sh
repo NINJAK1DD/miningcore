@@ -228,14 +228,24 @@ exit 98
 SH
 chmod +x "$work_dir/src/Native/check_cpu.sh"
 
+real_make=$(command -v make)
+cat > "$work_dir/src/Native/libmultihash/Makefile" <<'MAKE'
+.PHONY: all clean
+all:
+	@echo reviewed-makefile-all >> "$(MININGCORE_NATIVE_TEST_TRACE)"
+	@exit 42
+clean:
+	@echo reviewed-makefile-clean >> "$(MININGCORE_NATIVE_TEST_TRACE)"
+MAKE
+
 cat > "$work_dir/bin/make" <<'SH'
 #!/usr/bin/env sh
 set -eu
 
 printf '%s %s\n' "$(basename "$PWD")" "$*" >> "$MININGCORE_NATIVE_TEST_TRACE"
 
-if [ "$(basename "$PWD")" = libmultihash ] && [ "${1:-}" != clean ]; then
-  exit 42
+if [ "$(basename "$PWD")" = libmultihash ]; then
+  exec "$MININGCORE_NATIVE_TEST_MAKE" "$@"
 fi
 
 touch "lib$(basename "$PWD" | sed 's/^lib//').so"
@@ -278,45 +288,66 @@ for inherited in CFLAGS=-mavx512f CXXFLAGS=-mfma CPPFLAGS=-DHAVE_AVX512F \
   fi
 done
 
-set +e
-(
-  cd "$work_dir/src/Miningcore"
-  PATH="$work_dir/bin:$PATH" \
-    MININGCORE_NATIVE_TEST_TRACE="$work_dir/trace" \
-    bash build-libs-linux.sh "$work_dir/out"
-) > "$work_dir/output" 2>&1
-status=$?
-set -e
+check_driver_failure() {
+  : > "$work_dir/trace"
+  set +e
+  (
+    cd "$work_dir/src/Miningcore"
+    PATH="$work_dir/bin:$PATH" \
+      MININGCORE_NATIVE_TEST_MAKE="$real_make" \
+      MININGCORE_NATIVE_TEST_TRACE="$work_dir/trace" \
+      bash build-libs-linux.sh "$work_dir/out"
+  ) > "$work_dir/output" 2>&1
+  status=$?
+  set -e
 
-if [[ "$status" -eq 0 ]]; then
-  echo "Native build driver reported success after the injected component failure" >&2
-  cat "$work_dir/output" >&2
-  exit 1
-fi
+  if [[ "$status" -eq 0 ]]; then
+    echo "Native build driver reported success after the injected component failure" >&2
+    cat "$work_dir/output" >&2
+    exit 1
+  fi
 
-if grep -Fq 'libbeamhash' "$work_dir/trace"; then
-  echo "Native build driver attempted a later component after the injected failure" >&2
-  cat "$work_dir/trace" >&2
-  exit 1
-fi
+  if grep -Fq 'libbeamhash' "$work_dir/trace"; then
+    echo "Native build driver attempted a later component after the injected failure" >&2
+    cat "$work_dir/trace" >&2
+    exit 1
+  fi
 
-if grep -Fq 'unexpected-tool ' "$work_dir/trace"; then
-  echo "Native build regression test unexpectedly reached an external build tool" >&2
-  cat "$work_dir/trace" >&2
-  exit 1
-fi
+  if grep -Fq 'unexpected-tool ' "$work_dir/trace"; then
+    echo "Native build regression test unexpectedly reached an external build tool" >&2
+    cat "$work_dir/trace" >&2
+    exit 1
+  fi
 
-if ! grep -Fq 'Building native component: libmultihash' "$work_dir/output"; then
-  echo "Native build driver did not reach the injected first component" >&2
-  cat "$work_dir/output" >&2
-  exit 1
-fi
+  if ! grep -Fq 'Building native component: libmultihash' "$work_dir/output"; then
+    echo "Native build driver did not reach the injected first component" >&2
+    cat "$work_dir/output" >&2
+    exit 1
+  fi
 
-if ! grep -Fq -- 'libmultihash CPU_FLAGS=-march=x86-64-v2 -mtune=generic -maes -mpclmul' "$work_dir/trace" ||
-    grep -Eq -- '^libmultihash .*(-mavx|-march=native|HAVE_AVX)|unexpected-cpu-probe' "$work_dir/trace"; then
-  echo "Native build inherited optional CPU capabilities from its builder" >&2
-  cat "$work_dir/trace" >&2
-  exit 1
-fi
+  for phase in clean all; do
+    if ! grep -Fxq "reviewed-makefile-$phase" "$work_dir/trace"; then
+      echo "GNU Make did not execute the reviewed Makefile's $phase target" >&2
+      cat "$work_dir/output" >&2
+      exit 1
+    fi
+  done
+  if ! grep -Fq -- 'libmultihash -f Makefile CPU_FLAGS=-march=x86-64-v2 -mtune=generic -maes -mpclmul' "$work_dir/trace" ||
+      grep -Eq -- '^libmultihash .*(-mavx|-march=native|HAVE_AVX)|unexpected-cpu-probe' "$work_dir/trace"; then
+    echo "Native build inherited optional CPU capabilities from its builder" >&2
+    cat "$work_dir/trace" >&2
+    exit 1
+  fi
+}
 
-echo "Native build driver stopped at the injected first-component failure"
+check_driver_failure
+# Exercise each default-search shadow independently with real GNU Make. An
+# implicit invocation fails at parse time before the reviewed recipes run.
+for shadow in GNUmakefile makefile; do
+  # shellcheck disable=SC2016 # Literal GNU Make parse-time error, not shell syntax.
+  printf '%s\n' '$(error unreviewed shadow Makefile selected)' \
+    > "$work_dir/src/Native/libmultihash/$shadow"
+  check_driver_failure
+  rm -- "$work_dir/src/Native/libmultihash/$shadow"
+done
+echo "Native build driver selected the reviewed Makefile and stopped at its injected failure (both shadow names tested)"

@@ -10,8 +10,9 @@ before selecting AVX2. It retains SSE4.1 when XSAVE is unavailable.
 The recommendation to submit the missing-OSXSAVE fix upstream was checked against
 [Google HighwayHash at f8381f3331d9c56a9792f9b4a35f61c41108c39e](https://github.com/google/highwayhash/blob/f8381f3331d9c56a9792f9b4a35f61c41108c39e/highwayhash/instruction_sets.cc).
 The feature-selection body now matches that upstream revision verbatim. Local
-differences are only the two include paths and moving `ReadXCR0` out of the
-anonymous namespace so hardware observations can be interposed in the fixture.
+differences are only the two include paths, moving `ReadXCR0` out of the
+anonymous namespace so hardware observations can be interposed in the fixture,
+and a source comment explaining that linkage.
 The redundant local FMA clearing and comment changes have been removed. No
 duplicate upstream bug-fix PR is needed.
 

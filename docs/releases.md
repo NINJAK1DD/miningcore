@@ -22,6 +22,17 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased: portable native builds and inherited overrides
+
+Linux source and release builds now use a fixed CPU baseline, guard optional ISA
+dispatch against unavailable OS state, and explicitly select reviewed Makefiles.
+Source builds stop with exit code 64 if compiler flags, Make controls or tool
+commands are inherited from the environment. This affects packagers using exported
+`CFLAGS`, `CXXFLAGS`, `MAKEFLAGS`, `CC`, `CXX` or similar overrides. Unset the variable
+named in the error and rerun the documented build driver; the
+[complete variable list and build contract](native-cpu-portability.md) explain the
+remediation and supported baseline.
+
 > **Runtime requirement:** install a supported, serviced .NET 10 ASP.NET Core runtime from the
 > documented Ubuntu package source and keep it updated with normal security maintenance.
 
