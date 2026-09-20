@@ -179,7 +179,11 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal async Task<JObject> ReadAsync()
     {
         var line = await reader.ReadLineAsync(stop.Token);
-        Assert.False(string.IsNullOrEmpty(line), $"Stratum connection closed before a complete response: {dispatchError}");
+        Assert.False(string.IsNullOrEmpty(line),
+            $"Stratum connection closed before a complete response: requestId={requestId}, " +
+            $"completion={Connection.CompletionReason}, dispatchCompleted={dispatch.IsCompleted}, " +
+            $"harnessCancelled={stop.IsCancellationRequested}, requestCancelled={RequestCancellation.IsCancellationRequested}, " +
+            $"disconnectRequested={Connection.IsDisconnectRequested}, responses={Connection.ResponseSequence}; {dispatchError}");
         return JObject.Parse(line);
     }
 

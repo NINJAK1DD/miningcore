@@ -143,15 +143,74 @@ and reporting changes are not represented by this historical row.
 Row 7 measures the subsequent independent BLAKE2b broadcast-failure cleanup and
 reporting implementation, including both new live-registry failure cases. All
 four BLAKE2b broadcast cases passed in their existing parallel fixture, as did
-all 42 publication cases. Seven failures remained: Stratum request cancellation
-did not throw the expected cancellation exception; the BLAKE2b malformed numeric
-string case (`"2,0"`) disconnected before its expected response; metrics export,
+all 42 publication cases. Two assertion failures require separate triage: Stratum
+request cancellation did not throw the expected cancellation exception, and the
+BLAKE2b malformed numeric string case (`"2,0"`) encountered EOF during its initial
+subscription. Five other failures exhausted deadlines: metrics export,
 notification snapshot delivery, idle listener shutdown, pool shutdown and
-orphaned payout completion exhausted their deadlines. This constrained run is
-not green and does not establish the causes of those failures. No watchdog,
+orphaned payout completion. This constrained run is not green. No watchdog,
 assertion or collection membership was changed. Its evidence is
 `deadline-round6-final-1.trx` and `deadline-round6-final-1.log` in the same ignored
-local artifact directories. No production or test changes followed this run.
+local artifact directories. It predates the test-only assertion triage below.
+
+### Separate triage of the row 7 assertion failures
+
+`ProcessRequest_Honor_CancellationToken` invokes `ProcessRequestAsync` directly
+on a standalone connection. It does not run `DispatchAsync`, the receive pipe,
+startup admission or a broadcast. Both this helper's handler invocation and the
+original test were unchanged from base `2702579ca`. The original handler waited
+on a one-second delay while a separate 20-millisecond timer requested cancellation.
+It therefore assumed cancellation would win against normal completion.
+[Timer callbacks run on thread-pool threads](https://learn.microsoft.com/en-us/dotnet/api/system.threading.timer?view=net-10.0),
+and [task cancellation is cooperative](https://learn.microsoft.com/en-us/dotnet/standard/parallel-programming/task-cancellation).
+The retained failure has no callback-order trace; it does not prove swallowed
+cancellation or establish why cancellation lost that run.
+
+The regression now waits for handler entry, explicitly cancels the supplied
+token, and requires the handler's infinite cancellable delay to propagate
+`TaskCanceledException`. It also verifies token identity, canceled task state
+and exactly one handler call, using the existing ten-second test watchdog.
+A temporary mutation that swallowed `OperationCanceledException` failed the
+exception assertion as expected. The mutation was removed before final testing.
+This removes the competing-timer assumption without weakening cancellation
+coverage or changing production behavior.
+
+The `MalformedNumericStrings_ConsumeBudgetThenDisconnect("2,0")` failure's
+retained stack is `ReadAsync -> RequestAsync -> Subscribe`, at the initial
+subscription on line 346 of `BitcoinBlake2bAdmissionHardeningTests.cs` at
+`081b2dcdc`. No `mining.configure` or `"2,0"` value had been sent, so this occurrence
+cannot show culture-dependent parsing or an early difficulty-budget refusal.
+The BLAKE2b configure parser explicitly uses `NumberStyles.Float` and
+`CultureInfo.InvariantCulture`. The test transport has a startup deadline, but
+the original assertion recorded no completion reason: startup expiry remains
+a hypothesis, not a proven cause of this EOF. The harness now includes request
+ID, transport completion reason, dispatch completion, harness/request cancellation,
+disconnect latch and response count in an EOF assertion for future diagnosis.
+
+Focused Ubuntu 22.04 WSL runs used the same `DOTNET_PROCESSOR_COUNT=2`, existing
+native libraries and .NET 10 binaries; no daemon or database dependency was needed:
+
+| Selection | Passed | Failed | Skipped | Local TRX |
+| --- | ---: | ---: | ---: | --- |
+| Original cancellation test | 1 | 0 | 0 | `assertion-cancellation-before.trx` |
+| Original malformed-number theory alone | 5 | 0 | 0 | `assertion-malformed-alone.trx` |
+| Entire original BLAKE2b difficulty fixture, including culture cases | 177 | 0 | 0 | `assertion-culture-fixture.trx` |
+| Ordered culture probe | 3 | 0 | 0 | `assertion-ordered-cultures.trx` |
+| Deterministic cancellation regression | 1 | 0 | 0 | `assertion-cancellation-after.trx` |
+| Deliberately swallowed cancellation (negative control) | 0 | 1 | 0 | `assertion-cancellation-mutant.trx` |
+| Final Stratum/BLAKE2b/publication and collection-contract selection | 251 | 0 | 0 | `assertion-focused-final.trx` |
+
+The temporary ordered probe ran three rows (`fr-FR`, `de-DE`, `tr-TR`). Each
+awaited the existing invariant-number test, date-scalar compatibility test and
+canonical legacy-culture test in that order, verified restoration after each,
+then ran the `"2,0"` budget theory. It repeated that theory with the selected
+culture actively installed. All subscription, error-response and exact-budget
+assertions passed. The probe was removed afterward rather than duplicating
+those tests in the permanent suite. These results do not reproduce a culture
+leak; they do not prove that the unexplained subscription EOF cannot recur.
+The ignored TRX files above and matching logs are retained under the same local
+artifact directories. Normal full-suite CI remains a separate required check;
+none of this focused evidence turns row 7 into a green whole-suite result.
 
 ## Background-service startup context
 
