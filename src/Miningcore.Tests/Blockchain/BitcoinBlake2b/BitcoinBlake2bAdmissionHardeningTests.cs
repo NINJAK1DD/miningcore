@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -358,5 +359,36 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         await wire.SendRequestAsync("mining.configure", new[] { "minimum-difficulty" },
             new Dictionary<string, object> { ["minimum-difficulty.value"] = value });
         await wire.AssertNoMoreMessagesAsync();
+    }
+
+    [Fact]
+    public async Task MalformedNumericStrings_AfterCultureScenarios_KeepAdmissionContract()
+    {
+        // Explicit order in one execution context: runner ordering between
+        // separate theory rows cannot establish that cultures were restored.
+        var original = CultureInfo.CurrentCulture;
+        foreach(var culture in new[] { "fr-FR", "tr-TR" })
+        {
+            await DateScalars_PreserveAuthorizationAndSubscribeCompatibilityAcrossCultures(culture);
+            Assert.Equal(original, CultureInfo.CurrentCulture);
+        }
+        await SuggestAndConfigure_UseInvariantNumbersAndStringsAcrossCultures("de-DE");
+        Assert.Equal(original, CultureInfo.CurrentCulture);
+        await CanonicalSuggestion_RetainsItsLegacyCultureConversion();
+        Assert.Equal(original, CultureInfo.CurrentCulture);
+        foreach(var value in new[] { "NaN", "Infinity", "1e999", "-1", "2,0" })
+            await MalformedNumericStrings_ConsumeBudgetThenDisconnect(value);
+
+        // Even an explicitly inherited comma-decimal culture must not change
+        // malformed-wire admission, its exact budget or terminal disconnect.
+        try
+        {
+            foreach(var culture in new[] { "fr-FR", "de-DE" })
+            {
+                CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(culture);
+                await MalformedNumericStrings_ConsumeBudgetThenDisconnect("2,0");
+            }
+        }
+        finally { CultureInfo.CurrentCulture = original; }
     }
 }

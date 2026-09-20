@@ -166,10 +166,11 @@ and [task cancellation is cooperative](https://learn.microsoft.com/en-us/dotnet/
 The retained failure has no callback-order trace; it does not prove swallowed
 cancellation or establish why cancellation lost that run.
 
-The regression now waits for handler entry, explicitly cancels the supplied
-token, and requires the handler's infinite cancellable delay to propagate
-`TaskCanceledException`. It also verifies token identity, canceled task state
-and exactly one handler call, using the existing ten-second test watchdog.
+At `407377801`, the regression waited for handler entry, explicitly canceled the
+supplied token, and required the handler's infinite cancellable delay to propagate
+`TaskCanceledException`. It also verified token identity, canceled task state
+and exactly one handler call, using the existing ten-second test watchdog. The
+whole-suite follow-up below further removes its continuation-order dependency.
 A temporary mutation that swallowed `OperationCanceledException` failed the
 exception assertion as expected. The mutation was removed before final testing.
 This removes the competing-timer assumption without weakening cancellation
@@ -183,7 +184,8 @@ cannot show culture-dependent parsing or an early difficulty-budget refusal.
 The BLAKE2b configure parser explicitly uses `NumberStyles.Float` and
 `CultureInfo.InvariantCulture`. The test transport has a startup deadline, but
 the original assertion recorded no completion reason: startup expiry remains
-a hypothesis, not a proven cause of this EOF. The harness now includes request
+a hypothesis in that original log, not a proven cause of this EOF. The
+follow-up below reproduces and classifies startup expiry. The harness includes request
 ID, transport completion reason, dispatch completion, harness/request cancellation,
 disconnect latch and response count in an EOF assertion for future diagnosis.
 
@@ -211,6 +213,84 @@ leak; they do not prove that the unexplained subscription EOF cannot recur.
 The ignored TRX files above and matching logs are retained under the same local
 artifact directories. Normal full-suite CI remains a separate required check;
 none of this focused evidence turns row 7 into a green whole-suite result.
+
+### Run 7 assertion-failure investigation
+
+The 2026-09-20 whole-suite follow-up was measured in an isolated worktree based
+on `081b2dcdc`, then integrated with `407377801` after that concurrent update. The original log and TRX
+establish different failure phases; neither assertion is classified as generic
+contention noise:
+
+- `ProcessRequest_Honor_CancellationToken` reported **no exception**, not the
+  wrong exception type. It invokes `ProcessRequestAsync` directly through
+  `PrivateObject`; no socket, receive loop, broadcast or `DispatchAsync` error
+  selection participates. Its handler awaits a one-second `Task.Delay`, while a
+  separate 20 ms timer requests cancellation. If both timers become runnable
+  before the worker processes them, normal delay completion is possible. The
+  failed assertion establishes that this handler completed normally; the log
+  does not trace timer callback scheduling. The revised test verifies that the
+  handler receives the original, uncancelled token, cancels inside that handler,
+  and returns an infinite delay using that
+  token. It requires `TaskCanceledException` with the exact token and one handler
+  invocation. Cancellation occurs after handler admission with no timer or
+  continuation ordering deciding its outcome. The receive-loop cancellation
+  regression remains separate and unchanged.
+- `MalformedNumericStrings_ConsumeBudgetThenDisconnect("2,0")` failed in
+  `Subscribe` -> `RequestAsync` -> `ReadAsync`, at the initial subscription on
+  line 346 of the reviewed test. **No malformed configure request had been sent.**
+  Consequently neither parsing `"2,0"` nor consuming its difficulty budget caused
+  that failure. The recorded test lasted 41 seconds and the dispatcher has a
+  ten-second first-request deadline, making startup expiry a concrete hypothesis.
+  The old EOF assertion printed an empty dispatch error: startup expiry reports
+  normal completion, and EOF can also precede the terminal callback. That log
+  alone does not prove the completion reason. A follow-up whole-suite diagnostic
+  run reproduced this exact row and phase with **`completion=StartupTimeout,
+  request=1, subscribed=False, error=`**. This establishes startup expiry for
+  the reproduced failure, before any configure parsing or budget consumption.
+  It does not identify which startup continuation was delayed. The fixture now
+  awaits bounded dispatch completion on EOF and includes its completion reason, request number,
+  subscription state and error in the failure. It still fails on premature EOF.
+
+Before edits, a focused Linux run at `081b2dcdc` with
+`DOTNET_PROCESSOR_COUNT=2` passed the cancellation case and all five malformed
+numeric rows (**6 passed, zero failed/skipped**). The final hardened tests,
+diagnostics and culture regression under the same processor limit passed **231 cases, zero failed/skipped** across
+`StratumConnectionTests`, `BitcoinBlake2bDifficultyBudgetTests`,
+`BitcoinPublicationFailureTests` and `IntegrationDeadlineCollectionTests`.
+The new culture regression explicitly runs both date-scalar culture cases, the
+German invariant-number scenario and the canonical legacy-culture scenario in
+one test, checks that each restores the caller's culture, then runs all five
+malformed strings. It also repeats `"2,0"` with `fr-FR` and `de-DE` deliberately
+active. Every budget response and terminal-disconnect assertion is retained.
+Production configure parsing already uses `NumberStyles.Float` and
+`InvariantCulture`; no parsing change is warranted by this failure.
+
+This follow-up changes only tests and evidence. It does not change production
+deadlines, test watchdogs or collection membership. Filtered success and the
+explicit culture sequence do not establish reliability under whole-suite load.
+The five deadline failures from run 7 remain a separate investigation; this
+triage does not claim to resolve them. An intermediate cancellation-test version
+used external explicit cancellation plus a ten-second continuation watchdog.
+It passed focused testing but hit that watchdog in the whole-suite diagnostic
+run. The final version above performs cancellation inside the handler and has
+no dependency on timer order or a runner continuation to initiate cancellation.
+
+The final whole-assembly repeat at local `0f5b2d4bf` used the same two-CPU limit, native libraries,
+Bitcoin Core 28.1 and unset PostgreSQL as row 7: **3,352 passed, 3 failed,
+41 skipped**. Cancellation, all five malformed-input rows, the ordered culture
+regression, all 42 publication cases and all four BLAKE2b broadcast cases passed.
+The remaining failures were orphaned payout completion, idle listener shutdown
+and notification snapshot delivery. This run is **not green** and does not prove
+startup-timeout flakiness eliminated; the reproduced startup expiry above remains
+part of the evidence. Results are `build/review191/full-final.log` and
+`build/review191/results/full-final.trx`. Normal CI is a separate required check.
+
+Local baseline evidence is `build/issue183/results/round7-baseline-targeted.trx`
+in the original worktree. Final focused evidence is
+`build/review191/focused-final.log` and
+`build/review191/results/focused-final.trx` in the review worktree. The diagnostic
+run is retained in `build/review191/full.log` and its matching TRX. These artifacts
+are ignored; the findings and test sequence above are included in the PR.
 
 ## Background-service startup context
 

@@ -248,33 +248,27 @@ public class StratumConnectionTests : TestBase
         var wrapper = new PrivateObject(connection);
         var callCount = 0;
         using var cts = new CancellationTokenSource();
-        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        async Task handler(StratumConnection con, JsonRpcRequest request, CancellationToken ct)
+        Task handler(StratumConnection con, JsonRpcRequest request, CancellationToken ct)
         {
             callCount++;
-            entered.SetResult();
             Assert.Equal(cts.Token, ct);
-            // Only explicit cancellation can finish this handler. Competing
-            // 20 ms cancellation / 1 s completion timers test scheduler order.
-            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            Assert.False(ct.IsCancellationRequested);
+            // Cancel only after the handler owns the request. No competing
+            // timers or runner continuations decide whether cancellation wins.
+            cts.Cancel();
+            return Task.Delay(Timeout.InfiniteTimeSpan, ct);
         }
 
         var processing = (Task) wrapper.Invoke(ProcessRequestAsyncMethod,
             cts.Token,
             handler,
             new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(requestString)));
-        try
-        {
-            await entered.Task.WaitAsync(TestTimeout);
-            Assert.False(processing.IsCompleted);
-            cts.Cancel();
-            var error = await Assert.ThrowsAnyAsync<TaskCanceledException>(() => processing.WaitAsync(TestTimeout));
-            Assert.Equal(cts.Token, error.CancellationToken);
-            Assert.True(processing.IsCanceled);
-            Assert.Equal(1, callCount);
-        }
-        finally { cts.Cancel(); }
+        var error = await Assert.ThrowsAnyAsync<TaskCanceledException>(() => processing);
+
+        Assert.True(processing.IsCanceled);
+        Assert.Equal(1, callCount);
+        Assert.Equal(cts.Token, error.CancellationToken);
     }
 
     // [Fact]
