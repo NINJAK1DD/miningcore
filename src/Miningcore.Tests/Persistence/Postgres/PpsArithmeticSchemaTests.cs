@@ -207,6 +207,8 @@ public class PpsArithmeticSchemaTests
                     $"GRANT EXECUTE ON FUNCTION activate_pps_binary64(text,timestamptz) TO {app}",
                     $"GRANT EXECUTE ON FUNCTION guard_pps_arithmetic_credit() TO {app}",
                     $"GRANT EXECUTE ON FUNCTION guard_pps_arithmetic_transition() TO {app}",
+                    "GRANT SELECT ON pps_arithmetic_transitions TO PUBLIC",
+                    "GRANT SELECT(effectivefrom) ON pps_arithmetic_transitions TO PUBLIC",
                     "GRANT TRUNCATE ON pps_arithmetic_transitions TO PUBLIC",
                     "GRANT EXECUTE ON FUNCTION activate_pps_binary64(text,timestamptz) TO PUBLIC",
                 })
@@ -217,6 +219,10 @@ public class PpsArithmeticSchemaTests
                     Assert.False(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None), damage);
                     await tx.RollbackAsync();
                 }
+                // Reapplying the administrator migration must remove both table
+                // and column PUBLIC read drift while preserving explicit app access.
+                await db.ExecuteAsync("GRANT SELECT ON pps_arithmetic_transitions TO PUBLIC; GRANT SELECT(poolid,effectivefrom,version) ON pps_arithmetic_transitions TO PUBLIC");
+                await db.ExecuteAsync(Script("add_pps_arithmetic_version.sql"));
                 await db.ExecuteAsync($"SET ROLE {app}");
                 Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
                 foreach(var sql in new[]

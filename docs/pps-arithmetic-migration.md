@@ -92,9 +92,17 @@ Ownership and effective permissions are checked for the credit-table owner and
 the connecting non-superuser role, including inherited and column-level grants.
 The transition table and routines must share an administrator owner. Runtime
 roles must have SELECT but no write, activation, routine execution or administrator
-membership; PUBLIC must have no write/execute grants. Superuser administrative
+membership; PUBLIC must have no table or column privileges, including SELECT,
+and no routine execution grants. Superuser administrative
 sessions and fixtures remain usable, but a superuser runtime login has no
 enforceable privilege boundary and is not a supported deployment policy.
+
+The application still owns `pps_share_credits`. Its PostgreSQL ownership permits
+DDL, including disabling that table's user trigger. This boundary protects
+against stale writers and invalid version evidence under ordinary DML; it cannot
+protect against a compromised owner deliberately changing DDL or a superuser.
+Restrict administrative access accordingly. Moving credit-table ownership out of
+the runtime role would require a separate deployment and privilege redesign.
 
 Primary-key membership is checked in the catalogs. Arithmetic CHECK expressions
 are compared after removing deparser whitespace and redundant parentheses, while
@@ -148,3 +156,54 @@ round trips, unknown versions, sanitized recovery and extreme binary64 ratios.
 PostgreSQL tests cover one-way activation, overlap rejection, old replay after
 cutover, replay-version conflict, stale-writer rejection and nonzero remainder
 continuity with exactly one durable credit per accounting identity.
+
+## Isolated version-1 service acceptance
+
+On 20 September 2026, a fresh Ubuntu 22.04 WSL lab ran the actual Miningcore
+service with Bitcoin Core 28.1 and a dedicated PostgreSQL 14 cluster. The tested
+production source was `e0bedbd94` plus this follow-up's PUBLIC ACL preflight
+change; the retained production patch SHA-256 is
+`10b3c8f8438791ca77af6d267027d287525f2724a94191addec3eb73cd69982a`.
+The service was published from that source; unchanged native libraries were
+reused from the existing lab, with their hashes retained. This local service
+exercise is separate from the PostgreSQL 15/16/17/18 schema CI lanes.
+
+The administrator activated `bitcoin-pps-v1-lab` at
+`2026-09-20T02:12:21Z` before starting Miningcore as the non-superuser application
+login. Two generated miner addresses submitted 20 real Stratum shares each at
+assigned difficulty `1e-10`, with 99% retained reward and a 50-test-BTC reward
+basis. The single service performed acceptance and recording into PostgreSQL;
+a separate relay process was not used. No credits were inserted as fixtures.
+
+| Evidence | Result |
+| --- | --- |
+| Stratum acceptance | 40 of 40 submissions accepted |
+| Durable evidence | 40 shares, 40 credits, 40 accounting groups, 40 balance changes |
+| Arithmetic version | All 40 credits store version 1 |
+| Independent calculation | Every credit exactly matches binary64 rational arithmetic truncated once at scale 24 |
+| Liability per share | `10.645161290322581103779573` test BTC |
+| Total calculated liability | `425.806451612903244151182920` test BTC |
+| Total credited | `425.806451612902` test BTC |
+| Total retained remainder | `0.000000000001244151182920` test BTC |
+| Regtest blocks | 22 accepted, reaching height 123 after 101 bootstrap blocks |
+| Payments | 0 |
+
+The independent verifier decoded PostgreSQL's `float8send` bytes into Python
+`Fraction` values, applied integer satoshi reward and 99/100 retention, then
+compared the integer-truncated scale-24 result to each stored amount. Total
+calculated liability equals credited liability plus retained remainder; each
+recipient's remainder is nonnegative and below `10^-12` test BTC.
+
+After a clean Miningcore stop, `pg_dump`/`pg_restore` into a separately named
+database preserved counts, totals and canonical row-content hashes for shares,
+credits, balance changes, remainders, accounting groups and balances. The restore
+reader had no tested write privileges. Backup SHA-256:
+`7935f605018d26b1b9da8cf60894f083ec4033a56d64a790d3f4baddd60f278c`.
+
+The isolated nodes and database were then stopped. The old version-0 evidence
+was preserved. Local scripts, sanitized configuration, logs, verification JSON,
+source archive and backup are retained under `build/review194/` in the review
+worktree; these ignored artifacts are not part of the distributed package.
+This verifies a fresh version-1 service path at the frozen fee policy; historical
+replay, mixed-version cutover and varying-input behavior remain covered by their
+separate automated tests. It does not establish full CoreDRP Mining conformance.

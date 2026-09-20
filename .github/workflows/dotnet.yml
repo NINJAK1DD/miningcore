@@ -370,7 +370,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres: [ '15', '16', '18' ]
+        # Keep every documented major explicit even if the main suite changes its image.
+        postgres: [ '15', '16', '17', '18' ]
     services:
       postgres:
         image: postgres:${{ matrix.postgres }}

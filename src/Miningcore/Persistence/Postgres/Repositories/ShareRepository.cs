@@ -386,7 +386,11 @@ public class ShareRepository : IShareRepository
               AND NOT EXISTS (SELECT 1 FROM routines r CROSS JOIN boundary b WHERE r.proowner<>b.relowner)
               AND NOT EXISTS (
                 SELECT 1 FROM boundary b, LATERAL aclexplode(COALESCE(b.relacl,acldefault('r',b.relowner))) acl
-                WHERE acl.grantee=0 AND acl.privilege_type<>'SELECT')
+                WHERE acl.grantee=0)
+              AND NOT EXISTS (
+                SELECT 1 FROM boundary b JOIN pg_attribute a ON a.attrelid=b.oid,
+                    LATERAL aclexplode(a.attacl) acl
+                WHERE a.attnum>0 AND NOT a.attisdropped AND acl.grantee=0)
               AND NOT EXISTS (
                 SELECT 1 FROM routines r, LATERAL aclexplode(COALESCE(r.proacl,acldefault('f',r.proowner))) acl
                 WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE')
