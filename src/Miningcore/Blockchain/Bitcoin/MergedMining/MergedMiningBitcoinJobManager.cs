@@ -766,6 +766,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 share.AccountingRole = ShareAccountingRole.None;
                 share.RewardBasisSatoshis = 0;
                 share.PpsCalculatedAmount = null;
+                share.PpsArithmeticVersion = 0;
                 share.PairedShare = null;
             }
 
@@ -1135,6 +1136,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             AccountingRole = share.AccountingRole,
             RewardBasisSatoshis = share.RewardBasisSatoshis,
             PpsCalculatedAmount = share.PpsCalculatedAmount,
+            PpsArithmeticVersion = share.PpsArithmeticVersion,
             PairedShare = share.PairedShare,
             BlockHeight = share.BlockHeight,
             BlockReward = share.BlockReward,

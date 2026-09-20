@@ -125,6 +125,7 @@
           "enabled": true,
           "minimumPayment": 0.01,
           "payoutScheme": "SOLO",
+          "ppsBinary64Activation": null,
           "ppsShareRetentionDays": 7
         },
         "ports": {
@@ -214,6 +215,7 @@
           "enabled": true,
           "minimumPayment": 1.0,
           "payoutScheme": "SOLO",
+          "ppsBinary64Activation": null,
           "ppsShareRetentionDays": 7
         },
         "ports": {
@@ -274,6 +276,7 @@
           "enabled": false,
           "minimumPayment": 0.001,
           "payoutScheme": "SOLO",
+          "ppsBinary64Activation": null,
           "ppsShareRetentionDays": 7
         },
         "ports": {

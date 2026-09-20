@@ -1338,6 +1338,9 @@ else
 fi
 ```
 
+The cumulative `add_share_accounting.sql` above includes `add_pps_arithmetic_version.sql`;
+follow the [PPS arithmetic rollout](pps-arithmetic-migration.md) before opting in to version 1.
+
 Start the service only when the block prints `READY` and exports
 `MININGCORE_UPGRADE_READY=1`. The old symlink remains intact after a staging, backup or migration
 failure. If a migration committed before a later step failed, do not restart the old binary merely

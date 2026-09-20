@@ -557,6 +557,14 @@
           ]
         },
         "payoutSchemeConfig": {},
+        "ppsBinary64Activation": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?Z$"
+        },
         "ppsShareRetentionDays": {
           "type": "integer",
           "default": 7

@@ -51,6 +51,9 @@ jobs:
       shell: bash
       run: bash scripts/release/test-release-install-docs.sh
 
+    - name: Check generated PPS arithmetic migration
+      run: python3 scripts/release/sync-pps-arithmetic-migration.py --check
+
     - name: Test PostgreSQL systemd ordering helper
       shell: bash
       run: sudo bash scripts/release/test-systemd-postgresql-ordering.sh
@@ -359,6 +362,47 @@ jobs:
         LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net10.0
         MININGCORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
       run: dotnet test --logger:"console;verbosity=detailed" --no-build --verbosity normal src
+
+  pps-postgres-compatibility:
+    name: PPS schema on PostgreSQL ${{ matrix.postgres }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep every documented major explicit even if the main suite changes its image.
+        postgres: [ '15', '16', '17', '18' ]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: miningcore
+          POSTGRES_PASSWORD: miningcore-test
+          POSTGRES_DB: miningcore_tests
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U miningcore -d miningcore_tests"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+    - name: Setup .NET
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      with:
+        dotnet-version: 10.0.x
+    - name: Test PPS schema and old-writer compatibility
+      env:
+        MININGCORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
+      run: >-
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
+        -p:MiningcoreStratumListenerSmoke=true
+        --filter "FullyQualifiedName~PpsArithmeticSchema|FullyQualifiedName~ShareAccountingIntegrationTests"
 
   build-ubuntu-source:
     name: Build Ubuntu ${{ matrix.ubuntu }} source

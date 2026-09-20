@@ -286,8 +286,8 @@ public class ShareAccountingIntegrationTests
                   AND tablename IN ('share_accounting_groups',
                       'share_accounting_prune_state', 'pps_share_credits',
                       'pps_credit_remainders')
-                  AND tableowner = (SELECT pg_get_userbyid(datdba)
-                      FROM pg_database WHERE datname = current_database())"));
+                  AND tableowner = (SELECT pg_get_userbyid(relowner)
+                      FROM pg_class WHERE oid = 'shares'::regclass)"));
 
             await Assert.ThrowsAsync<PostgresException>(() =>
                 connection.ExecuteAsync(@"INSERT INTO shares(poolid, blockheight,
@@ -668,6 +668,67 @@ public class ShareAccountingIntegrationTests
         finally
         {
             await connection.ExecuteAsync("ROLLBACK; SET search_path TO public");
+            await connection.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
+        }
+    }
+
+    [PostgresIntegrationFact]
+    public async Task ArithmeticCutover_PreservesLegacyReplayAndCarriesRemainderForward()
+    {
+        var schema = $"miningcore_arithmetic_{Guid.NewGuid():N}";
+        await using var connection = new NpgsqlConnection(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"));
+        await connection.OpenAsync();
+        try
+        {
+            await connection.ExecuteAsync($"CREATE SCHEMA {schema}; SET search_path TO {schema}, public");
+            var script = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+                "../../../../Miningcore/Persistence/Postgres/Scripts/createdb.sql"));
+            await connection.ExecuteAsync((await File.ReadAllTextAsync(script)).Replace("SET ROLE miningcore;", ""));
+            var repository = new ShareRepository(AutoMapperFactory.CreateMapper());
+            var old = CreateBatch(Guid.NewGuid(), 0.0000000000006m, 'A');
+            Assert.Equal(ShareAccountingInsertResult.Inserted, await InsertAsync(repository, connection, old));
+            var cutoff = old.Created.AddMinutes(1);
+            var premature = CreateBatch(Guid.NewGuid(), 0.25m, 'D');
+            premature = premature with { PpsCredits = new[] { premature.PpsCredits[0] with { ArithmeticVersion = 1 } } };
+            await Assert.ThrowsAsync<PostgresException>(() => InsertAsync(repository, connection, premature));
+            await Assert.ThrowsAsync<PostgresException>(() => connection.ExecuteAsync(
+                "SELECT activate_pps_binary64('ltc',@cutoff)", new { cutoff = old.Created.AddSeconds(-1) }));
+            await connection.ExecuteAsync("SELECT activate_pps_binary64('ltc',@cutoff)", new { cutoff });
+            await connection.ExecuteAsync("SELECT activate_pps_binary64('ltc',@cutoff)", new { cutoff });
+            Assert.Equal(ShareAccountingInsertResult.AlreadyCommitted, await InsertAsync(repository, connection, old));
+            Assert.Equal(0.0000000000006m, await connection.ExecuteScalarAsync<decimal>(
+                "SELECT amount FROM pps_credit_remainders WHERE poolid='ltc' AND address='miner'"));
+            var current = CreateBatch(Guid.NewGuid(), 0.0000000000007m, 'B');
+            current = current with
+            {
+                Created = cutoff,
+                Shares = new[] { current.Shares[0] with { Created = cutoff } },
+                PpsCredits = new[] { current.PpsCredits[0] with { Created = cutoff, ArithmeticVersion = 1 } },
+            };
+            Assert.Equal(ShareAccountingInsertResult.Inserted, await InsertAsync(repository, connection, current));
+            Assert.Equal(ShareAccountingInsertResult.AlreadyCommitted, await InsertAsync(repository, connection, current));
+            Assert.Equal(0.000000000001m, await GetBalanceAsync(connection));
+            Assert.Equal(0.0000000000003m, await connection.ExecuteScalarAsync<decimal>(
+                "SELECT amount FROM pps_credit_remainders WHERE poolid='ltc' AND address='miner'"));
+            Assert.Equal(0, await connection.ExecuteScalarAsync<short>(
+                "SELECT arithmeticversion FROM pps_share_credits WHERE accountingid=@id", new { id = old.AccountingId }));
+            Assert.Equal(0.0000000000006m, await connection.ExecuteScalarAsync<decimal>(
+                "SELECT calculatedamount FROM pps_share_credits WHERE accountingid=@id", new { id = old.AccountingId }));
+            var wrongReplay = current with { PpsCredits = new[] { current.PpsCredits[0] with { ArithmeticVersion = 0 } } };
+            await Assert.ThrowsAsync<InvalidDataException>(() => InsertAsync(repository, connection, wrongReplay));
+            var stale = CreateBatch(Guid.NewGuid(), 0.25m, 'C');
+            stale = stale with { Created = cutoff, Shares = new[] { stale.Shares[0] with { Created = cutoff } },
+                PpsCredits = new[] { stale.PpsCredits[0] with { Created = cutoff } } };
+            await Assert.ThrowsAsync<PostgresException>(() => InsertAsync(repository, connection, stale));
+            Assert.Equal(2, await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM pps_share_credits"));
+            Assert.Equal(2, await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM share_accounting_groups"));
+            await Assert.ThrowsAsync<PostgresException>(() => connection.ExecuteAsync(
+                "SELECT activate_pps_binary64('ltc',@cutoff)", new { cutoff = cutoff.AddSeconds(1) }));
+            await Assert.ThrowsAsync<PostgresException>(() => connection.ExecuteAsync("DELETE FROM pps_arithmetic_transitions"));
+        }
+        finally
+        {
+            await connection.ExecuteAsync("SET search_path TO public");
             await connection.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
         }
     }

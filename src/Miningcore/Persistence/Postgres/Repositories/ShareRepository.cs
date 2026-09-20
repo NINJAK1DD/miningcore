@@ -30,6 +30,7 @@ public class ShareRepository : IShareRepository
         public Guid AccountingId { get; set; }
         public string Address { get; set; }
         public decimal CalculatedAmount { get; set; }
+        public short ArithmeticVersion { get; set; }
         public decimal CreditedAmount { get; set; }
         public double Difficulty { get; set; }
         public double NetworkDifficulty { get; set; }
@@ -50,6 +51,16 @@ public class ShareRepository : IShareRepository
         public Guid? CursorAccountingId { get; set; }
     }
 
+    public Task<bool> HasMatchingPpsArithmeticTransitionAsync(IDbConnection con,
+        string poolId, DateTime? activation, CancellationToken ct) =>
+        con.ExecuteScalarAsync<bool>(new CommandDefinition(@"
+            SELECT CASE WHEN @activation::timestamptz IS NULL THEN
+                NOT EXISTS(SELECT 1 FROM pps_arithmetic_transitions WHERE poolid=@poolId)
+            ELSE
+                EXISTS(SELECT 1 FROM pps_arithmetic_transitions
+                    WHERE poolid=@poolId AND version=1 AND effectivefrom=@activation)
+            END", new { poolId, activation }, cancellationToken: ct));
+
     public async Task<bool> HasShareAccountingSchemaAsync(IDbConnection con,
         CancellationToken ct)
     {
@@ -66,9 +77,13 @@ public class ShareRepository : IShareRepository
                 ('share_accounting_prune_state', 'singletonid', 'int2', false, NULL, NULL),
                 ('share_accounting_prune_state', 'cursorcreated', 'timestamptz', true, NULL, NULL),
                 ('share_accounting_prune_state', 'cursoraccountingid', 'uuid', true, NULL, NULL),
+                ('pps_arithmetic_transitions', 'poolid', 'text', false, NULL, NULL),
+                ('pps_arithmetic_transitions', 'effectivefrom', 'timestamptz', false, NULL, NULL),
+                ('pps_arithmetic_transitions', 'version', 'int2', false, NULL, NULL),
                 ('pps_share_credits', 'poolid', 'text', false, NULL, NULL),
                 ('pps_share_credits', 'accountingid', 'uuid', false, NULL, NULL),
                 ('pps_share_credits', 'address', 'text', false, NULL, NULL),
+                ('pps_share_credits', 'arithmeticversion', 'int2', false, NULL, NULL),
                 ('pps_share_credits', 'calculatedamount', 'numeric', false, 38, 24),
                 ('pps_share_credits', 'creditedamount', 'numeric', false, 28, 12),
                 ('pps_share_credits', 'difficulty', 'float8', false, NULL, NULL),
@@ -92,8 +107,68 @@ public class ShareRepository : IShareRepository
                       (actual.numeric_precision = required.numeric_precision AND
                        actual.numeric_scale = required.numeric_scale))
                 WHERE actual.column_name IS NULL
+            ), arithmetic_constraints AS MATERIALIZED (
+                -- Scope before deparsing: another schema may be dropped concurrently.
+                SELECT * FROM pg_constraint
+                WHERE conrelid IN (to_regclass('pps_arithmetic_transitions'), to_regclass('pps_share_credits'))
             )
             SELECT NOT EXISTS(SELECT 1 FROM missing_columns)
+            -- Old writers omit the new column: only a literal zero default is safe.
+            AND EXISTS (
+                SELECT 1 FROM pg_attribute a JOIN pg_attrdef d
+                  ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+                WHERE a.attrelid=to_regclass('pps_share_credits') AND a.attname='arithmeticversion'
+                  AND NOT a.attisdropped AND a.attgenerated='' AND a.attidentity=''
+                  AND regexp_replace(pg_get_expr(d.adbin,d.adrelid,true),
+                      '[[:space:]()]', '', 'g') IN ('0', '0::smallint'))
+            AND EXISTS (
+                SELECT 1 FROM arithmetic_constraints c
+                WHERE c.conrelid=to_regclass('pps_arithmetic_transitions')
+                  AND c.contype='p' AND c.convalidated AND NOT c.condeferrable
+                  AND c.conkey=ARRAY[(SELECT attnum FROM pg_attribute
+                      WHERE attrelid=c.conrelid AND attname='poolid')]::smallint[])
+            AND NOT EXISTS (
+                SELECT 1 FROM (VALUES
+                    ('pps_arithmetic_transitions', 'version', 'version=1'),
+                    ('pps_arithmetic_transitions', 'effectivefrom', 'isfiniteeffectivefrom'),
+                    ('pps_share_credits', 'arithmeticversion', 'arithmeticversion=anyarray[0,1]')
+                ) required(relation, column_name, expression)
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM arithmetic_constraints c
+                    WHERE c.conrelid=to_regclass(required.relation) AND c.contype='c'
+                      AND c.convalidated AND NOT c.condeferrable
+                      AND c.conkey=ARRAY[(SELECT attnum FROM pg_attribute
+                          WHERE attrelid=c.conrelid AND attname=required.column_name)]::smallint[]
+                      -- Ignore deparser whitespace, redundant parentheses and ANY casing;
+                      -- retain every operator, literal and column so weakened checks fail.
+                      AND regexp_replace(lower(pg_get_expr(c.conbin,c.conrelid,true)),
+                          '[[:space:]()]', '', 'g')=required.expression))
+            AND NOT EXISTS (
+                SELECT 1 FROM (VALUES
+                    ('pps_share_credits', 'trg_pps_arithmetic_credit', 7, 'guard_pps_arithmetic_credit', @creditGuard),
+                    ('pps_arithmetic_transitions', 'trg_pps_arithmetic_transition_immutable', 27, 'guard_pps_arithmetic_transition', @transitionGuard),
+                    ('pps_arithmetic_transitions', 'trg_pps_arithmetic_transition_truncate', 34, 'guard_pps_arithmetic_transition', @transitionGuard)
+                ) required(relation, trigger_name, trigger_type, function_name, body)
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid
+                    JOIN pg_language l ON l.oid=p.prolang
+                    WHERE t.tgrelid=to_regclass(required.relation) AND t.tgname=required.trigger_name
+                      AND t.tgenabled='O' AND t.tgtype=required.trigger_type
+                      AND NOT t.tgisinternal AND t.tgqual IS NULL AND t.tgnargs=0
+                      AND t.tgattr::text='' AND NOT t.tgdeferrable
+                      AND p.proname=required.function_name
+                      AND p.pronamespace=(SELECT oid FROM pg_namespace WHERE nspname=current_schema())
+                      AND p.pronargs=0 AND p.prorettype='trigger'::regtype AND NOT p.prosecdef
+                      AND l.lanname='plpgsql'
+                      AND p.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp', current_schema())]
+                      AND btrim(replace(p.prosrc, chr(13)||chr(10), chr(10)), chr(32)||chr(9)||chr(10)||chr(13))=required.body))
+            AND EXISTS (
+                SELECT 1 FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang
+                WHERE p.oid=to_regprocedure('activate_pps_binary64(text,timestamptz)')
+                  AND p.pronamespace=(SELECT oid FROM pg_namespace WHERE nspname=current_schema())
+                  AND p.prorettype='void'::regtype AND NOT p.prosecdef AND l.lanname='plpgsql'
+                  AND p.proconfig=ARRAY[format('search_path=pg_catalog, %I, pg_temp', current_schema())]
+                  AND btrim(replace(p.prosrc, chr(13)||chr(10), chr(10)), chr(32)||chr(9)||chr(10)||chr(13))=@activationBody)
             AND EXISTS (
                 SELECT 1 FROM pg_index index_record
                 WHERE index_record.indrelid = to_regclass('shares')
@@ -269,11 +344,16 @@ public class ShareRepository : IShareRepository
                       AND index_record.indisready))";
 
         var structureReady = await con.QuerySingleAsync<bool>(
-            new CommandDefinition(query, cancellationToken: ct));
-        if(!structureReady)
+            new CommandDefinition(query, new
+            {
+                creditGuard = PpsArithmeticSchemaContract.CreditGuard,
+                transitionGuard = PpsArithmeticSchemaContract.TransitionGuard,
+                activationBody = PpsArithmeticSchemaContract.Activation,
+            }, cancellationToken: ct));
+        if(!structureReady || !await HasPpsArithmeticPrivilegesAsync(con, ct))
             return false;
 
-        // Keep this as a second query. Referencing the table directly in the structural query
+        // Keep this query separate. Referencing the table directly in the structural query
         // would make a completely missing migration fail during PostgreSQL parse analysis rather
         // than returning the false preflight result expected by startup diagnostics.
         const string pruneStateQuery = @"SELECT EXISTS(
@@ -283,6 +363,47 @@ public class ShareRepository : IShareRepository
                     OR (cursorcreated IS NOT NULL AND cursoraccountingid IS NOT NULL)))";
         return await con.QuerySingleAsync<bool>(new CommandDefinition(
             pruneStateQuery, cancellationToken: ct));
+    }
+
+    private static Task<bool> HasPpsArithmeticPrivilegesAsync(IDbConnection con, CancellationToken ct)
+    {
+        const string query = @"WITH boundary AS (
+                SELECT oid, relowner, relacl FROM pg_class
+                WHERE oid=to_regclass('pps_arithmetic_transitions')
+            ), routines AS (
+                SELECT oid, proowner, proacl FROM pg_proc
+                WHERE oid IN (to_regprocedure('guard_pps_arithmetic_credit()'),
+                    to_regprocedure('guard_pps_arithmetic_transition()'),
+                    to_regprocedure('activate_pps_binary64(text,timestamptz)'))
+            ), runtime_roles AS (
+                -- Check the table owner even when preflight runs under an administrator.
+                -- Superuser-only fixtures/administrative sessions have no enforceable ACL boundary.
+                SELECT oid FROM pg_roles WHERE NOT rolsuper AND
+                    (rolname=current_user OR oid=(SELECT relowner FROM pg_class
+                        WHERE oid=to_regclass('pps_share_credits')))
+            )
+            SELECT EXISTS (SELECT 1 FROM boundary)
+              AND NOT EXISTS (SELECT 1 FROM routines r CROSS JOIN boundary b WHERE r.proowner<>b.relowner)
+              AND NOT EXISTS (
+                SELECT 1 FROM boundary b, LATERAL aclexplode(COALESCE(b.relacl,acldefault('r',b.relowner))) acl
+                WHERE acl.grantee=0)
+              AND NOT EXISTS (
+                SELECT 1 FROM boundary b JOIN pg_attribute a ON a.attrelid=b.oid,
+                    LATERAL aclexplode(a.attacl) acl
+                WHERE a.attnum>0 AND NOT a.attisdropped AND acl.grantee=0)
+              AND NOT EXISTS (
+                SELECT 1 FROM routines r, LATERAL aclexplode(COALESCE(r.proacl,acldefault('f',r.proowner))) acl
+                WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE')
+              AND NOT EXISTS (
+                SELECT 1 FROM runtime_roles role CROSS JOIN boundary b
+                WHERE pg_has_role(role.oid,b.relowner,'MEMBER')
+                   OR NOT has_table_privilege(role.oid,b.oid,'SELECT')
+                   OR has_table_privilege(role.oid,b.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+                   OR has_any_column_privilege(role.oid,b.oid,'INSERT,UPDATE,REFERENCES')
+                   OR EXISTS (SELECT 1 FROM routines r
+                       WHERE has_function_privilege(role.oid,r.oid,'EXECUTE')))";
+
+        return con.ExecuteScalarAsync<bool>(new CommandDefinition(query, cancellationToken: ct));
     }
 
     public async Task<string[]> GetMissingSharePartitionsAsync(IDbConnection con,
@@ -560,7 +681,7 @@ public class ShareRepository : IShareRepository
            (batch.NewReceiptNotBefore != DateTime.MinValue &&
                batch.NewReceiptNotBefore.Kind != DateTimeKind.Utc) ||
            batch.PpsCredits.Any(x => x == null ||
-               x.AccountingId != batch.AccountingId ||
+               x.AccountingId != batch.AccountingId || x.ArithmeticVersion is not (0 or 1) ||
                string.IsNullOrWhiteSpace(x.PoolId) ||
                string.IsNullOrWhiteSpace(x.Address) || x.CalculatedAmount <= 0 ||
                !double.IsFinite(x.Difficulty) || x.Difficulty <= 0 ||
@@ -668,9 +789,9 @@ public class ShareRepository : IShareRepository
                     @Addresses::text[], @CalculatedAmounts::numeric[],
                     @Difficulties::double precision[],
                     @NetworkDifficulties::double precision[],
-                    @RewardBases::bigint[], @CreatedValues::timestamptz[])
+                    @RewardBases::bigint[], @CreatedValues::timestamptz[], @ArithmeticVersions::smallint[])
                 AS value(poolid, accountingid, address, calculatedamount,
-                    difficulty, networkdifficulty, rewardbasissatoshis, created)
+                    difficulty, networkdifficulty, rewardbasissatoshis, created, arithmeticversion)
             ), running AS (
                 SELECT input.*, remainder.amount +
                         sum(calculatedamount) OVER recipient_window AS accumulated,
@@ -691,10 +812,10 @@ public class ShareRepository : IShareRepository
             ), inserted_credits AS (
                 INSERT INTO pps_share_credits(poolid, accountingid, address,
                     calculatedamount, creditedamount, difficulty,
-                    networkdifficulty, rewardbasissatoshis, created)
+                    networkdifficulty, rewardbasissatoshis, created, arithmeticversion)
                 SELECT poolid, accountingid, address, calculatedamount,
                     creditedamount, difficulty, networkdifficulty,
-                    rewardbasissatoshis, created
+                    rewardbasissatoshis, created, arithmeticversion
                 FROM calculated
                 RETURNING *
             ), inserted_changes AS (
@@ -739,6 +860,7 @@ public class ShareRepository : IShareRepository
             PoolIds = credits.Select(x => x.PoolId).ToArray(),
             AccountingIds = credits.Select(x => x.AccountingId).ToArray(),
             Addresses = credits.Select(x => x.Address).ToArray(),
+            ArithmeticVersions = credits.Select(x => x.ArithmeticVersion).ToArray(),
             CalculatedAmounts = credits.Select(x => x.CalculatedAmount).ToArray(),
             Difficulties = credits.Select(x => x.Difficulty).ToArray(),
             NetworkDifficulties = credits.Select(x => x.NetworkDifficulty).ToArray(),
@@ -839,6 +961,7 @@ public class ShareRepository : IShareRepository
             if(actual == null || actual.AccountingId != expected.AccountingId ||
                !string.Equals(actual.Address, expected.Address, StringComparison.Ordinal) ||
                actual.CalculatedAmount != expected.CalculatedAmount ||
+               actual.ArithmeticVersion != expected.ArithmeticVersion ||
                actual.Difficulty != expected.Difficulty ||
                actual.NetworkDifficulty != expected.NetworkDifficulty ||
                actual.RewardBasisSatoshis != expected.RewardBasisSatoshis ||

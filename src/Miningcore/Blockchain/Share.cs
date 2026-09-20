@@ -145,6 +145,10 @@ public class Share
     [ProtoMember(27)]
     public decimal? PpsCalculatedAmount { get; set; }
 
+    // Missing on historical wire/journal records means legacy decimal arithmetic.
+    [ProtoMember(33)]
+    public short PpsArithmeticVersion { get; set; }
+
     /// <summary>
     /// Immutable settlement marker for an accepted block whose coinbase pays
     /// the SOLO miner directly.
