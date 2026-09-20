@@ -161,9 +161,8 @@ continuity with exactly one durable credit per accounting identity.
 
 On 20 September 2026, a fresh Ubuntu 22.04 WSL lab ran the actual Miningcore
 service with Bitcoin Core 28.1 and a dedicated PostgreSQL 14 cluster. The tested
-production source was `e0bedbd94` plus this follow-up's PUBLIC ACL preflight
-change; the retained production patch SHA-256 is
-`10b3c8f8438791ca77af6d267027d287525f2724a94191addec3eb73cd69982a`.
+production source was `e0bedbd94` plus the PUBLIC ACL preflight change.
+Production patch SHA-256: `10b3c8f8438791ca77af6d267027d287525f2724a94191addec3eb73cd69982a`.
 The service was published from that source; unchanged native libraries were
 reused from the existing lab, with their hashes retained. This local service
 exercise is separate from the PostgreSQL 15/16/17/18 schema CI lanes.
@@ -197,12 +196,12 @@ recipient's remainder is nonnegative and below `10^-12` test BTC.
 After a clean Miningcore stop, `pg_dump`/`pg_restore` into a separately named
 database preserved counts, totals and canonical row-content hashes for shares,
 credits, balance changes, remainders, accounting groups and balances. The restore
-reader had no tested write privileges. Backup SHA-256:
-`7935f605018d26b1b9da8cf60894f083ec4033a56d64a790d3f4baddd60f278c`.
+reader had no tested write privileges.
+Backup SHA-256: `7935f605018d26b1b9da8cf60894f083ec4033a56d64a790d3f4baddd60f278c`.
 
 The isolated nodes and database were then stopped. The old version-0 evidence
 was preserved. Local scripts, sanitized configuration, logs, verification JSON,
-source archive and backup are retained under `build/review194/` in the review
+source archive and backup are retained under `build/review194/` in the local
 worktree; these ignored artifacts are not part of the distributed package.
 This verifies a fresh version-1 service path at the frozen fee policy; historical
 replay, mixed-version cutover and varying-input behavior remain covered by their
