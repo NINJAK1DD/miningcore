@@ -98,6 +98,7 @@ public class NonParallelCollectionTests
         yield return new object[] { typeof(AdminApiEnvironmentCollection), new[] { typeof(AdminApiSecurityTests) } };
         yield return new object[] { typeof(BitcoinCorePayoutIntegrationCollection),
             new[] { typeof(BitcoinDirectSoloRegtestTests), typeof(BitcoinPayoutHandlerRegtestTests),
+                typeof(BitcoinPublicationRegtestTests),
                 typeof(BitcoinVersionRollingRegtestTests), typeof(BitcoinBlake2bRegtestTests),
                 typeof(BitcoinBlake2bStartupTests), typeof(MergedMiningPayoutRegtestTests) } };
         yield return new object[] { typeof(RpcDiagnosticCollection),

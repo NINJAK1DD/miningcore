@@ -16,6 +16,22 @@ public class BitcoinWorkerContext : WorkerContextBase
     private DirectPayoutAuthorization directPayoutAuthorization;
     private long directPayoutGeneration;
     private readonly SemaphoreSlim directPayoutOperationGate = new(1, 1);
+    private long acceptedProofSequence;
+    private bool jobsClosed;
+
+    // Requests are serial per connection. Managers mark this immediately after
+    // proof validation, before accounting, candidate submission or observers run.
+    internal long AcceptedProofSequence => Interlocked.Read(ref acceptedProofSequence);
+    internal void MarkProofAccepted() => Interlocked.Increment(ref acceptedProofSequence);
+
+    internal void CloseJobs()
+    {
+        lock(this)
+        {
+            jobsClosed = true;
+            validJobs.Clear();
+        }
+    }
 
     /// <summary>
     /// Usually a wallet address
@@ -99,6 +115,10 @@ public class BitcoinWorkerContext : WorkerContextBase
     /// </summary>
     public Queue<BitcoinJob> validJobs { get; private set; } = new();
 
+    /// <summary>Adds work to an open worker registry.</summary>
+    /// <exception cref="BitcoinJobRegistryClosedException">
+    /// The registry is permanently closed; stop assigning work to this worker.
+    /// </exception>
     public virtual void AddJob(BitcoinJob job, int maxActiveJobs)
     {
         ArgumentNullException.ThrowIfNull(job);
@@ -107,12 +127,26 @@ public class BitcoinWorkerContext : WorkerContextBase
             AddJobCore(job, maxActiveJobs);
     }
 
+    /// <summary>Adds work only if its payout authorization is still current.</summary>
+    /// <returns>
+    /// True if added; false if authorization is absent or its generation changed.
+    /// Only a false result permits rebuilding from a new authorization snapshot.
+    /// </returns>
+    /// <exception cref="BitcoinJobRegistryClosedException">
+    /// The registry is permanently closed. This takes precedence over an
+    /// authorization mismatch and must not trigger a rebuild.
+    /// </exception>
     internal bool TryAddDirectJob(BitcoinJob job, int maxActiveJobs)
     {
         ArgumentNullException.ThrowIfNull(job);
 
         lock(this)
         {
+            // A terminal refusal must not look like an authorization race:
+            // callers may rebuild only when a live session changed destination.
+            if(jobsClosed)
+                throw new BitcoinJobRegistryClosedException();
+
             if(directPayoutAuthorization == null ||
                job.DirectPayoutGeneration !=
                directPayoutAuthorization.Generation)
@@ -125,6 +159,9 @@ public class BitcoinWorkerContext : WorkerContextBase
 
     private void AddJobCore(BitcoinJob job, int maxActiveJobs)
     {
+        if(jobsClosed)
+            throw new BitcoinJobRegistryClosedException();
+
         if(!validJobs.Contains(job))
             validJobs.Enqueue(job);
 
@@ -148,6 +185,10 @@ public class BitcoinWorkerContext : WorkerContextBase
         }
     }
 
+    /// <summary>
+    /// Retained for downstream compatibility: clears existing work without
+    /// closing an open registry or reopening a permanently closed registry.
+    /// </summary>
     public void ClearJobs()
     {
         lock(this)

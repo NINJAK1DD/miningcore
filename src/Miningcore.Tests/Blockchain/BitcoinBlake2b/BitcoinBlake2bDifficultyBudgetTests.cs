@@ -555,6 +555,12 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
 
     private sealed class FixtureManager : BitcoinBlake2bJobManager
     {
+        internal Action BeforeGetJob;
+        public override BitcoinJob GetJobForStratum()
+        {
+            BeforeGetJob?.Invoke();
+            return base.GetJobForStratum();
+        }
         internal int AddressValidations { get; private set; }
         internal Func<Task> BeforeValidation { get; set; }
         internal void SetCurrentJob(BitcoinBlake2bJob job) => currentJob = job;

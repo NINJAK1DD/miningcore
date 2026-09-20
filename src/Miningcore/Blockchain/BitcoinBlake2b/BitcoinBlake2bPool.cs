@@ -69,7 +69,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         return gate;
     }
 
-    private bool IsAdmissionClosed(StratumConnection connection) => operations.IsClosed ||
+    private bool IsAdmissionClosed(StratumConnection connection) => connection.IsDisconnectRequested || operations.IsClosed ||
         difficultyBudgets.TryGetValue(connection, out var budget) && budget.IsClosed;
 
     // Weak connection keys retain no disconnected-miner/IP history. Suggest,
@@ -307,6 +307,21 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify,
                     CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]));
             }
+            catch(OperationCanceledException ex) when(ex is StratumConnectionClosedException or BitcoinJobRegistryClosedException)
+            {
+                // Submissions do not take the assignment gate. A concurrent ban
+                // can close the registry while this broadcast constructs work.
+                CloseAssignmentPublicationFailure(connection, ex, reportFailure: false);
+            }
+            catch(Exception ex)
+            {
+                // A difficulty notification may already have been queued. Close
+                // this worker's budget and jobs before releasing the assignment
+                // gate, even when failure came from work construction itself.
+                CloseAssignmentPublicationFailure(connection, ex,
+                    !(ex is OperationCanceledException && ct.IsCancellationRequested));
+                throw;
+            }
             finally { gate.Release(); }
         });
         await Guard(BroadcastAsync);
@@ -354,9 +369,9 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> request, CancellationToken ct)
     {
-        if(operations.IsClosed)
+        if(connection.IsDisconnectRequested || operations.IsClosed)
         {
-            Disconnect(connection);
+            GuardPublicationCleanup(connection, () => Disconnect(connection));
             return;
         }
 
@@ -462,8 +477,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                         // hook do not customize this pool's subscription dispatch.
                         await OnSubscribeCoreAsync(connection, request, subscription);
                     else
-                        await OnSuggestDifficultyAsync(connection, request, new ParsedSuggestedDifficulty(suggestedDifficulty),
-                            propagatePublicationFailures: true);
+                        await OnSuggestDifficultyAsync(connection, request, new ParsedSuggestedDifficulty(suggestedDifficulty));
                     await CompleteAssignmentAsync(connection, previousDifficulty, request.Value.Method);
                 }
                 catch(Exception ex)
@@ -488,12 +502,12 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         }
         catch(StratumException ex)
         {
-            await OnRequestErrorAsync(connection, request.Value, ex, connection.ResponseSequence != responseSequence);
+            await OnRequestErrorAsync(connection, request.Value, ex, connection.ResponseSequence != responseSequence, ct);
         }
     }
 
     protected override Task OnRequestErrorAsync(StratumConnection connection, JsonRpcRequest request,
-        StratumException error, bool responseStarted)
+        StratumException error, bool responseStarted, CancellationToken ct)
     {
         if(responseStarted || IsAdmissionClosed(connection))
         {
@@ -501,30 +515,29 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             // that happens, a publication failure is terminal: never send a second
             // response or retain a live, partially published assignment. Also latch
             // admission closed so requests already buffered cannot resume this session.
-            CloseAssignmentPublicationFailure(connection, error);
+            CloseAssignmentPublicationFailure(connection, error, reportFailure: responseStarted);
             return Task.CompletedTask;
         }
 
-        return base.OnRequestErrorAsync(connection, request, error, false);
+        return base.OnRequestErrorAsync(connection, request, error, false, ct);
     }
+
+    protected override void CloseRequestPublicationFailure(StratumConnection connection, Exception failure,
+        bool reportFailure = true) => CloseAssignmentPublicationFailure(connection, failure, reportFailure);
 
     private void CloseAssignmentPublicationFailure(StratumConnection connection, Exception failure, bool reportFailure = true)
     {
         // Even a submit-only session needs the latch: disconnect alone does not
         // prevent dispatch of further lines already in the receive buffer.
-        if(!difficultyBudgets.TryGetValue(connection, out var budget))
-            budget = difficultyBudgets.GetValue(connection, createDifficultyBudget);
-        if(budget.TryClose())
+        try
         {
-            connection.ContextAs<BitcoinWorkerContext>().ClearJobs();
-            if(reportFailure)
+            GuardPublicationCleanup(connection, () =>
             {
-                StratumDiagnostics.Write(logger, NLog.LogLevel.Info,
-                    StratumDiagnostics.Event.AssignmentPublicationFailure, connection.ConnectionId, failure: failure);
-                PublishTelemetry(TelemetryCategory.StratumAdmission, "publication-failure", TimeSpan.Zero);
-            }
+                var budget = difficultyBudgets.GetValue(connection, createDifficultyBudget);
+                budget.TryClose();
+            });
         }
-        Disconnect(connection);
+        finally { base.CloseRequestPublicationFailure(connection, failure, reportFailure); }
     }
 
     private async Task<bool> ValidateProposedDifficultyAsync(StratumConnection connection, JsonRpcRequest request,
