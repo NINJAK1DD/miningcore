@@ -95,7 +95,7 @@
         <PackageReference Include="MailKit" Version="4.17.0" />
         <PackageReference Include="McMaster.Extensions.CommandLineUtils" Version="5.1.0" />
         <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.10" />
-        <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.10" />
+        <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.12" />
         <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.10" />
         <PackageReference Include="NBitcoin" Version="7.0.42" />
         <PackageReference Include="NBitcoin.Altcoins" Version="3.0.28" />
