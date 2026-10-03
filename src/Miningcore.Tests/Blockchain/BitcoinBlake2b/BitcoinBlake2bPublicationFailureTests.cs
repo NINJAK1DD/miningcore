@@ -16,6 +16,30 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public partial class BitcoinBlake2bDifficultyBudgetTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CleanupFailure_StillDisconnectsAndPreservesOriginalFailure(bool missingContext)
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
+        var original = new System.IO.IOException("original publication failure");
+        if(!missingContext)
+            bus.When(x => x.SendMessage(Arg.Is<TelemetryEvent>(e => e.Info == "publication-failure"), Arg.Any<string>()))
+                .Do(_ => throw new InvalidOperationException("telemetry cleanup failure"));
+        wire.AfterConfigure = () =>
+        {
+            if(missingContext)
+                wire.Connection.SetContext<BitcoinWorkerContext>(null);
+            throw original;
+        };
+        await wire.SendRequestAsync("mining.configure", PublicationParameters("mining.configure"));
+        await wire.AssertDisconnectedAsync();
+        Assert.Same(original, wire.DispatchError);
+        Assert.True(wire.Connection.IsDisconnectRequested);
+        Assert.Equal(1, wire.Connection.ResponseSequence);
+    }
+
     private static void AssertPublicationCause(NLog.Targets.MemoryTarget target, string category, int? code = null)
     {
         var message = Assert.Single(target.Logs.Where(x => x.Contains("AssignmentPublicationFailure")));

@@ -143,6 +143,48 @@ BLAKE2b templates must disable version rolling. Cross-connection churn defenses 
 tracked separately in [#180](https://github.com/NINJAK1DD/miningcore/issues/180).
 See the [policy and validation evidence](bitcoin-blake2b.md#miner-requested-difficulty-budget).
 
+## Unreleased: Bitcoin-family response publication failures
+
+[#183](https://github.com/NINJAK1DD/miningcore/issues/183) closes a Bitcoin-family
+connection when work publication fails after its response has started. It does
+not send a second response, including when the first attempt failed to enqueue.
+Buffered requests cannot restart the session. Valid accepted shares retain their
+accounting and do not acquire invalid-share or ban penalties from later publication
+failures. Successful canonical Bitcoin/direct-SOLO ordering and immutable credit
+binding are preserved. See the [handler audit and reconnect policy](bitcoin-response-publication.md).
+
+Managers now witness proof acceptance before merged statistical accounting or
+candidate work can throw. Admitted shares keep their valid-share and block-time
+bookkeeping even when acknowledgement fails. Terminal job insertion is permanently
+closed, including broadcasts already constructing work. Cleanup preserves the
+original error and its report flag is independent of earlier disconnects.
+Ordinary invalid-share bans and recovery-response shutdown cancellation do not
+consume that report flag. A faulty accepted-share telemetry or logging observer
+cannot prevent acknowledgement. Accounting or work-publication failures after proof
+acceptance still close the session without a rejection response: operators may see
+miner resets with only a bounded diagnostic category, and should investigate the
+accounting/publication path rather than treat those resets as invalid proofs.
+
+Shared transport hardening applies to **all pool families**: balanced pipe reads,
+buffered-line disconnect checks, synchronous queue admission, and explicit
+teardown cancellation for peer EOF/host stop. Unexpected queue closure still fails;
+normal teardown does not create a new connection/publication error. Independent
+handler failures remain visible. Family-specific policies outside Bitcoin are
+tracked in [#192](https://github.com/NINJAK1DD/miningcore/issues/192).
+
+An invalid share that triggers a ban closes the session without attempting its
+JSON-RPC rejection response; non-banning rejections retain their normal response.
+Downstream pool overrides must add and forward the new `CancellationToken` argument
+to `OnRequestErrorAsync`. The new `CloseRequestPublicationFailure` hook owns terminal
+cleanup, and `ClearJobs()` remains non-terminal. See the
+[pool extension migration notes](bitcoin-response-publication.md#downstream-pool-extension-compatibility).
+
+Test maintenance accompanying #183 also corrects a calendar-sensitive paired-share
+recovery fixture: both shares now use one captured current UTC timestamp so valid
+evidence stays within the real-clock replay horizon. Production replay protection
+and transactional assertions are unchanged; see the
+[repair and validation evidence](integration-deadline-tests.md#october-recovery-fixture-repair-and-validation).
+
 ## Unreleased: BLAKE2b assignment ordering
 
 [#182](https://github.com/NINJAK1DD/miningcore/issues/182) serializes worker difficulty
@@ -168,8 +210,8 @@ Unexpected unrepresentable post-acknowledgment assignments use the same terminal
 and invalidate jobs. The `publication-failure` admission-counter outcome counts each
 terminal publication failure once. Accepted shares remain credited and do not acquire
 an invalid-share count or ban penalty when subsequent VarDiff publication fails.
-Canonical Bitcoin's post-response policy is tracked separately in
-[#183](https://github.com/NINJAK1DD/miningcore/issues/183).
+Canonical Bitcoin's post-response policy is documented in the
+[Bitcoin-family publication policy](bitcoin-response-publication.md).
 BLAKE2b continues to reject canonical direct-coinbase SOLO options at startup.
 
 Omitted BLAKE2b VarDiff maxima now use the highest representable difficulty as an effective

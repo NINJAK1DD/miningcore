@@ -590,6 +590,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
         // validate & process
         var (share, blockHex) = job.ProcessShare(worker, extraNonce2, nTime, nonce, versionBits);
+        context.MarkProofAccepted();
 
         // enrich share with common data
         share.PoolId = poolConfig.Id;
