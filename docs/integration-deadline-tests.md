@@ -56,6 +56,11 @@ the missing/incompatible-context guards added after `14d33dccc`. The first run
 left the extracted class parallel. The second added only its collection attribute
 and matching expected-member entry; production logic, protocol assertions,
 test cases and watchdogs were identical.
+These measurements preceded the recovery-fixture timestamp correction at
+`a0450d34f`; the serialized variant became part of `b2ad64c8b`. They describe
+that comparison, not the latest branch head. See the
+[October validation](#october-recovery-fixture-repair-and-validation) for the
+subsequent full-suite and current-dev integration results.
 
 | Scheduling | Passed | Failed | Skipped | Ordered culture passed/failed | TRX elapsed seconds |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -80,6 +85,49 @@ remains required. Local evidence is `deadline-round8-parallel.trx` and
 `deadline-round8-serialized.trx` under `build/issue183/results/`, with matching
 logs under `build/issue183/`. These ignored artifacts are not an independently
 auditable bundle included in the PR.
+
+## October recovery-fixture repair and validation
+
+On 2026-10-03, the normal full Linux suite at `b2ad64c8b` reported **3,356 passed,
+one failed, 41 optional skips**. Windows CI reproduced the same failure in
+`RecoverSharesAsync_PairedAccountingRemainsOneTransactionalEnvelope`: the fixture
+used a fixed 2026-08-29 timestamp with the recorder's real clock, so valid test
+evidence had aged beyond the production 30-day replay horizon. This failure was
+calendar-dependent and separate from the publication or scheduling changes.
+
+The test-only correction at `a0450d34f` captures `DateTime.UtcNow` once for both
+parent and auxiliary shares. It preserves their equal timestamps and all
+transaction, paired-accounting and PPS-credit assertions. Production replay
+protection is unchanged. The corrected test and the separate regression rejecting
+expired/future evidence both passed (**2 passed, zero failed/skipped**).
+
+Validation at `a0450d34f`:
+
+| Run | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| Normal Linux full suite, Ubuntu 22.04 WSL / Bitcoin Core 28.1 | 3357 | 0 | 41 |
+| [Main .NET CI](https://github.com/NINJAK1DD/miningcore/actions/runs/37147792280) | 3423 | 0 | 1 |
+| [Ubuntu 22.04 release suite](https://github.com/NINJAK1DD/miningcore/actions/runs/37147792220) | 3364 | 0 | 34 |
+| [Ubuntu 26.04 release suite](https://github.com/NINJAK1DD/miningcore/actions/runs/37147792220) | 3364 | 0 | 34 |
+
+The .NET and Release checkout logs identify synthetic merge
+`eb815225689cbc2d1a3e64cea5da3f598268c5f0`, merging PR head
+`a0450d34f643ccf208e656f9edb699ad05bcd39b` into `dev` at
+`fc65ba40a0605c0e8c48f77caa31ff1be97458f0`. These runs include the workflow changes
+on current `dev`, even though the branch's historical merge base is `2702579ca`.
+Windows share recovery passed all 267 cases; all Windows/Linux build jobs, both
+package targets, source/packaged container checks and
+[listener portability](https://github.com/NINJAK1DD/miningcore/actions/runs/37147792182)
+passed. Release publication was skipped for the PR. The managed Release build
+had zero warnings/errors. Local full-suite evidence is
+`build/issue183/linux-full.log` and
+`build/issue183/results/issue183-linux-full.trx`; optional PostgreSQL/Knots
+dependencies were absent from that local invocation.
+
+These green normal-suite and CI results do not turn the earlier constrained runs
+green or establish that startup flakiness is eliminated. The historical runs below
+retain their measured revisions, failures and limits; later changes are validated
+separately.
 
 ## Bitcoin publication fixture scheduling
 
@@ -308,7 +356,7 @@ active. Every budget response and terminal-disconnect assertion is retained.
 Production configure parsing already uses `NumberStyles.Float` and
 `InvariantCulture`; no parsing change is warranted by this failure.
 
-This follow-up changes only tests and evidence. It does not change production
+The follow-up at `14d33dccc` changes only tests and evidence. It does not change production
 deadlines, test watchdogs or collection membership. Filtered success and the
 explicit culture sequence do not establish reliability under whole-suite load.
 The five deadline failures from run 7 remain a separate investigation; this
@@ -318,7 +366,8 @@ It passed focused testing but hit that watchdog in the whole-suite diagnostic
 run. The final version above performs cancellation inside the handler and has
 no dependency on timer order or a runner continuation to initiate cancellation.
 
-The final whole-assembly repeat at local `0f5b2d4bf` used the same two-CPU limit, native libraries,
+The historical whole-assembly repeat for this investigation at local `0f5b2d4bf`
+used the same two-CPU limit, native libraries,
 Bitcoin Core 28.1 and unset PostgreSQL as row 7: **3,352 passed, 3 failed,
 41 skipped**. Cancellation, all five malformed-input rows, the ordered culture
 regression, all 42 publication cases and all four BLAKE2b broadcast cases passed.
@@ -326,7 +375,11 @@ The remaining failures were orphaned payout completion, idle listener shutdown
 and notification snapshot delivery. This run is **not green** and does not prove
 startup-timeout flakiness eliminated; the reproduced startup expiry above remains
 part of the evidence. Results are `build/review191/full-final.log` and
-`build/review191/results/full-final.trx`. Normal CI is a separate required check.
+`build/review191/results/full-final.trx`. Later changes include the context guard
+and culture-fixture extraction at `b2ad64c8b`, then the recovery-fixture timestamp
+repair at `a0450d34f`. This measurement does not validate those later revisions;
+their [October validation](#october-recovery-fixture-repair-and-validation) is
+recorded separately.
 
 Local baseline evidence is `build/issue183/results/round7-baseline-targeted.trx`
 in the original worktree. Final focused evidence is

@@ -179,6 +179,12 @@ to `OnRequestErrorAsync`. The new `CloseRequestPublicationFailure` hook owns ter
 cleanup, and `ClearJobs()` remains non-terminal. See the
 [pool extension migration notes](bitcoin-response-publication.md#downstream-pool-extension-compatibility).
 
+Test maintenance accompanying #183 also corrects a calendar-sensitive paired-share
+recovery fixture: both shares now use one captured current UTC timestamp so valid
+evidence stays within the real-clock replay horizon. Production replay protection
+and transactional assertions are unchanged; see the
+[repair and validation evidence](integration-deadline-tests.md#october-recovery-fixture-repair-and-validation).
+
 ## Unreleased: BLAKE2b assignment ordering
 
 [#182](https://github.com/NINJAK1DD/miningcore/issues/182) serializes worker difficulty
