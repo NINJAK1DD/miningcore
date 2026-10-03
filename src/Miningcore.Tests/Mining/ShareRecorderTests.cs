@@ -3297,7 +3297,9 @@ public class ShareRecorderTests
     {
         var fixture = CreateRecoveryFixture();
         var accountingId = ShareAccounting.CreateId();
-        var created = new DateTime(2026, 8, 29, 12, 0, 0, DateTimeKind.Utc);
+        // This fixture uses the real clock. Keep valid evidence inside its replay
+        // horizon so calendar time cannot bypass the transactional assertions.
+        var created = DateTime.UtcNow;
         var parent = new Share
         {
             PoolId = "ltc-solo",
