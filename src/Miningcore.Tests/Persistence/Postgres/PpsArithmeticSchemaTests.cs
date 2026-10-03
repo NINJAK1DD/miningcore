@@ -15,8 +15,8 @@ namespace Miningcore.Tests.Persistence.Postgres;
 public class PpsArithmeticSchemaTests
 {
     private static readonly DateTime Cutoff = new(2026, 9, 21, 0, 0, 0, DateTimeKind.Utc);
-    private static string Script(string name) => File.ReadAllText(Path.GetFullPath(
-        Path.Combine(AppContext.BaseDirectory, "../../../../Miningcore/Persistence/Postgres/Scripts", name)))
+    private static string Script(string name) => File.ReadAllText(
+        Path.Combine(AppContext.BaseDirectory, "Fixtures", "Postgres", name))
         .Replace("\\set ON_ERROR_STOP on", "").Replace("SET ROLE miningcore;", "");
 
     [PostgresIntegrationFact]
@@ -172,8 +172,8 @@ public class PpsArithmeticSchemaTests
         await db.OpenAsync();
         var serverVersion = await db.ExecuteScalarAsync<int>("SELECT current_setting('server_version_num')::int");
         var lockPrivilege = serverVersion >= 170000 ? "MAINTAIN" : "UPDATE";
-        var runbook = await File.ReadAllTextAsync(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-            "../../../../../docs/pps-arithmetic-migration.md")));
+        var runbook = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory,
+            "docs", "pps-arithmetic-migration.md"));
         const string begin = "-- BEGIN PPS BOUNDARY OWNER HANDOFF";
         const string end = "-- END PPS BOUNDARY OWNER HANDOFF";
         var start = runbook.IndexOf(begin, StringComparison.Ordinal) + begin.Length;
@@ -200,8 +200,17 @@ public class PpsArithmeticSchemaTests
                 await db.ExecuteAsync("RESET ROLE");
                 if(upgrade)
                     await db.ExecuteAsync(Script("add_share_accounting.sql"));
-                await db.ExecuteAsync(handoff.Replace("public", schema).Replace("miningcore", app)
-                    .Replace("pps_boundary_owner", owner).Replace("pps_activation_operator", activationLogin));
+                // Replace complete quoted identifiers; substrings in other names are untouched.
+                // The runbook's BEGIN/COMMIT wrapper is supplied by this managed transaction,
+                // whose disposal also rolls back a failed handoff before fixture cleanup.
+                await using(var tx = await db.BeginTransactionAsync())
+                {
+                    await db.ExecuteAsync(handoff.Replace("\"public\"", $"\"{schema}\"")
+                        .Replace("\"miningcore\"", $"\"{app}\"")
+                        .Replace("\"pps_boundary_owner\"", $"\"{owner}\"")
+                        .Replace("\"pps_activation_operator\"", $"\"{activationLogin}\""), transaction: tx);
+                    await tx.CommitAsync();
+                }
                 var repository = new ShareRepository(AutoMapperFactory.CreateMapper());
                 await db.ExecuteAsync($"SET ROLE {app}");
                 Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
@@ -237,6 +246,13 @@ public class PpsArithmeticSchemaTests
                 await db.ExecuteAsync("RESET SESSION AUTHORIZATION; RESET ROLE");
                 if(serverVersion < 170000)
                     await db.ExecuteAsync($"REVOKE UPDATE ON pps_share_credits FROM {owner}");
+                await db.ExecuteAsync($"SET SESSION AUTHORIZATION {activationLogin}; SET ROLE {owner}");
+                Assert.False(await db.ExecuteScalarAsync<bool>(
+                    "SELECT has_table_privilege(current_user,'pps_share_credits','UPDATE')"));
+                Assert.Equal(PostgresErrorCodes.InsufficientPrivilege,
+                    (await Assert.ThrowsAsync<PostgresException>(() => db.ExecuteAsync(
+                        "UPDATE pps_share_credits SET arithmeticversion=0"))).SqlState);
+                await db.ExecuteAsync("RESET SESSION AUTHORIZATION; RESET ROLE");
                 await db.ExecuteAsync($"SET ROLE {app}");
                 Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
                 Assert.True(await repository.HasMatchingPpsArithmeticTransitionAsync(db, "limited", Cutoff, CancellationToken.None));
@@ -246,7 +262,7 @@ public class PpsArithmeticSchemaTests
             }
             finally
             {
-                await db.ExecuteAsync($@"ROLLBACK; RESET SESSION AUTHORIZATION; RESET ROLE; SET search_path TO public;
+                await db.ExecuteAsync($@"RESET SESSION AUTHORIZATION; RESET ROLE; SET search_path TO public;
                     DROP SCHEMA IF EXISTS {schema} CASCADE;
                     DROP ROLE IF EXISTS {app}, {owner}, {activationLogin}, {escalation}");
             }

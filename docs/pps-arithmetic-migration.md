@@ -106,23 +106,29 @@ names. The activation login must have no superuser-role memberships or other
 independent administrative grants. If it previously received `postgres`
 membership, revoke that separately; a new owner does not remove old grants.
 
+The boundary owner is a scoped PPS security administrator. Anyone who can
+assume it can use owner DDL to alter the transition table and all four routines,
+including replacing the credit-version guard. This grant therefore requires
+trust to administer the PPS enforcement policy, beyond permission to activate
+a cutover. It does not grant ownership of the credit table.
+
 ```sql
--- BEGIN PPS BOUNDARY OWNER HANDOFF
 BEGIN;
-CREATE ROLE pps_boundary_owner NOLOGIN NOINHERIT NOSUPERUSER
+-- BEGIN PPS BOUNDARY OWNER HANDOFF
+CREATE ROLE "pps_boundary_owner" NOLOGIN NOINHERIT NOSUPERUSER
     NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-GRANT USAGE, CREATE ON SCHEMA public TO pps_boundary_owner;
-ALTER TABLE public.pps_arithmetic_transitions OWNER TO pps_boundary_owner;
-ALTER FUNCTION public.guard_pps_arithmetic_transition() OWNER TO pps_boundary_owner;
-ALTER FUNCTION public.guard_pps_arithmetic_transition_insert() OWNER TO pps_boundary_owner;
-ALTER FUNCTION public.guard_pps_arithmetic_credit() OWNER TO pps_boundary_owner;
-ALTER FUNCTION public.activate_pps_binary64(text,timestamptz) OWNER TO pps_boundary_owner;
-REVOKE CREATE ON SCHEMA public FROM pps_boundary_owner;
-GRANT SELECT ON public.pps_arithmetic_transitions TO miningcore;
-GRANT SELECT ON public.pps_share_credits TO pps_boundary_owner;
-GRANT pps_boundary_owner TO pps_activation_operator;
-COMMIT;
+GRANT USAGE, CREATE ON SCHEMA "public" TO "pps_boundary_owner";
+ALTER TABLE "public".pps_arithmetic_transitions OWNER TO "pps_boundary_owner";
+ALTER FUNCTION "public".guard_pps_arithmetic_transition() OWNER TO "pps_boundary_owner";
+ALTER FUNCTION "public".guard_pps_arithmetic_transition_insert() OWNER TO "pps_boundary_owner";
+ALTER FUNCTION "public".guard_pps_arithmetic_credit() OWNER TO "pps_boundary_owner";
+ALTER FUNCTION "public".activate_pps_binary64(text,timestamptz) OWNER TO "pps_boundary_owner";
+REVOKE CREATE ON SCHEMA "public" FROM "pps_boundary_owner";
+GRANT SELECT ON "public".pps_arithmetic_transitions TO "miningcore";
+GRANT SELECT ON "public".pps_share_credits TO "pps_boundary_owner";
+GRANT "pps_boundary_owner" TO "pps_activation_operator";
 -- END PPS BOUNDARY OWNER HANDOFF
+COMMIT;
 ```
 
 Next, the database administrator supplies the lock privilege for the server major:

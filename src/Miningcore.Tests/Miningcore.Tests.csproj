@@ -79,6 +79,15 @@
     <None Include="../../docs/releases.md" Link="docs/releases.md">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="../../docs/pps-arithmetic-migration.md" Link="docs/pps-arithmetic-migration.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="../Miningcore/Persistence/Postgres/Scripts/createdb.sql;
+                   ../Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql;
+                   ../Miningcore/Persistence/Postgres/Scripts/add_pps_arithmetic_version.sql"
+          Link="Fixtures/Postgres/%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="test.runsettings">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
