@@ -683,12 +683,16 @@ public abstract class StratumServer
 
     /// <summary>
     /// Admits an accepted share to the accounting pipeline before its positive Stratum response.
-    /// Both steps take concurrent healthy admissions against the exclusive mining fail-stop
-    /// transition. A gate closure between them leaves the share published but deliberately
-    /// unacknowledged; response queue admission itself is synchronous.
+    /// New share publication and response enqueue each enter the healthy-admission gate
+    /// independently; no admission lock is held across the persistence await or callback.
+    /// An already-published share keeps its existing persistence ownership and requires a
+    /// new healthy admission only for its response. A gate closure leaves the owned share
+    /// deliberately unacknowledged; response queue admission itself is synchronous.
+    /// onAdmitted runs once after persistence admission and before acknowledgement admission,
+    /// including for an already-published merged share whose later response is rejected.
     /// </summary>
     protected async Task PublishShareAndAcknowledgeAsync(Share share,
-        Func<Task> acknowledge, bool publishShare = true)
+        Func<Task> acknowledge, bool publishShare = true, Action onAdmitted = null)
     {
         ArgumentNullException.ThrowIfNull(share);
         ArgumentNullException.ThrowIfNull(acknowledge);
@@ -701,11 +705,14 @@ public abstract class StratumServer
                 messageBus.SendMessage(share);
 
             await share.PersistenceAdmission;
+            onAdmitted?.Invoke();
             await acknowledge();
             return;
         }
 
-        using var acceptance = failStop.AcquireSubmissionAcceptance();
+        // A prepublished merged share already has a persistence owner. A later
+        // fail-stop may reject its response, but must not suppress admission bookkeeping.
+        using var acceptance = publishShare ? failStop.AcquireSubmissionAcceptance() : null;
 
         if(publishShare)
         {
@@ -721,9 +728,16 @@ public abstract class StratumServer
         // that clone's completion here. Deliberately wait outside the admission lock so storage
         // latency cannot delay an exclusive fail-stop transition.
         await share.PersistenceAdmission;
+        onAdmitted?.Invoke();
 
         Task response = null;
-        acceptance.QueueResponse(() => response = acknowledge());
+        if(acceptance != null)
+            acceptance.QueueResponse(() => response = acknowledge());
+        else
+        {
+            using var responseAcceptance = failStop.AcquireSubmissionAcceptance();
+            responseAcceptance.QueueResponse(() => response = acknowledge());
+        }
         await response;
     }
 

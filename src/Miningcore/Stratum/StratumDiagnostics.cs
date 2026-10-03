@@ -16,6 +16,7 @@ internal static class StratumDiagnostics
         AcceptError, ListenError, TerminalCallback, UntrackedCompletion,
         Completion, TaskRemoval, Drain, CertificateLoad, ReceiveWait, BufferWait,
         DifficultyBudgetDisconnect, DuplicateSubscription, AssignmentPublicationFailure,
+        PublicationCleanupFailure,
         CancelledFailure,
     }
 

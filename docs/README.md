@@ -61,6 +61,7 @@ wallet balances or recovery files.
 | Maintain deadline-sensitive test isolation | [Integration deadline scheduling](integration-deadline-tests.md) |
 | Maintain payout retry-contention coverage | [Payout persistence tests](payout-persistence-tests.md) |
 | Review Bitcoin-family notification ownership and regression coverage | [Job notification snapshots](bitcoin-job-notifications.md) |
+| Review Bitcoin-family response failures and reconnect behavior | [Response publication policy](bitcoin-response-publication.md) |
 
 The machine-readable configuration reference is
 [`src/Miningcore/config.schema.json`](../src/Miningcore/config.schema.json), and the maintained

@@ -35,6 +35,13 @@ internal enum StratumConnectionCompletionReason
     StartupTimeout,
 }
 
+// An explicit transport-owned cancellation, distinct from an independent
+// operation timing out while teardown happens concurrently.
+internal sealed class StratumConnectionClosedException : OperationCanceledException
+{
+    internal StratumConnectionClosedException() : base("Stratum connection is closing") { }
+}
+
 public class StratumConnection
 {
     public StratumConnection(ILogger logger, RecyclableMemoryStreamManager rmsm,
@@ -78,6 +85,17 @@ public class StratumConnection
     private readonly BufferBlock<object> sendQueue;
     private WorkerContextBase context;
     private long responseSequence;
+    private int disconnectRequested;
+    private int transportStopping;
+
+    internal bool IsDisconnectRequested => Volatile.Read(ref disconnectRequested) != 0;
+    internal bool IsTransportStopping => Volatile.Read(ref transportStopping) != 0;
+    internal bool TryBeginDisconnect() => Interlocked.Exchange(ref disconnectRequested, 1) == 0;
+    // Cancellation callbacks may not yet have propagated fail-stop to the linked
+    // request token. Recognize only cancellation carrying this connection's gate token.
+    internal bool IsMiningFailStopCancellation(Exception failure) =>
+        failure is OperationCanceledException canceled && failStopToken.IsCancellationRequested &&
+        canceled.CancellationToken == failStopToken;
 
     // Dispatch awaits requests serially. Comparing this sequence before/after a
     // handler detects a response attempt without retaining miner-controlled IDs.
@@ -235,6 +253,7 @@ public class StratumConnection
                 // Stop network I/O, but do not declare the connection complete until an in-flight
                 // request handler has reached an admitted-or-rejected outcome. Handlers receive
                 // cancellation and are then explicitly drained below.
+                Volatile.Write(ref transportStopping, 1);
                 cts.Cancel();
                 sendQueue.Complete();
 
@@ -245,7 +264,10 @@ public class StratumConnection
                 }
                 catch(Exception ex)
                 {
-                    error = tasks
+                    // Terminal request cleanup may abort the socket before this
+                    // observer runs. Preserve the owned handler failure ahead of
+                    // secondary receive/send errors caused by that teardown.
+                    error = new[] { processTask, receiveTask, sendTask }
                         .Where(task => task.IsFaulted)
                         .SelectMany(task => task.Exception!.Flatten().InnerExceptions)
                         .FirstOrDefault(candidate =>
@@ -406,6 +428,9 @@ public class StratumConnection
 
     public void Disconnect()
     {
+        // Closing the socket does not discard lines already read into the pipe.
+        // Latch before touching I/O so the receive loop cannot resume this session.
+        TryBeginDisconnect();
         var activeSocket = socket;
 
         if(activeSocket != null)
@@ -422,6 +447,9 @@ public class StratumConnection
         // per response across pool families); notifications bypass that counter.
         Contract.RequiresNonNull(payload);
 
+        if(IsTransportStopping)
+            throw new StratumConnectionClosedException();
+
         if(failStopToken.IsCancellationRequested)
             throw new OperationCanceledException(
                 "Stratum response rejected by the mining fail-stop gate",
@@ -430,7 +458,15 @@ public class StratumConnection
         if(sendQueue.Count >= SendQueueCapacity)
             throw new IOException("Sendqueue stalled");
 
-        return sendQueue.SendAsync(payload);
+        // This BufferBlock is unbounded: Post admits synchronously or declines
+        // a completed queue without allocating an async state machine per message.
+        if(!sendQueue.Post(payload))
+        {
+            if(IsTransportStopping)
+                throw new StratumConnectionClosedException();
+            throw new IOException("Stratum send queue is closed");
+        }
+        return Task.CompletedTask;
     }
 
     private async Task FillReceivePipeAsync(CancellationToken ct)
@@ -470,43 +506,50 @@ public class StratumConnection
             var result = await receivePipe.Reader.ReadAsync(ct);
 
             var buffer = result.Buffer;
-            SequencePosition? position;
-
-            if(buffer.Length > MaxInboundRequestLength)
-                throw new InvalidDataException($"Incoming data exceeds maximum of {MaxInboundRequestLength}");
-
-            StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.Buffer, ConnectionId, bytes: buffer.Length);
-
-            do
+            try
             {
-                // Scan buffer for line terminator
-                position = buffer.PositionOf((byte) '\n');
+                if(buffer.Length > MaxInboundRequestLength)
+                    throw new InvalidDataException($"Incoming data exceeds maximum of {MaxInboundRequestLength}");
 
-                // Bound a PROXY line while it is still wire bytes, even if a sender
-                // withholds LF. Optional ordinary JSON retains its normal line limit.
-                if(expectingProxyHeader)
-                    ValidateProxyWireLength(position == null ? buffer : buffer.Slice(0, position.Value), proxyProtocol);
-
-                if(position != null)
+                StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.Buffer, ConnectionId, bytes: buffer.Length);
+                SequencePosition? position;
+                do
                 {
-                    var slice = buffer.Slice(0, position.Value);
+                    if(IsDisconnectRequested)
+                        return;
 
-                    var proxyHeader = expectingProxyHeader && ProcessProxyHeader(slice, proxyProtocol);
-                    if(AdmitProxyIdentity != null)
+                    // Scan buffer for line terminator
+                    position = buffer.PositionOf((byte) '\n');
+
+                    // Bound a PROXY line while it is still wire bytes, even if a sender
+                    // withholds LF. Optional ordinary JSON retains its normal line limit.
+                    if(expectingProxyHeader)
+                        ValidateProxyWireLength(position == null ? buffer : buffer.Slice(0, position.Value), proxyProtocol);
+
+                    if(position != null)
                     {
-                        if(!AdmitProxyIdentity(RemoteEndpoint.Address))
-                            throw new StratumAdmissionException();
-                        AdmitProxyIdentity = null;
+                        var slice = buffer.Slice(0, position.Value);
+
+                        var proxyHeader = expectingProxyHeader && ProcessProxyHeader(slice, proxyProtocol);
+                        if(AdmitProxyIdentity != null)
+                        {
+                            if(!AdmitProxyIdentity(RemoteEndpoint.Address))
+                                throw new StratumAdmissionException();
+                            AdmitProxyIdentity = null;
+                        }
+                        if(!proxyHeader)
+                            await ProcessRequestAsync(ct, onRequestAsync, slice);
+
+                        // Commit the consumed line before a cancellation exits this read.
+                        buffer = buffer.Slice(buffer.GetPosition(1, position.Value));
+                        ct.ThrowIfCancellationRequested();
                     }
-                    if(!proxyHeader)
-                        await ProcessRequestAsync(ct, onRequestAsync, slice);
-
-                    // Skip consumed section
-                    buffer = buffer.Slice(buffer.GetPosition(1, position.Value));
-                }
-            } while(position != null);
-
-            receivePipe.Reader.AdvanceTo(buffer.Start, buffer.End);
+                } while(position != null);
+            }
+            finally
+            {
+                receivePipe.Reader.AdvanceTo(buffer.Start, buffer.End);
+            }
 
             if(result.IsCompleted)
                 break;
