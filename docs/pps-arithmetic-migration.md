@@ -59,6 +59,36 @@ used as the runtime login. Use the function owner/admin; do not insert transitio
 rows manually. No user-facing command runs a migration
 or activates a pool implicitly.
 
+An administrator-member login must explicitly `SET ROLE` to the transition-table
+and function owner before calling `activate_pps_binary64()`, then `RESET ROLE`
+afterwards. Preflight permits grants to trusted owner-role members; the insert
+guard deliberately requires `current_user` to equal the owner. Inherited grants
+alone do not satisfy that identity check. The login must be allowed to assume the
+owner role (the membership's SET option on PostgreSQL 16+). For example, when
+`postgres` owns the boundary:
+
+```sql
+SET ROLE postgres;
+SELECT activate_pps_binary64('bitcoin-pps-lab', '2026-09-21T00:00:00Z');
+RESET ROLE;
+```
+
+Check the actual owner before using that example:
+
+```sql
+SELECT pg_get_userbyid(relowner) AS transition_owner
+FROM pg_class WHERE oid='pps_arithmetic_transitions'::regclass;
+```
+
+The administrator must also have permission to alter the application-owned
+credit table during migration. Activation remains SECURITY INVOKER and needs
+SELECT plus permission to take SHARE ROW EXCLUSIVE on `pps_share_credits`;
+SELECT or INSERT alone is insufficient for that lock. The documented `postgres`
+flow supplies those privileges. A non-superuser boundary owner needs the required
+credit-table privileges separately; switching to that owner does not manufacture
+them. See PostgreSQL's [SET ROLE](https://www.postgresql.org/docs/17/sql-set-role.html)
+and [LOCK privilege requirements](https://www.postgresql.org/docs/17/sql-lock.html).
+
 Set the identical cutoff and exact, case-sensitive pool ID on every producer,
 relay and recorder for that pool, against every database they use:
 
@@ -85,7 +115,10 @@ Preflight also verifies the constraints, trigger types, enabled state and functi
 bodies against the shipped contract. The version column must have a literal
 `DEFAULT 0`: an old writer omits that column entirely, so default drift can
 mislabel legacy amounts. Reapplying the migration repairs the default for future
-inserts without changing stored credits. If a wrong default was in use, keep
+inserts without changing stored credits. Unsafe grants to unrelated named roles
+are detected but not automatically revoked; explicitly revoke their write or
+routine EXECUTE grants while preserving intentional named SELECT access. If a
+wrong default was in use, keep
 writers stopped and reconcile affected evidence before restarting.
 
 Ownership and effective permissions are checked for the credit-table owner and
@@ -237,7 +270,9 @@ insert guard and named-role ACL checks. The actual published Miningcore service
 ran with a non-superuser application login against a new isolated database.
 Source archive SHA-256: `60f54b8f652041c9a4fe9656a840db0fbcd4a6db1fde0e1c75afa2318fb5a28e`.
 The archive and source provenance are retained under `build/round4-194-final/` in the
-local worktree. Native libraries were reused with their hashes retained.
+local worktree. Native libraries were reused with their hashes retained. These
+ignored artifacts are not shipped or available through the GitHub PR; the
+checksums identify local evidence, not a downloadable verification bundle.
 
 All 40 real Stratum submissions were accepted, producing 40 version-1 credits,
 40 accounting groups, 40 shares and 40 balance changes. The independent verifier
@@ -254,6 +289,10 @@ the production V1 arithmetic, recorder and PostgreSQL transaction. It commits th
 liability before injecting a subsequent assignment-publication failure, then
 checks one durable V1 credit, one valid share, zero invalid shares, no ban,
 terminal connection closure and successful reconnect. Replaying the accepted
-envelope adds no credit. This case runs in the main CI lane when both real
+envelope adds no credit. Its message-bus subscriber commits synchronously through
+the production recorder to make the ordering deterministic; it does not exercise
+the asynchronous persistence-admission queue under publication failure. The
+40-share service run exercises normal asynchronous recording without an injected
+publication failure. This case runs in the main CI lane when both real
 Bitcoin and PostgreSQL integration dependencies are supplied; missing dependencies
 are reported as a skipped test.

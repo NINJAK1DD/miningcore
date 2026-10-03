@@ -176,6 +176,7 @@ public class PpsArithmeticSchemaTests
             var schema = "pps_roles_" + Guid.NewGuid().ToString("N");
             var app = "pps_app_" + Guid.NewGuid().ToString("N");
             var thirdParty = "pps_untrusted_" + Guid.NewGuid().ToString("N");
+            var adminMember = "pps_admin_member_" + Guid.NewGuid().ToString("N");
             try
             {
                 await db.ExecuteAsync($"CREATE ROLE {app}; CREATE SCHEMA {schema}; GRANT ALL ON SCHEMA {schema} TO {app}; SET search_path TO {schema}, public; SET ROLE {app}");
@@ -196,6 +197,36 @@ public class PpsArithmeticSchemaTests
                 Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
                 Assert.True(await repository.HasMatchingPpsArithmeticTransitionAsync(db, "ltc", Cutoff, CancellationToken.None));
                 await db.ExecuteAsync("RESET ROLE");
+                // Owner membership is trusted by ACL preflight, but insertion requires
+                // the owner's exact identity. Prove the documented SET ROLE procedure
+                // from a non-superuser member session, with lock privileges supplied.
+                var owner = await db.ExecuteScalarAsync<string>("SELECT quote_ident(current_user)");
+                await db.ExecuteAsync($@"CREATE ROLE {adminMember};
+                    DO $$ BEGIN EXECUTE format('GRANT %I TO {adminMember}', session_user); END $$;
+                    GRANT USAGE ON SCHEMA {schema} TO {adminMember};
+                    GRANT SELECT, INSERT ON pps_arithmetic_transitions TO {adminMember};
+                    GRANT SELECT, UPDATE ON pps_share_credits TO {adminMember};
+                    GRANT EXECUTE ON FUNCTION activate_pps_binary64(text,timestamptz) TO {adminMember};
+                    SET ROLE {app}");
+                Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
+                await db.ExecuteAsync($"RESET ROLE; SET SESSION AUTHORIZATION {adminMember}");
+                Assert.Equal(adminMember, await db.ExecuteScalarAsync<string>("SELECT current_user"));
+                foreach(var sql in new[]
+                {
+                    "INSERT INTO pps_arithmetic_transitions VALUES ('admin-direct', @Cutoff, 1)",
+                    "SELECT activate_pps_binary64('admin-function', @Cutoff)",
+                })
+                {
+                    var denied = await Assert.ThrowsAsync<PostgresException>(() => db.ExecuteAsync(sql, new { Cutoff }));
+                    Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, denied.SqlState);
+                    Assert.Contains("administrator activation", denied.MessageText);
+                }
+                await db.ExecuteAsync($"SET ROLE {owner}");
+                await db.ExecuteAsync("SELECT activate_pps_binary64('admin-function', @Cutoff)", new { Cutoff });
+                await db.ExecuteAsync("INSERT INTO pps_arithmetic_transitions VALUES ('admin-direct', @Cutoff, 1)", new { Cutoff });
+                Assert.Equal(2, await db.ExecuteScalarAsync<int>(
+                    "SELECT count(*) FROM pps_arithmetic_transitions WHERE poolid IN ('admin-direct','admin-function')"));
+                await db.ExecuteAsync("RESET ROLE; RESET SESSION AUTHORIZATION");
                 foreach(var damage in new[]
                 {
                     $"ALTER TABLE pps_arithmetic_transitions OWNER TO {app}",
@@ -296,7 +327,7 @@ public class PpsArithmeticSchemaTests
             }
             finally
             {
-                await db.ExecuteAsync($"RESET ROLE; DROP TABLE IF EXISTS pg_temp.pps_arithmetic_transitions; SET search_path TO public; DROP SCHEMA IF EXISTS {schema} CASCADE; DROP ROLE {app}; DROP ROLE {thirdParty}");
+                await db.ExecuteAsync($"RESET SESSION AUTHORIZATION; RESET ROLE; DROP TABLE IF EXISTS pg_temp.pps_arithmetic_transitions; SET search_path TO public; DROP SCHEMA IF EXISTS {schema} CASCADE; DROP ROLE {app}; DROP ROLE {thirdParty}; DROP ROLE IF EXISTS {adminMember}");
             }
         }
     }

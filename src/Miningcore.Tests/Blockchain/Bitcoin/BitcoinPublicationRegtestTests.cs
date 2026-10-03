@@ -201,7 +201,8 @@ public class BitcoinPublicationRegtestTests : TestBase
                 bus.When(x => x.SendMessage(Arg.Any<Share>(), Arg.Any<string>())).Do(call =>
                 {
                     ledger.Accepted = call.Arg<Share>();
-                    // Commit through the production recorder before the pool publishes its response.
+                    // Deterministic commit boundary: this synchronous sink exercises the recorder,
+                    // not the production asynchronous admission queue under publication failure.
                     ledger.Recorder.PersistSharesAsync(new[] { ledger.Accepted }).GetAwaiter().GetResult();
                 });
                 return ledger;

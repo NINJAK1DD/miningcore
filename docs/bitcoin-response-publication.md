@@ -232,7 +232,9 @@ confirmation and PostgreSQL suites cover the separate durable candidate paths.
 The PPS V1 case commits a real accepted proof through the production recorder
 into PostgreSQL before forcing a later assignment failure. It checks one durable
 liability, replay suppression, one valid share, no invalid-share ban, terminal
-closure and successful reconnect. See [PPS arithmetic migration](pps-arithmetic-migration.md)
+closure and successful reconnect. Its synchronous test subscriber makes the
+commit ordering deterministic; it does not test asynchronous admission-queue
+timing during publication failure. See [PPS arithmetic migration](pps-arithmetic-migration.md)
 for supported PostgreSQL service acceptance and the shared terminal diagnostic label.
 
 Run the Bitcoin/Stratum suites, and opt into the canonical Bitcoin Core and
