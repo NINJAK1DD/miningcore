@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Miningcore.Tests.Blockchain.Bitcoin;
 using Miningcore.Tests.Blockchain.Bitcoin.MergedMining;
+using Miningcore.Tests.Blockchain.BitcoinBlake2b;
 using Miningcore.Tests.Util;
 using Xunit;
 
@@ -30,5 +31,6 @@ public class IntegrationDeadlineCollectionTests
         typeof(ProgramPoolTemplateTests),
         typeof(MergedMiningManagerReorgTests),
         typeof(BitcoinPublicationFailureTests),
+        typeof(BitcoinBlake2bCultureTests),
     };
 }

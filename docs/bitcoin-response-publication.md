@@ -17,7 +17,7 @@ tracked in [#192](https://github.com/NINJAK1DD/miningcore/issues/192).
 | --- | --- |
 | Subscribe, including canonical resubscribe | Preserve subscriber data, success response, NiceHash lookup/difficulty, then initial notify. A failure after the response attempt closes the session and clears its jobs. Direct-SOLO still withholds work until authorized. This does not change the separate resubscription policy in #181. |
 | Authorize, including static password difficulty | Address validation stays before the response. Success precedes static difficulty and direct-SOLO notify. Failure after success is terminal. Invalid address handling retains its existing configured login-ban behavior. |
-| Submit and immediate VarDiff | Proof validation/rejection is separate from accounting, acknowledgement, accepted-share bookkeeping and later work publication. Publication failure cannot increment invalid shares or invoke share banning. Already admitted accounting is neither retried nor rolled back. |
+| Submit and immediate VarDiff | Proof validation/rejection is separate from accounting, acknowledgement, accepted-share bookkeeping and later work publication. Publication failure cannot increment invalid shares or invoke share banning. Already admitted accounting is neither retried nor rolled back. If an invalid share triggers a ban, disconnect is latched before recovery: no rejection response is attempted for that share, and no publication-failure report is consumed. A non-banning rejection still receives its normal error response. |
 | Idle VarDiff | Once the pending difficulty is applied, failure to construct or publish its work invalidates the connection even though no request is active. |
 | Configure | Canonical version-rolling/minimum-difficulty negotiation still precedes its sole response, with no new canonical notify. A failed response enqueue or an override failing after responding is terminal. BLAKE2b retains its gated matching difficulty/notify publication. |
 | Suggest difficulty | Malformed suggestions retain the existing acknowledged no-op behavior. Valid suggestions still acknowledge before changing difficulty. Publication errors now propagate to the terminal boundary instead of being logged and ignored. |
@@ -44,6 +44,11 @@ their existing propagation to transport teardown.
 
 This tracks attempts, not delivery: abortive TCP close may discard queued bytes.
 Repeated miner-selected IDs belong to separate serial requests and remain valid.
+For a ban-triggering share, firmware sees EOF or TCP reset without a new JSON-RPC
+rejection attempt. Earlier behavior could enqueue an error after the ban had
+already initiated abortive close; delivery was never guaranteed. The explicit
+policy is now immediate terminal closure, rather than attempting another write
+after disconnect. A disconnect alone does not identify whether a proof was valid.
 There is no ID set or request history. State is bounded per connection: response
 and accepted-proof counters, disconnect/transport/job closure flags, and one
 publication-report flag held through a weak connection key. All response payloads
@@ -143,6 +148,8 @@ the shared per-connection handler for its Error diagnostic; they do not fault th
 whole BLAKE2b pool.
 The public `ClearJobs()` method remains available for downstream compatibility;
 it removes existing work without changing whether the registry accepts new work.
+In-tree terminal cleanup must use `CloseJobs()`, which permanently prevents
+reinsertion; `ClearJobs()` is not a terminal-cleanup substitute.
 Both expected and unexpected exception diagnostics remain redacted at every level;
 the IP-censor/GDPR flag does not authorize raw exception or credential logging. Existing transport
 diagnostics may separately describe teardown. See [Stratum diagnostics](stratum-diagnostics.md).
@@ -155,6 +162,24 @@ the replacement session. Repeated publication failures require operator
 investigation; aggressive reconnects remain subject to
 [connection admission](stratum-connection-admission.md). No new firmware-specific
 compatibility or physical ASIC certification is claimed.
+
+## Downstream pool extension compatibility
+
+`OnRequestErrorAsync` is a source-breaking protected override change: its signature
+is now `(StratumConnection connection, JsonRpcRequest request, StratumException error,
+bool responseStarted, CancellationToken ct)`. Downstream overrides must add the
+token and forward it when calling the base implementation so shutdown cancellation
+retains its classification. No legacy overload bypasses that token-aware path.
+
+`CloseRequestPublicationFailure(StratumConnection connection, Exception failure,
+bool reportFailure = true)` is a new protected virtual cleanup hook. Overrides
+should close family-specific admission state and delegate common job closure,
+bounded once-only reporting and disconnect to the base implementation. They must
+preserve quiet terminal/shutdown cancellation, avoid response retries, and prevent
+secondary cleanup failures from replacing the original error. BLAKE2b provides
+the in-tree example. Context factories must supply `BitcoinWorkerContext` or a
+subclass; canonical dispatch now handles a missing or incompatible context through
+terminal cleanup before invoking any request handler or attempting a response.
 
 ## Regression coverage
 

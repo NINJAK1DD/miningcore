@@ -4,7 +4,9 @@ using System.Threading.Tasks;
 using Autofac;
 using Microsoft.IO;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Ethereum;
 using Miningcore.Configuration;
+using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Notifications.Messages;
 using Miningcore.Persistence.Repositories;
@@ -19,6 +21,44 @@ namespace Miningcore.Tests.Blockchain.Bitcoin;
 // No sockets or deadline collection: these exercise synchronous cleanup gates.
 public class BitcoinPublicationCleanupTests : TestBase
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Dispatch_InvalidWorkerContext_ClosesBeforeResponseAndReportsOnce(bool missing)
+    {
+        var clock = Substitute.For<IMasterClock>();
+        var bus = Substitute.For<IMessageBus>();
+        using var scope = container.BeginLifetimeScope(builder =>
+        {
+            builder.RegisterInstance(Substitute.For<IBlockRepository>());
+            builder.RegisterInstance(Substitute.For<IShareRepository>());
+        });
+        var streams = container.Resolve<RecyclableMemoryStreamManager>();
+        var pool = new BitcoinBlake2bWireSession.CanonicalPool(scope, clock, bus, streams);
+        pool.Configure(new PoolConfig
+        {
+            Id = "invalid-context", Coin = "bitcoin", Template = ModuleInitializer.CoinTemplates["bitcoin"],
+        }, new ClusterConfig());
+        var connection = new StratumConnection(new NLog.NullLogger(NLog.LogManager.LogFactory),
+            streams, clock, "invalid-context", false);
+        connection.SetContext(missing ? null : new EthereumWorkerContext());
+        var request = new JsonRpcRequest { Id = 1, Method = BitcoinStratumMethods.ExtraNonceSubscribe };
+        var error = await Record.ExceptionAsync(() => pool.Dispatch(connection, request, CancellationToken.None));
+        if(missing)
+            Assert.IsType<InvalidOperationException>(error);
+        else
+            Assert.IsType<InvalidCastException>(error);
+        Assert.True(connection.IsDisconnectRequested);
+        Assert.Equal(0, connection.ResponseSequence);
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "publication-failure"), Arg.Any<string>());
+        // Even a later valid context cannot resume buffered traffic or fabricate
+        // another error response after the session has become terminal.
+        connection.SetContext(new BitcoinWorkerContext());
+        await pool.Dispatch(connection, request, CancellationToken.None);
+        Assert.Equal(0, connection.ResponseSequence);
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "publication-failure"), Arg.Any<string>());
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]

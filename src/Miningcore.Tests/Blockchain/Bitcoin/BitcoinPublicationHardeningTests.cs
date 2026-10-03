@@ -15,6 +15,9 @@ using Xunit;
 
 namespace Miningcore.Tests.Blockchain.Bitcoin;
 
+// The collection attribute on the other partial declaration applies to every
+// test here. New cases expand the serialized fixture: retain failure evidence
+// and a whole-suite cost measurement as required by IntegrationDeadlineCollection.
 public partial class BitcoinPublicationFailureTests
 {
     [Theory]

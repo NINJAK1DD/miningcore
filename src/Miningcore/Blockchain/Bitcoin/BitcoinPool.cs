@@ -884,11 +884,16 @@ public class BitcoinPool : PoolBase
 
         var request = tsRequest.Value;
         var responseSequence = connection.ResponseSequence;
-        var workerContext = connection.ContextAs<BitcoinWorkerContext>();
-        var acceptedProofSequence = workerContext.AcceptedProofSequence;
+        BitcoinWorkerContext workerContext = null;
+        long acceptedProofSequence = 0;
 
         try
         {
+            // A downstream context factory must preserve this dispatch contract.
+            // Treat missing/incompatible context as terminal before any handler runs.
+            workerContext = connection.ContextAs<BitcoinWorkerContext>() ??
+                throw new InvalidOperationException("Bitcoin worker context is required");
+            acceptedProofSequence = workerContext.AcceptedProofSequence;
             switch(request.Method)
             {
                 case BitcoinStratumMethods.Subscribe:
@@ -945,7 +950,7 @@ public class BitcoinPool : PoolBase
             }
         }
 
-        catch(Exception ex) when(connection.ResponseSequence != responseSequence ||
+        catch(Exception ex) when(workerContext == null || connection.ResponseSequence != responseSequence ||
             workerContext.AcceptedProofSequence != acceptedProofSequence)
         {
             // A response attempt owns this request even if enqueue failed. Never

@@ -2,7 +2,8 @@
 
 `IntegrationDeadlineCollection` uses xUnit's collection-level
 `DisableParallelization` setting for `ProgramPoolTemplateTests`,
-`MergedMiningManagerReorgTests`, and `BitcoinPublicationFailureTests`.
+`MergedMiningManagerReorgTests`, `BitcoinPublicationFailureTests`, and the single
+ordered scenario in `BitcoinBlake2bCultureTests`.
 It changes test scheduling, not production
 deadlines or test assertions. The definition and its contract tests live at the
 test-project root because the collection spans the root and Blockchain namespaces.
@@ -27,7 +28,7 @@ The selected classes are isolated as units. Most retain pure cases because a
 large fixture extraction has review cost, but these cases can lengthen the serial
 phase. The four pure publication fail-stop cleanup cases now run in the separate,
 parallel `BitcoinPublicationCleanupTests` class, alongside the registry-lifetime
-contract. Its TCP construction-race cases remain in the deadline fixture. Consider
+contract and invalid-worker-context guards. Its TCP construction-race cases remain in the deadline fixture. Consider
 further extraction if measurements show material cost or fixtures grow
 substantially; raw test counts are not a runtime measurement.
 
@@ -37,6 +38,48 @@ removes cross-collection contention, not every possible delay within one test.
 If a timeout recurs, inspect host/IO progress and intra-test continuation scheduling
 before considering a test watchdog change. Do not automatically relax deadlines.
 Revisit this isolation when upgrading xUnit to its conservative scheduler.
+
+## Ordered BLAKE2b culture scenario
+
+`BitcoinBlake2bCultureTests` contains only
+`MalformedNumericStrings_AfterCultureScenarios_KeepAdmissionContract`. It invokes
+the original culture/admission scenarios sequentially, retaining their complete
+wire-response, exact-budget and disconnect assertions. The remaining 177 cases
+in `BitcoinBlake2bDifficultyBudgetTests` stay parallel. The new class does not
+inherit that fixture, so xUnit does not discover its existing tests a second time.
+The shared helpers still use the production ten-second first-request deadline.
+
+A whole-assembly comparison on 2026-09-20 used Ubuntu 22.04 WSL, .NET 10,
+`DOTNET_PROCESSOR_COUNT=2`, the same native libraries and Bitcoin Core 28.1,
+with PostgreSQL unset. Both runs included the extracted culture scenario and
+the missing/incompatible-context guards added after `14d33dccc`. The first run
+left the extracted class parallel. The second added only its collection attribute
+and matching expected-member entry; production logic, protocol assertions,
+test cases and watchdogs were identical.
+
+| Scheduling | Passed | Failed | Skipped | Ordered culture passed/failed | TRX elapsed seconds |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Extracted fixture, parallel | 3352 | 5 | 41 | 0 / 1 | 279.28 |
+| Extracted fixture, deadline collection | 3355 | 2 | 41 | 1 / 0 | 275.54 |
+
+The parallel run reproduced startup expiry inside the ordered culture scenario:
+`requestId=1`, `completion=StartupTimeout`, `subscribed=False`, `responses=0`.
+It occurred during the date-scalar scenario's initial subscription, before a
+configure request. The standalone `"2,0"` row also expired during startup in both
+runs. Orphaned payout completion failed in both; idle listener shutdown and
+metrics export failed only in the parallel run. All 42 publication cases and all
+seven parallel cleanup/context-guard cases passed in both runs.
+
+The serialized run was 3.74 seconds faster in this pair. One pair under varying
+host load cannot establish a causal runtime improvement, general reliability
+benefit or elimination of startup flakes. Neither whole-suite run is green.
+The reproduced failure and successful isolated case support admitting only this
+multi-session scenario to the existing deadline collection; they do not justify
+serializing the full BLAKE2b fixture or raising deadlines. Normal full-suite CI
+remains required. Local evidence is `deadline-round8-parallel.trx` and
+`deadline-round8-serialized.trx` under `build/issue183/results/`, with matching
+logs under `build/issue183/`. These ignored artifacts are not an independently
+auditable bundle included in the PR.
 
 ## Bitcoin publication fixture scheduling
 

@@ -172,6 +172,13 @@ normal teardown does not create a new connection/publication error. Independent
 handler failures remain visible. Family-specific policies outside Bitcoin are
 tracked in [#192](https://github.com/NINJAK1DD/miningcore/issues/192).
 
+An invalid share that triggers a ban closes the session without attempting its
+JSON-RPC rejection response; non-banning rejections retain their normal response.
+Downstream pool overrides must add and forward the new `CancellationToken` argument
+to `OnRequestErrorAsync`. The new `CloseRequestPublicationFailure` hook owns terminal
+cleanup, and `ClearJobs()` remains non-terminal. See the
+[pool extension migration notes](bitcoin-response-publication.md#downstream-pool-extension-compatibility).
+
 ## Unreleased: BLAKE2b assignment ordering
 
 [#182](https://github.com/NINJAK1DD/miningcore/issues/182) serializes worker difficulty

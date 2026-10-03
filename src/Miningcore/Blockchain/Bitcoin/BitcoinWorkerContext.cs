@@ -188,6 +188,7 @@ public class BitcoinWorkerContext : WorkerContextBase
     /// <summary>
     /// Retained for downstream compatibility: clears existing work without
     /// closing an open registry or reopening a permanently closed registry.
+    /// Pool implementations must use CloseJobs for terminal session cleanup.
     /// </summary>
     public void ClearJobs()
     {

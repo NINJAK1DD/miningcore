@@ -426,6 +426,9 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         // Authorization runs its address-validation RPC outside the gate; only
         // ApplyStaticDifficultyAsync enters it. Share/RPC/accounting work never
         // owns this gate either (its final VarDiff update acquires it separately).
+        // Any method that can accept a proof must continue through the base
+        // dispatcher, which owns AcceptedProofSequence classification. Do not
+        // add such a method to this gated set without preserving that boundary.
         if(request.Value.Method is not (BitcoinStratumMethods.Subscribe or
             BitcoinStratumMethods.SuggestDifficulty or BitcoinStratumMethods.MiningConfigure))
         {

@@ -12,6 +12,8 @@ namespace Miningcore.Tests;
 // not a membership criterion: require failure evidence and a full-suite cost
 // measurement before expanding this collection. The contract pins its members.
 // Membership applies to the whole of the selected classes, including their unit cases.
+// All partial declarations share that membership; adding cases in another file
+// still expands the serialized workload and requires the same evidence review.
 // Other collections retain their settings. This root-level definition spans
 // the root host fixture and the Blockchain namespace's RPC/TCP fixtures.
 // Revisit this isolation when upgrading xUnit to its conservative scheduler.
