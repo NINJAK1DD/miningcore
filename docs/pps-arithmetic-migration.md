@@ -73,6 +73,13 @@ SELECT activate_pps_binary64('bitcoin-pps-lab', '2026-09-21T00:00:00Z');
 RESET ROLE;
 ```
 
+Permission to `SET ROLE postgres` gives that login full PostgreSQL superuser
+access, even if its own `rolsuper` flag is false. `RESET ROLE` ends the assumed
+identity; it does not remove the ability to assume it again. Treat membership of
+any superuser owner as full database administration, never as a narrowly scoped
+activation grant, and never grant it to the Miningcore runtime. The dedicated
+non-superuser owner procedure below avoids granting that authority.
+
 Check the actual owner before using that example:
 
 ```sql
@@ -80,14 +87,109 @@ SELECT pg_get_userbyid(relowner) AS transition_owner
 FROM pg_class WHERE oid='pps_arithmetic_transitions'::regclass;
 ```
 
-The administrator must also have permission to alter the application-owned
-credit table during migration. Activation remains SECURITY INVOKER and needs
-SELECT plus permission to take SHARE ROW EXCLUSIVE on `pps_share_credits`;
-SELECT or INSERT alone is insufficient for that lock. The documented `postgres`
-flow supplies those privileges. A non-superuser boundary owner needs the required
-credit-table privileges separately; switching to that owner does not manufacture
-them. See PostgreSQL's [SET ROLE](https://www.postgresql.org/docs/17/sql-set-role.html)
-and [LOCK privilege requirements](https://www.postgresql.org/docs/17/sql-lock.html).
+The administrator running the migration must be able to alter the
+application-owned credit table; the documented `postgres` session supplies that
+authority. A role that only owns the transition table cannot run the migration.
+Run the schema migration first as that database administrator, then optionally
+transfer the boundary as described below. Activation remains SECURITY INVOKER
+and needs SELECT plus permission to take SHARE ROW EXCLUSIVE on
+`pps_share_credits`. SELECT or INSERT alone is insufficient for that lock.
+
+### Dedicated non-superuser boundary owner
+
+Perform this optional handoff as the database administrator, after a successful
+migration and while all writers remain stopped. It transfers only the transition
+table and all four routines, leaving the application-owned credit table intact.
+The example uses schema `public`, runtime role `miningcore`, and an existing
+non-superuser activation login `pps_activation_operator`; substitute the actual
+names. The activation login must have no superuser-role memberships or other
+independent administrative grants. If it previously received `postgres`
+membership, revoke that separately; a new owner does not remove old grants.
+
+```sql
+-- BEGIN PPS BOUNDARY OWNER HANDOFF
+BEGIN;
+CREATE ROLE pps_boundary_owner NOLOGIN NOINHERIT NOSUPERUSER
+    NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+GRANT USAGE, CREATE ON SCHEMA public TO pps_boundary_owner;
+ALTER TABLE public.pps_arithmetic_transitions OWNER TO pps_boundary_owner;
+ALTER FUNCTION public.guard_pps_arithmetic_transition() OWNER TO pps_boundary_owner;
+ALTER FUNCTION public.guard_pps_arithmetic_transition_insert() OWNER TO pps_boundary_owner;
+ALTER FUNCTION public.guard_pps_arithmetic_credit() OWNER TO pps_boundary_owner;
+ALTER FUNCTION public.activate_pps_binary64(text,timestamptz) OWNER TO pps_boundary_owner;
+REVOKE CREATE ON SCHEMA public FROM pps_boundary_owner;
+GRANT SELECT ON public.pps_arithmetic_transitions TO miningcore;
+GRANT SELECT ON public.pps_share_credits TO pps_boundary_owner;
+GRANT pps_boundary_owner TO pps_activation_operator;
+COMMIT;
+-- END PPS BOUNDARY OWNER HANDOFF
+```
+
+Next, the database administrator supplies the lock privilege for the server major:
+
+| PostgreSQL | Credit-table grant to the boundary owner | Effect |
+| --- | --- | --- |
+| 17/18 | SELECT + MAINTAIN | Allows the activation lock and table maintenance without liability DML |
+| 15/16 | SELECT + temporary UPDATE | Allows the lock, but also permits credit updates until revoked |
+
+On PostgreSQL 17/18, grant the table-specific MAINTAIN privilege; no INSERT,
+UPDATE, DELETE, TRUNCATE or credit-table ownership is needed:
+
+```sql
+GRANT MAINTAIN ON public.pps_share_credits TO pps_boundary_owner;
+```
+
+MAINTAIN was introduced in [PostgreSQL 17](https://www.postgresql.org/docs/17/release-17.html).
+It also permits maintenance such as VACUUM and REINDEX, so the owner is still a
+trusted administrator of these objects. Avoid the cluster-wide `pg_maintain`
+role for this single-table requirement. On PostgreSQL 15/16, MAINTAIN is not
+available; the administrator can grant UPDATE temporarily while writers are
+stopped, then revoke it after activation:
+
+```sql
+GRANT UPDATE ON public.pps_share_credits TO pps_boundary_owner;
+```
+
+Between that grant and revoke, the boundary owner can update liabilities;
+PostgreSQL 15/16 provide no maintenance-only grant for this lock. Provision the
+lock privilege again before any later pool activation. Do not add membership in
+the credit-table owner or a superuser role as a workaround.
+
+In a separate connection authenticated as `pps_activation_operator`, use:
+
+```sql
+SET ROLE pps_boundary_owner;
+SELECT activate_pps_binary64('bitcoin-pps-lab', '2026-09-21T00:00:00Z');
+RESET ROLE;
+```
+
+On PostgreSQL 15/16, return to the database administrator connection after
+successful activation and remove the temporary UPDATE grant:
+
+```sql
+REVOKE UPDATE ON public.pps_share_credits FROM pps_boundary_owner;
+```
+
+Confirm Miningcore's schema preflight succeeds using the actual application
+login before restarting writers. The runtime must retain its explicit SELECT
+grant and no membership in the new owner. Inspect and revoke stale non-owner
+write or routine EXECUTE grants from previous administrator setups if preflight
+rejects them. Keep all four routine owners equal to the transition-table owner;
+transferring only the table fails preflight. Pinned search paths, function bodies
+and PUBLIC restrictions must remain intact.
+
+Reapplying the canonical migration assigns the boundary back to the migration
+session login. After every schema repair or upgrade, repeat this handoff before
+restarting, reusing the existing role instead of the CREATE ROLE statement, and
+reconcile its grants. The same immutable cutovers and historical liabilities
+remain stored throughout. Integration tests execute the handoff SQL above and
+verify application preflight, non-superuser activation, denied role creation and
+credit-table DDL, and the version-specific lock grants on PostgreSQL 15–18.
+See PostgreSQL's [SET ROLE](https://www.postgresql.org/docs/17/sql-set-role.html),
+[16 LOCK privileges](https://www.postgresql.org/docs/16/sql-lock.html) and
+[17 LOCK privileges](https://www.postgresql.org/docs/17/sql-lock.html).
+
+### Pool configuration
 
 Set the identical cutoff and exact, case-sensitive pool ID on every producer,
 relay and recorder for that pool, against every database they use:

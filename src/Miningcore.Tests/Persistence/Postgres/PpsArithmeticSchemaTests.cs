@@ -166,6 +166,94 @@ public class PpsArithmeticSchemaTests
     }
 
     [PostgresIntegrationFact]
+    public async Task DedicatedBoundaryOwnerHandoffPreservesRuntimePreflightAndLimitedActivation()
+    {
+        await using var db = new NpgsqlConnection(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"));
+        await db.OpenAsync();
+        var serverVersion = await db.ExecuteScalarAsync<int>("SELECT current_setting('server_version_num')::int");
+        var lockPrivilege = serverVersion >= 170000 ? "MAINTAIN" : "UPDATE";
+        var runbook = await File.ReadAllTextAsync(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+            "../../../../../docs/pps-arithmetic-migration.md")));
+        const string begin = "-- BEGIN PPS BOUNDARY OWNER HANDOFF";
+        const string end = "-- END PPS BOUNDARY OWNER HANDOFF";
+        var start = runbook.IndexOf(begin, StringComparison.Ordinal) + begin.Length;
+        var finish = runbook.IndexOf(end, start, StringComparison.Ordinal);
+        Assert.True(start >= begin.Length && finish > start);
+        var handoff = runbook[start..finish];
+        foreach(var upgrade in new[] { false, true })
+        {
+            var suffix = Guid.NewGuid().ToString("N");
+            var schema = "pps_handoff_" + suffix;
+            var app = "pps_app_" + suffix;
+            var owner = "pps_owner_" + suffix;
+            var activationLogin = "pps_operator_" + suffix;
+            var escalation = "pps_escalation_" + suffix;
+            var migrationAdmin = await db.ExecuteScalarAsync<string>("SELECT session_user");
+            try
+            {
+                await db.ExecuteAsync($@"CREATE ROLE {app};
+                    CREATE ROLE {activationLogin} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE;
+                    CREATE SCHEMA {schema}; GRANT ALL ON SCHEMA {schema} TO {app};
+                    SET search_path TO {schema}, public; SET ROLE {app}");
+                var fresh = Script("createdb.sql");
+                await db.ExecuteAsync(upgrade ? fresh.Split("-- BEGIN GENERATED PPS ARITHMETIC MIGRATION")[0] : fresh);
+                await db.ExecuteAsync("RESET ROLE");
+                if(upgrade)
+                    await db.ExecuteAsync(Script("add_share_accounting.sql"));
+                await db.ExecuteAsync(handoff.Replace("public", schema).Replace("miningcore", app)
+                    .Replace("pps_boundary_owner", owner).Replace("pps_activation_operator", activationLogin));
+                var repository = new ShareRepository(AutoMapperFactory.CreateMapper());
+                await db.ExecuteAsync($"SET ROLE {app}");
+                Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
+                await db.ExecuteAsync($"RESET ROLE; SET SESSION AUTHORIZATION {activationLogin}; SET ROLE {owner}");
+                Assert.False(await db.ExecuteScalarAsync<bool>(@"SELECT rolsuper OR rolcreaterole OR rolcreatedb
+                    FROM pg_roles WHERE rolname=current_user"));
+                Assert.False(await db.ExecuteScalarAsync<bool>("SELECT pg_has_role(current_user,@migrationAdmin,'MEMBER')",
+                    new { migrationAdmin }));
+                Assert.False(await db.ExecuteScalarAsync<bool>("SELECT pg_has_role(session_user,@migrationAdmin,'MEMBER')",
+                    new { migrationAdmin }));
+                var noLock = await Assert.ThrowsAsync<PostgresException>(() =>
+                    db.ExecuteAsync("SELECT activate_pps_binary64('limited', @Cutoff)", new { Cutoff }));
+                Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, noLock.SqlState);
+                await db.ExecuteAsync("RESET SESSION AUTHORIZATION; RESET ROLE");
+                await db.ExecuteAsync($"GRANT {lockPrivilege} ON pps_share_credits TO {owner}");
+                await db.ExecuteAsync($"SET SESSION AUTHORIZATION {activationLogin}; SET ROLE {owner}");
+                await db.ExecuteAsync("SELECT activate_pps_binary64('limited', @Cutoff)", new { Cutoff });
+                Assert.False(await db.ExecuteScalarAsync<bool>(
+                    "SELECT has_table_privilege(current_user,'pps_share_credits','INSERT,DELETE,TRUNCATE,REFERENCES,TRIGGER')"));
+                Assert.Equal(serverVersion < 170000, await db.ExecuteScalarAsync<bool>(
+                    "SELECT has_table_privilege(current_user,'pps_share_credits','UPDATE')"));
+                foreach(var sql in new[]
+                {
+                    $"CREATE ROLE {escalation} SUPERUSER",
+                    "ALTER TABLE pps_share_credits ALTER COLUMN arithmeticversion SET DEFAULT 1",
+                })
+                    Assert.Equal(PostgresErrorCodes.InsufficientPrivilege,
+                        (await Assert.ThrowsAsync<PostgresException>(() => db.ExecuteAsync(sql))).SqlState);
+                if(serverVersion >= 170000)
+                    Assert.Equal(PostgresErrorCodes.InsufficientPrivilege,
+                        (await Assert.ThrowsAsync<PostgresException>(() => db.ExecuteAsync(
+                            "UPDATE pps_share_credits SET arithmeticversion=0"))).SqlState);
+                await db.ExecuteAsync("RESET SESSION AUTHORIZATION; RESET ROLE");
+                if(serverVersion < 170000)
+                    await db.ExecuteAsync($"REVOKE UPDATE ON pps_share_credits FROM {owner}");
+                await db.ExecuteAsync($"SET ROLE {app}");
+                Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
+                Assert.True(await repository.HasMatchingPpsArithmeticTransitionAsync(db, "limited", Cutoff, CancellationToken.None));
+                Assert.False(await db.ExecuteScalarAsync<bool>("SELECT pg_has_role(current_user,@owner,'MEMBER')", new { owner }));
+                Assert.False(await db.ExecuteScalarAsync<bool>(
+                    "SELECT has_function_privilege(current_user,'activate_pps_binary64(text,timestamptz)','EXECUTE')"));
+            }
+            finally
+            {
+                await db.ExecuteAsync($@"ROLLBACK; RESET SESSION AUTHORIZATION; RESET ROLE; SET search_path TO public;
+                    DROP SCHEMA IF EXISTS {schema} CASCADE;
+                    DROP ROLE IF EXISTS {app}, {owner}, {activationLogin}, {escalation}");
+            }
+        }
+    }
+
+    [PostgresIntegrationFact]
     public async Task FreshAndUpgradedSchemasKeepAdministratorOwnershipAndAppReadAccess()
     {
         await using var db = new NpgsqlConnection(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"));

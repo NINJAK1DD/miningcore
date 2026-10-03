@@ -209,7 +209,12 @@ ORDER BY schemaname, tablename;"
 For payout/recovery tables, if the database owner is not the configured application role,
 correct the ownership or grant that application role the required privileges before startup.
 Keep `pps_arithmetic_transitions` and its functions owned by the administrator; runtime roles
-need only SELECT on that table. Do not make the Miningcore runtime role a PostgreSQL superuser.
+need only SELECT on that table. Do not make the Miningcore runtime role a PostgreSQL superuser
+or grant it permission to assume a superuser role. Membership that permits SET ROLE to a
+superuser grants full administrative access even when the login itself is marked NOSUPERUSER.
+For activation logins with narrower authority, follow the tested
+[dedicated PPS boundary owner procedure](pps-arithmetic-migration.md#dedicated-non-superuser-boundary-owner)
+after each migration; the schema migration itself still runs as the database administrator.
 
 The payout ownership migration is required wherever payment processing is enabled and for recorder or
 recovery-only deployments using the `-rs` importer. The AuxPoW and share-accounting migrations are
