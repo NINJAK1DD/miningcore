@@ -7,6 +7,7 @@ using Miningcore.Configuration;
 using Miningcore.Mining;
 using Miningcore.Persistence.Postgres;
 using Miningcore.Persistence.Postgres.Repositories;
+using Miningcore.Tests.Util.Postgres;
 using Npgsql;
 using Xunit;
 
@@ -16,7 +17,7 @@ public class PpsArithmeticSchemaTests
 {
     private static readonly DateTime Cutoff = new(2026, 9, 21, 0, 0, 0, DateTimeKind.Utc);
     private static string Script(string name) => File.ReadAllText(
-        Path.Combine(AppContext.BaseDirectory, "Fixtures", "Postgres", name))
+        PostgresTestScripts.PathFor(name))
         .Replace("\\set ON_ERROR_STOP on", "").Replace("SET ROLE miningcore;", "");
 
     [PostgresIntegrationFact]
@@ -192,7 +193,7 @@ public class PpsArithmeticSchemaTests
             try
             {
                 await db.ExecuteAsync($@"CREATE ROLE {app};
-                    CREATE ROLE {activationLogin} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE;
+                    CREATE ROLE {activationLogin} LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE;
                     CREATE SCHEMA {schema}; GRANT ALL ON SCHEMA {schema} TO {app};
                     SET search_path TO {schema}, public; SET ROLE {app}");
                 var fresh = Script("createdb.sql");
@@ -214,7 +215,23 @@ public class PpsArithmeticSchemaTests
                 var repository = new ShareRepository(AutoMapperFactory.CreateMapper());
                 await db.ExecuteAsync($"SET ROLE {app}");
                 Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
-                await db.ExecuteAsync($"RESET ROLE; SET SESSION AUTHORIZATION {activationLogin}; SET ROLE {owner}");
+                // Resolve under the application role; the operator has no inherited schema USAGE.
+                var activationOid = await db.ExecuteScalarAsync<long>(
+                    "SELECT 'activate_pps_binary64(text,timestamptz)'::regprocedure::oid::bigint");
+                await db.ExecuteAsync($"RESET ROLE; SET SESSION AUTHORIZATION {activationLogin}");
+                Assert.False(await db.ExecuteScalarAsync<bool>("SELECT rolinherit FROM pg_roles WHERE rolname=current_user"));
+                Assert.False(await db.ExecuteScalarAsync<bool>("SELECT pg_has_role(current_user,@owner,'USAGE')", new { owner }));
+                Assert.False(await db.ExecuteScalarAsync<bool>(
+                    "SELECT has_function_privilege(current_user,CAST(@activationOid AS oid),'EXECUTE')", new { activationOid }));
+                Assert.Equal(PostgresErrorCodes.InsufficientPrivilege,
+                    (await Assert.ThrowsAsync<PostgresException>(() => db.ExecuteAsync(
+                        $"ALTER FUNCTION {schema}.guard_pps_arithmetic_credit() RESET search_path"))).SqlState);
+                await db.ExecuteAsync($"SET ROLE {owner}");
+                Assert.False(await db.ExecuteScalarAsync<bool>("SELECT has_schema_privilege(current_user,current_schema(),'CREATE')"));
+                Assert.Equal(PostgresErrorCodes.InsufficientPrivilege,
+                    (await Assert.ThrowsAsync<PostgresException>(() => db.ExecuteAsync(@"
+                        CREATE OR REPLACE FUNCTION guard_pps_arithmetic_credit() RETURNS trigger
+                        LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$"))).SqlState);
                 Assert.False(await db.ExecuteScalarAsync<bool>(@"SELECT rolsuper OR rolcreaterole OR rolcreatedb
                     FROM pg_roles WHERE rolname=current_user"));
                 Assert.False(await db.ExecuteScalarAsync<bool>("SELECT pg_has_role(current_user,@migrationAdmin,'MEMBER')",

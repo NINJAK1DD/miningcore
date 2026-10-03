@@ -101,16 +101,23 @@ Perform this optional handoff as the database administrator, after a successful
 migration and while all writers remain stopped. It transfers only the transition
 table and all four routines, leaving the application-owned credit table intact.
 The example uses schema `public`, runtime role `miningcore`, and an existing
-non-superuser activation login `pps_activation_operator`; substitute the actual
-names. The activation login must have no superuser-role memberships or other
-independent administrative grants. If it previously received `postgres`
+dedicated non-superuser activation login `pps_activation_operator`; substitute
+the actual names. The handoff sets that login to NOINHERIT. On PostgreSQL 15
+this prevents automatic inheritance from all of its role memberships; use a
+dedicated login rather than changing a login used for other duties. On 16+
+the membership also explicitly uses INHERIT FALSE and SET TRUE, including when
+updating a pre-existing membership. The activation login must have no
+superuser-role memberships or other independent administrative grants. If it previously received `postgres`
 membership, revoke that separately; a new owner does not remove old grants.
 
-The boundary owner is a scoped PPS security administrator. Anyone who can
-assume it can use owner DDL to alter the transition table and all four routines,
-including replacing the credit-version guard. This grant therefore requires
-trust to administer the PPS enforcement policy, beyond permission to activate
-a cutover. It does not grant ownership of the credit table.
+The boundary owner is a scoped PPS security administrator. It retains ALTER
+and DROP authority over the transition table and all four routines; schema
+preflight detects changes to the verified contract. Revoking schema CREATE
+blocks CREATE OR REPLACE FUNCTION, including replacement of the credit guard,
+provided no PUBLIC or other inherited grant supplies CREATE. Ownership alone
+does not bypass that schema privilege. This still requires trust to administer
+the PPS enforcement policy, beyond permission to activate a cutover. It does
+not grant ownership of the credit table.
 
 ```sql
 BEGIN;
@@ -126,10 +133,32 @@ ALTER FUNCTION "public".activate_pps_binary64(text,timestamptz) OWNER TO "pps_bo
 REVOKE CREATE ON SCHEMA "public" FROM "pps_boundary_owner";
 GRANT SELECT ON "public".pps_arithmetic_transitions TO "miningcore";
 GRANT SELECT ON "public".pps_share_credits TO "pps_boundary_owner";
-GRANT "pps_boundary_owner" TO "pps_activation_operator";
+ALTER ROLE "pps_activation_operator" NOINHERIT;
+DO $membership$
+BEGIN
+    IF current_setting('server_version_num')::int >= 160000 THEN
+        EXECUTE 'GRANT "pps_boundary_owner" TO "pps_activation_operator" WITH INHERIT FALSE, SET TRUE';
+    ELSE
+        GRANT "pps_boundary_owner" TO "pps_activation_operator";
+    END IF;
+END
+$membership$;
 -- END PPS BOUNDARY OWNER HANDOFF
 COMMIT;
 ```
+
+Before activation, check the effective schema privilege as the administrator:
+
+```sql
+SELECT has_schema_privilege('pps_boundary_owner', 'public', 'CREATE');
+```
+
+This must return false. A direct REVOKE does not remove privileges supplied by
+PUBLIC or another role. If it returns true, keep writers stopped and reconcile
+those schema grants before proceeding; older installations may still grant
+CREATE on `public` to PUBLIC. Keep the operator free of alternate inherited
+paths to the boundary owner as well. Without SET ROLE, it must have no owner
+privileges or EXECUTE access to activation.
 
 Next, the database administrator supplies the lock privilege for the server major:
 

@@ -26,6 +26,7 @@ using NBitcoin;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NSubstitute;
+using Miningcore.Tests.Util.Postgres;
 using Xunit;
 
 namespace Miningcore.Tests.Blockchain.Bitcoin;
@@ -187,8 +188,7 @@ public class BitcoinPublicationRegtestTests : TestBase
             try
             {
                 await db.ExecuteAsync($"CREATE SCHEMA {schema}");
-                var script = await File.ReadAllTextAsync(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-                    "../../../../Miningcore/Persistence/Postgres/Scripts/createdb.sql")));
+                var script = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("createdb.sql"));
                 await db.ExecuteAsync(script.Replace("\\set ON_ERROR_STOP on", "").Replace("SET ROLE miningcore;", ""));
                 await db.ExecuteAsync("SELECT activate_pps_binary64(@Id,@cutoff)",
                     new { config.Id, cutoff = config.PaymentProcessing.PpsBinary64Activation });

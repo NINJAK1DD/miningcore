@@ -8,6 +8,7 @@ using Dapper;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
 using Npgsql;
+using Miningcore.Tests.Util.Postgres;
 using Xunit;
 
 namespace Miningcore.Tests.Persistence.Postgres;
@@ -95,8 +96,7 @@ public class ShareAccountingIntegrationTests
                     created timestamptz NOT NULL);
             ");
 
-            var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-                "../../../../Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql"));
+            var migrationPath = PostgresTestScripts.PathFor("add_share_accounting.sql");
             var migration = (await File.ReadAllTextAsync(migrationPath))
                 .Replace("\\set ON_ERROR_STOP on", string.Empty,
                     StringComparison.Ordinal);
@@ -187,8 +187,7 @@ public class ShareAccountingIntegrationTests
                     usage text NULL, tags text[] NULL,
                     created timestamptz NOT NULL);
             ");
-            var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-                "../../../../Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql"));
+            var migrationPath = PostgresTestScripts.PathFor("add_share_accounting.sql");
             var migration = (await File.ReadAllTextAsync(migrationPath))
                 .Replace("\\set ON_ERROR_STOP on", string.Empty,
                     StringComparison.Ordinal);
@@ -266,8 +265,7 @@ public class ShareAccountingIntegrationTests
                     usage text NULL, tags text[] NULL, created timestamptz NOT NULL);
             ");
 
-            var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-                "../../../../Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql"));
+            var migrationPath = PostgresTestScripts.PathFor("add_share_accounting.sql");
             var migration = (await File.ReadAllTextAsync(migrationPath))
                 .Replace("\\set ON_ERROR_STOP on", string.Empty,
                     StringComparison.Ordinal);
@@ -681,8 +679,7 @@ public class ShareAccountingIntegrationTests
         try
         {
             await connection.ExecuteAsync($"CREATE SCHEMA {schema}; SET search_path TO {schema}, public");
-            var script = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-                "../../../../Miningcore/Persistence/Postgres/Scripts/createdb.sql"));
+            var script = PostgresTestScripts.PathFor("createdb.sql");
             await connection.ExecuteAsync((await File.ReadAllTextAsync(script)).Replace("SET ROLE miningcore;", ""));
             var repository = new ShareRepository(AutoMapperFactory.CreateMapper());
             var old = CreateBatch(Guid.NewGuid(), 0.0000000000006m, 'A');
