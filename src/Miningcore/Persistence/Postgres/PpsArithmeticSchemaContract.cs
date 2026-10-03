@@ -9,6 +9,7 @@ internal static class PpsArithmeticSchemaContract
     private static readonly string Migration = ReadMigration();
     internal static readonly string CreditGuard = Body("guard_pps_arithmetic_credit");
     internal static readonly string TransitionGuard = Body("guard_pps_arithmetic_transition");
+    internal static readonly string TransitionInsertGuard = Body("guard_pps_arithmetic_transition_insert");
     internal static readonly string Activation = Body("activate_pps_binary64");
 
     private static string ReadMigration()

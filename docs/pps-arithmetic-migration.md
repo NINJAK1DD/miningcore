@@ -48,7 +48,7 @@ SELECT activate_pps_binary64('bitcoin-pps-lab', '2026-09-21T00:00:00Z');
 The function serializes against credit inserts, rejects a cutoff overlapping
 existing credits, and records one immutable per-pool transition. Repeating the
 same request is harmless; updates, deletes and truncation are rejected.
-The transition table and all three functions belong to the migration administrator
+The transition table and all four functions belong to the migration administrator
 (the session login), on both fresh installs and upgrades. The owner of
 `pps_share_credits` receives SELECT only; the application role cannot activate a
 cutover, mutate the table, or replace its functions. If writers use additional
@@ -90,7 +90,15 @@ writers stopped and reconcile affected evidence before restarting.
 
 Ownership and effective permissions are checked for the credit-table owner and
 the connecting non-superuser role, including inherited and column-level grants.
-The transition table and routines must share an administrator owner. Runtime
+The transition table and routines must share an administrator owner. Grants to
+other named roles are checked too: only members of the administrator role may
+have write privileges or routine execution; explicit named read roles are allowed.
+Activation remains SECURITY INVOKER with a pinned search path: run it as the
+function owner/administrator, never as the runtime role. A BEFORE INSERT guard
+rejects direct inserts by other roles even if INSERT is granted after startup.
+A direct owner insert still acquires the credit-table lock and rejects overlap
+with existing liabilities. Owner DDL and superuser access remain outside this
+enforcement boundary. Runtime
 roles must have SELECT but no write, activation, routine execution or administrator
 membership; PUBLIC must have no table or column privileges, including SELECT,
 and no routine execution grants. Superuser administrative
@@ -113,6 +121,18 @@ The public diagnostic config includes `ppsBinary64Activation` in UTC with at mos
 six fractional digits, so the cutoff can be copied back into configuration. Monitor
 `miningcore_pps_arithmetic_credits_total{pool="bitcoin-pps-lab",version="1"}`
 for newly committed version-1 liabilities; suppressed replays do not increment it.
+
+Malformed cutovers and unsupported versions normally fail startup or validation.
+If a defensive arithmetic exception occurs after a Bitcoin proof is accepted,
+the connection closes through the accepted-proof failure path. The sanitized
+`AssignmentPublicationFailure` diagnostic and Stratum admission
+`publication-failure` metric also cover this terminal path; that label does not
+prove a socket or response queue caused the failure. Correlate the connection ID and sanitized exception type/code with
+startup configuration and schema reconciliation diagnostics. These diagnostics
+do not expose raw exception messages; the original exception still propagates
+through the server error handler. An accepted proof is never reclassified as an
+invalid share or used to ban the miner. A committed PPS credit survives a later
+response or assignment failure. See [Bitcoin response publication](bitcoin-response-publication.md).
 
 For a merged-mining PPS/PPS pair (for example LTC/DOGE), activate **both** exact
 pool IDs and configure both cutoffs identically on every hop. The database stores
@@ -164,8 +184,9 @@ service with Bitcoin Core 28.1 and a dedicated PostgreSQL 14 cluster. The tested
 production source was `e0bedbd94` plus the PUBLIC ACL preflight change.
 Production patch SHA-256: `10b3c8f8438791ca77af6d267027d287525f2724a94191addec3eb73cd69982a`.
 The service was published from that source; unchanged native libraries were
-reused from the existing lab, with their hashes retained. This local service
-exercise is separate from the PostgreSQL 15/16/17/18 schema CI lanes.
+reused from the existing lab, with their hashes retained. This historical service
+exercise used PostgreSQL 14, which is outside the supported PostgreSQL 15/16/17/18
+set and does not establish service acceptance on a supported major.
 
 The administrator activated `bitcoin-pps-v1-lab` at
 `2026-09-20T02:12:21Z` before starting Miningcore as the non-superuser application
@@ -206,3 +227,33 @@ worktree; these ignored artifacts are not part of the distributed package.
 This verifies a fresh version-1 service path at the frozen fee policy; historical
 replay, mixed-version cutover and varying-input behavior remain covered by their
 separate automated tests. It does not establish full CoreDRP Mining conformance.
+
+
+## Supported PostgreSQL service acceptance
+
+On 3 October 2026, the service acceptance was repeated on PostgreSQL 17.11 with
+Bitcoin Core 28.1, after merging `dev` at `008f2e184` and adding the administrator
+insert guard and named-role ACL checks. The actual published Miningcore service
+ran with a non-superuser application login against a new isolated database.
+Source archive SHA-256: `60f54b8f652041c9a4fe9656a840db0fbcd4a6db1fde0e1c75afa2318fb5a28e`.
+The archive and source provenance are retained under `build/round4-194-final/` in the
+local worktree. Native libraries were reused with their hashes retained.
+
+All 40 real Stratum submissions were accepted, producing 40 version-1 credits,
+40 accounting groups, 40 shares and 40 balance changes. The independent verifier
+decoded PostgreSQL binary64 inputs and matched every scale-24 amount exactly.
+Per-share liability and totals equal the September example above. Credited
+liability plus retained remainder equals calculated liability; no payments ran.
+After a clean stop, backup/restore preserved all six ledger table row hashes,
+counts and totals, and the restore reader had no tested write permissions.
+Backup SHA-256: `0ccac992ea295da712539974cc2cee0537c5ed845e9d3d81fe9cd48cea5ef978`.
+The dedicated Bitcoin nodes and PostgreSQL container were stopped afterwards.
+
+The combined Bitcoin/PPS regression also uses a genuine accepted non-block proof,
+the production V1 arithmetic, recorder and PostgreSQL transaction. It commits the
+liability before injecting a subsequent assignment-publication failure, then
+checks one durable V1 credit, one valid share, zero invalid shares, no ban,
+terminal connection closure and successful reconnect. Replaying the accepted
+envelope adds no credit. This case runs in the main CI lane when both real
+Bitcoin and PostgreSQL integration dependencies are supplied; missing dependencies
+are reported as a skipped test.

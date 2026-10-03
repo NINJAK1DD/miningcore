@@ -183,6 +183,22 @@ CREATE TRIGGER trg_pps_arithmetic_transition_immutable BEFORE UPDATE OR DELETE O
 FOR EACH ROW EXECUTE FUNCTION guard_pps_arithmetic_transition();
 CREATE TRIGGER trg_pps_arithmetic_transition_truncate BEFORE TRUNCATE ON pps_arithmetic_transitions
 FOR EACH STATEMENT EXECUTE FUNCTION guard_pps_arithmetic_transition();
+-- Table grants alone must never bypass administrator activation.
+-- Keep direct administrator inserts serialized and checked too.
+CREATE OR REPLACE FUNCTION guard_pps_arithmetic_transition_insert() RETURNS trigger
+LANGUAGE plpgsql AS $$ BEGIN
+    IF current_user<>pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid=TG_RELID)) THEN
+        RAISE EXCEPTION 'PPS cutovers require administrator activation' USING ERRCODE='42501';
+    END IF;
+    LOCK TABLE pps_share_credits IN SHARE ROW EXCLUSIVE MODE;
+    IF EXISTS(SELECT 1 FROM pps_share_credits WHERE poolid=NEW.poolid AND created>=NEW.effectivefrom) THEN
+        RAISE EXCEPTION 'PPS cutover would relabel existing liabilities';
+    END IF;
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS trg_pps_arithmetic_transition_insert ON pps_arithmetic_transitions;
+CREATE TRIGGER trg_pps_arithmetic_transition_insert BEFORE INSERT ON pps_arithmetic_transitions
+FOR EACH ROW EXECUTE FUNCTION guard_pps_arithmetic_transition_insert();
 CREATE OR REPLACE FUNCTION guard_pps_arithmetic_credit() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE cutoff TIMESTAMPTZ; expected SMALLINT;
@@ -225,7 +241,7 @@ DO $$ DECLARE app_role NAME; admin_role NAME := session_user; routine TEXT; BEGI
     REVOKE ALL ON pps_arithmetic_transitions FROM PUBLIC;
     EXECUTE format('REVOKE ALL ON pps_arithmetic_transitions FROM %I', app_role);
     EXECUTE format('GRANT SELECT ON pps_arithmetic_transitions TO %I', app_role);
-    FOREACH routine IN ARRAY ARRAY['guard_pps_arithmetic_transition()', 'guard_pps_arithmetic_credit()',
+    FOREACH routine IN ARRAY ARRAY['guard_pps_arithmetic_transition()', 'guard_pps_arithmetic_transition_insert()', 'guard_pps_arithmetic_credit()',
         'activate_pps_binary64(text,timestamptz)'] LOOP
         EXECUTE format('ALTER FUNCTION %s OWNER TO %I', routine, admin_role);
         EXECUTE format('ALTER FUNCTION %s SET search_path TO pg_catalog, %I, pg_temp', routine, current_schema());

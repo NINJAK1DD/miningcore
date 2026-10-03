@@ -2665,7 +2665,7 @@ public class Program : ProcessStatusBackgroundService
             shareRepo.HasShareAccountingSchemaAsync(con, ct));
         if(!schemaReady)
             throw new PoolStartupException(
-                "PPS and merged-mining pooled payouts require the transactional share-accounting schema. Apply add_share_accounting.sql as the database administrator and verify the zero arithmetic-version default and administrator ownership/SELECT-only application privileges on pps_arithmetic_transitions before enabling them.");
+                "PPS and merged-mining pooled payouts require the transactional share-accounting schema. Apply add_share_accounting.sql as the database administrator and verify the zero arithmetic-version default and administrator ownership, SELECT-only application privileges and no non-administrator write or routine-execution grants on pps_arithmetic_transitions. PUBLIC must have no table or column privileges (including SELECT), or routine execution, before enabling them.");
 
         foreach(var pool in config.Pools.Where(pool => pool.Enabled &&
             pool.PaymentProcessing?.Enabled == true &&

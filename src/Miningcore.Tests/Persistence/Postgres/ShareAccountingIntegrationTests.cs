@@ -693,6 +693,12 @@ public class ShareAccountingIntegrationTests
             await Assert.ThrowsAsync<PostgresException>(() => InsertAsync(repository, connection, premature));
             await Assert.ThrowsAsync<PostgresException>(() => connection.ExecuteAsync(
                 "SELECT activate_pps_binary64('ltc',@cutoff)", new { cutoff = old.Created.AddSeconds(-1) }));
+            // Direct owner insertion must enforce the same overlap rule as activation.
+            var directOverlap = await Assert.ThrowsAsync<PostgresException>(() => connection.ExecuteAsync(
+                "INSERT INTO pps_arithmetic_transitions VALUES ('ltc', @overlap, 1)",
+                new { overlap = old.Created.AddSeconds(-1) }));
+            Assert.Contains("would relabel existing liabilities", directOverlap.MessageText);
+            Assert.Equal(0, await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM pps_arithmetic_transitions"));
             await connection.ExecuteAsync("SELECT activate_pps_binary64('ltc',@cutoff)", new { cutoff });
             await connection.ExecuteAsync("SELECT activate_pps_binary64('ltc',@cutoff)", new { cutoff });
             Assert.Equal(ShareAccountingInsertResult.AlreadyCommitted, await InsertAsync(repository, connection, old));

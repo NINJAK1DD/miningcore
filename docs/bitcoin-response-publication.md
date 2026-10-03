@@ -229,6 +229,11 @@ and direct-SOLO modes. It checks accepted accounting, version-rolling negotiatio
 immutable direct payout binding, terminal VarDiff failure, and a replacement
 connection's fresh extranonce and complete assignment. Existing block submission,
 confirmation and PostgreSQL suites cover the separate durable candidate paths.
+The PPS V1 case commits a real accepted proof through the production recorder
+into PostgreSQL before forcing a later assignment failure. It checks one durable
+liability, replay suppression, one valid share, no invalid-share ban, terminal
+closure and successful reconnect. See [PPS arithmetic migration](pps-arithmetic-migration.md)
+for supported PostgreSQL service acceptance and the shared terminal diagnostic label.
 
 Run the Bitcoin/Stratum suites, and opt into the canonical Bitcoin Core and
 PostgreSQL direct-SOLO integration suites using the isolated

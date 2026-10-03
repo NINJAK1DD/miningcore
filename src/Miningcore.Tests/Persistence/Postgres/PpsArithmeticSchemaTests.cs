@@ -46,6 +46,10 @@ public class PpsArithmeticSchemaTests
                 "ALTER TABLE pps_arithmetic_transitions DISABLE TRIGGER trg_pps_arithmetic_transition_immutable",
                 "DROP TRIGGER trg_pps_arithmetic_transition_immutable ON pps_arithmetic_transitions",
                 "CREATE OR REPLACE FUNCTION guard_pps_arithmetic_transition() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$",
+                "ALTER TABLE pps_arithmetic_transitions DISABLE TRIGGER trg_pps_arithmetic_transition_insert",
+                "DROP TRIGGER trg_pps_arithmetic_transition_insert ON pps_arithmetic_transitions",
+                "CREATE OR REPLACE FUNCTION guard_pps_arithmetic_transition_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$",
+                "ALTER FUNCTION activate_pps_binary64(text,timestamptz) SECURITY DEFINER",
                 "ALTER TABLE pps_arithmetic_transitions DISABLE TRIGGER trg_pps_arithmetic_transition_truncate",
                 "DROP TRIGGER trg_pps_arithmetic_transition_truncate ON pps_arithmetic_transitions",
                 "ALTER TABLE pps_arithmetic_transitions DROP CONSTRAINT pps_arithmetic_transitions_pkey",
@@ -171,9 +175,11 @@ public class PpsArithmeticSchemaTests
         {
             var schema = "pps_roles_" + Guid.NewGuid().ToString("N");
             var app = "pps_app_" + Guid.NewGuid().ToString("N");
+            var thirdParty = "pps_untrusted_" + Guid.NewGuid().ToString("N");
             try
             {
                 await db.ExecuteAsync($"CREATE ROLE {app}; CREATE SCHEMA {schema}; GRANT ALL ON SCHEMA {schema} TO {app}; SET search_path TO {schema}, public; SET ROLE {app}");
+                await db.ExecuteAsync($"RESET ROLE; CREATE ROLE {thirdParty}; GRANT USAGE ON SCHEMA {schema} TO {thirdParty}; SET ROLE {app}");
                 var fresh = Script("createdb.sql");
                 await db.ExecuteAsync(upgrade ? fresh.Split("-- BEGIN GENERATED PPS ARITHMETIC MIGRATION")[0] : fresh);
                 await db.ExecuteAsync("RESET ROLE");
@@ -197,6 +203,10 @@ public class PpsArithmeticSchemaTests
                     $"ALTER FUNCTION guard_pps_arithmetic_transition() OWNER TO {app}",
                     $"ALTER FUNCTION activate_pps_binary64(text,timestamptz) OWNER TO {app}",
                     $"REVOKE SELECT ON pps_arithmetic_transitions FROM {app}",
+                    $"GRANT INSERT ON pps_arithmetic_transitions TO {thirdParty}",
+                    $"GRANT UPDATE(effectivefrom) ON pps_arithmetic_transitions TO {thirdParty}",
+                    $"GRANT EXECUTE ON FUNCTION activate_pps_binary64(text,timestamptz) TO {thirdParty}",
+                    $"GRANT EXECUTE ON FUNCTION guard_pps_arithmetic_transition_insert() TO {thirdParty}",
                     $"GRANT INSERT ON pps_arithmetic_transitions TO {app}",
                     $"GRANT UPDATE ON pps_arithmetic_transitions TO {app}",
                     $"GRANT DELETE ON pps_arithmetic_transitions TO {app}",
@@ -219,6 +229,14 @@ public class PpsArithmeticSchemaTests
                     Assert.False(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None), damage);
                     await tx.RollbackAsync();
                 }
+                // A grant introduced after startup must not bypass the activation lock.
+                await db.ExecuteAsync($"GRANT INSERT ON pps_arithmetic_transitions TO {thirdParty}; SET ROLE {thirdParty}");
+                var directInsert = await Assert.ThrowsAsync<PostgresException>(() =>
+                    db.ExecuteAsync("INSERT INTO pps_arithmetic_transitions VALUES ('bypass', @Cutoff, 1)", new { Cutoff }));
+                Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, directInsert.SqlState);
+                Assert.Contains("administrator activation", directInsert.MessageText);
+                await db.ExecuteAsync($"RESET ROLE; REVOKE INSERT ON pps_arithmetic_transitions FROM {thirdParty}");
+                Assert.Equal(0, await db.ExecuteScalarAsync<int>("SELECT count(*) FROM pps_arithmetic_transitions WHERE poolid='bypass'"));
                 // Reapplying the administrator migration must remove both table
                 // and column PUBLIC read drift while preserving explicit app access.
                 await db.ExecuteAsync("GRANT SELECT ON pps_arithmetic_transitions TO PUBLIC; GRANT SELECT(poolid,effectivefrom,version) ON pps_arithmetic_transitions TO PUBLIC");
@@ -278,7 +296,7 @@ public class PpsArithmeticSchemaTests
             }
             finally
             {
-                await db.ExecuteAsync($"RESET ROLE; DROP TABLE IF EXISTS pg_temp.pps_arithmetic_transitions; SET search_path TO public; DROP SCHEMA IF EXISTS {schema} CASCADE; DROP ROLE {app}");
+                await db.ExecuteAsync($"RESET ROLE; DROP TABLE IF EXISTS pg_temp.pps_arithmetic_transitions; SET search_path TO public; DROP SCHEMA IF EXISTS {schema} CASCADE; DROP ROLE {app}; DROP ROLE {thirdParty}");
             }
         }
     }

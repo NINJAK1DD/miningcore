@@ -147,6 +147,7 @@ public class ShareRepository : IShareRepository
                 SELECT 1 FROM (VALUES
                     ('pps_share_credits', 'trg_pps_arithmetic_credit', 7, 'guard_pps_arithmetic_credit', @creditGuard),
                     ('pps_arithmetic_transitions', 'trg_pps_arithmetic_transition_immutable', 27, 'guard_pps_arithmetic_transition', @transitionGuard),
+                    ('pps_arithmetic_transitions', 'trg_pps_arithmetic_transition_insert', 7, 'guard_pps_arithmetic_transition_insert', @transitionInsertGuard),
                     ('pps_arithmetic_transitions', 'trg_pps_arithmetic_transition_truncate', 34, 'guard_pps_arithmetic_transition', @transitionGuard)
                 ) required(relation, trigger_name, trigger_type, function_name, body)
                 WHERE NOT EXISTS (
@@ -348,6 +349,7 @@ public class ShareRepository : IShareRepository
             {
                 creditGuard = PpsArithmeticSchemaContract.CreditGuard,
                 transitionGuard = PpsArithmeticSchemaContract.TransitionGuard,
+                transitionInsertGuard = PpsArithmeticSchemaContract.TransitionInsertGuard,
                 activationBody = PpsArithmeticSchemaContract.Activation,
             }, cancellationToken: ct));
         if(!structureReady || !await HasPpsArithmeticPrivilegesAsync(con, ct))
@@ -374,6 +376,7 @@ public class ShareRepository : IShareRepository
                 SELECT oid, proowner, proacl FROM pg_proc
                 WHERE oid IN (to_regprocedure('guard_pps_arithmetic_credit()'),
                     to_regprocedure('guard_pps_arithmetic_transition()'),
+                    to_regprocedure('guard_pps_arithmetic_transition_insert()'),
                     to_regprocedure('activate_pps_binary64(text,timestamptz)'))
             ), runtime_roles AS (
                 -- Check the table owner even when preflight runs under an administrator.
@@ -386,14 +389,19 @@ public class ShareRepository : IShareRepository
               AND NOT EXISTS (SELECT 1 FROM routines r CROSS JOIN boundary b WHERE r.proowner<>b.relowner)
               AND NOT EXISTS (
                 SELECT 1 FROM boundary b, LATERAL aclexplode(COALESCE(b.relacl,acldefault('r',b.relowner))) acl
-                WHERE acl.grantee=0)
+                WHERE CASE WHEN acl.grantee=0 THEN true
+                    ELSE acl.privilege_type<>'SELECT' AND NOT pg_has_role(acl.grantee,b.relowner,'MEMBER') END)
               AND NOT EXISTS (
                 SELECT 1 FROM boundary b JOIN pg_attribute a ON a.attrelid=b.oid,
                     LATERAL aclexplode(a.attacl) acl
-                WHERE a.attnum>0 AND NOT a.attisdropped AND acl.grantee=0)
+                WHERE a.attnum>0 AND NOT a.attisdropped AND
+                    CASE WHEN acl.grantee=0 THEN true
+                    ELSE acl.privilege_type<>'SELECT' AND NOT pg_has_role(acl.grantee,b.relowner,'MEMBER') END)
               AND NOT EXISTS (
                 SELECT 1 FROM routines r, LATERAL aclexplode(COALESCE(r.proacl,acldefault('f',r.proowner))) acl
-                WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE')
+                WHERE acl.privilege_type='EXECUTE' AND
+                    CASE WHEN acl.grantee=0 THEN true
+                    ELSE NOT pg_has_role(acl.grantee,r.proowner,'MEMBER') END)
               AND NOT EXISTS (
                 SELECT 1 FROM runtime_roles role CROSS JOIN boundary b
                 WHERE pg_has_role(role.oid,b.relowner,'MEMBER')

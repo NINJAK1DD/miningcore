@@ -11,6 +11,9 @@ public class PpsArithmeticSchemaContractTests
     {
         Assert.Contains("NEW.arithmeticversion<>expected", PpsArithmeticSchemaContract.CreditGuard);
         Assert.Contains("RAISE EXCEPTION", PpsArithmeticSchemaContract.TransitionGuard);
+        Assert.Contains("current_user<>pg_get_userbyid", PpsArithmeticSchemaContract.TransitionInsertGuard);
+        Assert.Contains("LOCK TABLE pps_share_credits", PpsArithmeticSchemaContract.TransitionInsertGuard);
+        Assert.Contains("created>=NEW.effectivefrom", PpsArithmeticSchemaContract.TransitionInsertGuard);
         Assert.Contains("LOCK TABLE pps_share_credits", PpsArithmeticSchemaContract.Activation);
         Assert.Contains("INSERT INTO pps_arithmetic_transitions", PpsArithmeticSchemaContract.Activation);
     }

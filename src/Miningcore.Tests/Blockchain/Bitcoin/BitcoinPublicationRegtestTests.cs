@@ -1,6 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
+using System.Threading;
+using Dapper;
+using Miningcore.Persistence.Postgres;
+using Miningcore.Persistence.Postgres.Repositories;
+using IBlockRepository = Miningcore.Persistence.Repositories.IBlockRepository;
+using Miningcore.Notifications.Messages;
+using Npgsql;
 using System.Threading.Tasks;
 using Autofac;
 using Miningcore.Blockchain;
@@ -31,7 +39,10 @@ public class BitcoinPublicationRegtestTests : TestBase
     [BitcoinCoreIntegrationFact]
     public Task DirectSoloProof_KeepsImmutableCreditAfterPublicationFailureAndReconnect() => ExerciseAsync(true);
 
-    private async Task ExerciseAsync(bool direct)
+    [BitcoinCoreIntegrationFact(requiresPostgres: true)]
+    public Task PpsV1Proof_KeepsOneDurableCreditAfterPublicationFailureAndReconnect() => ExerciseAsync(false, pps: true);
+
+    private async Task ExerciseAsync(bool direct, bool pps = false)
     {
         await using var node = await BitcoinPayoutHandlerRegtestTests.BitcoinCoreRegtestNode.StartAsync(walletBroadcast: true);
         var template = (await node.RootRpcAsync("getblocktemplate", new JObject { ["rules"] = new JArray("segwit") }))
@@ -43,8 +54,10 @@ public class BitcoinPublicationRegtestTests : TestBase
         {
             Id = "publication-regtest-" + Guid.NewGuid().ToString("N"), Coin = "bitcoin", Template = coin,
             Address = poolAddress.ToString(), Daemons = new[] { node.WalletEndpoint },
-            PaymentProcessing = new PoolPaymentProcessingConfig { Enabled = true, PayoutScheme = PayoutScheme.SOLO },
+            PaymentProcessing = new PoolPaymentProcessingConfig { Enabled = true, PayoutScheme = pps ? PayoutScheme.PPS : PayoutScheme.SOLO,
+                PpsBinary64Activation = pps ? DateTime.UtcNow.Date : null },
             Extra = new Dictionary<string, object> { ["soloCoinbasePayout"] = direct },
+            Banning = new PoolShareBasedBanningConfig { Enabled = true, CheckThreshold = 0, InvalidPercent = 1 },
         };
         var clock = Substitute.For<IMasterClock>();
         clock.Now.Returns(DateTime.UtcNow);
@@ -52,6 +65,7 @@ public class BitcoinPublicationRegtestTests : TestBase
         var manager = new TemplateManager(container, clock, bus);
         manager.Configure(config, new ClusterConfig());
         manager.SetTemplate(template, poolAddress);
+        await using var ledger = pps ? await PpsLedger.CreateAsync(config, bus) : null;
 
         // Keep the share target easier than regtest's block target so a genuine
         // accepted non-block proof can exercise ordinary share accounting.
@@ -94,6 +108,7 @@ public class BitcoinPublicationRegtestTests : TestBase
         context.VarDiff = new VarDiffContext { Config = options,
             LastTs = clock.Now.ToUnixSeconds() - 1, LastRetarget = clock.Now.ToUnixSeconds() - 10 };
         wire.Canonical.BeforeCreateJob = () => throw new StratumException(StratumError.JobNotFound, "injected post-acceptance publication failure");
+        var banManager = wire.EnableInvalidShareBanning();
         var responses = wire.Connection.ResponseSequence;
         var submission = JsonConvert.SerializeObject(new { id = 90, method = "mining.submit",
             @params = new[] { miner + ".worker", job.JobId, extraNonce2, time, nonce, "00000000" } });
@@ -103,6 +118,19 @@ public class BitcoinPublicationRegtestTests : TestBase
         Assert.Equal(1, context.Stats.ValidShares);
         Assert.Equal(0, context.Stats.InvalidShares);
         Assert.Empty(context.validJobs);
+        banManager.DidNotReceiveWithAnyArgs().Ban(default, default);
+        if(pps)
+        {
+            Assert.NotNull(ledger.Accepted);
+            Assert.Equal(1, ledger.Accepted.PpsArithmeticVersion);
+            Assert.NotNull(ledger.Accepted.PpsCalculatedAmount);
+            await ledger.AssertSingleCreditAsync();
+            // Recovery/replay of the same accepted envelope must not add another liability.
+            await ledger.Recorder.PersistSharesAsync(new[] { ledger.Accepted });
+            await ledger.AssertSingleCreditAsync();
+            bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
+                x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());
+        }
         bus.Received(1).SendMessage(Arg.Is<Share>(x => x.Miner == miner.ToString() && !x.IsBlockCandidate), Arg.Any<string>());
         if(direct)
         {
@@ -133,6 +161,78 @@ public class BitcoinPublicationRegtestTests : TestBase
         Assert.True((await wire.ReadAsync())["result"].Value<bool>());
         if(direct)
             Assert.Equal("mining.notify", (await wire.ReadAsync())["method"].Value<string>());
+    }
+
+    private sealed class PpsLedger : IAsyncDisposable
+    {
+        private readonly NpgsqlConnection database;
+        private readonly string schema;
+        internal ShareRecorder Recorder { get; private set; }
+        internal Share Accepted { get; private set; }
+
+        private PpsLedger(NpgsqlConnection database, string schema)
+        {
+            this.database = database;
+            this.schema = schema;
+        }
+
+        internal static async Task<PpsLedger> CreateAsync(PoolConfig config, IMessageBus bus)
+        {
+            var schema = "pps_publication_" + Guid.NewGuid().ToString("N");
+            var settings = new NpgsqlConnectionStringBuilder(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"))
+                { SearchPath = schema + ", public" };
+            var db = new NpgsqlConnection(settings.ConnectionString);
+            await db.OpenAsync();
+            var ledger = new PpsLedger(db, schema);
+            try
+            {
+                await db.ExecuteAsync($"CREATE SCHEMA {schema}");
+                var script = await File.ReadAllTextAsync(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+                    "../../../../Miningcore/Persistence/Postgres/Scripts/createdb.sql")));
+                await db.ExecuteAsync(script.Replace("\\set ON_ERROR_STOP on", "").Replace("SET ROLE miningcore;", ""));
+                await db.ExecuteAsync("SELECT activate_pps_binary64(@Id,@cutoff)",
+                    new { config.Id, cutoff = config.PaymentProcessing.PpsBinary64Activation });
+                var repository = new ShareRepository(AutoMapperFactory.CreateMapper());
+                Assert.True(await repository.HasShareAccountingSchemaAsync(db, CancellationToken.None));
+                ledger.Recorder = new ShareRecorder(new PgConnectionFactory(settings.ConnectionString),
+                    AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(), repository,
+                    Substitute.For<IBlockRepository>(), new ClusterConfig { Pools = new[] { config },
+                        ShareRecoveryFile = Path.Combine(Path.GetTempPath(), schema, "recovery.txt") }, bus);
+                bus.When(x => x.SendMessage(Arg.Any<Share>(), Arg.Any<string>())).Do(call =>
+                {
+                    ledger.Accepted = call.Arg<Share>();
+                    // Commit through the production recorder before the pool publishes its response.
+                    ledger.Recorder.PersistSharesAsync(new[] { ledger.Accepted }).GetAwaiter().GetResult();
+                });
+                return ledger;
+            }
+            catch
+            {
+                await ledger.DisposeAsync();
+                throw;
+            }
+        }
+
+        internal async Task AssertSingleCreditAsync()
+        {
+            Assert.Equal(1, await database.ExecuteScalarAsync<int>("SELECT count(*) FROM shares"));
+            Assert.Equal(1, await database.ExecuteScalarAsync<int>("SELECT count(*) FROM share_accounting_groups"));
+            Assert.Equal(1, await database.ExecuteScalarAsync<int>("SELECT count(*) FROM balance_changes"));
+            Assert.Equal(1, await database.ExecuteScalarAsync<int>("SELECT count(*) FROM pps_share_credits WHERE arithmeticversion=1"));
+            Assert.Equal(Accepted.PpsCalculatedAmount.Value, await database.ExecuteScalarAsync<decimal>(
+                "SELECT calculatedamount FROM pps_share_credits"));
+            Assert.True(await database.ExecuteScalarAsync<bool>(@"SELECT
+                (SELECT sum(calculatedamount) FROM pps_share_credits) =
+                (SELECT sum(creditedamount) FROM pps_share_credits) +
+                (SELECT coalesce(sum(amount),0) FROM pps_credit_remainders)"));
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            Recorder?.Dispose();
+            await database.ExecuteAsync($"SET search_path TO public; DROP SCHEMA IF EXISTS {schema} CASCADE");
+            await database.DisposeAsync();
+        }
     }
 
     private sealed class TemplateManager : BitcoinJobManager
