@@ -75,8 +75,11 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
         Assert.Equal(1, wire.JobsCreated);
         Assert.Equal(extraNonce, context.ExtraNonce1);
         Assert.Equal(difficulty, context.Difficulty);
-        Assert.Equal(jobs, context.validJobs.ToArray());
+        Assert.Empty(context.validJobs);
+        Assert.Throws<BitcoinJobRegistryClosedException>(() => context.AddJob(jobs[0], 4));
         Assert.Single(target.Logs.Where(x => x.Contains("DuplicateSubscription")));
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
+            x.Category == TelemetryCategory.StratumAdmission && x.Info == "duplicate-subscribe-warning"), Arg.Any<string>());
         bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
             x.Category == TelemetryCategory.StratumAdmission && x.Info == "duplicate-subscribe"), Arg.Any<string>());
     }
@@ -225,7 +228,8 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
         Assert.Equal(extraNonce, wire.Connection.ContextAs<BitcoinWorkerContext>().ExtraNonce1);
         Assert.Equal(1, wire.JobsCreated);
         bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
-            x.Category == TelemetryCategory.StratumAdmission), Arg.Any<string>());
+            x.Category == TelemetryCategory.StratumAdmission &&
+            (x.Info == "difficulty-refused" || x.Info == "difficulty-disconnect")), Arg.Any<string>());
     }
 
     [Theory]

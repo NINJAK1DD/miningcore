@@ -427,7 +427,7 @@ Enforcement emits one Info-level structured `DifficultyBudgetDisconnect`,
 `DuplicateSubscription` or `AssignmentPublicationFailure` event per closed connection,
 with the server-generated connection ID and no request/password/address payload. Ordinary refusals produce no dedicated logs.
 `miningcore_stratum_admission_total{pool,outcome}` counts `difficulty-refused`,
-`difficulty-disconnect`, `duplicate-subscribe` and `publication-failure`; outcomes are allowlisted and there are
+`difficulty-disconnect`, `duplicate-subscribe-warning`, `duplicate-subscribe` and `publication-failure`; outcomes are allowlisted and there are
 no per-miner, connection-ID or IP labels. Use these counters to distinguish renegotiation
 refusals from duplicate-subscription and work-publication disconnects. Each terminal
 publication failure is counted once, including failures following an accepted share.

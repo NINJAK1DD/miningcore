@@ -55,6 +55,7 @@ public class BitcoinDuplicateSubscriptionTests : TestBase
         {
             try { job.Evaluate(proofWorker, i); }
             catch(StratumException ex) when(ex.Code == StratumError.LowDifficultyShare) { continue; }
+            // Retained only to reproduce the extranonce mismatch on the pre-fix baseline.
             if(context.ExtraNonce1 != original)
             {
                 try { job.Evaluate(wire.Connection, i); continue; }
@@ -126,7 +127,171 @@ public class BitcoinDuplicateSubscriptionTests : TestBase
         await wire.DispatchBufferedAsync("mining.subscribe", "buffered");
         Assert.Equal(extraNonce, context.ExtraNonce1);
         Assert.Equal(1, wire.JobsCreated);
+        Assert.Empty(context.validJobs);
+        Assert.Throws<BitcoinJobRegistryClosedException>(() => context.AddJob(jobs[0], 4));
+        await wire.AnnounceJobAsync(jobs[0].GetJobParams(false));
+        Assert.Empty(context.validJobs);
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "duplicate-subscribe-warning"), Arg.Any<string>());
         bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "duplicate-subscribe"), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task NiceHashDuplicates_BypassOverrideAndLookup_WithoutChangingAssignment()
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: true);
+        var lookups = 0;
+        wire.Canonical.NicehashLookup = _ => { lookups++; return Task.FromResult<double?>(null); };
+        await Subscribe(wire);
+        Assert.Equal(1, lookups);
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var extraNonce = context.ExtraNonce1;
+        var job = Assert.Single(context.validJobs);
+        wire.Canonical.BeforeSubscribe = () => throw new InvalidOperationException("Duplicate reached subscription override");
+        wire.Canonical.NicehashLookup = _ => throw new InvalidOperationException("Duplicate reached NiceHash lookup");
+        var warning = await wire.RequestAsync("mining.subscribe", "NiceHash/1.0", "resume-id");
+        Assert.Equal((int) StratumError.Other, warning["error"]["code"].Value<int>());
+        await wire.SendRequestAsync("mining.extranonce.subscribe");
+        Assert.True((await wire.ReadAsync())["result"].Value<bool>());
+        Assert.Equal(extraNonce, context.ExtraNonce1);
+        Assert.Same(job, Assert.Single(context.validJobs));
+        Assert.Equal("test/miner", context.UserAgent);
+        Assert.Equal(1, wire.JobsCreated);
+        Assert.Equal(1, lookups);
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "duplicate-subscribe-warning"), Arg.Any<string>());
+        bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "duplicate-subscribe"), Arg.Any<string>());
+        await wire.SendRequestAsync("mining.subscribe", "NiceHash/1.0");
+        await wire.AssertNoMoreMessagesAsync();
+        Assert.False(wire.DispatchError is InvalidOperationException);
+        Assert.Empty(context.validJobs);
+    }
+
+    [Fact]
+    public async Task MergedMiningDispatcher_PreservesOutstandingProof_AndClosesRegistryOnRepeat()
+    {
+        var (config, manager, clock, bus) = Fixture("litecoin");
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            difficulty: 1e-7, merged: true);
+        await Subscribe(wire);
+        var context = Assert.IsType<Miningcore.Blockchain.Bitcoin.MergedMining.MergedMiningBitcoinWorkerContext>(wire.Connection.Context);
+        var job = Assert.IsType<ProofJob>(Assert.Single(context.validJobs));
+        var nonce = FindProof(job, wire.Connection);
+        var extraNonce = context.ExtraNonce1;
+        Assert.True((await wire.RequestAsync("mining.authorize", "test.worker", ""))["result"].Value<bool>());
+        Assert.Equal((int) StratumError.Other,
+            (await wire.RequestAsync("mining.subscribe", "NiceHash/1.0"))["error"]["code"].Value<int>());
+        var accepted = await wire.RequestAsync("mining.submit", "test.worker", job.JobId,
+            "00000000000000", job.BlockTemplate.CurTime.ToStringHex8(), nonce);
+        Assert.True(accepted["result"].Value<bool>(), accepted.ToString());
+        Assert.Equal(extraNonce, context.ExtraNonce1);
+        Assert.Equal(1, context.Stats.ValidShares);
+        Assert.Equal(0, context.Stats.InvalidShares);
+        await wire.SendRequestAsync("mining.subscribe", "repeat");
+        await wire.AssertNoMoreMessagesAsync();
+        Assert.Empty(context.validJobs);
+        Assert.Throws<BitcoinJobRegistryClosedException>(() => context.AddJob(job, 4));
+        Assert.Equal(1, wire.JobsCreated);
+    }
+
+    [Fact]
+    public async Task TerminalDuplicate_ClosesRegistryDespiteThrowingObservers()
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: true);
+        await Subscribe(wire);
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var job = Assert.Single(context.validJobs);
+        bus.When(x => x.SendMessage(Arg.Is<TelemetryEvent>(e => e.Category == TelemetryCategory.StratumAdmission),
+            Arg.Any<string>())).Do(_ => throw new InvalidOperationException("Telemetry failure"));
+        var logger = Substitute.For<NLog.ILogger>();
+        logger.When(x => x.Log(Arg.Any<NLog.LogLevel>(), Arg.Any<string>())).Do(_ => throw new InvalidOperationException("Logger failure"));
+        wire.SetLogger(logger);
+        Assert.Equal((int) StratumError.Other,
+            (await wire.RequestAsync("mining.subscribe", "duplicate"))["error"]["code"].Value<int>());
+        Assert.Same(job, Assert.Single(context.validJobs));
+        await wire.SendRequestAsync("mining.subscribe", "repeat");
+        await wire.AssertNoMoreMessagesAsync();
+        await wire.DispatchBufferedAsync("mining.subscribe", "buffered");
+        Assert.False(wire.DispatchError is InvalidOperationException);
+        Assert.True(wire.Connection.IsDisconnectRequested);
+        Assert.Empty(context.validJobs);
+        Assert.Throws<BitcoinJobRegistryClosedException>(() => context.AddJob(job, 4));
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "duplicate-subscribe-warning"), Arg.Any<string>());
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "duplicate-subscribe"), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task TerminalDuplicate_PreventsInsertionByAnAlreadyRunningBroadcast()
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: true);
+        await Subscribe(wire);
+        Assert.True((await wire.RequestAsync("mining.authorize", "test.worker", ""))["result"].Value<bool>());
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var job = Assert.Single(context.validJobs);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        wire.Canonical.BeforeCreateJob = () =>
+        {
+            entered.TrySetResult();
+            release.Task.WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
+        };
+        var broadcast = Task.Run(() => wire.AnnounceJobAsync(job.GetJobParams(false)));
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal((int) StratumError.Other,
+                (await wire.RequestAsync("mining.subscribe", "duplicate"))["error"]["code"].Value<int>());
+            await wire.SendRequestAsync("mining.subscribe", "repeat");
+            await wire.AssertNoMoreMessagesAsync();
+            Assert.Empty(context.validJobs);
+        }
+        finally { release.TrySetResult(); }
+        await broadcast.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Empty(context.validJobs);
+        Assert.Throws<BitcoinJobRegistryClosedException>(() => context.AddJob(job, 4));
+        Assert.Equal(1, wire.JobsCreated);
+        bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "publication-failure"), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task OutstandingJob_UsesLatestBip310Mask_AfterConfigureAndDuplicateSubscribe()
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: true, difficulty: 1e-7);
+        await ConfigureMask(wire, "00006000");
+        await Subscribe(wire);
+        Assert.True((await wire.RequestAsync("mining.authorize", "test.worker", ""))["result"].Value<bool>());
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var job = Assert.IsType<ProofJob>(Assert.Single(context.validJobs));
+        var extraNonce = context.ExtraNonce1;
+        var oldNonce = FindProof(job, wire.Connection, 0x00004000);
+        await ConfigureMask(wire, "00002000");
+        Assert.Equal((int) StratumError.Other,
+            (await wire.RequestAsync("mining.subscribe", "duplicate"))["error"]["code"].Value<int>());
+        var rejected = await wire.RequestAsync("mining.submit", "test.worker", job.JobId,
+            "00000000000000", job.BlockTemplate.CurTime.ToStringHex8(), oldNonce, "00004000");
+        Assert.Contains("rolling-version mask violation", rejected["error"]["message"].Value<string>());
+        var nonce = FindProof(job, wire.Connection, 0x00002000);
+        var accepted = await wire.RequestAsync("mining.submit", "test.worker", job.JobId,
+            "00000000000000", job.BlockTemplate.CurTime.ToStringHex8(), nonce, "00002000");
+        Assert.True(accepted["result"].Value<bool>(), accepted.ToString());
+        Assert.Equal(0x00002000u, context.VersionRollingMask);
+        Assert.Same(job, Assert.Single(context.validJobs));
+        Assert.Equal(extraNonce, context.ExtraNonce1);
+        Assert.Equal(1, wire.JobsCreated);
+        Assert.Equal(1, context.Stats.ValidShares);
+        Assert.Equal(1, context.Stats.InvalidShares);
+    }
+
+    private static async Task ConfigureMask(BitcoinBlake2bWireSession wire, string mask)
+    {
+        await wire.SendRequestAsync("mining.configure", new[] { "version-rolling" },
+            new Dictionary<string, object> { ["version-rolling.mask"] = mask });
+        var result = (await wire.ReadAsync())["result"];
+        Assert.True(result["version-rolling"].Value<bool>());
+        Assert.Equal(mask, result["version-rolling.mask"].Value<string>());
     }
 
     [Theory]
@@ -234,13 +399,13 @@ public class BitcoinDuplicateSubscriptionTests : TestBase
         bus.Received(1).SendMessage(Arg.Any<Share>(), Arg.Any<string>());
     }
 
-    private static string FindProof(ProofJob job, StratumConnection worker)
+    private static string FindProof(ProofJob job, StratumConnection worker, uint? versionBits = null)
     {
         for(uint i = 0; i < 100_000; i++)
         {
             try
             {
-                var share = job.Evaluate(worker, i);
+                var share = job.Evaluate(worker, i, versionBits);
                 if(!share.IsBlockCandidate)
                     return i.ToStringHex8();
             }
@@ -264,18 +429,22 @@ public class BitcoinDuplicateSubscriptionTests : TestBase
             manager.Initialize(template);
             await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
                 canonical: true, difficulty: 1);
+            await ConfigureMask(wire, "00006000");
             var address = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
             Assert.True((await wire.RequestAsync("mining.authorize", address + ".worker", ""))["result"].Value<bool>());
             await Subscribe(wire);
             var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
             var original = context.ExtraNonce1;
             var job = Assert.IsType<ProofJob>(Assert.Single(context.validJobs));
+            // BIP310 applies the latest mask even to an already issued job.
+            await ConfigureMask(wire, "00002000");
+            const uint versionBits = 0x00002000;
             string nonce = null;
             for(uint i = 0; i < 100_000; i++)
             {
                 try
                 {
-                    if(job.Evaluate(wire.Connection, i).IsBlockCandidate)
+                    if(job.Evaluate(wire.Connection, i, versionBits).IsBlockCandidate)
                     {
                         nonce = i.ToStringHex8();
                         break;
@@ -288,11 +457,12 @@ public class BitcoinDuplicateSubscriptionTests : TestBase
             await wire.SendRequestAsync("mining.subscribe", "proxy/retry");
             Assert.Equal((int) StratumError.Other, (await wire.ReadAsync())["error"]["code"].Value<int>());
             var response = await wire.RequestAsync("mining.submit", address + ".worker", job.JobId,
-                "00000000000000", template.CurTime.ToStringHex8(), nonce);
+                "00000000000000", template.CurTime.ToStringHex8(), nonce, versionBits.ToStringHex8());
             Assert.True(response["result"].Value<bool>(), response.ToString());
             Assert.Equal(original, context.ExtraNonce1);
             Assert.Equal(template.Height, (await node.RootRpcAsync("getblockcount")).Value<uint>());
             var accepted = await node.RootRpcAsync("getblock", (await node.RootRpcAsync("getbestblockhash")).Value<string>(), 2);
+            Assert.Equal((template.Version & ~versionBits) | versionBits, accepted["version"].Value<uint>());
             var coinbase = accepted["tx"][0];
             Assert.Equal(job.CoinbaseId(original), coinbase["txid"].Value<string>());
             var expectedDestination = direct ? address : BitcoinAddress.Create(config.Address, Network.RegTest);
@@ -342,8 +512,8 @@ public class BitcoinDuplicateSubscriptionTests : TestBase
 
     private sealed class ProofJob : BitcoinJob
     {
-        internal Share Evaluate(StratumConnection worker, uint nonce) =>
-            ProcessShareInternal(worker, "00000000000000", BlockTemplate.CurTime, nonce, null).Share;
+        internal Share Evaluate(StratumConnection worker, uint nonce, uint? versionBits = null) =>
+            ProcessShareInternal(worker, "00000000000000", BlockTemplate.CurTime, nonce, versionBits).Share;
         internal string CoinbaseId(string extraNonce) => NBitcoin.Transaction.Parse(
             SerializeCoinbase(extraNonce, "00000000000000").ToHexString(), Network.RegTest).GetHash().ToString();
     }

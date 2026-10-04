@@ -392,12 +392,9 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         var context = connection.ContextAs<BitcoinWorkerContext>();
         if(request.Value.Method == BitcoinStratumMethods.Subscribe && context.IsSubscribed)
         {
-            budget ??= difficultyBudgets.GetValue(connection, createDifficultyBudget);
-            if(budget.TryWarnDuplicateSubscribe())
-                await connection.RespondErrorAsync(StratumError.Other,
-                    "Already subscribed; another subscription attempt will close this connection", request.Value.Id, false);
-            else
-                CloseAdmission(connection, budget, StratumDiagnostics.Event.DuplicateSubscription, "duplicate-subscribe");
+            // Share the connection's warning and response-failure boundary. This
+            // still precedes BLAKE2b parsing, lookup and assignment admission.
+            await base.OnRequestAsync(connection, request, ct);
             return;
         }
 
@@ -722,14 +719,16 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         return false;
     }
 
+    protected override void CloseDuplicateSubscription(StratumConnection connection) =>
+        CloseAdmission(connection, difficultyBudgets.GetValue(connection, createDifficultyBudget),
+            StratumDiagnostics.Event.DuplicateSubscription, "duplicate-subscribe");
+
     private void CloseAdmission(StratumConnection connection, DifficultyRequestBudget budget,
         StratumDiagnostics.Event reason, string outcome)
     {
         if(!budget.TryClose())
             return;
-        StratumDiagnostics.Write(logger, NLog.LogLevel.Info, reason, connection.ConnectionId);
-        PublishTelemetry(TelemetryCategory.StratumAdmission, outcome, TimeSpan.Zero);
-        Disconnect(connection);
+        CloseStratumAdmission(connection, reason, outcome);
     }
 
     private Task RefuseDifficultyRequestAsync(StratumConnection connection, JsonRpcRequest request, JArray extensions)

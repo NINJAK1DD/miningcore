@@ -1,12 +1,14 @@
 # Bitcoin-family subscription compatibility
 
-Each TCP connection has one successful `mining.subscribe`. A stray duplicate receives
+Each TCP connection served by `BitcoinPool` has one successful `mining.subscribe`.
+A stray duplicate receives
 Stratum error `20` (`Other`) and `result: false`. The connection remains usable and its
 outstanding jobs remain valid. Another duplicate on that connection closes the transport
 without another response, including requests already buffered by the receive loop.
 
-Rejection happens before parameter conversion, extranonce allocation, NiceHash lookup or
-work publication. It preserves extranonce, user agent, difficulty, pending VarDiff,
+Rejection happens in dispatch before subscription overrides, parameter conversion,
+extranonce allocation, NiceHash lookup or work publication. It preserves extranonce,
+user agent, difficulty, pending VarDiff,
 version-rolling mask, authorization and the job registry. A duplicate never sends
 `mining.set_difficulty` or `mining.notify`, and cannot change a direct-SOLO payout binding.
 The warning allowance lasts for the connection; successful authorization, accepted shares,
@@ -26,8 +28,14 @@ traffic and cross-connection churn are separate transport/admission concerns. Se
 | Bitcoin BLAKE2b header-v2 | Existing identical duplicate policy; its separate difficulty budget remains unchanged |
 | Initial subscribe with an optional proxy/session-resume parameter | Accepted as before; a fresh connection receives a fresh unique extranonce |
 | `mining.extranonce.subscribe` | Remains a separate supported extension; it does not repeat `mining.subscribe` or allocate another extranonce |
-| Configure, version rolling, ordinary authorization and server VarDiff | Continue through their existing handlers |
-| Independent coin-family protocols, including Equihash and ProgPoW | Keep their own handlers; this policy applies to the Bitcoin pool dispatchers |
+| Configure, version rolling, ordinary authorization and server VarDiff | Continue through their existing handlers; BIP310 uses the latest negotiated connection mask |
+| `SatoshicashPool`, `NexaPool`, `HandshakePool` | Independent subscribe handlers still accept duplicates and can rotate extranonce; this PR does not fix those paths |
+| `EquihashPool`, `ProgpowPool`, `KaspaPool` and other independent protocols | Separate handlers and work formats; no duplicate-subscription safety claim from this PR |
+
+The related [independent dispatcher audit](https://github.com/NINJAK1DD/miningcore/issues/192)
+covers response publication outside Bitcoin. Its existence does not establish duplicate-subscribe
+safety for these independent handlers. Issue #181's implemented scope is `BitcoinPool`, its
+inherited merged-mining dispatcher, and the existing BLAKE2b policy.
 
 Proxies should subscribe once on each upstream connection and share that upstream assignment
 according to their existing downstream extranonce allocation. Additional downstream miners
@@ -36,8 +44,15 @@ subscribe and authorize again, then use the fresh assignment. The optional resum
 does not promise resumption of jobs from a closed connection.
 
 A client may continue submitting its outstanding work after the first error. Repeated retry
-loops now disconnect deliberately. Commission firmware/proxies that treat every protocol
-error as fatal or repeatedly subscribe on a producing upstream connection before upgrading.
+loops now disconnect deliberately. Test firmware/proxies that treat every protocol error as
+fatal or repeatedly subscribe on an isolated endpoint before upgrading the pool.
+
+The server rejects instead of replaying subscription success to match the existing BLAKE2b
+policy and make the retry visible without suggesting that it assigned new work. One warning
+preserves a producing connection. Clients that treat any subscribe error as fatal may reconnect.
+The second duplicate uses the existing abortive transport close: queued replies, including a
+prior accepted-share acknowledgement, can be lost. A missing acknowledgement does not imply
+proof rejection; already admitted accounting retains its existing ownership and is not replayed.
 
 The policy keeps `mining.extranonce.subscribe` distinct from initial subscription as defined
 by the [NiceHash extension specification](https://github.com/nicehash/Specifications/blob/master/NiceHash_extranonce_subscribe_extension.txt).
@@ -57,51 +72,32 @@ In-flight submissions keep their persistence ownership and receive one acceptanc
 admission completes. A legitimate later reauthorization retains its existing generation and
 submission-gate rules.
 
-Terminal duplicate closure emits one structured `DuplicateSubscription` event and increments
-`miningcore_stratum_admission_total{pool,outcome="duplicate-subscribe"}` once. The first warning
-has no dedicated diagnostic. Logs do not include request parameters, miner payout addresses
-or passwords. Transport closure is latched before optional log/metric observers run.
+The first successfully enqueued warning increments
+`miningcore_stratum_admission_total{pool,outcome="duplicate-subscribe-warning"}` once, with no
+dedicated log line. Terminal duplicate closure emits one structured `DuplicateSubscription`
+event and increments outcome `duplicate-subscribe` once. Both outcomes are fixed allowlisted
+values; neither introduces client or request labels. Observer failures are best effort and
+cannot invalidate the first warning's preserved work or prevent terminal cleanup.
+Logs do not include request parameters, miner payout addresses or passwords. Terminal cleanup
+latches transport closure, permanently closes the job registry and then closes I/O before
+optional log/metric observers run. Concurrent producers cannot reinsert jobs after cleanup.
 
-## Regression and lab evidence for issue #181
+## Extranonce and version-mask identity
 
-The [TCP regression suite](../src/Miningcore.Tests/Blockchain/Bitcoin/BitcoinDuplicateSubscriptionTests.cs)
-uses the production dispatcher, subscription/job creation and share validation over real
-newline-delimited TCP. The ordinary fixtures substitute persistence and background template
-acquisition. They cover original-proof credit, representative Bitcoin/LTC/DOGE/BCH assignments,
-proxy resume parameters, extranonce extension, ASICBoost response shape, malformed duplicates,
-missing/null IDs, independent connections, a pipelined repeated-subscribe burst, direct payout
-binding and delayed persistence admission.
+Duplicate subscribe cannot change extranonce, so an outstanding job and its original session
+assignment remain coherent. Job templates can be shared between workers; a worker-specific
+extranonce must not be attached to the shared template.
 
-Before the fix, the original-proof test failed against `34af171c7`: the first subscription
-assigned `f0000001`, the second assigned `f0000002`, and the coinbase transaction hash changed:
+Version rolling has a different protocol contract. [BIP310](https://github.com/bitcoin/bips/blob/master/bip-0310.mediawiki)
+requires submit validation and header reconstruction to use the **latest connection mask**,
+including on an existing job. Freezing the earlier mask in a job entry would accept bits that
+the current negotiated mask forbids and reconstruct a different header from a conforming miner.
+A successful later `mining.configure` can therefore change the mask; clients must apply the
+returned mask to subsequent submissions. A duplicate `mining.subscribe` never changes it.
+The TCP regression checks both rejection of newly forbidden bits and acceptance of outstanding
+work calculated with the latest mask. See [version-rolling policy](version-rolling.md).
 
-- Original coinbase transaction ID (double SHA-256): `f45e61a56a3db6ff201d6c4aa3eba04c3b4167662524e55b7183544236453021`.
-- Rotated coinbase transaction ID (double SHA-256): `0bc28fd581ad8ddb924efec27fef10f91453387d47fb5d9e7d80141c4882aa46`.
+## Validation
 
-An outstanding proof with nonce `0000003c`, valid at difficulty `1e-7` under the original assignment, was
-rejected with error `23` and reconstructed difficulty `1.0937091875612106E-09`. These are
-recorded observations from a generated fixture, not fixed consensus vectors. The same test
-now accepts the original proof and retains extranonce, job count and accounting identity.
-To repeat the before/after comparison, copy the regression test file into an isolated checkout
-of that baseline and run `OutstandingCanonicalProof_RemainsValidAfterDuplicateSubscribe`.
-
-Validation on 2026-10-04:
-
-- Windows .NET 10: 954 relevant Bitcoin-family/transport cases passed; 17 optional external
-  integration cases were explicitly skipped. The managed-only test build used
-  `-p:BuildOdoCryptWindows=false`; this change does not modify native hashing code.
-- Documented Ubuntu 22.04 WSL compatibility lab: all 21 selected duplicate-subscription,
-  publication-cleanup, direct-SOLO and version-rolling cases passed, with no skips. The lab ran
-  the rebuilt managed test assembly with its existing Linux native libraries, in isolated test
-  output. Active pool services, wallets and database configuration were not replaced.
-- The new daemon-backed TCP case used Bitcoin Core 28.1, with the official Linux archive
-  verified against the repository CI SHA-256 pin
-  SHA-256: `07f77afd326639145b9ba9562912b2ad2ccec47b8a305bd075b4f4cb127b7ed7`. Core accepted
-  both the outstanding custodial block and direct block after the duplicate warning; decoded
-  coinbase IDs and payout scripts matched the original jobs. Persistence is substituted in
-  this fixture; it is not a PostgreSQL ledger test.
-
-Run the suite with `dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --filter
-FullyQualifiedName~BitcoinDuplicateSubscriptionTests`. Set `MININGCORE_TEST_BITCOIND` to a
-real Core binary to enable the daemon case. Existing publication tests now inject failure
-during initial subscription or configure rather than relying on an unsafe second subscription.
+See the [validation record](bitcoin-subscription-validation.md) for the real-TCP baseline
+reproduction, live Bitcoin Core results, regression commands and review dispositions.
