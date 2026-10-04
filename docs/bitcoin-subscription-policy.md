@@ -72,10 +72,11 @@ In-flight submissions keep their persistence ownership and receive one acceptanc
 admission completes. A legitimate later reauthorization retains its existing generation and
 submission-gate rules.
 
-The first successfully enqueued warning increments
+After successfully enqueueing the first warning, the server attempts to emit
 `miningcore_stratum_admission_total{pool,outcome="duplicate-subscribe-warning"}` once, with no
-dedicated log line. Terminal duplicate closure emits one structured `DuplicateSubscription`
-event and increments outcome `duplicate-subscribe` once. Both outcomes are fixed allowlisted
+dedicated log line. Terminal duplicate closure attempts one structured `DuplicateSubscription`
+event and one metric emission with outcome `duplicate-subscribe`. Delivery and counter increments
+depend on successful observer publication. Both outcomes are fixed allowlisted
 values; neither introduces client or request labels. Observer failures are best effort and
 cannot invalidate the first warning's preserved work or prevent terminal cleanup.
 Logs do not include request parameters, miner payout addresses or passwords. Terminal cleanup
@@ -89,11 +90,15 @@ assignment remain coherent. Job templates can be shared between workers; a worke
 extranonce must not be attached to the shared template.
 
 Version rolling has a different protocol contract. [BIP310](https://github.com/bitcoin/bips/blob/master/bip-0310.mediawiki)
-requires submit validation and header reconstruction to use the **latest connection mask**,
-including on an existing job. Freezing the earlier mask in a job entry would accept bits that
-the current negotiated mask forbids and reconstruct a different header from a conforming miner.
-A successful later `mining.configure` can therefore change the mask; clients must apply the
-returned mask to subsequent submissions. A duplicate `mining.subscribe` never changes it.
+defines submit validation and header reconstruction using the last received mask, including
+on an existing job. It recommends `mining.configure` as the first message and leaves repeated
+configuration semantics to each extension; its explicit immediate-effect rule describes
+`mining.set_version_mask` notifications.
+
+Miningcore applies BIP310's last-received-mask rule to a successful repeated configure response.
+The returned mask governs subsequent submissions, including outstanding jobs. Freezing an
+earlier mask in a job entry would accept newly forbidden bits and reconstruct a different header
+from a miner following that rule. A duplicate `mining.subscribe` never changes the mask.
 The TCP regression checks both rejection of newly forbidden bits and acceptance of outstanding
 work calculated with the latest mask. See [version-rolling policy](version-rolling.md).
 

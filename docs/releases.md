@@ -71,8 +71,10 @@ Pools served by `BitcoinPool`, including Bitcoin, Litecoin, Dogecoin, Bitcoin Ca
 and inherited merged-mining Stratum, now preserve the original extranonce and work
 after a duplicate `mining.subscribe`. The first identified duplicate receives error
 `20` with `result: false`; another closes the connection without a reply. BLAKE2b
-keeps the same wire policy. Warning and disconnect counters distinguish single
-retries from repeated attempts.
+keeps the same wire policy. Best-effort `miningcore_stratum_admission_total` counters
+with outcomes `duplicate-subscribe-warning` and `duplicate-subscribe` distinguish
+single retries from repeated attempts when telemetry publication succeeds. Terminal
+BLAKE2b difficulty-budget disconnects also permanently close the worker job registry.
 
 **Upgrade action:** test firmware/proxies on an isolated endpoint before upgrading.
 Subscribe once per upstream connection; reconnect to obtain a new assignment.

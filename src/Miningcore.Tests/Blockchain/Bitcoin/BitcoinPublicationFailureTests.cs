@@ -2,10 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Threading.Tasks.Dataflow;
 using Autofac;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
@@ -258,9 +256,7 @@ public partial class BitcoinPublicationFailureTests : TestBase
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: true);
         wire.Canonical.BeforeSubscribe = () =>
         {
-            var queue = (BufferBlock<object>) typeof(StratumConnection)
-                .GetField("sendQueue", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(wire.Connection);
-            queue.Complete();
+            wire.Connection.CompleteSendQueue();
             throw new StratumException(StratumError.JobNotFound, "pre-response rejection");
         };
         await wire.SendRawAsync(Request("mining.subscribe"));

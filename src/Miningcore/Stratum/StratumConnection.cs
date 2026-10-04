@@ -91,6 +91,10 @@ public class StratumConnection
     internal bool IsDisconnectRequested => Volatile.Read(ref disconnectRequested) != 0;
     internal bool IsTransportStopping => Volatile.Read(ref transportStopping) != 0;
     internal bool TryBeginDisconnect() => Interlocked.Exchange(ref disconnectRequested, 1) == 0;
+    // Stop outbound admission without changing transport cancellation state.
+    // Dispatch owns teardown; publication tests can exercise a declined enqueue
+    // through this same completion boundary without reflecting on queue storage.
+    internal void CompleteSendQueue() => sendQueue.Complete();
     // Cancellation callbacks may not yet have propagated fail-stop to the linked
     // request token. Recognize only cancellation carrying this connection's gate token.
     internal bool IsMiningFailStopCancellation(Exception failure) =>
@@ -255,7 +259,7 @@ public class StratumConnection
                 // cancellation and are then explicitly drained below.
                 Volatile.Write(ref transportStopping, 1);
                 cts.Cancel();
-                sendQueue.Complete();
+                CompleteSendQueue();
 
                 Exception error = null;
                 try

@@ -1,9 +1,7 @@
 using System;
 using System.IO;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Threading.Tasks.Dataflow;
 using Autofac;
 using Microsoft.IO;
 using Miningcore.Blockchain.Bitcoin;
@@ -50,9 +48,7 @@ public class BitcoinPublicationCleanupTests : TestBase
         var job = new BitcoinJob();
         context.AddJob(job, 4);
         connection.SetContext(context);
-        var queue = (BufferBlock<object>) typeof(StratumConnection)
-            .GetField("sendQueue", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(connection);
-        queue.Complete();
+        connection.CompleteSendQueue();
         var request = new JsonRpcRequest { Id = 1, Method = BitcoinStratumMethods.Subscribe };
         await Assert.ThrowsAsync<IOException>(() => pool.Dispatch(connection, request, CancellationToken.None));
         Assert.Equal(1, connection.ResponseSequence);

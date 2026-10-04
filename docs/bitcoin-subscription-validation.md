@@ -49,23 +49,25 @@ during initial subscription or configure rather than relying on an unsafe second
 
 ## Review dispositions
 
-The reviews of PR #206 at `01db4c671` approved the state-transition fix and identified
-documentation improvements and optional hardening. The follow-up addresses them as follows:
+Reviews of PR #206 at `01db4c671` and `5fe5c3e51` approved the state-transition fix
+and identified documentation improvements and optional hardening. The decisions below
+describe the resulting protocol and testing behavior without depending on review-only labels.
 
 | Finding | Disposition |
 | --- | --- |
-| M1 / release note | Added an Unreleased operator entry with upgrade actions and a policy link. |
-| M2 / publication document contradiction | The subscribe row now describes initial subscription and links the duplicate policy. |
-| M3 / independent handler scope | Explicitly name Satoshicash, Nexa, Handshake, Equihash, ProgPoW and Kaspa, distinguish the related #192 audit, and narrow the issue/PR completion claim to the implemented dispatchers. Independent handler safety is not claimed. |
-| L1 / first-warning visibility | Added the fixed `duplicate-subscribe-warning` metric outcome, once per successfully enqueued warning; no dedicated log or client labels. The exporter rejects arbitrary outcomes. |
-| L2 / override side effects | Dispatch rejects duplicates before virtual subscription hooks; retain the core guard for direct core calls. A throwing override and NiceHash lookup regression proves the early boundary. |
-| L3 / terminal registry cleanup | Latch closure and permanently close jobs before I/O cleanup and guarded observers. Cover throwing observers, delayed broadcast insertion and buffered traffic. |
-| L4 / duplicated policy | Both dispatchers share the worker warning flag, response text, recovery boundary and terminal cleanup. BLAKE2b keeps its difficulty budget and terminal admission latch. |
-| L5 / coverage claims | Added real TCP through `MergedMiningBitcoinPool` with its worker context and accepted parent work, plus a canonical NiceHash duplicate. The merged fixture substitutes the job manager; it does not claim auxiliary-daemon or AuxPoW validation. |
-| L6 / queued replies | Document abortive close and possible acknowledgement loss, preserving admitted accounting ownership. Transport drain semantics stay unchanged. |
+| Operator release guidance | Added an Unreleased operator entry with upgrade actions, literal telemetry outcomes and a policy link. |
+| Initial versus duplicate subscription publication | The subscribe row now describes initial subscription and links the duplicate policy. |
+| Independent handler scope | Explicitly name Satoshicash, Nexa, Handshake, Equihash, ProgPoW and Kaspa, distinguish the related #192 audit, and narrow the issue/PR completion claim to the implemented dispatchers. Independent handler safety is not claimed. |
+| First-warning observability | Attempt the fixed `duplicate-subscribe-warning` metric outcome once after successfully enqueueing a warning; counter increments depend on successful observer publication. No dedicated log or client labels. The exporter rejects arbitrary outcomes. |
+| Subscription override and NiceHash side effects | Dispatch rejects duplicates before virtual subscription hooks; retain the core guard for direct core calls. A throwing override and NiceHash lookup regression proves the early boundary. |
+| Terminal job registry cleanup | Latch closure and permanently close jobs before I/O cleanup and guarded observers. Cover throwing observers, delayed broadcast insertion and buffered traffic. |
+| Shared Bitcoin/BLAKE2b duplicate policy | Both dispatchers share the worker warning flag, response text, recovery boundary and terminal cleanup. BLAKE2b keeps its difficulty budget and terminal admission latch; terminal difficulty-budget disconnects also close its job registry. |
+| Merged-pool and NiceHash coverage | Added real TCP through `MergedMiningBitcoinPool` with its worker context and accepted parent work, plus a canonical NiceHash duplicate. The merged fixture substitutes the job manager; it does not claim auxiliary-daemon or AuxPoW validation. |
+| Acknowledgements queued before terminal closure | Document abortive close and possible acknowledgement loss, preserving admitted accounting ownership. Transport drain semantics stay unchanged. |
 | Replay subscription instead of rejection | Document why rejection matches BLAKE2b and the accepted issue contract while retaining one recoverable retry. Replaying success would give clients a different retry contract. |
-| Snapshot extranonce/version mask per job | Preserve the stable session extranonce; shared job templates must not contain worker-specific values. BIP310 requires the latest connection mask, so a historical job mask would violate submit semantics. Add a TCP mask-change regression and real Core acceptance with latest-mask rolled headers. |
+| Snapshot extranonce/version mask per job | Preserve the stable session extranonce; shared job templates must not contain worker-specific values. Apply BIP310's last-received-mask submit rule to repeated configure responses, as defined by Miningcore's policy. Add a TCP mask-change regression and real Core acceptance with latest-mask rolled headers. |
 | Baseline-only branch / wording / dated evidence / troubleshooting | Label the old-mismatch reproduction branch, replace the firmware commissioning wording, move dated evidence into this record and add canonical subscription troubleshooting. |
+| Queue completion regression stability | Use the internal `StratumConnection.CompleteSendQueue()` boundary shared with transport teardown, so failed-warning enqueue tests do not depend on private queue storage or its field name. |
 
 The version-mask decision follows the primary [BIP310 specification](https://github.com/bitcoin/bips/blob/master/bip-0310.mediawiki),
 which calculates submitted `nVersion` from the job version and the last mask received by the
@@ -88,3 +90,17 @@ after issuing custodial/direct jobs and checks the exact accepted block version.
 - Administrative API, wallet-backup, release-installation, local Markdown link/anchor,
   diagnostic-source and generated PPS migration guards passed. No native hashing, daemon,
   database schema, ledger format or active lab configuration change was required.
+
+## Documentation precision and queue completion validation
+
+After the review at `5fe5c3e51`, clarified best-effort telemetry and Miningcore's
+repeated-configure policy, replaced review-only row labels with standalone descriptions,
+and documented the literal warning metric and terminal BLAKE2b difficulty cleanup in release
+guidance. The duplicate-warning and recovery-response queue tests now use the typed completion
+method shared with transport shutdown, retaining their original failure assertions.
+
+- Windows .NET 10: **254 passed, 1 optional daemon case skipped, 0 failed** across transport,
+  canonical/BLAKE2b publication and duplicate-subscription regressions, plus bounded metrics.
+- Documented Ubuntu 22.04 WSL lab: the same selection with pinned Core 28.1 enabled produced
+  **255 passed, 0 skipped, 0 failed**, including custodial/direct block acceptance.
+- Documentation, local link/anchor, diagnostic-source and generated migration guards passed.
