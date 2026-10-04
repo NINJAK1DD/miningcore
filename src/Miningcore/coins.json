@@ -380,7 +380,7 @@
         "twitter": "",
         "telegram": "",
         "discord": "",
-        "blake2bProtocol": "knots-29.4.1-header-v2",
+        "blake2bProtocol": "knots-29.4.2-header-v2",
         "disableVersionRolling": true,
         "coinbaseHasher": {
             "hash": "sha256d"

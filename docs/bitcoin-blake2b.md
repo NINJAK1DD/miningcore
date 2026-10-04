@@ -12,8 +12,8 @@ later hard fork is implemented by the pinned Knots sources listed below.
 ## Compatibility boundary
 
 - A Miningcore build containing this feature is required; v0.3.0 does not contain it.
-- The reviewed node is **Bitcoin Knots v29.4.1.knots20260508**, commit
-  `8c85b1585dac23f964e2dd32045624de7f02aa58`. Startup requires its version and Knots identifier,
+- The reviewed node is **Bitcoin Knots v29.4.2.knots20260508**, commit
+  `58398baf33e588779685ead478e6397bb28ed3d6`. Startup requires its version and Knots identifier,
   an active deployment with the expected activation height, and mandatory GBT rule `!blake2b`.
   Version strings are compatibility checks, not proof of binary authenticity: independently
   verify the upstream release checksums and signatures.
@@ -39,7 +39,7 @@ later hard fork is implemented by the pinned Knots sources listed below.
   The parent-only comparison is restricted to mainnet carry-forward heights. At a retarget
   boundary or on min-difficulty regtest, the daemon owns difficulty selection; Miningcore
   still validates GBT target/bits and rejects malformed parent metadata. See the pinned
-  [Knots difficulty selection](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/pow.cpp#L32-L89).
+  [Knots difficulty selection](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/pow.cpp#L32-L89).
 - Only mainnet and isolated regtest are configured. Testnet4 and signet are not advertised.
   The regtest fixture uses activation 20 and shift 20; its headline is
   `Miningcore BLAKE2b regtest`. These are a test contract, not mainnet settings.
@@ -49,6 +49,72 @@ later hard fork is implemented by the pinned Knots sources listed below.
 - The node release is stable. The project's compatible DATUM gateway/miner ecosystem is
   still described as public beta. A stable node does not prove compatibility with every
   ASIC, firmware, proxy, rental service or public network deployment.
+
+## Reward maturity and RPC units
+
+The current baseline is `knots-29.4.2-header-v2`; 29.4.1 is retired from the accepted
+current daemon matrix. Knots 29.4.2 removes `getdifficulty`. The typed BLAKE2b manager
+skips that startup call and remains PoW even if legacy stake-shaped data is supplied.
+Other Bitcoin-family/PoS pools retain their legacy RPC behavior.
+
+Mainnet consensus requires 6480 blocks of depth for coinbases created from 973440
+when the **spending block** is between 973440 and 979919 inclusive. Before that
+coinbase height, or at spending height 979920 onward, ordinary 100-block consensus
+maturity applies. This release's wallet and mempool independently require **6480
+blocks for all coinbases**, including earlier ones, without expiring at 979920.
+Wallet category `generate` requires **6481 RPC confirmations**: remaining wallet
+depth is `max(0, 6481 - confirmations)`. These heights are the released block rules;
+45 days is an estimate at 600 seconds per block.
+
+`getdeploymentinfo.deployments.long_coinbase_maturity` must report the reviewed
+`flagday`, enforcement height, inclusive `height_end: 979919`, covered coinbase
+height, maturity and `active` value. `active` describes the next block. Miningcore
+validates its field contract and next-height semantics at startup and runtime;
+each GBT must advertise unprefixed `long_coinbase_maturity` exactly while that
+schedule enforces, alongside `!blake2b`. Unknown mandatory rules and proposed
+MTP/phased-release RPC contracts fail closed. A missing mainnet deployment never
+selects ordinary maturity. Unscheduled regtest alone has an explicitly reviewed
+absent deployment and 100-block wallet policy.
+
+Custodial reward progress uses the larger of wallet-required confirmations and the
+operator's `minimumConfirmations`. The `immature` category stays pending even if
+the numerical progress would reach one. Classification logs the wallet category,
+RPC confirmations, remaining depth and resulting status. The block API's
+`confirmationProgress` is progress toward that threshold, not a payment receipt
+or an independent spendability guarantee. `generate` still needs the operator
+threshold, an active matching block and the expected generated wallet transaction.
+Classification and wallet payment both revalidate daemon identity, chain and maturity.
+Outage/reindexing or missing wallet entries keep active or unverified blocks pending;
+a proven inactive block is orphaned. Restart reads the same pending block records.
+These changes introduce no ledger migration, share rescaling or PPS liability reversal.
+The wallet remains the final authority for funding and accepting a payout; wallet
+rejection does not book a successful payment.
+
+RPC `difficulty_blake2b` is explicitly typed expected hash work, including mining
+information's `next` object and header-v2 block/blockchain records. Missing fields
+remain optional; malformed present values are rejected. Historical SHA256d records
+retain `difficulty`. Expected hash work is never used as assigned-share difficulty,
+job/network accounting difficulty, PPS price or PPLNS work-window score. Those retain
+the exact GBT target-derived reference-target scale and existing hashrate conversion.
+The API's `networkDifficulty` remains in that accounting scale. No stored shares,
+balances, pool IDs, coin key (`bitcoin-blake2b`) or ledger symbol (`BTCB2B`) are renamed.
+
+For PPS, use mature, spendable reserves sufficient for the longer immature period;
+future or immature rewards cannot fund already-booked liabilities. See [PPS reserve
+planning](pps.md). Deployment inactivity alone is not a reason to release reserves.
+
+Isolated tests may explicitly match the node's
+`-testcoinbasematuritylong=start:enforce:release` using `blake2bMaturityStart`,
+`blake2bMaturityEnforce`, and `blake2bMaturityRelease` in the **regtest coin-template
+network**. All three are required; release is exclusive, enforce must be at least
+start, and release minus start must exceed 100. Every mainnet override is refused.
+Omitting these fields uses the reviewed unscheduled regtest contract and refuses a
+node with an unexpected scheduled deployment. These are fixture settings, not pool
+confirmation controls. The CI fixtures use distinct boundaries; do not add the
+regtest switch to a mainnet daemon.
+
+[Upgrade/release verification and live test evidence](bitcoin-blake2b-knots-29.4.2-review.md)
+cover the reviewed transition and remaining DATUM work in #163.
 
 ## Node and wallet isolation
 
@@ -666,7 +732,7 @@ operator commissioning beyond isolated regtest.
 
 ## Immutable source provenance
 
-Protocol baseline rechecked against upstream on 2026-09-04 and 2026-09-05:
+Daemon/RPC/maturity baseline rechecked on 2026-10-04. Historical header vector provenance remains 29.4.1 because the header primitives, PoW and vectors did not change in 29.4.2:
 
 Loader constants enforce this reviewed compatibility boundary; they are not independent
 proof of upstream consensus. That evidence is the pinned source audit, official vectors
@@ -674,16 +740,17 @@ and accepted-block integration tests. Changes to these constants require renewed
 
 | Contract | Reviewed source |
 | --- | --- |
-| Stable node and release | [Knots v29.4.1.knots20260508](https://github.com/bitcoinknots/bitcoin/tree/8c85b1585dac23f964e2dd32045624de7f02aa58) |
-| Header layout | [src/primitives/block.h](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/primitives/block.h) |
-| H1/H2, ASIC profiles, PoW, XOR | [src/primitives/block.cpp](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/primitives/block.cpp) |
-| Official vectors | [block_header_v2.json](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/test/data/block_header_v2.json) |
-| GBT rules and version | [src/rpc/mining.cpp](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/rpc/mining.cpp) |
-| Activation parameters and target shift | [chainparams.cpp](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/kernel/chainparams.cpp), [pow.cpp](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/pow.cpp) |
+| Stable node and release | [Knots v29.4.2.knots20260508](https://github.com/bitcoinknots/bitcoin/tree/58398baf33e588779685ead478e6397bb28ed3d6) |
+| Header layout | [src/primitives/block.h](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/primitives/block.h) |
+| H1/H2, ASIC profiles, PoW, XOR | [src/primitives/block.cpp](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/primitives/block.cpp) |
+| Official vectors | [block_header_v2.json](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/test/data/block_header_v2.json) |
+| GBT rules and version | [src/rpc/mining.cpp](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/rpc/mining.cpp) |
+| Activation parameters and target shift | [chainparams.cpp](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/kernel/chainparams.cpp), [pow.cpp](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/pow.cpp) |
 | Miner work and target accounting | [CONVOY datum_pow.c](https://github.com/CONVOYMining/datum_gateway/blob/b9ea7dc3eb91352565ab487ec55ed6ee5964a440/src/datum_pow.c) |
 | Miner notify, submit and payout coinbase selection | [CONVOY datum_stratum.c](https://github.com/CONVOYMining/datum_gateway/blob/b9ea7dc3eb91352565ab487ec55ed6ee5964a440/src/datum_stratum.c) |
 
-The Knots and CONVOY default heads were unchanged from these pins at the recheck. New,
-unmerged gateway proposals addressed strict parsing, duplicate replies, diagnostics and C
-memory safety; they do not redefine this consensus baseline. Re-audit upstream before merge
-and before accepting a new daemon revision rather than automatically tracking a moving branch.
+The Knots default head remained the 29.4.2 pin at this recheck. CONVOY now has revision
+`ac9b70c8b361f14e90e2c963b429a9bbb414aecb`; the old CONVOY links above preserve the
+original miner-layout/accounting review. See the [29.4.2 review and DATUM handoff](bitcoin-blake2b-knots-29.4.2-review.md)
+for the updated gateway references, license boundary and required interoperability tests.
+Re-audit upstream before merge and before accepting another daemon revision.

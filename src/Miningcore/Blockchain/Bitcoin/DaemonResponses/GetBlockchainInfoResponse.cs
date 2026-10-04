@@ -7,6 +7,8 @@ public class BlockchainInfo
     public int Headers { get; set; }
     public string BestBlockHash { get; set; }
     public double Difficulty { get; set; }
+    [Newtonsoft.Json.JsonProperty("difficulty_blake2b")]
+    public Blake2bHashWork Blake2bExpectedHashWork { get; set; }
     public long MedianTime { get; set; }
     public double VerificationProgress { get; set; }
     public bool Pruned { get; set; }

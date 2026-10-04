@@ -209,8 +209,8 @@ jobs:
     - name: Install pinned Bitcoin BLAKE2b Knots regtest dependency
       shell: bash
       env:
-        KNOTS_VERSION: 29.4.1.knots20260508
-        KNOTS_SHA256: 0d0b435ae67dd38d150c048a388be821ad0ca8b46d6dcace5c34d4ba2977801b
+        KNOTS_VERSION: 29.4.2.knots20260508
+        KNOTS_SHA256: b59d0445a317e21a03dc29425db3aba79b27d5125230b1a2b1dce62e120827c5
       run: |
         set -euo pipefail
         archive="bitcoin-${KNOTS_VERSION}-x86_64-linux-gnu.tar.gz"
@@ -224,6 +224,10 @@ jobs:
         tar -xzf "$archive_path" --strip-components=1 -C "$install_root"
         test -x "$install_root/bin/bitcoind"
         echo "MININGCORE_TEST_BLAKE2B_BITCOIND=$install_root/bin/bitcoind" >> "$GITHUB_ENV"
+
+    - name: Verify released Knots consensus and mempool maturity boundaries
+      shell: bash
+      run: bash scripts/regtest/validate-knots-29.4.2-maturity.sh
 
     - name: Install pinned Litecoin and Dogecoin regtest dependencies
       shell: bash

@@ -101,6 +101,7 @@ public class NonParallelCollectionTests
                 typeof(BitcoinDuplicateSubscriptionTests),
                 typeof(BitcoinPublicationRegtestTests),
                 typeof(BitcoinVersionRollingRegtestTests), typeof(BitcoinBlake2bRegtestTests),
+                typeof(BitcoinBlake2bMaturityRegtestTests),
                 typeof(BitcoinBlake2bStartupTests), typeof(MergedMiningPayoutRegtestTests) } };
         yield return new object[] { typeof(RpcDiagnosticCollection),
             new[] { typeof(RpcDiagnosticTests), typeof(RpcConsumerDiagnosticTests) } };

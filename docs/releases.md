@@ -557,8 +557,15 @@ methods. Method labels are separately allowlisted from source-controlled protoco
 
 ## Unreleased: Bitcoin BLAKE2b header-v2
 
+The current compatibility update removes the BLAKE2b startup dependency on the removed
+`getdifficulty` RPC and separately types expected BLAKE2b hash work. Startup/runtime
+and payout checks enforce the reviewed long-maturity deployment and GBT transition
+contract. Wallet-aware progress and active-chain verification keep immature or
+unverified rewards pending without rescaling shares or reversing PPS liabilities.
+See the [29.4.2 review, upgrade and DATUM handoff](bitcoin-blake2b-knots-29.4.2-review.md).
+
 The separate `bitcoin-blake2b` template and runtime target the reviewed Bitcoin Knots
-29.4.1.knots20260508 hard-fork chain. They do not replace SHA-256d `bitcoin`, enable BTC
+29.4.2.knots20260508 hard-fork chain. They do not replace SHA-256d `bitcoin`, enable BTC
 direct-coinbase settlement on another chain, or implement the DATUM pool protocol.
 The [operator guide](bitcoin-blake2b.md) describes the pinned consensus and miner contract,
 isolated wallet/node setup, accounting, startup refusal conditions and validation limitations.

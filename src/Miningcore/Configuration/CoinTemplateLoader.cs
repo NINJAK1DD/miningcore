@@ -26,7 +26,7 @@ public static class CoinTemplateLoader
     private const string OdoCryptIntervalProperty =
         "odoCryptShapeChangeInterval";
     internal const string BitcoinBlake2bProtocol =
-        "knots-29.4.1-header-v2";
+        "knots-29.4.2-header-v2";
 
     private static void RejectUnsupportedMetadata(string filename, string coinId,
         JToken template)
@@ -436,6 +436,12 @@ public static class CoinTemplateLoader
                        field.Value.Value<string>().Any(x => x is < ' ' or > '~'))
                         Reject($"'{field.Name}' must be printable ASCII");
                 }
+                else if(field.Name is "blake2bMaturityStart" or "blake2bMaturityEnforce" or "blake2bMaturityRelease")
+                {
+                    if(field.Value.Type != JTokenType.Integer ||
+                       !int.TryParse(field.Value.ToString(), out var boundary) || boundary < 0)
+                        Reject($"'{field.Name}' must be a nonnegative in-range JSON integer");
+                }
                 else if(field.Name is "blake2bActivationHeight" or "blake2bTargetShift")
                 {
                     if(field.Value.Type != JTokenType.Integer ||
@@ -484,6 +490,9 @@ public static class CoinTemplateLoader
         ValidateBitcoinBlake2bNetwork(filename, coinId, "regtest", regtest,
             requireHeadline: false);
 
+        BitcoinBlake2bMaturity.ForNetwork(template, "main", coinId);
+        BitcoinBlake2bMaturity.ForNetwork(template, "regtest", coinId);
+
         if(regtest.Blake2bTargetShift != BitcoinBlake2bConsensus.RegtestTargetShift)
             throw new PoolStartupException($"Invalid coin-template '{coinId}' in file '{filename}': regtest target shift must match the reviewed value {BitcoinBlake2bConsensus.RegtestTargetShift}");
 
@@ -492,7 +501,7 @@ public static class CoinTemplateLoader
             throw new PoolStartupException(
                 $"Invalid coin-template '{coinId}' in file '{filename}': " +
                 "mainnet activation metadata does not match reviewed Bitcoin " +
-                "Knots v29.4.1.knots20260508 consensus parameters");
+                "Knots v29.4.2.knots20260508 consensus parameters");
         }
     }
 

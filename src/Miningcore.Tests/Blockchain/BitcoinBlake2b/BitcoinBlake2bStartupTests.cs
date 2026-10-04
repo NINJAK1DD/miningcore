@@ -68,6 +68,8 @@ public partial class BitcoinBlake2bStartupTests : TestBase
         await using var node = await BitcoinPayoutHandlerRegtestTests.BitcoinCoreRegtestNode.StartAsync(
             true, Environment.GetEnvironmentVariable(BitcoinBlake2bIntegrationFactAttribute.BinaryEnvironmentVariable),
             new[] { "-testactivationheight=blake2b@20", "-blake2b_headline=Miningcore BLAKE2b regtest" }, 19);
+        var removedRpc = await node.TryWalletRpcAsync("getdifficulty");
+        Assert.Equal(-32601, removedRpc.Error?["code"]?.Value<int>());
         using var scope = Scope();
         var pool = ResolvePool(scope);
         pool.Configure(new PoolConfig
@@ -87,7 +89,18 @@ public partial class BitcoinBlake2bStartupTests : TestBase
                 BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(pool, new object[] { stop.Token })!);
             var manager = Assert.IsType<BitcoinBlake2bJobManager>(typeof(BitcoinPool)
                 .GetField("manager", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(pool));
-            Assert.IsType<BitcoinBlake2bJob>(manager.GetJobForStratum());
+            var job = Assert.IsType<BitcoinBlake2bJob>(manager.GetJobForStratum());
+            var rpcShape = (JObject) await node.RootRpcAsync("getmininginfo");
+            var mining = rpcShape.ToObject<MiningInfo>();
+            Assert.Equal(20u, mining.Next.Height);
+            Assert.NotNull(mining.Next.Blake2bExpectedHashWork);
+            Assert.Null(rpcShape["next"]["difficulty"]);
+            Assert.Equal(BitcoinBlake2bHeader.DifficultyForHash(BitcoinBlake2bHeader.ParseDisplayTarget(mining.Next.Target)), job.Difficulty);
+            Assert.NotEqual(mining.Next.Blake2bExpectedHashWork.ExpectedHashes, job.Difficulty);
+            var historicalHash = (await node.RootRpcAsync("getblockhash", 19)).Value<string>();
+            var historical = (JObject) await node.RootRpcAsync("getblockheader", historicalHash);
+            Assert.NotNull(historical["difficulty"]);
+            Assert.Null(historical["difficulty_blake2b"]);
         }
         finally
         {

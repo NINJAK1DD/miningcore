@@ -23,6 +23,17 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public partial class BitcoinBlake2bStartupTests
 {
+    private static JObject MaturityInfo(int height, bool blake2bActive = true) => new()
+    {
+        ["height"] = height,
+        ["blake2b"] = new JObject { ["height"] = 20, ["active"] = blake2bActive },
+        ["deployments"] = new JObject { ["long_coinbase_maturity"] = new JObject
+        {
+            ["type"] = "flagday", ["height"] = int.MaxValue, ["height_end"] = int.MaxValue - 1,
+            ["coinbase_start_height"] = int.MaxValue, ["maturity"] = 100, ["active"] = false,
+        } },
+    };
+
     private static PoolConfig LifecycleConfig() => new()
     {
         Id = "blake2b-lifecycle", Coin = "bitcoin-blake2b",
@@ -81,9 +92,11 @@ public partial class BitcoinBlake2bStartupTests
     [InlineData("version", true)]
     [InlineData("chain", true)]
     [InlineData("deployment", true)]
+    [InlineData("maturity", true)]
     [InlineData("version", false)]
     [InlineData("chain", false)]
     [InlineData("deployment", false)]
+    [InlineData("maturity", false)]
     public async Task RuntimeAttestation_RejectsRecoveredAndSeamlessDaemonDrift(string drift, bool outage)
     {
         var now = DateTime.UtcNow;
@@ -135,6 +148,24 @@ public partial class BitcoinBlake2bStartupTests
         Assert.NotSame(verified, manager.GetJobForStratum());
     }
 
+    [Theory]
+    [InlineData("long_coinbase_maturity")]
+    [InlineData("!future-consensus")]
+    public async Task RuntimeGbt_RejectsRuleDriftInsideAttestationCache(string unexpectedRule)
+    {
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(DateTime.UtcNow);
+        var manager = new LifecycleManager(container, clock);
+        manager.Configure(LifecycleConfig(), new ClusterConfig());
+        manager.Prepare();
+        await manager.RefreshAsync();
+        var verified = manager.GetJobForStratum();
+        manager.TemplateRules = new[] { "!blake2b", unexpectedRule };
+        await Assert.ThrowsAsync<PoolStartupException>(() => manager.RefreshAsync());
+        Assert.Same(verified, manager.GetJobForStratum());
+        Assert.Equal(3, manager.AttestationCalls);
+    }
+
     private sealed class LifecycleManager : BitcoinBlake2bJobManager
     {
         // Only ParentUnavailable crosses the timer/test-thread boundary.
@@ -152,6 +183,8 @@ public partial class BitcoinBlake2bStartupTests
         internal TaskCompletionSource SubmitRelease;
         internal CancellationToken SubmitToken;
         internal Miningcore.Blockchain.Share SubmittedShare;
+        internal uint TemplateHeight = 20;
+        internal string[] TemplateRules = new[] { "!blake2b" };
         internal int Publications;
         internal int AttestationCalls;
         internal readonly TaskCompletionSource ForcedRefresh = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -201,10 +234,10 @@ public partial class BitcoinBlake2bStartupTests
             TemplateThrows ? throw new InvalidOperationException("failed refresh") :
             Task.FromResult(TemplateUnavailable ? new RpcResponse<BlockTemplate>(null, Unavailable()) : new(new BlockTemplate
             {
-                Height = 20, Version = 0xa0000000, CurTime = 1700000000, Bits = "207fffff",
+                Height = TemplateHeight, Version = 0xa0000000, CurTime = 1700000000, Bits = "207fffff",
                 Target = "7fffff" + new string('0', 58), PreviousBlockhash = new string('0', 64),
                 CoinbaseValue = 5000000000, Transactions = Array.Empty<BitcoinBlockTransaction>(),
-                Rules = new[] { "!blake2b" },
+                Rules = TemplateRules,
             }));
         protected override Task<RpcResponse<JObject>> GetActivationParentAsync(string hash, CancellationToken ct) =>
             Task.FromResult(ParentUnavailable ? new RpcResponse<JObject>(null, Unavailable()) : new(new JObject { ["bits"] = "207fffff" }));
@@ -225,10 +258,10 @@ public partial class BitcoinBlake2bStartupTests
             }
             var response = method switch
             {
-                BitcoinCommands.GetNetworkInfo => new JObject { ["version"] = Drift == "version" ? 300000 : 290401,
-                    ["subversion"] = "/Satoshi:29.4.1/Knots:20260508/" },
+                BitcoinCommands.GetNetworkInfo => new JObject { ["version"] = Drift == "version" ? 300000 : 290402,
+                    ["subversion"] = "/Satoshi:29.4.2/Knots:20260508/" },
                 BitcoinCommands.GetBlockchainInfo => new JObject { ["chain"] = Drift == "chain" ? "main" : "regtest" },
-                "getdeploymentinfo" => new JObject { ["blake2b"] = new JObject { ["height"] = 20, ["active"] = Drift != "deployment" } },
+                "getdeploymentinfo" => Drift == "maturity" ? BitcoinBlake2bMaturityTests.Deployment(BitcoinBlake2bMaturity.Mainnet, 973439) : MaturityInfo(19, Drift != "deployment"),
                 _ => throw new InvalidOperationException(method),
             };
             return Task.FromResult(new RpcResponse<JObject>(response));

@@ -251,6 +251,15 @@ public partial class BitcoinTemplate : CoinTemplate
         [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
         public byte? Blake2bTargetShift { get; set; }
 
+        // Explicit fixture-only -testcoinbasematuritylong=start:enforce:release.
+        // Omission selects the reviewed daemon defaults; mainnet overrides are refused.
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public int? Blake2bMaturityStart { get; set; }
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public int? Blake2bMaturityEnforce { get; set; }
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public int? Blake2bMaturityRelease { get; set; }
+
         /// <summary>
         /// Arbitrary extension data
         /// </summary>

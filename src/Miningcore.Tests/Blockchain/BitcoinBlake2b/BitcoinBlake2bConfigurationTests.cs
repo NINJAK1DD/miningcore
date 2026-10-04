@@ -229,7 +229,7 @@ public class BitcoinBlake2bConfigurationTests : TestBase
     [Theory]
     [InlineData("blake2bProtocol", "null")]
     [InlineData("blake2bProtocol", "\"unreviewed-revision\"")]
-    [InlineData("Blake2bProtocol", "\"knots-29.4.1-header-v2\"")]
+    [InlineData("Blake2bProtocol", "\"knots-29.4.2-header-v2\"")]
     [InlineData("hasMWEB", "true")]
     [InlineData("shareMultiplier", "65536")]
     [InlineData("headerHasher", "{\"hash\":\"blake2b\"}")]
@@ -272,10 +272,11 @@ public class BitcoinBlake2bConfigurationTests : TestBase
     }
 
     [Theory]
-    [InlineData(290401, "/Satoshi:29.4.1/Knots:20260508/", true)]
+    [InlineData(290402, "/Satoshi:29.4.2/Knots:20260508/", true)]
+    [InlineData(290401, "/Satoshi:29.4.1/Knots:20260508/", false)]
     [InlineData(290400, "/Satoshi:29.4.0/Knots:20260508/", false)]
-    [InlineData(290401, "/Satoshi:29.4.1/Knots:20260508rc4/", false)]
-    [InlineData(290401, "/Satoshi:29.4.1/", false)]
+    [InlineData(290402, "/Satoshi:29.4.2/Knots:20260508rc4/", false)]
+    [InlineData(290402, "/Satoshi:29.4.2/", false)]
     [InlineData(300000, "/Satoshi:30.0.0/Knots:20260508/", false)]
     public void DaemonIdentity_RequiresReviewedStableRevision(int version, string agent, bool accepted)
     {
@@ -319,6 +320,26 @@ public class BitcoinBlake2bConfigurationTests : TestBase
     public void Deployment_RejectsInactiveOrMismatchedSchedule(string json) =>
         Assert.Throws<PoolStartupException>(() =>
             BitcoinBlake2bJobManager.ValidateDeployment(JObject.Parse(json), 20, "test"));
+
+    [Theory]
+    [InlineData("main", 2, 104, 106, false)]
+    [InlineData("regtest", 2, 104, 106, true)]
+    [InlineData("regtest", 2, 1, 106, false)]
+    [InlineData("regtest", 2, 104, 104, false)]
+    [InlineData("regtest", 2, 102, 102, false)]
+    [InlineData("regtest", -1, 104, 106, false)]
+    public void Loader_LongMaturityOverrideIsExplicitRegtestOnly(string chain, int start, int enforce, int release, bool accepted)
+    {
+        var template = ReadTemplate();
+        var network = template["networks"][chain];
+        network["blake2bMaturityStart"] = start;
+        network["blake2bMaturityEnforce"] = enforce;
+        network["blake2bMaturityRelease"] = release;
+        if(accepted) Assert.IsType<BitcoinBlake2bTemplate>(Load(template));
+        else Assert.Throws<PoolStartupException>(() => Load(template));
+        network["blake2bMaturityRelease"].Parent.Remove();
+        Assert.Throws<PoolStartupException>(() => Load(template));
+    }
 
     private static JObject ReadTemplate() => (JObject) JObject.Parse(
         File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "coins.json")))["bitcoin-blake2b"].DeepClone();
