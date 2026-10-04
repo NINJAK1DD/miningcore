@@ -84,6 +84,26 @@ public class BitcoinPool : PoolBase
             throw new StratumException(StratumError.MinusOne, "missing request id");
 
         var context = connection.ContextAs<BitcoinWorkerContext>();
+        // Reject before parsing parameters, allocating another extranonce,
+        // consulting NiceHash or publishing work. Existing jobs and direct
+        // payout authorization remain usable after one stray duplicate.
+        if(context.IsSubscribed)
+        {
+            if(context.TryWarnDuplicateSubscribe())
+                await connection.RespondErrorAsync(StratumError.Other,
+                    "Already subscribed; another subscription attempt will close this connection", request.Id, false);
+            else
+            {
+                // Latch the transport closed before optional observers run so
+                // buffered requests cannot reopen a repeatedly rejected session.
+                GuardPublicationCleanup(connection, () => Disconnect(connection));
+                GuardPublicationCleanup(connection, () => StratumDiagnostics.Write(logger,
+                    NLog.LogLevel.Info, StratumDiagnostics.Event.DuplicateSubscription, connection.ConnectionId));
+                GuardPublicationCleanup(connection, () => PublishTelemetry(
+                    TelemetryCategory.StratumAdmission, "duplicate-subscribe", TimeSpan.Zero));
+            }
+            return;
+        }
         var userAgent = preparedSubscription.HasValue ? preparedSubscription.Value.UserAgent : ReadSubscribeUserAgent(request);
 
         var data = new object[]

@@ -217,11 +217,13 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
         // Canonical Bitcoin still issues work only at subscribe here.
         Assert.Equal(1, wire.JobsCreated);
         Assert.Equal(7, manager.AddressValidations);
-        // Documents existing canonical behavior, not a safe resubscription contract:
-        // extranonce rotation can strand old jobs. Tracked in issue #181; keep this
-        // scope regression until the canonical Bitcoin-family policy is fixed.
-        await Subscribe(wire);
-        Assert.Equal(2, wire.JobsCreated);
+        // Duplicate subscription is now rejected independently of the BLAKE2b
+        // difficulty budget. Canonical difficulty and authorization remain unbudgeted.
+        var extraNonce = wire.Connection.ContextAs<BitcoinWorkerContext>().ExtraNonce1;
+        await wire.SendRequestAsync("mining.subscribe", "duplicate");
+        Assert.Equal((int) StratumError.Other, (await wire.ReadAsync())["error"]["code"].Value<int>());
+        Assert.Equal(extraNonce, wire.Connection.ContextAs<BitcoinWorkerContext>().ExtraNonce1);
+        Assert.Equal(1, wire.JobsCreated);
         bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
             x.Category == TelemetryCategory.StratumAdmission), Arg.Any<string>());
     }

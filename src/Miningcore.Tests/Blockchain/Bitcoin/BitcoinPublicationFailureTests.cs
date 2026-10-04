@@ -140,7 +140,8 @@ public partial class BitcoinPublicationFailureTests : TestBase
     {
         var (config, manager, clock, bus) = Fixture();
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: true);
-        await Subscribe(wire);
+        if(method != "mining.subscribe")
+            await Subscribe(wire);
         using var logs = new LogFactory();
         var target = new NLog.Targets.MemoryTarget { Layout = "${message}|${exception:format=tostring}" };
         var logging = new NLog.Config.LoggingConfiguration();
@@ -215,8 +216,8 @@ public partial class BitcoinPublicationFailureTests : TestBase
         await wire.SendRawAsync(Request("mining.extranonce.subscribe"));
         Assert.True((await wire.ReadAsync())["result"].Value<bool>());
         Assert.Equal(3, wire.Connection.ResponseSequence);
-        wire.Canonical.BeforeCreateJob = () => throw new StratumException(StratumError.JobNotFound, "later failure");
-        await wire.SendRawAsync(Request("mining.subscribe"));
+        wire.Canonical.AfterConfigure = () => throw new StratumException(StratumError.JobNotFound, "later failure");
+        await wire.SendRawAsync(Request("mining.configure", Parameters("mining.configure")));
         await wire.ReadUntilDisconnectedAsync();
         Assert.Equal(4, wire.Connection.ResponseSequence);
     }

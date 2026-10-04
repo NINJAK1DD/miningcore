@@ -43,6 +43,7 @@ wallet balances or recovery files.
 | Configure the separate Bitcoin BLAKE2b header-v2 chain | [Bitcoin BLAKE2b](bitcoin-blake2b.md) |
 | Review Scrypt daemon/template provenance | [Scrypt coin definitions](scrypt-coin-definitions.md) |
 | Review Bitcoin-family BIP310 mask safety | [Version rolling](version-rolling.md) |
+| Preserve outstanding work when miners or proxies repeat subscribe | [Bitcoin subscription policy](bitcoin-subscription-policy.md) |
 | Review the daemon-backed merged-mining evidence | [Regtest validation record](merged-mining-regtest-validation.md) |
 | Review dated production evidence and outstanding gates | [Mainnet validation record](mainnet-validation.md) |
 

@@ -371,8 +371,8 @@ Missing or null request IDs take precedence: they receive error -1 without consu
 the duplicate warning or difficulty allowance, even after subscription or a warning. The
 one-warning allowance is per connection and is not reset by other requests or refill.
 This protocol does not support in-session resubscription. Buffered requests cannot reopen
-a terminal connection. Canonical Bitcoin's existing resubscription behavior is separately
-tracked in [#181](https://github.com/NINJAK1DD/miningcore/issues/181).
+a terminal connection. Canonical Bitcoin and inherited Bitcoin-family pools use the same
+[duplicate-subscription compatibility policy](bitcoin-subscription-policy.md).
 
 A per-connection async gate covers assignment mutation, pending VarDiff application,
 `mining.set_difficulty` and the immutable job/target snapshot plus `mining.notify`.
