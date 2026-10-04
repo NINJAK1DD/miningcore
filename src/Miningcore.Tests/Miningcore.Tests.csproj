@@ -82,32 +82,8 @@
     <None Include="../../docs/pps-arithmetic-migration.md" Link="docs/pps-arithmetic-migration.md">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Include="../Miningcore/Persistence/Postgres/Scripts/createdb.sql"
-          Link="Fixtures/Postgres/createdb.sql">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Include="../Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql"
-          Link="Fixtures/Postgres/add_share_accounting.sql">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Include="../Miningcore/Persistence/Postgres/Scripts/add_pps_arithmetic_version.sql"
-          Link="Fixtures/Postgres/add_pps_arithmetic_version.sql">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Include="../Miningcore/Persistence/Postgres/Scripts/createdb_postgresql_11_appendix.sql"
-          Link="Fixtures/Postgres/createdb_postgresql_11_appendix.sql">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Include="../Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql"
-          Link="Fixtures/Postgres/add_auxpow_block_idempotency.sql">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Include="../Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql"
-          Link="Fixtures/Postgres/add_payout_manager_ownership.sql">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Include="../Miningcore/Persistence/Postgres/Scripts/add_bitcoin_direct_solo.sql"
-          Link="Fixtures/Postgres/add_bitcoin_direct_solo.sql">
+    <None Include="../Miningcore/Persistence/Postgres/Scripts/*.sql"
+          Link="Fixtures/Postgres/%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="test.runsettings">

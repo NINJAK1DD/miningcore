@@ -111,8 +111,10 @@ superuser-role memberships or other independent administrative grants. If it pre
 membership, revoke that separately; a new owner does not remove old grants.
 
 The boundary owner is a scoped PPS security administrator. It retains ALTER
-and DROP authority over the transition table and all four routines; schema
-preflight detects changes to the verified contract. Revoking schema CREATE
+and DROP authority over the transition table and all four routines. Schema
+preflight checks the verified contract before startup admission; changes made
+while Miningcore runs are detected on the next startup, rather than continuously.
+Keep all writers stopped during owner DDL and privilege changes. Revoking schema CREATE
 blocks CREATE OR REPLACE FUNCTION, including replacement of the credit guard,
 provided no PUBLIC or other inherited grant supplies CREATE. Ownership alone
 does not bypass that schema privilege. This still requires trust to administer
