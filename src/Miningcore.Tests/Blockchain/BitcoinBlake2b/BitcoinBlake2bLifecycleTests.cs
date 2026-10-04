@@ -27,11 +27,7 @@ public partial class BitcoinBlake2bStartupTests
     {
         ["height"] = height,
         ["blake2b"] = new JObject { ["height"] = 20, ["active"] = blake2bActive },
-        ["deployments"] = new JObject { ["long_coinbase_maturity"] = new JObject
-        {
-            ["type"] = "flagday", ["height"] = int.MaxValue, ["height_end"] = int.MaxValue - 1,
-            ["coinbase_start_height"] = int.MaxValue, ["maturity"] = 100, ["active"] = false,
-        } },
+        ["deployments"] = new JObject(),
     };
 
     private static PoolConfig LifecycleConfig() => new()

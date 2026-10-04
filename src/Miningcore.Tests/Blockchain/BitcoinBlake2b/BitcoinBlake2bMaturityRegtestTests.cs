@@ -40,7 +40,7 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
         return coin;
     }
 
-    private sealed class ReconciliationHandler : BitcoinPayoutHandler
+    private sealed class ReconciliationHandler : BitcoinBlake2bPayoutHandler
     {
         internal Func<Task> AfterWalletLookup;
         internal bool ContractUnavailable;
@@ -48,7 +48,7 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
         internal ReconciliationHandler(IComponentContext context, IPaymentRepository payments) : base(context,
             Substitute.For<IConnectionFactory>(), AutoMapperFactory.CreateMapper(),
             Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(), Substitute.For<IBalanceRepository>(),
-            payments, new StandardClock(), Substitute.For<IMessageBus>(), new ActiveBlockGracePeriodTracker()) { }
+            payments, new StandardClock(), Substitute.For<IMessageBus>(), new ActiveBlockGracePeriodTracker(), new BitcoinBlake2bPayoutContractTracker()) { }
 
         protected override async Task<RpcResponse<JToken>[]> GetTransactionsAsync(RewardBlock[] blocks, CancellationToken ct)
         {
@@ -106,8 +106,9 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
             new[] { "-testactivationheight=blake2b@20", "-blake2b_headline=Miningcore BLAKE2b regtest", "-testcoinbasematuritylong=30:134:140" }, 130);
         var coin = Coin(30, 134, 140);
         var fixture = await Handler(node, coin);
-        await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
-            new[] { new RewardBlock { SettlementMode = BitcoinDirectCoinbaseSettlement.Mode } }, CancellationToken.None));
+        var unsupported = new RewardBlock { SettlementMode = BitcoinDirectCoinbaseSettlement.Mode };
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { unsupported }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Quarantined, unsupported.Status);
         var older = await Reward(node, 29);
         var covered = await Reward(node, 30);
         async Task Classify() => await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { older, covered }, CancellationToken.None);
@@ -116,6 +117,9 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
         Assert.Equal(BlockStatus.Pending, covered.Status);
         Assert.Equal(102.0 / 111, older.ConfirmationProgress, 12);
         Assert.Equal(101.0 / 111, covered.ConfirmationProgress, 12);
+        Assert.Equal(50m, older.Reward);
+        Assert.Equal(50m, covered.Reward);
+        Assert.Equal(0m, (await node.WalletRpcAsync("gettransaction", covered.TransactionConfirmationData))["amount"].Value<decimal>());
         // Ordinary transactions are not subject to the coinbase lock.
         var destination = await node.GetNewAddressAsync();
         var parent = (await node.WalletRpcAsync("sendtoaddress", destination, 1m)).Value<string>();
@@ -156,7 +160,7 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
         Assert.Equal(BlockStatus.Pending, covered.Status);
         fixture.Handler.ContractUnavailable = false;
         fixture.Handler.ContractChanged = true;
-        await Assert.ThrowsAsync<PoolStartupException>(Classify);
+        await Assert.ThrowsAsync<InvalidOperationException>(Classify);
         Assert.Equal(BlockStatus.Pending, covered.Status);
         fixture.Handler.ContractChanged = false;
         fixture = await Handler(node, coin); // new handler after restart/upgrade reconciliation
@@ -178,6 +182,74 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
         await Classify();
         Assert.Equal(BlockStatus.Confirmed, covered.Status);
         Assert.Empty(fixture.Payments.ReceivedCalls()); // classification cannot submit/persist payments
+    }
+
+    [BitcoinBlake2bIntegrationFact]
+    public async Task PrunedCoinbase_UsesHeadersToMatureAndReconcileWithoutBlockBodies()
+    {
+        await using var node = await Node.StartAsync(true,
+            Environment.GetEnvironmentVariable(BitcoinBlake2bIntegrationFactAttribute.BinaryEnvironmentVariable),
+            new[] { "-testactivationheight=blake2b@20", "-blake2b_headline=Miningcore BLAKE2b regtest",
+                "-testcoinbasematuritylong=30:1034:1040", "-prune=1", "-fastprune=1",
+                "-uacomment=Miningcore review test", "-uaappend=MiningcoreTest:1" }, 0);
+        async Task Generate(int count)
+        {
+            // Keep each RPC below the fixture's bounded HTTP timeout on Windows.
+            while(count > 0)
+            {
+                var batch = Math.Min(count, 50);
+                await node.GenerateAsync(batch, CancellationToken.None);
+                count -= batch;
+            }
+        }
+        await Generate(500);
+        var reward = await Reward(node, 30);
+        var fixture = await Handler(node, Coin(30, 1034, 1040));
+        await node.RootRpcAsync("pruneblockchain", 210);
+        var pruned = await node.TryWalletRpcAsync("getblock", reward.Hash);
+        Assert.NotNull(pruned.Error);
+        Assert.Equal(-1, pruned.Error["code"].Value<int>());
+        Assert.Contains("pruned", pruned.Error["message"].Value<string>(), StringComparison.OrdinalIgnoreCase);
+        var header = await node.RootRpcAsync("getblockheader", reward.Hash);
+        Assert.Equal(30, header["height"].Value<int>());
+        Assert.Equal(471, header["confirmations"].Value<int>());
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { reward }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Pending, reward.Status);
+        Assert.Equal(50m, reward.Reward);
+        Assert.Equal(471.0 / 1011, reward.ConfirmationProgress, 12);
+        await Generate(540);
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { reward }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Confirmed, reward.Status);
+        Assert.Equal(50m, reward.Reward);
+        Assert.NotNull((await node.TryWalletRpcAsync("getblock", reward.Hash)).Error);
+        var tip = (await node.RootRpcAsync("getbestblockhash")).Value<string>();
+        await node.RootRpcAsync("invalidateblock", tip);
+        fixture = await Handler(node, Coin(30, 1034, 1040));
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { reward }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Pending, reward.Status);
+        Assert.Equal(1010.0 / 1011, reward.ConfirmationProgress, 12);
+        await node.RootRpcAsync("reconsiderblock", tip);
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { reward }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Confirmed, reward.Status);
+        Assert.Empty(fixture.Payments.ReceivedCalls());
+    }
+
+    [BitcoinBlake2bIntegrationFact]
+    public async Task ExplicitRegtestSchedule_AllowsEnforcementBeforeCoveredCoinbaseStart()
+    {
+        await using var node = await Node.StartAsync(true,
+            Environment.GetEnvironmentVariable(BitcoinBlake2bIntegrationFactAttribute.BinaryEnvironmentVariable),
+            new[] { "-testactivationheight=blake2b@20", "-blake2b_headline=Miningcore BLAKE2b regtest",
+                "-testcoinbasematuritylong=30:2:140" }, 31);
+        var coin = Coin(30, 2, 140);
+        var schedule = BitcoinBlake2bMaturity.ForNetwork(coin, "regtest", "test");
+        schedule.ValidateDeployment((JObject) await node.RootRpcAsync("getdeploymentinfo"), "test");
+        var fixture = await Handler(node, coin);
+        var reward = await Reward(node, 29);
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { reward }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Pending, reward.Status);
+        Assert.Equal(50m, reward.Reward);
+        Assert.Equal(3.0 / 111, reward.ConfirmationProgress, 12);
     }
 
     [BitcoinBlake2bIntegrationFact]

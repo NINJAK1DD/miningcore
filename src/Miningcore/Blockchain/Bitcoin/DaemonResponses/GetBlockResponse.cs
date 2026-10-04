@@ -11,8 +11,6 @@ public class Block
     public uint Height { get; set; }
     public string Bits { get; set; }
     public double Difficulty { get; set; }
-    [Newtonsoft.Json.JsonProperty("difficulty_blake2b")]
-    public Blake2bHashWork Blake2bExpectedHashWork { get; set; }
     public string Nonce { get; set; }
     public uint Weight { get; set; }
     public uint Size { get; set; }

@@ -1,0 +1,288 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Autofac;
+using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Bitcoin.DaemonResponses;
+using Miningcore.Blockchain.BitcoinBlake2b;
+using Miningcore.Configuration;
+using Miningcore.JsonRpc;
+using Miningcore.Messaging;
+using Miningcore.Mining;
+using Miningcore.Notifications.Messages;
+using Miningcore.Payments;
+using Miningcore.Persistence;
+using Miningcore.Persistence.Repositories;
+using Miningcore.Rpc;
+using Miningcore.Time;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using NSubstitute;
+using Xunit;
+using Block = Miningcore.Persistence.Model.Block;
+using BlockStatus = Miningcore.Persistence.Model.BlockStatus;
+
+namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
+
+public class BitcoinBlake2bPayoutTests : TestBase
+{
+    private const string Hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private const string TxId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    private static Block Reward() => new()
+    {
+        Id = 1, PoolId = "review", BlockHeight = 30, Hash = Hash,
+        TransactionConfirmationData = TxId, Status = BlockStatus.Pending, Reward = 49,
+    };
+
+    private sealed class Handler : BitcoinBlake2bPayoutHandler
+    {
+        internal JObject Wallet = JObject.FromObject(new Transaction
+        {
+            Generated = true, TxId = TxId, BlockHash = Hash, Confirmations = 101, Amount = 50,
+            Details = new[] { new TransactionDetails { Category = "generate", Vout = 0, Amount = 50 } },
+        }, JsonSerializer.Create(new JsonSerializerSettings
+        {
+            ContractResolver = new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver(),
+        }));
+        internal JsonRpcError WalletError;
+        internal JObject Header = new() { ["hash"] = Hash, ["height"] = 30, ["confirmations"] = 101 };
+        internal bool HeaderUnavailable;
+        internal bool HeaderMalformed;
+        internal string Chain = "regtest";
+        internal int WalletRequests;
+
+        internal Handler(IComponentContext context, IMasterClock clock, IMessageBus messages,
+            IActiveBlockGracePeriodTracker grace, BitcoinBlake2bPayoutContractTracker contracts)
+            : base(context, Substitute.For<IConnectionFactory>(), AutoMapperFactory.CreateMapper(),
+                Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(), Substitute.For<IBalanceRepository>(),
+                Substitute.For<IPaymentRepository>(), clock, messages, grace, contracts) { }
+
+        protected override Task<RpcResponse<JObject>> ReadBlake2bPayoutContractAsync(string method, CancellationToken ct)
+        {
+            var coin = (BitcoinBlake2bTemplate) poolConfig.Template;
+            var deployment = Chain == "main" ? BitcoinBlake2bMaturityTests.Deployment(BitcoinBlake2bMaturity.Mainnet, 973439)
+                : new JObject { ["height"] = 130, ["deployments"] = new JObject() };
+            deployment["blake2b"] = new JObject { ["height"] = coin.Networks[Chain].Blake2bActivationHeight!.Value, ["active"] = true };
+            return Task.FromResult(new RpcResponse<JObject>(method switch
+            {
+                "getnetworkinfo" => new JObject { ["version"] = 290402, ["subversion"] = "/Satoshi:29.4.2(operator)/Knots:20260508/Miningcore:1/" },
+                "getblockchaininfo" => new JObject { ["chain"] = Chain, ["initialblockdownload"] = false },
+                "getdeploymentinfo" => deployment,
+                _ => throw new InvalidOperationException(method),
+            }));
+        }
+
+        protected override Task<RpcResponse<JObject>> GetBlockHeaderAsync(string hash, CancellationToken ct) =>
+            HeaderMalformed ? throw new JsonSerializationException("Malformed header") : Task.FromResult(HeaderUnavailable
+                ? new RpcResponse<JObject>(null, new JsonRpcError(-500, "Unavailable", null)) : new(Header));
+
+        protected override Task<RpcResponse<Miningcore.Blockchain.Bitcoin.DaemonResponses.Block>> GetBlockAsync(string hash, CancellationToken ct) =>
+            throw new InvalidOperationException("BLAKE2b reconciliation must not require block bodies");
+
+        protected override Task<RpcResponse<JToken>[]> GetTransactionsAsync(Block[] blocks, CancellationToken ct)
+        {
+            WalletRequests += blocks.Length;
+            return Task.FromResult(blocks.Select(_ => new RpcResponse<JToken>(Wallet, WalletError)).ToArray());
+        }
+    }
+
+    private static PoolConfig Config() => new()
+    {
+        Id = "review", Coin = "bitcoin-blake2b", Template = ModuleInitializer.CoinTemplates["bitcoin-blake2b"],
+        Address = "unused", Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 1 } },
+        Extra = new Dictionary<string, object> { ["minimumConfirmations"] = 1 },
+        PaymentProcessing = new PoolPaymentProcessingConfig { Enabled = true },
+    };
+
+    private async Task<(Handler Handler, IMiningPool Pool, IMessageBus Messages)> Fixture(
+        IMasterClock clock = null, IActiveBlockGracePeriodTracker grace = null, BitcoinBlake2bPayoutContractTracker contracts = null,
+        IMessageBus messages = null)
+    {
+        clock ??= Substitute.For<IMasterClock>();
+        messages ??= Substitute.For<IMessageBus>();
+        var handler = new Handler(container, clock, messages, grace ?? new ActiveBlockGracePeriodTracker(),
+            contracts ?? new BitcoinBlake2bPayoutContractTracker());
+        var pool = Substitute.For<IMiningPool>();
+        pool.Config.Returns(Config());
+        await handler.ConfigureAsync(new ClusterConfig(), pool.Config, CancellationToken.None);
+        return (handler, pool, messages);
+    }
+
+    [Theory]
+    [InlineData("wallet-error", 1, BlockStatus.Pending)]
+    [InlineData("wallet-error", -1, BlockStatus.Orphaned)]
+    [InlineData("wallet-error", 0, BlockStatus.Pending)]
+    [InlineData("missing-details", 1, BlockStatus.Pending)]
+    [InlineData("missing-details", -1, BlockStatus.Orphaned)]
+    [InlineData("missing-details", 0, BlockStatus.Pending)]
+    public async Task MissingWalletEvidence_RequiresHeaderProofBeforeOrphaning(string failure, int activity, BlockStatus expected)
+    {
+        var fixture = await Fixture();
+        if(failure == "wallet-error") fixture.Handler.WalletError = new(-5, "Not indexed", null);
+        else fixture.Handler.Wallet["details"] = new JArray();
+        fixture.Handler.Header["confirmations"] = activity;
+        var reward = Reward();
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { reward }, CancellationToken.None);
+        Assert.Equal(expected, reward.Status);
+        Assert.Equal(expected == BlockStatus.Orphaned ? 0m : 49m, reward.Reward);
+        Assert.Empty(fixture.Messages.ReceivedCalls());
+    }
+
+    [Theory]
+    [InlineData("height")]
+    [InlineData("hash")]
+    [InlineData("txid")]
+    [InlineData("blockhash")]
+    [InlineData("generated")]
+    [InlineData("category")]
+    [InlineData("missing-confirmations")]
+    [InlineData("negative-confirmations")]
+    [InlineData("unavailable")]
+    [InlineData("malformed")]
+    [InlineData("malformed-wallet")]
+    [InlineData("negative-credit")]
+    [InlineData("duplicate-output")]
+    [InlineData("mixed-category")]
+    [InlineData("overflow-credit")]
+    public async Task ContradictionsAndUnavailableEvidence_HoldRewardAndEmitOneBoundedFamilyAlert(string failure)
+    {
+        var now = DateTime.UtcNow;
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(_ => now);
+        var fixture = await Fixture(clock);
+        switch(failure)
+        {
+            case "height": fixture.Handler.Header["height"] = 31; break;
+            case "hash": fixture.Handler.Header["hash"] = new string('c', 64); break;
+            case "txid": fixture.Handler.Wallet["txId"] = "wrong"; break;
+            case "blockhash": fixture.Handler.Wallet["blockHash"] = "wrong"; break;
+            case "generated": fixture.Handler.Wallet["generated"] = false; break;
+            case "category": fixture.Handler.Wallet["details"][0]["category"] = "orphan"; break;
+            case "missing-confirmations": fixture.Handler.Header.Property("confirmations").Remove(); break;
+            case "negative-confirmations": fixture.Handler.Header["confirmations"] = -2; break;
+            case "unavailable": fixture.Handler.HeaderUnavailable = true; break;
+            case "malformed": fixture.Handler.HeaderMalformed = true; break;
+            case "malformed-wallet": fixture.Handler.Wallet["details"] = "bad"; break;
+            case "negative-credit": fixture.Handler.Wallet["details"][0]["amount"] = -1m; break;
+            case "duplicate-output": fixture.Handler.Wallet["details"] = new JArray(
+                new JObject { ["category"] = "generate", ["amount"] = 25m, ["vout"] = 0 },
+                new JObject { ["category"] = "generate", ["amount"] = 25m, ["vout"] = 0 }); break;
+            case "mixed-category": fixture.Handler.Wallet["details"] = new JArray(
+                new JObject { ["category"] = "generate", ["amount"] = 25m, ["vout"] = 0 },
+                new JObject { ["category"] = "immature", ["amount"] = 25m, ["vout"] = 1 }); break;
+            case "overflow-credit": fixture.Handler.Wallet["details"] = new JArray(
+                new JObject { ["category"] = "generate", ["amount"] = decimal.MaxValue, ["vout"] = 0 },
+                new JObject { ["category"] = "generate", ["amount"] = decimal.MaxValue, ["vout"] = 1 }); break;
+        }
+        var reward = Reward();
+        async Task Classify() => await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { reward }, CancellationToken.None);
+        await Classify();
+        Assert.Empty(fixture.Messages.ReceivedCalls());
+        now = now.AddMinutes(31);
+        await Classify();
+        await Classify();
+        Assert.Equal(BlockStatus.Pending, reward.Status);
+        Assert.Equal(49m, reward.Reward);
+        Assert.False(reward.NotifyBlockUnlockedOnUpdate);
+        var alert = Assert.Single(fixture.Messages.ReceivedCalls()).GetArguments()[0] as AdminNotification;
+        Assert.Contains("Bitcoin BLAKE2b", alert.Subject);
+        Assert.DoesNotContain("merged-mining", alert.Subject);
+        Assert.Contains("getblockheader/gettransaction", alert.Message);
+        Assert.DoesNotContain("wrong", alert.Message);
+    }
+
+    [Fact]
+    public async Task VerifiedRecovery_ClearsEpisodeAcrossHandlerRecreationWithoutAlertSpam()
+    {
+        var now = DateTime.UtcNow;
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(_ => now);
+        var grace = new ActiveBlockGracePeriodTracker();
+        var fixture = await Fixture(clock, grace);
+        var reward = Reward();
+        fixture.Handler.HeaderUnavailable = true;
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { reward }, CancellationToken.None);
+        now = now.AddMinutes(31);
+        var nextCycle = await Fixture(clock, grace, messages: fixture.Messages);
+        nextCycle.Handler.HeaderUnavailable = true;
+        await nextCycle.Handler.ClassifyBlocksAsync(nextCycle.Pool, new[] { reward }, CancellationToken.None);
+        Assert.Single(fixture.Messages.ReceivedCalls());
+        nextCycle.Handler.HeaderUnavailable = false;
+        await nextCycle.Handler.ClassifyBlocksAsync(nextCycle.Pool, new[] { reward }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Confirmed, reward.Status);
+        nextCycle.Handler.HeaderUnavailable = true;
+        await nextCycle.Handler.ClassifyBlocksAsync(nextCycle.Pool, new[] { reward }, CancellationToken.None);
+        Assert.Single(fixture.Messages.ReceivedCalls());
+        now = now.AddMinutes(31);
+        await nextCycle.Handler.ClassifyBlocksAsync(nextCycle.Pool, new[] { reward }, CancellationToken.None);
+        Assert.Equal(2, fixture.Messages.ReceivedCalls().Count());
+    }
+
+    [Fact]
+    public async Task ImmatureCredit_PreservesOwnedOutputValueAndCannotUnlockOnProgressOrRelease()
+    {
+        var fixture = await Fixture();
+        fixture.Handler.Wallet["amount"] = 0;
+        fixture.Handler.Wallet["details"][0]["category"] = "immature";
+        fixture.Handler.Wallet["details"] = new JArray(
+            new JObject { ["category"] = "immature", ["amount"] = 30m, ["vout"] = 0 },
+            new JObject { ["category"] = "immature", ["amount"] = 20m, ["vout"] = 1 });
+        var reward = Reward();
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { reward }, CancellationToken.None);
+        Assert.Equal(50m, reward.Reward);
+        Assert.Equal(BlockStatus.Pending, reward.Status);
+        Assert.InRange(reward.ConfirmationProgress, 0, Math.BitDecrement(1));
+        Assert.False(reward.NotifyBlockUnlockedOnUpdate);
+    }
+
+    [Theory]
+    [InlineData("prepared")]
+    [InlineData("legacy-observed")]
+    public async Task QuarantinedDirectRow_DoesNotPreventHealthyCustodialRewardClassification(string submissionState)
+    {
+        var fixture = await Fixture();
+        var unsupported = Reward();
+        unsupported.SettlementMode = BitcoinDirectCoinbaseSettlement.Mode;
+        unsupported.DirectSubmissionState = submissionState;
+        unsupported.NotifyBlockFoundOnUpdate = true;
+        var healthy = Reward();
+        healthy.Id = 2;
+        var classified = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { unsupported, healthy }, CancellationToken.None);
+        Assert.Equal(2, classified.Length);
+        Assert.Equal(BlockStatus.Quarantined, unsupported.Status);
+        Assert.Equal(submissionState == "legacy-observed" ? "legacy-observed" : "quarantined", unsupported.DirectSubmissionState);
+        Assert.False(unsupported.NotifyBlockFoundOnUpdate);
+        Assert.False(unsupported.NotifyBlockUnlockedOnUpdate);
+        Assert.Equal(BlockStatus.Confirmed, healthy.Status);
+        Assert.Equal(1, fixture.Handler.WalletRequests);
+    }
+
+    [Fact]
+    public async Task ProcessContractBinding_SurvivesConfigureAndHandlerRecreation()
+    {
+        var contracts = new BitcoinBlake2bPayoutContractTracker();
+        var fixture = await Fixture(contracts: contracts);
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { Reward() }, CancellationToken.None);
+        await fixture.Handler.ConfigureAsync(new ClusterConfig(), fixture.Pool.Config, CancellationToken.None);
+        fixture.Handler.Chain = "main";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { Reward() }, CancellationToken.None));
+        var replacement = await Fixture(contracts: contracts);
+        replacement.Handler.Chain = "main";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => replacement.Handler.ClassifyBlocksAsync(replacement.Pool, new[] { Reward() }, CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("0")]
+    [InlineData("\"invalid\"")]
+    public void SharedLegacyRpcTypes_IgnoreUnrelatedExpectedWorkExtensions(string value)
+    {
+        var json = "{\"difficulty\":123,\"difficulty_blake2b\":" + value + "}";
+        Assert.Equal(123, JsonConvert.DeserializeObject<Miningcore.Blockchain.Bitcoin.DaemonResponses.Block>(json).Difficulty);
+        Assert.Equal(123, JsonConvert.DeserializeObject<BlockchainInfo>(json).Difficulty);
+        Assert.Equal(123, JsonConvert.DeserializeObject<MiningInfo>(json).Difficulty);
+    }
+}

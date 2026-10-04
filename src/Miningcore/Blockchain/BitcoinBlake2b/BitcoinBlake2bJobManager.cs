@@ -79,10 +79,15 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
         var subversion = info?["subversion"];
         if(version?.Type != JTokenType.Integer || !long.TryParse(version.ToString(), out var number) || number != 290402 ||
            subversion?.Type != JTokenType.String ||
-           !string.Equals(subversion.Value<string>(), "/Satoshi:29.4.2/Knots:20260508/", StringComparison.Ordinal))
+           !IsReviewedUserAgent(subversion.Value<string>()))
             throw new PoolStartupException(
-                $"Pool '{poolId}' requires reviewed Bitcoin Knots 29.4.2.knots20260508; daemon protocol upgrades require an explicit compatibility review", poolId);
+                $"Pool '{poolId}' requires reviewed Bitcoin Knots 29.4.2.knots20260508 with its recognized version/user-agent prefix; received subversion {Newtonsoft.Json.JsonConvert.SerializeObject(subversion?.ToString()[..Math.Min(subversion.ToString().Length, 256)])}. Daemon upgrades or agent spoofing require an explicit compatibility review", poolId);
     }
+
+    private static bool IsReviewedUserAgent(string agent) => agent is { Length: <= 256 } &&
+        System.Text.RegularExpressions.Regex.IsMatch(agent,
+            @"\A/Satoshi:29\.4\.2(?:\([\x20-\x27\x2a-\x7e]*\))?/Knots:20260508/[\x20-\x7e]*\z",
+            System.Text.RegularExpressions.RegexOptions.NonBacktracking);
 
     protected override async Task<RpcResponse<BlockTemplate>> GetBlockTemplateAsync(CancellationToken ct)
     {

@@ -2,8 +2,11 @@
 
 Reviewed on 2026-10-04 for [#205](https://github.com/NINJAK1DD/miningcore/issues/205),
 following the exact-build policy in [#151](https://github.com/NINJAK1DD/miningcore/issues/151).
-The accepted daemon is **29.4.2.knots20260508**, numeric version `290402`, with exact
-subversion `/Satoshi:29.4.2/Knots:20260508/`. Protocol metadata is
+The accepted daemon is **29.4.2.knots20260508**, numeric version `290402`, with the
+recognized `/Satoshi:29.4.2/Knots:20260508/` prefix. Printable `-uacomment` comments
+in the Satoshi component and `-uaappend` suffixes are accepted within the reviewed
+256-byte limit; malformed/spoofed or contradictory build prefixes are refused.
+Protocol metadata is
 `knots-29.4.2-header-v2`. Earlier 29.4.1 node guidance is historical provenance,
 not an accepted current-mainnet build. There is no version bypass.
 
@@ -15,7 +18,7 @@ were reviewed against these implementation boundaries:
 
 | Source at `58398baf...` | Contract and Miningcore consequence |
 | --- | --- |
-| `src/kernel/chainparams.cpp`, `consensus/params.h` | Mainnet start/enforce 973440, release 979920 exclusive, maturity 6480. Regtest has explicitly unscheduled defaults; reviewed fixture overrides require three distinct, validated boundaries. |
+| `src/kernel/chainparams.cpp`, `consensus/params.h`, `chainparams.cpp` | Mainnet start/enforce 973440, release 979920 exclusive, maturity 6480. Regtest has unscheduled defaults. Explicit fixture overrides use start >= 0, enforce >= 2, release > both, release-start > 100, all below INT_MAX. Enforce may precede start. |
 | `src/consensus/tx_verify.cpp`, `validation.cpp`, `txmempool.cpp` | Consensus selectively covers coinbases during enforcement; mempool applies long maturity to every coinbase. Ordinary transaction inputs do not inherit a coinbase lock. |
 | `src/rpc/blockchain.cpp`, `rpc/mining.cpp` | Deployment `active` and GBT rules describe the next block. RPC `height_end` is inclusive. `getdifficulty` is removed; header-v2 reports expected hash work via `difficulty_blake2b`. |
 | `src/node/interfaces.cpp`, `wallet/wallet.cpp`, `wallet/receive.cpp` | Wallet maturity persists independently of deployment inactivity. Remaining depth is `max(0, maturity + 1 - confirmations)`. |
@@ -30,15 +33,23 @@ including inside the identity cache, so enforcement/release transitions do not d
 on cache expiry. Transport failures withhold fresh work; successful contradictions use
 the existing pool-local fail-stop and accounting admission boundary.
 
-Reward classification independently attests identity/chain/deployment each pass and
+The dedicated BLAKE2b payout handler independently attests identity/chain/deployment each pass and
 requires a synchronized chain. It verifies the generated transaction identity and the
-matching active block. Progress uses the smaller wallet/active-chain confirmation
+matching active block **header**, using `getblockheader` so block-body pruning cannot
+strand mature rewards. Shared Bitcoin/AuxPoW paths retain their full-block lookups.
+Progress uses the smaller wallet/active-chain confirmation
 count, preventing an intervening downward reorg from unlocking on stale wallet depth.
 Missing wallet records keep active or unverified blocks pending; only proven inactive
 blocks become orphaned. Payout submission re-attests the contract and retains the
 existing durable unknown-outcome/idempotent payment handling. Unsupported BLAKE2b
-direct-coinbase settlement markers are refused, rather than being processed by
-canonical Bitcoin's ordinary maturity path.
+direct-coinbase settlement rows are individually quarantined and excluded from
+credit/payment without starving valid custodial rows. Wallet detail amounts preserve
+owned immature credit while Knots reports a zero top-level amount. They do not imply
+spendable reserves. Missing or contradictory wallet/header evidence triggers one
+family-specific alert after 30 minutes per continuous episode; verified reconciliation
+clears it. A process-scoped binding survives payout-handler recreation and configuration
+cycles, refusing chain/schedule changes until the documented stop/restart. Expected-work
+RPC types are isolated to BLAKE2b; optional extensions cannot disrupt legacy daemons.
 
 ## Release verification
 
@@ -74,6 +85,11 @@ do not authenticate a downloaded binary. CI pins the Linux binary checksum and t
 signed-release source checksum; it does not import arbitrary network signing keys.
 
 ## Stop, upgrade, reconcile, restart
+
+**Complete the Knots and Miningcore upgrade before mainnet height 973440.**
+At or beyond enforcement, 29.4.1 templates may include coinbase spends rejected by
+29.4.2 consensus. If already past the boundary, keep admission stopped and complete
+revalidation, synchronization and reconciliation before resuming.
 
 1. Close new mining/PPS/payment admission and perform the documented graceful drain.
    Keep accepted shares, the accounting/recovery journals, uncertain candidates,
@@ -119,6 +135,14 @@ selection of a valid side branch and eviction of premature coinbase spends while
 ordinary transactions remain in the mempool, then checks persisted validation
 markers and demotion of stale side branches. CI runs both gates.
 
+CI caches the release archive by its full source SHA-256, rechecks its bytes on
+every use and checks both functional-script hashes before execution. New downloads
+are verified before atomic cache publication. Failures retain the temporary framework
+and daemon logs, print their last 200 lines and upload diagnostics with seven-day
+retention. Successful runs remove only their own temporary fixture. The offline
+`python3 scripts/regtest/test-knots-maturity-gate.py` checks cache-hit verification,
+corrupt-cache rejection, failed-download cleanup and failed-test log retention.
+
 Miningcore's `30:134:140` fixture additionally checks header-v2 GBT rule transitions,
 pre-coverage wallet rewards, ordinary non-coinbase spending, confirmation 110 versus
 111, restart/reorg/reconsideration, contract outages/drift and a downward reorg between
@@ -129,7 +153,7 @@ target-derived job difficulty. Existing tests exercise all four ASIC layouts, re
 Stratum proofs/accepted blocks and PostgreSQL exactly-once credit, payout schemes,
 conflicting replay rejection and preserved PPS liabilities after orphaning.
 
-Live validation on 2026-10-04 used the documented Windows/Ubuntu 22.04 WSL lab,
+Initial validation, before the review hardening below, on 2026-10-04 used the documented Windows/Ubuntu 22.04 WSL lab,
 official Knots binaries and isolated PostgreSQL. The full Linux suite passed
 **3570 tests, zero failures, one skipped benchmark**, including real Knots, Bitcoin
 Core 28.1, Litecoin 0.21.5.5, Dogecoin 1.14.9, PostgreSQL accounting and isolated
@@ -142,6 +166,38 @@ used the documented local `MININGCORE_WINDOWS_PLATFORM_TOOLSET=v142` compatibili
 setting because v143 was unavailable. A broader Windows run exposed a TLS fingerprint
 assertion failure reproduced on unchanged `dev`; its Linux counterpart passed.
 Source/test presence alone is not validation evidence.
+
+## Review hardening
+
+The follow-up addresses both supplied reviews, including their lower-priority findings:
+
+Final follow-up validation in the same documented lab passed **3604 Linux tests,
+zero failures, one skipped benchmark**, including all real-daemon, native,
+PostgreSQL accounting and authentication/TLS/recovery checks. Unchanged native
+libraries were built from source; a complete SDK managed rebuild reused their
+checksum-verified outputs with the CI native/database environment settings.
+The Windows live/compatibility/ledger run passed **623 tests, zero failures/skips**;
+the final diagnostic/redaction run passed **76 tests, zero failures/skips**.
+Both unmodified upstream functional tests passed on cold and warm source-cache
+runs. All five offline cache/failure checks, documentation gates/links, workflow
+action pins, diagnostic source guards, Bash syntax/ShellCheck and whitespace checks
+passed. The Windows toolset and pre-existing full-suite TLS limitation above still
+apply; this evidence does not claim a passing full Windows suite.
+
+| Findings | Change and regression evidence |
+| --- | --- |
+| P1, L2: pruned rewards and full-block RPC cost | Header-only reconciliation; real `-prune=1 -fastprune` fixture proves `getblock` fails for a retained coinbase header, preserves immature credit, matures it and reconciles invalidate/reconsider without its body. |
+| P2: stale catalogue source | Catalogue points at `58398baf...`; configuration test pins source and protocol together. |
+| P3, L1: misleading/missing delayed alerts | Dedicated family-specific, redacted, bounded alerts cover missing/contradictory header or wallet evidence, including wallet -5 and absent details. Tests cover active/inactive/unavailable states, recovery and handler recreation. |
+| M1: user-agent customization | Recognized prefix supports comments/appended fragments; malformed prefixes, control characters, unknown versions and release candidates remain refused. Unit cases and actual node startup/payout cover the supported options. |
+| M2: zero immature reward | Owned `details[].amount` credit survives a zero top-level wallet amount. Live tests assert the pending value; malformed, duplicate, mixed-category and overflow output evidence stays pending. |
+| M3: upgrade deadline | Upgrade before 973440; successor-review planning before proposed divergence at 979920 is explicit in the runbook/release notes. |
+| L3: one unsupported row stops the pool | Quarantine direct-settlement rows individually; preserve legacy submission metadata and continue healthy custodial reconciliation without crediting the unsupported row. |
+| L4: shared strict RPC extensions | Opt-in BLAKE2b response types isolate the expected-work converter; legacy Bitcoin-family DTOs ignore unrelated null/malformed extensions. |
+| L5: regtest parser mismatch | Constraints match released `chainparams.cpp`, including enforce >= 2 and enforce-before-start; loader tests and a real distinct-boundary schedule verify both. |
+| L6: coverage/fixture gaps | Added all grace/mismatch cases, PoW/PoS startup batch positions, customized agents and production payout-handler selection. Unscheduled regtest mocks now omit the deployment as Knots does. |
+| L7: CI transport/diagnostic fragility | Checksum-keyed caching, warm/cold real-daemon gates and five offline cache/diagnostic checks. |
+| Other review notes | Dedicated payout subclass, process-scoped chain/schedule binding across configuration cycles, runtime payout exceptions, and removal of the unused consensus-depth helper. Consensus boundaries remain tested by the unmodified upstream gate. |
 
 ## DATUM handoff to #163
 
@@ -186,3 +242,10 @@ status **immediately before merge**. If additional rules have shipped, review th
 source, activation and RPC contract as additional scope before accepting another build.
 No proposed reward eligibility rule, address blacklist or draft P2P settlement is
 implemented. Released-source review is not a measurement of network-wide adoption.
+
+Both proposals target changed rules beginning at height 979920. Monitor released
+updates **before that height** and budget another source/build/RPC review and Miningcore
+compatibility release before adopting any successor daemon: the existing pin does not
+auto-accept future builds. Their proposed timing is not an installed rule or a promised
+calendar date; if no successor has shipped, the reviewed 29.4.2 contract remains the
+only supported baseline.

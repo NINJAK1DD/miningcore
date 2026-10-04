@@ -28,15 +28,10 @@ public class BitcoinBlake2bMaturityTests
         } },
     };
 
-    [Theory]
-    [InlineData(973439, 973440, 100)]
-    [InlineData(973440, 973439, 100)]
-    [InlineData(973440, 973440, 6480)]
-    [InlineData(973440, 979919, 6480)]
-    [InlineData(973440, 979920, 100)]
-    public void ConsensusEligibility_IsIndependentOfPersistentWalletPolicy(int coinbase, int spend, int depth)
+    [Fact]
+    public void WalletPolicy_PersistsAfterConsensusRelease()
     {
-        Assert.Equal(depth, BitcoinBlake2bMaturity.Mainnet.ConsensusDepth(coinbase, spend));
+        Assert.False(BitcoinBlake2bMaturity.Mainnet.ActiveAt(979920));
         Assert.Equal(6481, BitcoinBlake2bMaturity.Mainnet.WalletConfirmations);
     }
 
@@ -102,36 +97,15 @@ public class BitcoinBlake2bMaturityTests
             new[] { "!blake2b", "long_coinbase_maturity", rule }, 973440, "test"));
 
     [Theory]
-    [InlineData(102, "immature", 6380, false)]
-    [InlineData(6480, "immature", 2, false)]
-    [InlineData(6481, "generate", 1, false)]
-    [InlineData(6482, "generate", 0, true)]
-    [InlineData(7000, "immature", 0, false)]
-    public void Reward_RequiresWalletSpendabilityAndOperatorPolicy(int confirmations, string category, int remaining, bool confirmed)
-    {
-        var schedule = BitcoinBlake2bMaturity.Mainnet;
-        var block = new RewardBlock { Status = BlockStatus.Pending };
-        BitcoinPayoutHandler.ApplyBlake2bReward(block, new Transaction
-        {
-            Confirmations = confirmations, Amount = 50,
-            Details = new[] { new TransactionDetails { Category = category } },
-        }, schedule, 6482);
-        Assert.Equal(remaining, schedule.Remaining(confirmations, 6482));
-        Assert.Equal(confirmed ? BlockStatus.Confirmed : BlockStatus.Pending, block.Status);
-        Assert.Equal(confirmed, block.NotifyBlockUnlockedOnUpdate);
-        if(!confirmed) Assert.InRange(block.ConfirmationProgress, 0, Math.BitDecrement(1.0));
-    }
-
-    [Theory]
     [InlineData("{}", null)]
     [InlineData("{\"difficulty\":123}", null)]
     [InlineData("{\"difficulty_blake2b\":4294967296}", 4294967296.0)]
     [InlineData("{\"difficulty_blake2b\":2.00001,\"next\":{\"height\":20,\"difficulty_blake2b\":4}}", 2.00001)]
     public void RpcDifficulty_KeepsOldAndExpectedWorkShapesDistinct(string json, double? expected)
     {
-        var mining = JsonConvert.DeserializeObject<MiningInfo>(json);
+        var mining = JsonConvert.DeserializeObject<BitcoinBlake2bMiningInfo>(json);
         Assert.Equal(expected, mining.Blake2bExpectedHashWork?.ExpectedHashes);
-        var historical = JsonConvert.DeserializeObject<Miningcore.Blockchain.Bitcoin.DaemonResponses.Block>("{\"difficulty\":123}");
+        var historical = JsonConvert.DeserializeObject<BitcoinBlake2bRpcBlock>("{\"difficulty\":123}");
         Assert.Equal(123, historical.Difficulty);
         Assert.Null(historical.Blake2bExpectedHashWork);
     }
@@ -145,7 +119,7 @@ public class BitcoinBlake2bMaturityTests
     [InlineData("true")]
     [InlineData("{}")]
     public void RpcExpectedWork_RejectsMalformedPresentValues(string value) =>
-        Assert.ThrowsAny<JsonException>(() => JsonConvert.DeserializeObject<MiningInfo>("{\"difficulty_blake2b\":" + value + "}"));
+        Assert.ThrowsAny<JsonException>(() => JsonConvert.DeserializeObject<BitcoinBlake2bMiningInfo>("{\"difficulty_blake2b\":" + value + "}"));
 
     [Fact]
     public void HeaderV2_PowContractCannotBeChangedByLegacyStakeShape()

@@ -13,8 +13,6 @@ internal sealed record BitcoinBlake2bMaturity(int Start, int Enforce, int Releas
     internal static readonly BitcoinBlake2bMaturity Regtest = new(int.MaxValue, int.MaxValue, int.MaxValue, 100);
 
     internal bool ActiveAt(long spendHeight) => spendHeight >= Enforce && spendHeight < Release;
-    internal int ConsensusDepth(long coinbaseHeight, long spendHeight) =>
-        ActiveAt(spendHeight) && coinbaseHeight >= Start ? Maturity : 100;
     internal int WalletConfirmations => checked(Maturity + 1);
 
     internal static BitcoinBlake2bMaturity ForNetwork(BitcoinBlake2bTemplate coin, string chain, string poolId)
@@ -25,7 +23,7 @@ internal sealed record BitcoinBlake2bMaturity(int Start, int Enforce, int Releas
         if(values.All(x => x == null)) return chain == "main" ? Mainnet : Regtest;
         if(chain != "regtest" || values.Any(x => x == null) ||
             values.Any(x => x < 0 || x >= int.MaxValue) ||
-            values[1] < values[0] || values[2] <= values[1] || values[2] - values[0] <= 100)
+            values[1] < 2 || values[2] <= values[1] || values[2] <= values[0] || values[2] - values[0] <= 100)
             throw new PoolStartupException("Long-maturity overrides require an explicit valid isolated-regtest schedule", poolId);
         return new(values[0]!.Value, values[1]!.Value, values[2]!.Value, values[2]!.Value - values[0]!.Value);
     }

@@ -12,11 +12,19 @@ later hard fork is implemented by the pinned Knots sources listed below.
 ## Compatibility boundary
 
 - A Miningcore build containing this feature is required; v0.3.0 does not contain it.
+- **Upgrade both Knots and Miningcore before mainnet height 973440.** From that
+  height, 29.4.1 templates can include premature coinbase spends rejected by
+  enforcing 29.4.2 nodes. If the height has already been reached, keep mining and
+  payouts stopped until the reviewed daemon has revalidated/synchronized its chain
+  and pending rewards have been reconciled using the upgrade runbook.
 - The reviewed node is **Bitcoin Knots v29.4.2.knots20260508**, commit
   `58398baf33e588779685ead478e6397bb28ed3d6`. Startup requires its version and Knots identifier,
   an active deployment with the expected activation height, and mandatory GBT rule `!blake2b`.
   Version strings are compatibility checks, not proof of binary authenticity: independently
   verify the upstream release checksums and signatures.
+  The reviewed Satoshi/Knots prefix accepts printable `-uacomment` comments and
+  `-uaappend` suffixes, bounded by Knots' 256-byte user-agent limit. Spoofed or
+  contradictory prefixes and release-candidate identifiers remain unsupported.
   Runtime work re-attests version, chain and deployment on the first successful template
   poll after a 30-second cache expires, and before new work after a GBT/activation-parent RPC outage.
   Failed attestation RPCs withhold fresh work and retry with bounded exponential backoff
@@ -106,8 +114,10 @@ planning](pps.md). Deployment inactivity alone is not a reason to release reserv
 Isolated tests may explicitly match the node's
 `-testcoinbasematuritylong=start:enforce:release` using `blake2bMaturityStart`,
 `blake2bMaturityEnforce`, and `blake2bMaturityRelease` in the **regtest coin-template
-network**. All three are required; release is exclusive, enforce must be at least
-start, and release minus start must exceed 100. Every mainnet override is refused.
+network**. All three are required, below `INT_MAX`: start must be nonnegative,
+enforce must be at least 2, release must exceed both, and release minus start must
+exceed 100. Enforcement may precede the first covered coinbase, as Knots permits.
+Every mainnet override is refused.
 Omitting these fields uses the reviewed unscheduled regtest contract and refuses a
 node with an unexpected scheduled deployment. These are fixture settings, not pool
 confirmation controls. The CI fixtures use distinct boundaries; do not add the

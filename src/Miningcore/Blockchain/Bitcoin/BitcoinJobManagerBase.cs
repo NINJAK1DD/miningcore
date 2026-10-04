@@ -675,6 +675,9 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         } while(await timer.WaitForNextTickAsync(ct));
     }
 
+    protected virtual Task<RpcResponse<JToken>[]> ExecuteStartupBatchAsync(CancellationToken ct, RpcRequest[] requests) =>
+        rpc.ExecuteBatchAsync(logger, ct, requests);
+
     protected override async Task PostStartInitAsync(CancellationToken ct)
     {
         var requests = new List<RpcRequest>
@@ -689,7 +692,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         // the RPC used to discover PoS/pseudo-PoS behavior.
         if(poolConfig.Template is not BitcoinBlake2bTemplate)
             requests.Add(new RpcRequest(BitcoinCommands.GetDifficulty));
-        var responses = await rpc.ExecuteBatchAsync(logger, ct, requests.ToArray());
+        var responses = await ExecuteStartupBatchAsync(ct, requests.ToArray());
 
         if(responses.Any(x => x.Error != null))
         {

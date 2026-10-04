@@ -1,4 +1,3 @@
-using Miningcore.Blockchain.BitcoinBlake2b;
 using System.Collections.Concurrent;
 using System.Globalization;
 using Autofac;
@@ -36,7 +35,7 @@ internal sealed class BitcoinDirectSettlementMismatchException : Exception
     }
 }
 
-[CoinFamily(CoinFamily.Bitcoin, CoinFamily.BitcoinBlake2b, CoinFamily.Nexa)]
+[CoinFamily(CoinFamily.Bitcoin, CoinFamily.Nexa)]
 public class BitcoinPayoutHandler : PayoutHandlerBase,
     IPayoutHandler
 {
@@ -79,8 +78,6 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     private int payoutDecimalPlaces = 4;
     private CoinTemplate coin;
     private int minConfirmations;
-    private BitcoinBlake2bMaturity blake2bMaturity;
-    private string blake2bChain;
     private static readonly TimeSpan UncertainBlockLifetime = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan PayoutVerificationRetryDelay = TimeSpan.FromSeconds(1);
     private const int MinimumDefinitiveMisses = 3;
@@ -139,8 +136,6 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         extraPoolPaymentProcessingConfig = pc.PaymentProcessing.Extra.SafeExtensionDataAs<BitcoinPoolPaymentProcessingConfigExtra>();
 
         coin = poolConfig.Template.As<CoinTemplate>();
-        blake2bMaturity = null;
-        blake2bChain = null;
         if(coin is BitcoinTemplate bitcoinTemplate)
         {
             minConfirmations = extraPoolConfig?.MinimumConfirmations ??
@@ -165,14 +160,6 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         Contract.RequiresNonNull(poolConfig);
         Contract.RequiresNonNull(blocks);
 
-        await ValidateBlake2bPayoutContractAsync(ct);
-        if(blake2bMaturity != null)
-        {
-            if(blocks.Any(IsDirectCoinbaseSettlement))
-                throw new InvalidDataException("Bitcoin BLAKE2b direct-coinbase settlement requires the separate reviewed DATUM implementation");
-            foreach(var pending in blocks.Where(x => x.Status == BlockStatus.Pending))
-                pending.ConfirmationProgress = Math.Clamp(pending.ConfirmationProgress, 0, Math.BitDecrement(1.0));
-        }
         var pageSize = 100;
         var pageCount = (int) Math.Ceiling(blocks.Length / (double) pageSize);
         var result = new List<Block>();
@@ -490,45 +477,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 else
                 {
-                    if(blake2bMaturity != null)
-                    {
-                        var activeBlock = await GetBlockAsync(block.Hash, ct);
-                        var activity = ClassifyBlockActivity(activeBlock, block.Hash);
-                        if(activity == BlockActivity.Inactive)
-                        {
-                            block.Status = BlockStatus.Orphaned;
-                            block.ConfirmationProgress = 0;
-                            block.Reward = 0;
-                            block.NotifyBlockUnlockedOnUpdate = true;
-                            result.Add(block);
-                            continue;
-                        }
-                        if(activity != BlockActivity.Active || activeBlock.Response.Height != block.BlockHeight || !transactionInfo.Generated ||
-                            transactionInfo.Confirmations <= 0 ||
-                            !string.Equals(transactionInfo.BlockHash, block.Hash, StringComparison.OrdinalIgnoreCase) ||
-                            !string.Equals(transactionInfo.TxId, block.TransactionConfirmationData, StringComparison.OrdinalIgnoreCase) ||
-                            transactionInfo.Details[0].Category is not ("immature" or "generate"))
-                        {
-                            // Outage, reindexing and unfamiliar wallet responses are
-                            // not proof of an orphan or permission to book a reward.
-                            block.Status = BlockStatus.Pending;
-                            result.Add(block);
-                            continue;
-                        }
-                        // The chain lookup follows the wallet batch. A downward
-                        // reorg cannot unlock using a stale wallet depth.
-                        transactionInfo.Confirmations = Math.Min(transactionInfo.Confirmations, activeBlock.Response.Confirmations);
-                    }
                     switch(transactionInfo.Details[0].Category)
                     {
-                        case "immature" when blake2bMaturity != null:
-                        case "generate" when blake2bMaturity != null:
-                            ClearUnavailableActiveBlockGrace(block);
-                            ApplyBlake2bReward(block, transactionInfo, blake2bMaturity, minConfirmations);
-                            result.Add(block);
-                            logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight}: wallet category {transactionInfo.Details[0].Category}, confirmations {transactionInfo.Confirmations}, remaining depth {blake2bMaturity.Remaining(transactionInfo.Confirmations, minConfirmations)}, status {block.Status}");
-                            break;
-
                         case "immature":
                             ClearUnavailableActiveBlockGrace(block);
 
@@ -571,45 +521,6 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         }
 
         return result.ToArray();
-    }
-
-    internal static void ApplyBlake2bReward(Block block, Transaction transaction,
-        BitcoinBlake2bMaturity maturity, int operatorConfirmations)
-    {
-        var immature = transaction.Details[0].Category == "immature";
-        var spendable = !immature && transaction.Confirmations >= maturity.RequiredConfirmations(operatorConfirmations);
-        block.Status = spendable ? BlockStatus.Confirmed : BlockStatus.Pending;
-        block.ConfirmationProgress = maturity.Progress(transaction.Confirmations, operatorConfirmations, immature);
-        block.Reward = transaction.Amount;
-        block.NotifyBlockConfirmationProgressOnUpdate = !spendable;
-        block.NotifyBlockUnlockedOnUpdate = spendable;
-    }
-
-    protected virtual Task<RpcResponse<JObject>> ReadBlake2bPayoutContractAsync(string method, CancellationToken ct) =>
-        rpcClient.ExecuteAsync<JObject>(logger, method, ct);
-
-    private async Task ValidateBlake2bPayoutContractAsync(CancellationToken ct)
-    {
-        if(coin is not BitcoinBlake2bTemplate template) return;
-        var identity = await ReadBlake2bPayoutContractAsync(BitcoinCommands.GetNetworkInfo, ct);
-        var chain = await ReadBlake2bPayoutContractAsync(BitcoinCommands.GetBlockchainInfo, ct);
-        var deployment = await ReadBlake2bPayoutContractAsync("getdeploymentinfo", ct);
-        ct.ThrowIfCancellationRequested();
-        if(identity.Error != null || chain.Error != null || deployment.Error != null)
-            throw new InvalidOperationException("Bitcoin BLAKE2b payout attestation unavailable; rewards and balances remain pending");
-        BitcoinBlake2bJobManager.ValidateDaemonIdentity(identity.Response, poolConfig.Id);
-        if(chain.Response?["initialblockdownload"]?.Type != JTokenType.Boolean ||
-            chain.Response["initialblockdownload"].Value<bool>())
-            throw new InvalidOperationException("Bitcoin BLAKE2b payout chain is not ready; wait for synchronization/revalidation");
-        var chainName = chain.Response?["chain"]?.Type == JTokenType.String ? chain.Response["chain"].Value<string>() : null;
-        if(blake2bChain != null && chainName != blake2bChain)
-            throw new PoolStartupException("Bitcoin BLAKE2b payout daemon chain changed", poolConfig.Id);
-        var schedule = BitcoinBlake2bMaturity.ForNetwork(template, chainName, poolConfig.Id);
-        BitcoinBlake2bJobManager.ValidateDeployment(deployment.Response,
-            template.Networks[chainName].Blake2bActivationHeight!.Value, poolConfig.Id);
-        schedule.ValidateDeployment(deployment.Response, poolConfig.Id);
-        blake2bChain = chainName;
-        blake2bMaturity = schedule;
     }
 
     internal static bool IsDirectCoinbaseSettlement(Block block) =>
@@ -1081,10 +992,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             : BlockActivity.Unavailable;
     }
 
-    private bool SupportsActiveBlockGrace(Block block)
+    private static bool SupportsActiveBlockGrace(Block block)
     {
-        return block.Type is "auxpow" or "merged-parent" ||
-            (coin is BitcoinBlake2bTemplate && !string.IsNullOrEmpty(block.Hash));
+        return block.Type is "auxpow" or "merged-parent";
     }
 
     private void NotifyDirectSettlementMismatchGrace(Block block,
@@ -1178,7 +1088,6 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     public virtual async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
     {
         Contract.RequiresNonNull(balances);
-        await ValidateBlake2bPayoutContractAsync(ct);
 
         // build args
         var requestedAmounts = balances

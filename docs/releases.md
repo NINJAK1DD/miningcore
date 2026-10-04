@@ -563,6 +563,12 @@ and payout checks enforce the reviewed long-maturity deployment and GBT transiti
 contract. Wallet-aware progress and active-chain verification keep immature or
 unverified rewards pending without rescaling shares or reversing PPS liabilities.
 See the [29.4.2 review, upgrade and DATUM handoff](bitcoin-blake2b-knots-29.4.2-review.md).
+Upgrade both the daemon and Miningcore **before mainnet height 973440**. Old templates
+can include premature coinbase spends rejected by enforcing nodes after that boundary;
+keep admission stopped if revalidation/synchronization and reconciliation are incomplete.
+The dedicated payout handler verifies retained block headers on pruned nodes, preserves
+immature wallet credit, alerts on prolonged contradictory evidence and quarantines
+unsupported direct-settlement rows without blocking valid custodial reconciliation.
 
 The separate `bitcoin-blake2b` template and runtime target the reviewed Bitcoin Knots
 29.4.2.knots20260508 hard-fork chain. They do not replace SHA-256d `bitcoin`, enable BTC
