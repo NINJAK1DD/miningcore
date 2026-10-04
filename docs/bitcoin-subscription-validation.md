@@ -67,7 +67,7 @@ describe the resulting protocol and testing behavior without depending on review
 | Replay subscription instead of rejection | Document why rejection matches BLAKE2b and the accepted issue contract while retaining one recoverable retry. Replaying success would give clients a different retry contract. |
 | Snapshot extranonce/version mask per job | Preserve the stable session extranonce; shared job templates must not contain worker-specific values. Apply BIP310's last-received-mask submit rule to repeated configure responses, as defined by Miningcore's policy. Add a TCP mask-change regression and real Core acceptance with latest-mask rolled headers. |
 | Baseline-only branch / wording / dated evidence / troubleshooting | Label the old-mismatch reproduction branch, replace the firmware commissioning wording, move dated evidence into this record and add canonical subscription troubleshooting. |
-| Queue completion regression stability | Use the internal `StratumConnection.CompleteSendQueue()` boundary shared with transport teardown, so failed-warning enqueue tests do not depend on private queue storage or its field name. |
+| Queue completion and inspection regression stability | Use the internal `StratumConnection.CompleteSendQueue()` boundary shared with transport teardown and nonblocking `TryReceiveQueuedMessage()` inspection for tests. Publication and notification-snapshot regressions retain their ordering/failure assertions without depending on private queue storage or its field name. Inspection tests omit the sender or hold it at a barrier. |
 
 The version-mask decision follows the primary [BIP310 specification](https://github.com/bitcoin/bips/blob/master/bip-0310.mediawiki),
 which calculates submitted `nVersion` from the job version and the last mask received by the
@@ -104,3 +104,16 @@ method shared with transport shutdown, retaining their original failure assertio
 - Documented Ubuntu 22.04 WSL lab: the same selection with pinned Core 28.1 enabled produced
   **255 passed, 0 skipped, 0 failed**, including custodial/direct block acceptance.
 - Documentation, local link/anchor, diagnostic-source and generated migration guards passed.
+
+## Queue inspection tidy-up validation
+
+The optional follow-up from the review at `e5f5d78ee` removes the remaining three private
+send-queue reflection sites in BLAKE2b publication and notification-snapshot tests. The internal
+nonblocking inspection method returns one queued payload without exposing the queue. Snapshot
+tests omit a sender; publication fault injection holds the sender at its existing barrier.
+All original payload ordering, empty-queue and publication-failure assertions are retained.
+
+The relevant notification-snapshot, canonical/BLAKE2b publication and transport selection
+passed **293 cases on Windows and 293 in the documented Ubuntu 22.04 WSL lab**, with zero
+failures or skips on either platform. No test in the project refers to the private send-queue
+field after this tidy-up.

@@ -95,6 +95,10 @@ public class StratumConnection
     // Dispatch owns teardown; publication tests can exercise a declined enqueue
     // through this same completion boundary without reflecting on queue storage.
     internal void CompleteSendQueue() => sendQueue.Complete();
+    // Destructive, nonblocking read for publication fault injection and payload
+    // snapshots. Tests must omit the transport sender or hold it at a barrier.
+    // Keep the queue implementation private; this does not change admission state.
+    internal bool TryReceiveQueuedMessage(out object message) => sendQueue.TryReceive(out message);
     // Cancellation callbacks may not yet have propagated fail-stop to the linked
     // request token. Recognize only cancellation carrying this connection's gate token.
     internal bool IsMiningFailStopCancellation(Exception failure) =>
