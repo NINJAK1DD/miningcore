@@ -47,9 +47,9 @@ The reviewed archive SHA-256 values are:
 
 | Archive | SHA-256 |
 | --- | --- |
-| `bitcoin-29.4.2.knots20260508-x86_64-linux-gnu.tar.gz` | `b59d0445a317e21a03dc29425db3aba79b27d5125230b1a2b1dce62e120827c5` |
-| `bitcoin-29.4.2.knots20260508-win64-pgpverifiable.zip` | `8fa3445a0f3ecc7d1f9e4f4778e44c786883437ac781902a38135be5ea0a892b` |
-| `bitcoin-29.4.2.knots20260508.tar.gz` (released source) | `11c0b99a82b8b1c9c29ab76d9b0507ce1017813665741627b3f3883a4c2f7a7f` |
+| `bitcoin-29.4.2.knots20260508-x86_64-linux-gnu.tar.gz` | SHA-256 `b59d0445a317e21a03dc29425db3aba79b27d5125230b1a2b1dce62e120827c5` |
+| `bitcoin-29.4.2.knots20260508-win64-pgpverifiable.zip` | SHA-256 `8fa3445a0f3ecc7d1f9e4f4778e44c786883437ac781902a38135be5ea0a892b` |
+| `bitcoin-29.4.2.knots20260508.tar.gz` (released source) | SHA-256 `11c0b99a82b8b1c9c29ab76d9b0507ce1017813665741627b3f3883a4c2f7a7f` |
 
 The review verified `SHA256SUMS.asc` against `SHA256SUMS` with valid signatures from
 Chris Guida (`658E64021E5793C6C4E15E45C2E581F5B998F30E`) and bitcoinmechanic
