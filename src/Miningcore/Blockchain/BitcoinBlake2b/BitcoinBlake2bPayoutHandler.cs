@@ -55,31 +55,81 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler
 
     private async Task<BitcoinBlake2bMaturity> AttestAsync(CancellationToken ct)
     {
-        var identity = await ReadBlake2bPayoutContractAsync(BitcoinCommands.GetNetworkInfo, ct);
-        var chain = await ReadBlake2bPayoutContractAsync(BitcoinCommands.GetBlockchainInfo, ct);
-        var deployment = await ReadBlake2bPayoutContractAsync("getdeploymentinfo", ct);
+        RpcResponse<JObject> identity, chain, deployment;
+        try
+        {
+            identity = await ReadBlake2bPayoutContractAsync(BitcoinCommands.GetNetworkInfo, ct);
+            chain = await ReadBlake2bPayoutContractAsync(BitcoinCommands.GetBlockchainInfo, ct);
+            deployment = await ReadBlake2bPayoutContractAsync("getdeploymentinfo", ct);
+        }
+        catch(JsonException)
+        {
+            throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.ContractDrift);
+        }
+        catch(Exception ex) when(ex is HttpRequestException or TimeoutException ||
+            ex is OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.RpcUnavailable);
+        }
         ct.ThrowIfCancellationRequested();
         if(identity?.Error != null || chain?.Error != null || deployment?.Error != null ||
             identity?.Response == null || chain?.Response == null || deployment?.Response == null)
-            throw new InvalidOperationException("Bitcoin BLAKE2b payout attestation unavailable; rewards and balances remain pending");
-        if(chain.Response["initialblockdownload"]?.Type != JTokenType.Boolean ||
-            chain.Response["initialblockdownload"].Value<bool>())
-            throw new InvalidOperationException("Bitcoin BLAKE2b payout chain is not ready; wait for synchronization/revalidation");
+            throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.RpcUnavailable);
+        if(chain.Response["initialblockdownload"]?.Type != JTokenType.Boolean)
+            throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.ContractDrift);
+        if(chain.Response["initialblockdownload"].Value<bool>())
+            throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.Syncing);
         var chainName = chain.Response["chain"]?.Type == JTokenType.String ? chain.Response["chain"].Value<string>() : null;
+        BitcoinBlake2bMaturity schedule;
         try
         {
             BitcoinBlake2bJobManager.ValidateDaemonIdentity(identity.Response, poolConfig.Id);
-            var schedule = BitcoinBlake2bMaturity.ForNetwork(coin, chainName, poolConfig.Id);
+            schedule = BitcoinBlake2bMaturity.ForNetwork(coin, chainName, poolConfig.Id);
             BitcoinBlake2bJobManager.ValidateDeployment(deployment.Response,
                 coin.Networks[chainName].Blake2bActivationHeight!.Value, poolConfig.Id);
             schedule.ValidateDeployment(deployment.Response, poolConfig.Id);
-            contracts.Attest(poolConfig.Id, chainName, schedule);
-            return schedule;
         }
-        catch(PoolStartupException ex)
+        catch(PoolStartupException)
         {
-            throw new InvalidOperationException("Bitcoin BLAKE2b payout contract differs from the reviewed build/chain/deployment; reconciliation is withheld", ex);
+            throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.ContractDrift);
         }
+        try { contracts.Attest(poolConfig.Id, chainName, schedule); }
+        catch(InvalidOperationException)
+        { throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.BindingMismatch); }
+        foreach(var reason in Enum.GetValues<BitcoinBlake2bPayoutAttestationReason>())
+            grace.Clear(poolConfig.Id, 0, null, AttestationEpisode(reason));
+        return schedule;
+    }
+
+    private static string AttestationEpisode(BitcoinBlake2bPayoutAttestationReason reason) =>
+        $"bitcoin-blake2b:attestation:{reason}";
+
+    private BitcoinBlake2bPayoutAttestationException AttestationFailure(BitcoinBlake2bPayoutAttestationReason reason)
+    {
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinBlake2bPayoutHandler.AttestAsync",
+            code: (int) reason, poolId: poolConfig.Id, stage: RpcConsumerDiagnostics.Stage.Unavailable);
+        foreach(var other in Enum.GetValues<BitcoinBlake2bPayoutAttestationReason>().Where(x => x != reason))
+            grace.Clear(poolConfig.Id, 0, null, AttestationEpisode(other));
+        var episode = AttestationEpisode(reason);
+        var delay = reason is BitcoinBlake2bPayoutAttestationReason.ContractDrift or
+            BitcoinBlake2bPayoutAttestationReason.BindingMismatch ? TimeSpan.Zero : AlertAfter;
+        if(grace.TryAcquireNotification(poolConfig.Id, 0, null, episode, clock.Now, delay))
+        {
+            try
+            {
+                messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}] Bitcoin BLAKE2b payout attestation withheld",
+                    $"Pool {poolConfig.Id}: reason {reason} ({(int) reason}). Rewards and balances are retained. " +
+                    "Check node synchronization, RPC availability and the reviewed daemon/chain/deployment configuration. " +
+                    "A changed process binding requires the documented stop/reconcile/restart. Sensitive RPC details are withheld."));
+                grace.MarkNotificationSent(poolConfig.Id, 0, null, episode);
+            }
+            catch(Exception ex)
+            {
+                grace.ReleaseNotification(poolConfig.Id, 0, null, episode);
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinBlake2bPayoutHandler.NotifyAttestationFailure", failure: ex);
+            }
+        }
+        return new(reason);
     }
 
     protected virtual Task<RpcResponse<JObject>> GetBlockHeaderAsync(string hash, CancellationToken ct) =>
@@ -114,6 +164,7 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler
         var custodial = new List<Block>();
         foreach(var block in blocks)
         {
+            block.BitcoinBlake2bCustodialEvidenceVerified = false;
             if(IsDirectCoinbaseSettlement(block))
             {
                 block.Status = BlockStatus.Quarantined;
@@ -126,7 +177,9 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler
                 logger.Error(() => $"[{LogCategory}] Block {block.BlockHeight} quarantined: direct-coinbase settlement requires the separately reviewed DATUM implementation");
                 continue;
             }
-            block.Status = BlockStatus.Pending;
+            // An orphan is reopened only by matching active header AND wallet
+            // evidence below, never merely by entering a new payout cycle.
+            if(block.Status != BlockStatus.Orphaned) block.Status = BlockStatus.Pending;
             block.ConfirmationProgress = double.IsFinite(block.ConfirmationProgress)
                 ? Math.Clamp(block.ConfirmationProgress, 0, Math.BitDecrement(1.0)) : 0;
             ResetNotifications(block);
@@ -144,10 +197,11 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler
                 var header = await ReadHeaderAsync(block.Hash, ct);
                 if(header?.Confirmations == -1 && header.Height == block.BlockHeight)
                 {
+                    var wasOrphaned = block.Status == BlockStatus.Orphaned;
                     block.Status = BlockStatus.Orphaned;
                     block.ConfirmationProgress = 0;
                     block.Reward = 0;
-                    block.NotifyBlockUnlockedOnUpdate = true;
+                    block.NotifyBlockUnlockedOnUpdate = !wasOrphaned;
                     ClearDelay(block);
                 }
                 else
@@ -170,10 +224,11 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler
                             block.Status = spendable ? BlockStatus.Confirmed : BlockStatus.Pending;
                             block.ConfirmationProgress = schedule.Progress(confirmations, operatorConfirmations, immature);
                             block.Reward = reward;
+                            block.BitcoinBlake2bCustodialEvidenceVerified = true;
                             block.NotifyBlockConfirmationProgressOnUpdate = !spendable;
                             block.NotifyBlockUnlockedOnUpdate = spendable;
                             ClearDelay(block);
-                            logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight}: confirmations {confirmations}, remaining depth {schedule.Remaining(confirmations, operatorConfirmations)}, status {block.Status}");
+                            logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight}: wallet category {(immature ? "immature" : "generate")}, confirmations {confirmations}, remaining depth {schedule.Remaining(confirmations, operatorConfirmations)}, status {block.Status}");
                         }
                     }
                     catch(Exception ex) when(ex is JsonException or OverflowException)

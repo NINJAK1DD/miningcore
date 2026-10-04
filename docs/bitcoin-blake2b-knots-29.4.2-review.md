@@ -49,7 +49,8 @@ spendable reserves. Missing or contradictory wallet/header evidence triggers one
 family-specific alert after 30 minutes per continuous episode; verified reconciliation
 clears it. A process-scoped binding survives payout-handler recreation and configuration
 cycles, refusing chain/schedule changes until the documented stop/restart. Expected-work
-RPC types are isolated to BLAKE2b; optional extensions cannot disrupt legacy daemons.
+RPC expected-work models are test fixtures; production ignores those optional
+extensions instead of consuming them in legacy or BLAKE2b accounting.
 
 ## Release verification
 
@@ -92,6 +93,17 @@ At or beyond enforcement, 29.4.1 templates may include coinbase spends rejected 
 revalidation, synchronization and reconciliation before resuming.
 
 1. Close new mining/PPS/payment admission and perform the documented graceful drain.
+   Plan this before the deadline: pause new wallet broadcasts and verify every
+   already-broadcast payout has confirmed on the validated chain before stopping
+   29.4.1. Record its txid, consumed coinbases, recipients and durable batch outcome.
+   A 29.4.2 restart re-locks **all** coinbases with 101–6480 confirmations; its mempool
+   rejects their spends even when they were spendable under 29.4.1. Unconfirmed
+   payouts may be evicted or not relayed by reviewed peers, and their change may
+   become unavailable. A recorded payment/txid does not prove confirmation.
+   If confirmation cannot be obtained safely before enforcement, keep admission
+   stopped, preserve the unresolved outcomes and reconcile them after upgrading;
+   do not delay the required consensus upgrade or rebroadcast a replacement as a
+   second payout without resolving the original transaction through the durable path.
    Keep accepted shares, the accounting/recovery journals, uncertain candidates,
    payment-batch identities and database backups. Do not cancel owned submissions
    or erase unresolved payment outcomes to force an upgrade.
@@ -107,7 +119,14 @@ revalidation, synchronization and reconciliation before resuming.
    and payment batches through the existing durable paths. A confirmed or orphaned
    block does not reprice or reverse already-booked PPS liabilities.
 5. Compare immature wallet funds, mature spendable liquidity and outstanding balances
-   with the [PPS reserve policy](pps.md). The long wallet lock survives consensus
+   using the dedicated wallet's `getbalances` after synchronization/indexing.
+   Blocks credited as Confirmed under 29.4.1 can lose their liquid backing at upgrade
+   until their coinbases reach 6481 confirmations. Keep those credited balances and
+   PPS liabilities; fund them with independently verified mature reserves. Check
+   prior payout confirmations/conflicts and change outputs before resuming. Chainstate
+   revalidation can also invalidate prior observations, so a pre-upgrade confirmation
+   is evidence to reconcile, rather than permission to skip this check.
+   Follow the [PPS reserve policy](pps.md). The long wallet lock survives consensus
    release. Resume PPS admission only when independently monitored mature reserves
    cover the operator's policy; Miningcore has no automatic solvency guarantee.
 6. Commission the supported miner/Stratum profiles against the exact target boundary
@@ -193,11 +212,57 @@ apply; this evidence does not claim a passing full Windows suite.
 | M2: zero immature reward | Owned `details[].amount` credit survives a zero top-level wallet amount. Live tests assert the pending value; malformed, duplicate, mixed-category and overflow output evidence stays pending. |
 | M3: upgrade deadline | Upgrade before 973440; successor-review planning before proposed divergence at 979920 is explicit in the runbook/release notes. |
 | L3: one unsupported row stops the pool | Quarantine direct-settlement rows individually; preserve legacy submission metadata and continue healthy custodial reconciliation without crediting the unsupported row. |
-| L4: shared strict RPC extensions | Opt-in BLAKE2b response types isolate the expected-work converter; legacy Bitcoin-family DTOs ignore unrelated null/malformed extensions. |
+| L4: shared strict RPC extensions | Test-fixture response types isolate expected-work conversion; production Bitcoin-family and BLAKE2b DTOs ignore these unrelated optional extensions. |
 | L5: regtest parser mismatch | Constraints match released `chainparams.cpp`, including enforce >= 2 and enforce-before-start; loader tests and a real distinct-boundary schedule verify both. |
 | L6: coverage/fixture gaps | Added all grace/mismatch cases, PoW/PoS startup batch positions, customized agents and production payout-handler selection. Unscheduled regtest mocks now omit the deployment as Knots does. |
 | L7: CI transport/diagnostic fragility | Checksum-keyed caching, warm/cold real-daemon gates and five offline cache/diagnostic checks. |
 | Other review notes | Dedicated payout subclass, process-scoped chain/schedule binding across configuration cycles, runtime payout exceptions, and removal of the unused consensus-depth helper. Consensus boundaries remain tested by the unmodified upstream gate. |
+
+## Re-review hardening
+
+Final re-review validation in the same documented lab passed **3635 Linux tests,
+zero failures, one skipped benchmark**, and **730 Windows live/compatibility/ledger/
+diagnostic tests, zero failures/skips**. The five maturity integration tests passed
+independently, including the new persisted lifecycle across all four schemes;
+254 focused transaction/recovery/diagnostic tests also passed. The final documentation,
+workflow-pin, diagnostic-boundary, offline cache and shell/whitespace gates passed.
+Native source and upstream functional scripts/binaries were unchanged; the Linux
+run reused checksum-verified native outputs through the complete SDK managed build.
+The previously documented Windows full-suite TLS limitation still applies.
+
+The second re-review identified a persistence gap: handler-only invalidate/reconsider
+tests did not prove recovery after Orphaned had committed. Production now reloads
+custodial BLAKE2b orphans in keyset batches of 64 within 12960 blocks of the observed
+tip, advancing and wrapping on every normal payout cycle. This avoids repeatedly
+examining an unavailable oldest prefix. The cursor resets at process restart;
+persisted candidate/status evidence remains authoritative. No schema migration or
+direct-settlement schema dependency is introduced.
+
+An orphan stays orphaned on unavailable evidence. Reopening requires a matching
+active header, wallet coinbase and owned reward credit. The row-lock commit verifies
+unchanged pool/row ID, height, hash, coinbase txid, miner, creation time, source,
+network difficulty and candidate type/settlement mode. Confirmed custodial rows are
+excluded from both selection and commit, preventing stale replay from allocating
+the reward twice. Their booked balances/PPS liabilities are not reversed.
+
+The real Knots/PostgreSQL test exercises all four schemes through production
+`PayoutManager`, repository queries, row locks, block commits and balance allocation:
+Pending -> persisted Orphaned -> Pending, then persisted Orphaned -> Confirmed.
+It recreates managers/handlers, never resets the stored Status, preserves PPS
+liabilities, and rejects a stale confirmed classification without extra balance
+changes or wallet payments. Separate tests cover bounded cursor wrap, immutable
+evidence changes, unavailable orphan evidence and already-confirmed replay refusal.
+
+| Re-review finding | Resolution |
+| --- | --- |
+| P1: persisted orphan/reactivation hole | Bounded typed-family selection and immutable row-lock admission, with fresh active wallet/header evidence and real persisted lifecycle tests for SOLO/PROP/PPLNS/PPS. |
+| P3: wallet-category log mismatch | Success logs include the reviewed `immature`/`generate` category; captured-log tests verify both. |
+| N1: upgrade re-locks prior payouts/liquidity | Runbook requires planned broadcast drain/confirmation before stopping 29.4.1, preserves unresolved outcomes if the deadline prevents confirmation, and checks `getbalances`, previous payouts/change and liabilities after upgrade. Pinned wallet/mempool source establishes the all-coinbase policy. |
+| N2: indistinguishable payout-attestation stalls | Fixed diagnostic codes 701–704 and bounded redacted alerts distinguish RPC availability, syncing, contract drift and binding mismatch; tests cover recreation, recovery, transport/parse errors and cancellation. |
+| N3: unknown headers remain unresolved | Operator guide explains why -5 cannot prove orphaning, the once-per-episode alert policy, verified node/wallet repair/rescan and ledger/payment safeguards; unavailable evidence retains its existing status. |
+| Unused expected-work models | Moved to test fixtures and corrected the guide/release notes: production ignores optional expected-work fields and preserves target-derived accounting. |
+| User-agent diagnostic redaction | Received daemon subversion is withheld from startup errors as well as logs/alerts; private RPC inspection remains available. Tests reject malicious agents without exposing their payload. |
+| Commit explanation and stale PR test counts | The prior restructuring commit has a detailed body; the recovery commit and PR description record the final scope and current validation evidence. |
 
 ## DATUM handoff to #163
 

@@ -5,14 +5,19 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
+using Dapper;
+using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Configuration;
+using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Payments;
+using Miningcore.Payments.PaymentSchemes;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
+using Miningcore.Persistence.Postgres.Repositories;
 using Miningcore.Rpc;
 using Miningcore.JsonRpc;
 using Miningcore.Tests.Blockchain.Bitcoin;
@@ -156,11 +161,11 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
         await Classify();
         Assert.Equal(BlockStatus.Confirmed, older.Status);
         fixture.Handler.ContractUnavailable = true;
-        await Assert.ThrowsAsync<InvalidOperationException>(Classify);
+        await Assert.ThrowsAsync<BitcoinBlake2bPayoutAttestationException>(Classify);
         Assert.Equal(BlockStatus.Pending, covered.Status);
         fixture.Handler.ContractUnavailable = false;
         fixture.Handler.ContractChanged = true;
-        await Assert.ThrowsAsync<InvalidOperationException>(Classify);
+        await Assert.ThrowsAsync<BitcoinBlake2bPayoutAttestationException>(Classify);
         Assert.Equal(BlockStatus.Pending, covered.Status);
         fixture.Handler.ContractChanged = false;
         fixture = await Handler(node, coin); // new handler after restart/upgrade reconciliation
@@ -172,12 +177,10 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
         Assert.Equal(1, covered.ConfirmationProgress);
         // A pending record whose coinbase leaves the active chain is orphaned;
         // the share/PPS ledger is not part of reward classification.
-        covered.Status = BlockStatus.Pending;
         await node.RootRpcAsync("invalidateblock", covered.Hash);
         await Classify();
         Assert.Equal(BlockStatus.Orphaned, covered.Status);
         await node.RootRpcAsync("reconsiderblock", covered.Hash);
-        covered.Status = BlockStatus.Pending;
         fixture = await Handler(node, coin);
         await Classify();
         Assert.Equal(BlockStatus.Confirmed, covered.Status);
@@ -232,6 +235,116 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
         await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { reward }, CancellationToken.None);
         Assert.Equal(BlockStatus.Confirmed, reward.Status);
         Assert.Empty(fixture.Payments.ReceivedCalls());
+    }
+
+    [BitcoinBlake2bLedgerIntegrationFact]
+    public async Task PersistedOrphan_ReactivationThroughPayoutManagerRestoresAllSchemesExactlyOnce()
+    {
+        foreach(var payoutScheme in new[] { PayoutScheme.SOLO, PayoutScheme.PROP, PayoutScheme.PPLNS, PayoutScheme.PPS })
+        {
+            await using var node = await Node.StartAsync(true,
+                Environment.GetEnvironmentVariable(BitcoinBlake2bIntegrationFactAttribute.BinaryEnvironmentVariable),
+                new[] { "-testactivationheight=blake2b@20", "-blake2b_headline=Miningcore BLAKE2b regtest",
+                    "-testcoinbasematuritylong=30:134:140" }, 31);
+            await using var db = await BitcoinBlake2bLedgerProbe.CreateAsync(fullSchema: true);
+            var mapper = AutoMapperFactory.CreateMapper();
+            var cf = db.Factory;
+            var blocks = new BlockRepository(mapper);
+            var shares = new ShareRepository(mapper);
+            var balances = new BalanceRepository(mapper);
+            var messages = Substitute.For<IMessageBus>();
+            var config = new PoolConfig
+            {
+                Id = "blake2b-persist-" + payoutScheme, Coin = "bitcoin-blake2b", Template = Coin(30, 134, 140),
+                Address = await node.GetNewAddressAsync(), Daemons = new[] { node.WalletEndpoint },
+                RewardRecipients = Array.Empty<RewardRecipient>(),
+                Extra = new Dictionary<string, object> { ["minimumConfirmations"] = 1 },
+                PaymentProcessing = new PoolPaymentProcessingConfig { Enabled = true, PayoutScheme = payoutScheme },
+            };
+            var cluster = new ClusterConfig { PaymentProcessing = new ClusterPaymentProcessingConfig() };
+            var pool = Substitute.For<IMiningPool>();
+            pool.Config.Returns(config);
+            pool.NetworkStats.Returns(new BlockchainStats { BlockHeight = 31 });
+            var contracts = new BitcoinBlake2bPayoutContractTracker();
+            var grace = new ActiveBlockGracePeriodTracker();
+            async Task<BitcoinBlake2bPayoutHandler> NewHandler()
+            {
+                var result = new BitcoinBlake2bPayoutHandler(container, cf, mapper, shares, blocks, balances,
+                    new PaymentRepository(mapper), new StandardClock(), messages, grace, contracts);
+                await result.ConfigureAsync(cluster, config, CancellationToken.None);
+                return result;
+            }
+            PayoutManager NewManager() => new(container, cf, blocks, shares, balances, cluster, messages,
+                Substitute.For<IPayoutManagerLease>(), new ProcessStatus());
+            var handler = await NewHandler();
+            var manager = NewManager();
+            IPayoutScheme scheme = payoutScheme switch
+            {
+                PayoutScheme.SOLO => new SOLOPaymentScheme(shares, balances),
+                PayoutScheme.PROP => new PROPPaymentScheme(cf, shares, blocks, balances),
+                PayoutScheme.PPLNS => new PPLNSPaymentScheme(cf, shares, blocks, balances),
+                _ => new PPSPaymentScheme(shares),
+            };
+            var reward = await Reward(node, 30);
+            reward.PoolId = config.Id;
+            reward.Miner = await node.GetNewAddressAsync();
+            reward.NetworkDifficulty = 1;
+            reward.Created = DateTime.UtcNow.AddSeconds(-1);
+            reward.Effort = reward.MinerEffort = 1;
+            Assert.True(await blocks.InsertAsync(db.Observer, null, reward));
+            reward.Id = await db.Observer.ExecuteScalarAsync<long>("SELECT id FROM blocks WHERE poolid=@PoolId", reward);
+            if(payoutScheme == PayoutScheme.PPS)
+                await balances.AddAmountAsync(db.Observer, null, config.Id, reward.Miner, 7m, "Previously booked PPS liability");
+            else
+                await shares.BatchInsertAsync(db.Observer, null, new[] { new Miningcore.Persistence.Model.Share
+                {
+                    PoolId = config.Id, BlockHeight = reward.BlockHeight, Miner = reward.Miner,
+                    Difficulty = 2, NetworkDifficulty = 1, IpAddress = "127.0.0.1", Created = reward.Created,
+                } }, CancellationToken.None);
+            Task Cycle() => manager.UpdatePoolBalancesAsync(pool, config, handler, scheme, CancellationToken.None);
+            async Task<RewardBlock> Stored() => await cf.RunTx((con, tx) => blocks.GetBlockByIdForUpdateAsync(con, tx, reward.Id));
+            await Cycle();
+            Assert.Equal(BlockStatus.Pending, (await Stored()).Status);
+            await node.RootRpcAsync("invalidateblock", reward.Hash);
+            await Cycle();
+            Assert.Equal(BlockStatus.Orphaned, (await Stored()).Status);
+            Assert.Equal(0, (await Stored()).Reward);
+            Assert.Empty(await blocks.GetPendingBlocksForPoolAsync(db.Observer, config.Id));
+            await node.RootRpcAsync("reconsiderblock", reward.Hash);
+            // Restart manager/handler; the database row remains Orphaned. No
+            // test assignment or SQL reset of status participates in recovery.
+            manager = NewManager();
+            handler = await NewHandler();
+            await Cycle();
+            Assert.Equal(BlockStatus.Pending, (await Stored()).Status);
+            Assert.Equal(50m, (await Stored()).Reward);
+            await node.RootRpcAsync("invalidateblock", reward.Hash);
+            await Cycle();
+            Assert.Equal(BlockStatus.Orphaned, (await Stored()).Status);
+            await node.RootRpcAsync("reconsiderblock", reward.Hash);
+            await node.GenerateAsync(109, CancellationToken.None); // height140, 111 confirmations
+            pool.NetworkStats.Returns(new BlockchainStats { BlockHeight = 140 });
+            var stale = Assert.Single(await manager.LoadBlocksForClassificationAsync(pool, CancellationToken.None));
+            await handler.ClassifyBlocksAsync(pool, new[] { stale }, CancellationToken.None);
+            Assert.Equal(BlockStatus.Confirmed, stale.Status);
+            await Cycle();
+            Assert.Equal(BlockStatus.Confirmed, (await Stored()).Status);
+            Assert.Equal(50m, (await Stored()).Reward);
+            var expected = payoutScheme == PayoutScheme.PPS ? 7m : 50m;
+            Assert.Equal(expected, await balances.GetBalanceAsync(db.Observer, config.Id, reward.Miner));
+            var changes = await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM balance_changes");
+            // Replayed/concurrent stale classification loses under the row lock.
+            await manager.RunBlockUpdateTransactionAsync(config, stale, (con, tx) =>
+                manager.ApplyConfirmedBlockAsync(con, tx, pool, stale, handler, scheme, CancellationToken.None));
+            await Cycle();
+            manager = NewManager();
+            handler = await NewHandler();
+            await Cycle();
+            Assert.Equal(expected, await balances.GetBalanceAsync(db.Observer, config.Id, reward.Miner));
+            Assert.Equal(changes, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM balance_changes"));
+            Assert.Equal(0, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM payments"));
+            Assert.Equal(0, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM payment_batches"));
+        }
     }
 
     [BitcoinBlake2bIntegrationFact]

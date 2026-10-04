@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Autofac;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
@@ -1067,6 +1068,103 @@ public class PayoutManagerTests
         return new Fixture(manager, miningPool, pool, block, connection, transaction,
             blockRepository, balanceRepository, messageBus, payoutLease, processStatus);
     }
+
+    [Theory]
+    [InlineData(BlockStatus.Pending)]
+    [InlineData(BlockStatus.Confirmed)]
+    public async Task OrphanedBlake2bCustodialBlock_AllowsVerifiedReactivationUnderRowLock(BlockStatus target)
+    {
+        var fixture = CreateFixture();
+        fixture.Pool.Template = new BitcoinBlake2bTemplate { Family = CoinFamily.BitcoinBlake2b,
+            ExplorerBlockLinks = new Dictionary<string, string>() };
+        var persisted = Blake2bBlock(fixture, BlockStatus.Orphaned);
+        var classified = Blake2bBlock(fixture, target);
+        classified.BitcoinBlake2bCustodialEvidenceVerified = true;
+        fixture.BlockRepository.GetBlockByIdForUpdateAsync(fixture.Connection, fixture.Transaction, classified.Id).Returns(persisted);
+        var actions = 0;
+        await fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool, classified, (_, _) =>
+        { actions++; return Task.FromResult(true); });
+        Assert.Equal(1, actions);
+    }
+
+    [Theory]
+    [InlineData("pool")]
+    [InlineData("height")]
+    [InlineData("hash")]
+    [InlineData("txid")]
+    [InlineData("miner")]
+    [InlineData("created")]
+    [InlineData("type")]
+    [InlineData("source")]
+    [InlineData("difficulty")]
+    [InlineData("mode")]
+    [InlineData("confirmed")]
+    [InlineData("quarantined")]
+    [InlineData("evidence")]
+    [InlineData("reward")]
+    [InlineData("family")]
+    public async Task Blake2bCustodialRowLock_RejectsChangedEvidenceAndPreviouslyCreditedRows(string mismatch)
+    {
+        var fixture = CreateFixture();
+        fixture.Pool.Template = new BitcoinBlake2bTemplate { Family = CoinFamily.BitcoinBlake2b };
+        var persisted = Blake2bBlock(fixture, BlockStatus.Orphaned);
+        var classified = Blake2bBlock(fixture, BlockStatus.Confirmed);
+        classified.BitcoinBlake2bCustodialEvidenceVerified = true;
+        switch(mismatch)
+        {
+            case "pool": persisted.PoolId = "other"; break;
+            case "height": persisted.BlockHeight++; break;
+            case "hash": persisted.Hash = new string('c', 64); break;
+            case "txid": persisted.TransactionConfirmationData = new string('c', 64); break;
+            case "miner": persisted.Miner = "other"; break;
+            case "created": persisted.Created = persisted.Created.AddSeconds(1); break;
+            case "type": persisted.Type = "auxpow"; break;
+            case "source": persisted.Source = "other"; break;
+            case "difficulty": persisted.NetworkDifficulty++; break;
+            case "mode": persisted.SettlementMode = BitcoinDirectCoinbaseSettlement.Mode; break;
+            case "confirmed": persisted.Status = BlockStatus.Confirmed; break;
+            case "quarantined": persisted.Status = BlockStatus.Quarantined; break;
+            case "evidence": classified.BitcoinBlake2bCustodialEvidenceVerified = false; break;
+            case "reward": classified.Reward = 0; break;
+            case "family": fixture.Pool.Template = new BitcoinTemplate(); break;
+        }
+        fixture.BlockRepository.GetBlockByIdForUpdateAsync(fixture.Connection, fixture.Transaction, classified.Id).Returns(persisted);
+        var actions = 0;
+        await fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool, classified, (_, _) =>
+        { actions++; return Task.FromResult(true); });
+        Assert.Equal(0, actions);
+        Assert.Empty(fixture.MessageBus.ReceivedCalls());
+    }
+
+    [Fact]
+    public async Task Blake2bClassificationLoad_RotatesBoundedOrphanBatchesWithoutDirectSchemaDependency()
+    {
+        var fixture = CreateFixture();
+        fixture.Pool.Template = new BitcoinBlake2bTemplate { Family = CoinFamily.BitcoinBlake2b };
+        fixture.MiningPool.NetworkStats.Returns(new BlockchainStats { BlockHeight = 20_000 });
+        var rows = Enumerable.Range(1, 130).Select(id => new Block { Id = id, Status = BlockStatus.Orphaned }).ToArray();
+        fixture.BlockRepository.GetPendingBlocksForPoolAsync(fixture.Connection, fixture.Pool.Id).Returns(Array.Empty<Block>());
+        fixture.BlockRepository.GetBitcoinBlake2bOrphanedBlocksForReconciliationAsync(fixture.Connection,
+            fixture.Pool.Id, 7_040, Arg.Any<long>(), 64, Arg.Any<CancellationToken>())
+            .Returns(call => rows.Where(x => x.Id > call.ArgAt<long>(3)).Take(64).ToArray());
+        var first = await fixture.Manager.LoadBlocksForClassificationAsync(fixture.MiningPool, CancellationToken.None);
+        var second = await fixture.Manager.LoadBlocksForClassificationAsync(fixture.MiningPool, CancellationToken.None);
+        var third = await fixture.Manager.LoadBlocksForClassificationAsync(fixture.MiningPool, CancellationToken.None);
+        var wrapped = await fixture.Manager.LoadBlocksForClassificationAsync(fixture.MiningPool, CancellationToken.None);
+        Assert.Equal(64, first.Length);
+        Assert.Equal(65, second[0].Id);
+        Assert.Equal(new long[] { 129, 130 }, third.Select(x => x.Id));
+        Assert.Equal(first.Select(x => x.Id), wrapped.Select(x => x.Id));
+        await fixture.BlockRepository.DidNotReceive().HasBitcoinDirectSoloSchemaAsync(Arg.Any<IDbConnection>(), Arg.Any<CancellationToken>());
+    }
+
+    private static Block Blake2bBlock(Fixture fixture, BlockStatus status) => new()
+    {
+        Id = fixture.Block.Id, PoolId = fixture.Pool.Id, BlockHeight = 100,
+        Miner = "miner", Created = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        Hash = new string('a', 64), TransactionConfirmationData = new string('b', 64),
+        Status = status, Reward = 50,
+    };
 
     private static void SetDirectSettlementEvidence(Block block)
     {

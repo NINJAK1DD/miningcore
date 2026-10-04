@@ -93,19 +93,74 @@ or an independent spendability guarantee. `generate` still needs the operator
 threshold, an active matching block and the expected generated wallet transaction.
 Classification and wallet payment both revalidate daemon identity, chain and maturity.
 Outage/reindexing or missing wallet entries keep active or unverified blocks pending;
-a proven inactive block is orphaned. Restart reads the same pending block records.
+a proven inactive block is orphaned. Alongside pending rows, each payout cycle
+reloads up to 64 custodial orphan rows within 12960 blocks of the observed tip
+(two mainnet wallet-maturity intervals). An ID cursor advances and wraps so one
+permanently unavailable row cannot starve later rows. Restart resets that cursor;
+the persisted statuses/evidence remain authoritative. Matching active header and
+wallet evidence can restore an orphan to Pending or Confirmed. The row-lock commit
+checks unchanged pool, height, hash, coinbase txid, miner and candidate metadata;
+already-confirmed custodial rows remain excluded from repeat settlement. This
+bounded recovery does not reverse booked liabilities or re-credit confirmed rows.
 These changes introduce no ledger migration, share rescaling or PPS liability reversal.
 The wallet remains the final authority for funding and accepting a payout; wallet
 rejection does not book a successful payment.
 
-RPC `difficulty_blake2b` is explicitly typed expected hash work, including mining
-information's `next` object and header-v2 block/blockchain records. Missing fields
-remain optional; malformed present values are rejected. Historical SHA256d records
+RPC `difficulty_blake2b` reports expected hash work, including mining information's
+`next` object and header-v2 block/blockchain records. Production Miningcore does
+not consume these optional fields; it ignores them rather than treating them as
+accounting difficulty. Separate test-fixture types decode the reviewed shapes and
+reject malformed values to verify their distinct units. Historical SHA256d records
 retain `difficulty`. Expected hash work is never used as assigned-share difficulty,
 job/network accounting difficulty, PPS price or PPLNS work-window score. Those retain
 the exact GBT target-derived reference-target scale and existing hashrate conversion.
 The API's `networkDifficulty` remains in that accounting scale. No stored shares,
 balances, pool IDs, coin key (`bitcoin-blake2b`) or ledger symbol (`BTCB2B`) are renamed.
+
+Payout attestation records fixed diagnostic reason codes: `701 RpcUnavailable`,
+`702 Syncing`, `703 ContractDrift`, and `704 BindingMismatch`. RPC/synchronization
+failures alert after 30 minutes; successful contract contradictions and changed
+process bindings alert immediately. Notifications are bounded to one per continuous
+reason episode across handler recreation; a changed reason or complete recovery
+starts a new episode. Cancellation is not an outage alert. Neither alerts nor
+startup identity errors include received user-agent/RPC payloads. Inspect
+`getnetworkinfo` privately to diagnose an incompatible customized agent.
+
+### Resolving missing block or wallet evidence
+
+An unknown header (`getblockheader` error -5), missing wallet transaction or unavailable
+RPC leaves the reward unresolved. Repeated misses alone do not prove orphaning or
+authorize a financial write-off. The delayed alert is emitted once per continuous
+episode; absence of repeated alerts does not mean the problem recovered.
+
+1. Pause the affected pool's new payment admission, preserve the ledger/wallet/node
+   backups and record the exact pool/block ID, height, hash, coinbase txid, miner,
+   reward, share/credit evidence and existing payment-batch outcomes.
+2. Inspect synchronization/reindex status and compare the header on independently
+   validated reviewed Knots nodes. A different active hash at that height alone does
+   not recover the missing header or prove the stored coinbase was accepted/inactive.
+   Body pruning normally preserves headers; missing headers indicate a different
+   failure requiring investigation. Check the dedicated wallet owns/indexes the txid.
+3. Restore/reindex the affected node from verified chain data and restore/rescan its
+   dedicated wallet as needed. A historical wallet rescan on a pruned node can require
+   archival block data. Keep the reviewed build/chain/schedule and allow complete
+   revalidation/indexing; do not reduce confirmations or replace immutable candidate IDs.
+4. Resume reconciliation against repaired evidence: matching active header/wallet
+   evidence restores the reward, and a matching inactive header proves orphaning.
+   If evidence cannot be recovered, retain the unresolved row and an operator case
+   with its backups; do not delete it, force Confirmed/paid, reset a credited row to
+   Pending, reverse PPS liabilities or blindly resend a known payment. Custodial
+   orphans outside the automatic scan horizon need an audited recovery plan checking
+   original share/credit/payment history before any manual requeue; this handler does
+   not promise recovery of historical allocation data already removed by retention.
+
+Before upgrading, drain and confirm broadcasts while still on 29.4.1, within the
+973440 upgrade deadline. The new wallet/mempool policy re-locks existing coinbases
+at depths 101–6480 and can evict their unconfirmed payouts or make change unavailable;
+already-credited balances retain their liability while losing liquid backing. After
+upgrade, compare `getbalances`, payout confirmations/conflicts, usable change and
+outstanding balances before resuming. See the [upgrade runbook](bitcoin-blake2b-knots-29.4.2-review.md#stop-upgrade-reconcile-restart)
+for unresolved broadcasts that cannot confirm safely before the deadline.
 
 For PPS, use mature, spendable reserves sufficient for the longer immature period;
 future or immature rewards cannot fund already-booked liabilities. See [PPS reserve

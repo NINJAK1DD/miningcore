@@ -238,6 +238,24 @@ public class BlockRepository : IBlockRepository
             .ToArray();
     }
 
+    public async Task<Block[]> GetBitcoinBlake2bOrphanedBlocksForReconciliationAsync(
+        IDbConnection con, string poolId, long minimumBlockHeight,
+        long afterId, int pageSize, CancellationToken ct)
+    {
+        if(minimumBlockHeight < 0 || afterId < 0 || pageSize is < 1 or > 64)
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+        // Only the typed BLAKE2b manager calls this query. Do not reopen confirmed
+        // custodial settlements or include direct/auxiliary candidate records.
+        const string query = @"SELECT * FROM blocks
+            WHERE poolid = @poolId AND status = 'orphaned'
+              AND (type IS NULL OR type = 'block')
+              AND blockheight >= @minimumBlockHeight AND id > @afterId
+            ORDER BY id ASC LIMIT @pageSize";
+        return (await con.QueryAsync<Entities.Block>(new CommandDefinition(query,
+                new { poolId, minimumBlockHeight, afterId, pageSize }, cancellationToken: ct)))
+            .Select(mapper.Map<Block>).ToArray();
+    }
+
     public async Task<Block[]> GetBitcoinDirectBlocksForReconciliationAsync(
         IDbConnection con, string poolId, long minimumBlockHeight,
         DateTime checkedBefore, int pageSize, CancellationToken ct)

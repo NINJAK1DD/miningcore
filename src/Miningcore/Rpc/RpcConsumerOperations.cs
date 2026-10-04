@@ -52,6 +52,8 @@ internal static class RpcConsumerOperations
         "BeamPool.SetupJobManager",
         "BitcoinBlake2bPool.FaultPool",
         "BitcoinBlake2bPayoutHandler.NotifyDelay",
+        "BitcoinBlake2bPayoutHandler.AttestAsync",
+        "BitcoinBlake2bPayoutHandler.NotifyAttestationFailure",
         "BitcoinJobManager.EnsureDaemonsSynchedAsync",
         "BitcoinJobManager.PersistAndSubmitDirectCandidateAsync",
         "BitcoinJobManager.RecordDirectSubmissionOutcomeSafelyAsync",

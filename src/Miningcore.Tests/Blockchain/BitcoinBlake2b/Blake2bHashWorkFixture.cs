@@ -1,6 +1,7 @@
+using System;
 using Newtonsoft.Json;
 
-namespace Miningcore.Blockchain.BitcoinBlake2b;
+namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 // Expected number of hashes, NOT Bitcoin reference-target share difficulty.
 // The distinct type prevents accidental assignment to the accounting scale.

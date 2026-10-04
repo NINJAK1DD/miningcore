@@ -558,7 +558,7 @@ methods. Method labels are separately allowlisted from source-controlled protoco
 ## Unreleased: Bitcoin BLAKE2b header-v2
 
 The current compatibility update removes the BLAKE2b startup dependency on the removed
-`getdifficulty` RPC and separately types expected BLAKE2b hash work. Startup/runtime
+`getdifficulty` RPC and keeps expected BLAKE2b hash work separate from accounting units. Startup/runtime
 and payout checks enforce the reviewed long-maturity deployment and GBT transition
 contract. Wallet-aware progress and active-chain verification keep immature or
 unverified rewards pending without rescaling shares or reversing PPS liabilities.
@@ -569,6 +569,13 @@ keep admission stopped if revalidation/synchronization and reconciliation are in
 The dedicated payout handler verifies retained block headers on pruned nodes, preserves
 immature wallet credit, alerts on prolonged contradictory evidence and quarantines
 unsupported direct-settlement rows without blocking valid custodial reconciliation.
+Custodial orphans are revisited in bounded rotating batches; matching active wallet/header
+evidence can restore them under an immutable row-lock check without re-crediting already
+confirmed rows. Fixed payout-attestation reason codes distinguish outages, synchronization,
+contract drift and process-binding changes. Before upgrading, pause broadcasts and drain
+confirmed payout outcomes within the deadline: previously spendable 101–6480-confirmation
+coinbases and their unconfirmed spends/change can become unavailable. Reconcile dedicated
+wallet `getbalances`, existing payout outcomes and already-credited liabilities before resuming.
 
 The separate `bitcoin-blake2b` template and runtime target the reviewed Bitcoin Knots
 29.4.2.knots20260508 hard-fork chain. They do not replace SHA-256d `bitcoin`, enable BTC

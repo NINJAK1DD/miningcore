@@ -342,6 +342,21 @@ public class BitcoinBlake2bConfigurationTests : TestBase
     }
 
     [Fact]
+    public void DaemonIdentity_RejectsUntrustedAgentWithoutExposingItsPayload()
+    {
+        var payload = "private-credential\n/Satoshi:29.4.2/Knots:20260508/";
+        var error = Assert.Throws<PoolStartupException>(() => BitcoinBlake2bJobManager.ValidateDaemonIdentity(
+            new JObject { ["version"] = 290402, ["subversion"] = payload }, "test"));
+        Assert.DoesNotContain(payload, error.Message);
+        Assert.DoesNotContain("private-credential", error.Message);
+        Assert.Contains("subversion is withheld", error.Message);
+        using var logs = new Miningcore.Tests.Rpc.RpcDiagnosticTests.CapturedLogs();
+        Miningcore.Rpc.RpcConsumerDiagnostics.Write(logs.Logger, NLog.LogLevel.Error,
+            "BitcoinJobManagerBase.PostStartInitAsync", failure: error);
+        Assert.All(logs.Messages, message => Assert.DoesNotContain("private-credential", message));
+    }
+
+    [Fact]
     public void ExtraNonceProvider_DoesNotRecycleAcrossConcurrentConnections()
     {
         var provider = new BitcoinBlake2bExtraNonceProvider();

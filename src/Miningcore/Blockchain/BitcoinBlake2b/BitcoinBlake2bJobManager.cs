@@ -81,7 +81,7 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
            subversion?.Type != JTokenType.String ||
            !IsReviewedUserAgent(subversion.Value<string>()))
             throw new PoolStartupException(
-                $"Pool '{poolId}' requires reviewed Bitcoin Knots 29.4.2.knots20260508 with its recognized version/user-agent prefix; received subversion {Newtonsoft.Json.JsonConvert.SerializeObject(subversion?.ToString()[..Math.Min(subversion.ToString().Length, 256)])}. Daemon upgrades or agent spoofing require an explicit compatibility review", poolId);
+                $"Pool '{poolId}' requires reviewed Bitcoin Knots 29.4.2.knots20260508 with its recognized version/user-agent prefix; incompatible received subversion is withheld. Inspect getnetworkinfo privately. Daemon upgrades or agent spoofing require an explicit compatibility review", poolId);
     }
 
     private static bool IsReviewedUserAgent(string agent) => agent is { Length: <= 256 } &&
