@@ -66,10 +66,19 @@ public class RpcClient
         {
             var response = await RequestAsync(logger, ct, config, method, payload);
 
-            if(response.Result is JToken token)
-                return new RpcResponse<TResponse>(token.ToObject<TResponse>(serializer), response.Error);
+            try
+            {
+                if(response.Result is JToken token)
+                    return new RpcResponse<TResponse>(token.ToObject<TResponse>(serializer), response.Error);
 
-            return new RpcResponse<TResponse>((TResponse) response.Result, response.Error);
+                return new RpcResponse<TResponse>((TResponse) response.Result, response.Error);
+            }
+            catch(Exception ex) when(ex is JsonException or InvalidCastException or ArgumentException)
+            {
+                // Result conversion follows successful framing/envelope decode.
+                // Scalars can fail by CLR cast rather than Json.NET conversion.
+                throw new JsonSerializationException("JSON-RPC result contract is incompatible", ex);
+            }
         }
 
         catch(TaskCanceledException ex)
@@ -202,7 +211,23 @@ public class RpcClient
                 // deserialize response
                 using(var jreader = new JsonTextReader(new StringReader(responseContent)))
                 {
-                    var result = serializer.Deserialize<JsonRpcResponse>(jreader);
+                    // Read a complete JSON value before converting its RPC shape.
+                    // Keep framing failures (JsonReaderException) distinguishable
+                    // from valid JSON with an incompatible contract (serialization).
+                    var decoded = JToken.ReadFrom(jreader);
+                    JsonRpcResponse result;
+                    try
+                    {
+                        result = decoded.ToObject<JsonRpcResponse>(serializer);
+                        if(result == null)
+                            throw new JsonSerializationException("JSON-RPC response envelope is missing");
+                    }
+                    catch(JsonException ex)
+                    {
+                        // A conversion can itself raise a reader exception (for
+                        // example an invalid error.code). Framing already passed.
+                        throw new JsonSerializationException("JSON-RPC response contract is incompatible", ex);
+                    }
 
                     messageBus.SendTelemetry(poolId, TelemetryCategory.RpcRequest, RpcDiagnostics.Method(method), sw.Elapsed, response.IsSuccessStatusCode);
 

@@ -103,6 +103,8 @@ public class PayoutManager : ProcessStatusBackgroundService
     internal const ulong DirectSettlementReconciliationDepth = 4_032;
     internal const int Blake2bOrphanReconciliationBatchSize = 64;
     internal const ulong Blake2bOrphanReconciliationDepth = 12_960;
+    // ProcessPoolsAsync serializes pool cycles; never access this cursor cache
+    // from concurrent classification work without adding synchronization.
     private readonly Dictionary<string, long> blake2bOrphanCursors = new(StringComparer.Ordinal);
     internal int AttachedPoolCount => pools.Count;
 
@@ -380,7 +382,7 @@ public class PayoutManager : ProcessStatusBackgroundService
                             default:
                                 return false;
                         }
-                    });
+                    }, handler is BitcoinBlake2bPayoutHandler blake2b ? blake2b.NotifyAllocationHold : null);
                 }
                 catch(Exception ex) when(block.Status ==
                         BlockStatus.Quarantined &&
@@ -475,8 +477,9 @@ public class PayoutManager : ProcessStatusBackgroundService
     }
 
     internal async Task RunBlockUpdateTransactionAsync(PoolConfig poolConfig, Block block,
-        Func<IDbConnection, IDbTransaction, Task<bool>> action)
+        Func<IDbConnection, IDbTransaction, Task<bool>> action, Action<Block> notifyAllocationHold = null)
     {
+        var allocationHeld = false;
         var updated = await cf.RunTx(async (con, tx) =>
         {
             // Serialize classification and crediting on the persisted block row. A second
@@ -491,6 +494,26 @@ public class PayoutManager : ProcessStatusBackgroundService
                 !BitcoinPayoutHandler.IsDirectCoinbaseSettlement(persisted);
             if(blake2bCustodial && !CanApplyBlake2bCustodialClassification(poolConfig, persisted, block))
                 return false;
+
+            if(blake2bCustodial && persisted.Status == BlockStatus.Orphaned &&
+               block.Status == BlockStatus.Orphaned && persisted.Reward == block.Reward &&
+               persisted.ConfirmationProgress == block.ConfirmationProgress &&
+               persisted.Effort == block.Effort && persisted.MinerEffort == block.MinerEffort)
+                return false;
+
+            // Historical dev builds could orphan active rewards prematurely.
+            // A later PROP/PPLNS settlement may then consume their original
+            // shares. Guard all out-of-order confirmations, including reopened
+            // Pending rows after restart; in-memory orphan provenance is unsafe.
+            // The database-wide payout lease serializes financial writers, and
+            // this check shares the locked-row transaction with any allocation.
+            if(blake2bCustodial && block.Status == BlockStatus.Confirmed &&
+               poolConfig.PaymentProcessing.PayoutScheme is PayoutScheme.PROP or PayoutScheme.PPLNS &&
+               await blockRepo.HasLaterConfirmedCustodialBlockAsync(con, tx, block.PoolId, block.Created, block.Id))
+            {
+                allocationHeld = true;
+                return false;
+            }
 
             if(BitcoinPayoutHandler.IsDirectCoinbaseSettlement(persisted) &&
                BitcoinPayoutHandler.IsDirectCoinbaseSettlement(block))
@@ -525,6 +548,12 @@ public class PayoutManager : ProcessStatusBackgroundService
 
             return await action(con, tx);
         });
+
+        if(allocationHeld)
+        {
+            logger.Warn(() => $"Bitcoin BLAKE2b block {block.BlockHeight}: automatic PROP/PPLNS allocation withheld for historical share and wallet audit");
+            notifyAllocationHold?.Invoke(block);
+        }
 
         if(updated && block.NotifyBlockFoundOnUpdate)
             TryNotifyPostCommit(poolConfig.Id, block, "block-found",

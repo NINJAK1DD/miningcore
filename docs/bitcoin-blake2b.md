@@ -102,6 +102,13 @@ wallet evidence can restore an orphan to Pending or Confirmed. The row-lock comm
 checks unchanged pool, height, hash, coinbase txid, miner and candidate metadata;
 already-confirmed custodial rows remain excluded from repeat settlement. This
 bounded recovery does not reverse booked liabilities or re-credit confirmed rows.
+For PROP/PPLNS, automatic confirmation is withheld if an ordinary custodial row
+with a later or equal creation timestamp is already Confirmed. A later allocation
+may have consumed the older reward's shares; equal timestamps have ambiguous order.
+This locked-transaction guard also covers reopened Pending rows after restart.
+The stored status/reward is retained, no new balance credit is applied, and one
+immediate allocation-history alert is sent per affected block per process lifetime.
+SOLO and booked PPS liabilities retain their existing settlement behavior.
 These changes introduce no ledger migration, share rescaling or PPS liability reversal.
 The wallet remains the final authority for funding and accepting a payout; wallet
 rejection does not book a successful payment.
@@ -122,8 +129,12 @@ Payout attestation records fixed diagnostic reason codes: `701 RpcUnavailable`,
 failures alert after 30 minutes; successful contract contradictions and changed
 process bindings alert immediately. Notifications are bounded to one per continuous
 reason episode across handler recreation; a changed reason or complete recovery
-starts a new episode. Cancellation is not an outage alert. Neither alerts nor
-startup identity errors include received user-agent/RPC payloads. Inspect
+starts a new episode. Cancellation is not an outage alert.
+RPC conversion diagnostics never inspect exception text: valid JSON with a wrong result
+or envelope shape and missing mandatory methods (-32601) produce ContractDrift.
+Malformed/truncated JSON framing produces RpcUnavailable, including errors wrapped
+by the production RpcClient. Both paths withhold financial operations.
+Neither alerts nor startup identity errors include received user-agent/RPC payloads. Inspect
 `getnetworkinfo` privately to diagnose an incompatible customized agent.
 
 ### Resolving missing block or wallet evidence
@@ -132,6 +143,9 @@ An unknown header (`getblockheader` error -5), missing wallet transaction or una
 RPC leaves the reward unresolved. Repeated misses alone do not prove orphaning or
 authorize a financial write-off. The delayed alert is emitted once per continuous
 episode; absence of repeated alerts does not mean the problem recovered.
+Already-stored orphans with unavailable headers are opportunistic scan misses:
+they remain Orphaned without delayed alerts or unchanged-row writes. An active
+header with missing/contradictory wallet proof still triggers the bounded alert.
 
 1. Pause the affected pool's new payment admission, preserve the ledger/wallet/node
    backups and record the exact pool/block ID, height, hash, coinbase txid, miner,
@@ -153,6 +167,19 @@ episode; absence of repeated alerts does not mean the problem recovered.
    orphans outside the automatic scan horizon need an audited recovery plan checking
    original share/credit/payment history before any manual requeue; this handler does
    not promise recovery of historical allocation data already removed by retention.
+
+Development builds before this fix could mark active BLAKE2b rewards Orphaned on
+transient wallet -5 errors after ordinary maturity. PROP/PPLNS may then have paid
+later blocks, deleted earlier shares and swept recovered surplus. On upgrading
+such a build, investigate allocation-history alerts before attempting recovery.
+Preserve the original share and balance-change backups; reconstruct the original
+PROP round/PPLNS window and reconcile prior credits, all payment outcomes and
+dedicated-wallet spendable backing. Audit and fund any outstanding entitlement
+before an operator-approved recovery. Do not bypass the hold by deleting later
+Confirmed rows, rewriting creation times, switching schemes or forcing Confirmed.
+Wallet spendability alone cannot reconstruct allocation history. This conservative
+guard does not certify completeness of retained shares when no later row exists.
+Historical orphans outside the scan window need the same audit.
 
 Before upgrading, drain and confirm broadcasts while still on 29.4.1, within the
 973440 upgrade deadline. The new wallet/mempool policy re-locks existing coinbases

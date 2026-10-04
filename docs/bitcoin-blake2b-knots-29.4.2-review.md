@@ -264,6 +264,58 @@ evidence changes, unavailable orphan evidence and already-confirmed replay refus
 | User-agent diagnostic redaction | Received daemon subversion is withheld from startup errors as well as logs/alerts; private RPC inspection remains available. Tests reject malicious agents without exposing their payload. |
 | Commit explanation and stale PR test counts | The prior restructuring commit has a detailed body; the recovery commit and PR description record the final scope and current validation evidence. |
 
+## Third review hardening
+
+Both third-round reviews were evaluated against head `61b306781c04c61711f7c84195562c2e538a70f1`.
+The previous automated review summary covered `75dc616112e1ffe867d3133f14bd03bdb72bfab0`;
+it is historical evidence, not an automated review of the subsequent heads.
+This section records the implemented findings and their regression coverage.
+
+Final third-round validation in the documented Windows/Ubuntu 22.04 WSL lab:
+
+- Windows live/ledger/Bitcoin compatibility/RPC diagnostic suite: **805 passed,
+  zero failures/skips**, using the documented local v142 toolset.
+- Full Linux suite: **3662 passed, one failed, one skipped benchmark** (3664 total).
+  The sole failure was the unchanged Stratum test
+  `RunAsync_LocalAdmissionClosureRejectsQuietlyWithoutLeakingConnections(false)`
+  rebinding its socket with `Address already in use`; both variants passed on
+  isolated retry (**2 passed, zero failures/skips**). This is not recorded as a
+  zero-failure full lab run. Every new RPC/history test passed in the full suite.
+- The two new live historical-recovery/query tests passed independently on Windows,
+  covering actual later PROP/PPLNS allocation and deleted earlier shares, stored
+  Orphaned and reopened Pending rows, repeated recovery and handler/manager recreation.
+- Complete Linux SDK rebuild passed without warnings/errors and reused
+  checksum-verified unchanged native libraries. Native algorithms, real Knots,
+  Core/Litecoin/Dogecoin, PostgreSQL and isolated authentication/TLS/recovery faults
+  remain included. The prior full-Windows TLS fingerprint limitation still applies.
+- Documentation/link, workflow-pin, diagnostic-source, five offline upstream-cache,
+  shell and whitespace gates passed. The pinned upstream functional scripts and
+  binaries are unchanged from the previously recorded cold/warm successful runs.
+
+The new exact PR head must also pass CI; previous-head CI and the historical
+automated review summary do not establish validation of subsequent changes.
+
+| Third-round finding | Resolution |
+| --- | --- |
+| P3: production RpcClient wraps contract failures as -500 | Inspect structural `JsonRpcError.InnerException`; decoded incompatible results/envelopes and missing mandatory methods (-32601) produce 703 ContractDrift and an immediate bounded alert. Null/scalar/array results and malformed error-code fields are covered. Raw RPC messages are never inspected or emitted. |
+| R3-1: stale orphan misses generate misleading pending alerts | Unavailable headers for already-stored orphans clear the delayed episode and emit only fixed/numeric Debug diagnostics. The orphan remains stored. Tests advance the clock beyond 30 minutes and recreate the handler; active headers with absent wallet proof still alert and say unresolved. |
+| R3-2: recovered PROP/PPLNS rewards can reuse consumed allocation history | Under the immutable row lock and database-wide payout lease, confirmation is withheld if another ordinary custodial Confirmed row has a later/equal Created timestamp. The guard includes reopened Pending rows after restart. It retains stored status/reward, applies no allocation and sends one immediate per-block process-lifetime alert through the shared tracker. Real Knots/PostgreSQL tests first settle the later reward through the actual PROP/PPLNS schemes and verify older shares were deleted, then verify repeated/recreated recovery produces no extra credit or payment. SOLO/PPS and ordinary recovery remain covered. |
+| JSON framing and conversion were conflated | Parse a complete JSON value before RPC-envelope conversion. Framing failures remain JsonReaderException/701; incompatible decoded envelopes are wrapped as JsonSerializationException/703 even when their conversion cause is a reader error. Real HTTP endpoint tests exercise production RpcClient, rather than only fake thrown exceptions. |
+| Unchanged Orphaned rows are rewritten every scan | Skip unchanged orphan classifications under the row lock before effort calculation, updates and notifications. Changed persisted financial/progress/effort fields still follow the guarded update. |
+| Cursor dictionary concurrency is implicit | Document that ProcessPoolsAsync serializes access; concurrent classification requires synchronization. |
+| Legacy-development upgrade hazard and recovery | Operator/release guidance explicitly covers premature orphaning on wallet -5, removed PROP/PPLNS share history and recovered funds already swept. Recovery requires original allocation/payment evidence and spendable backing; forcing status or rewriting history is not a repair. |
+| Merge/review evidence can become stale | Recheck official Knots release/source and proposals, publish validation for the new exact PR head, and retain the immediately-before-merge gate. Do not treat old automated review text as current-head approval. |
+
+The framing/conversion distinction follows the official
+[JsonReaderException contract](https://www.newtonsoft.com/json/help/html/t_newtonsoft_json_jsonreaderexception.htm)
+and [JsonSerializationException contract](https://www.newtonsoft.com/json/help/html/T_Newtonsoft_Json_JsonSerializationException.htm),
+verified against production HTTP deserialization. The history query also has a real
+PostgreSQL test excluding older/self rows, other pools, nonconfirmed status and
+direct/auxiliary types without requiring optional direct-settlement columns.
+Equal creation timestamps are conservatively treated as ambiguous allocation order.
+The guard does not certify that retained shares are complete when no later row exists;
+historical recovery still requires the documented audit and funding check.
+
 ## DATUM handoff to #163
 
 [DATUM server support remains #163](https://github.com/NINJAK1DD/miningcore/issues/163).

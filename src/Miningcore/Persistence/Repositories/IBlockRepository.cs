@@ -11,6 +11,8 @@ public interface IBlockRepository
     Task DeleteBlockAsync(IDbConnection con, IDbTransaction tx, Block block);
     Task<bool> UpdateBlockAsync(IDbConnection con, IDbTransaction tx, Block block);
     Task<Block> GetBlockByIdForUpdateAsync(IDbConnection con, IDbTransaction tx, long id);
+    Task<bool> HasLaterConfirmedCustodialBlockAsync(IDbConnection con, IDbTransaction tx,
+        string poolId, DateTime created, long id);
 
     Task<Block[]> PageBlocksAsync(IDbConnection con, string poolId, BlockStatus[] status, int page, int pageSize, CancellationToken ct);
     Task<Block[]> PageBlocksAsync(IDbConnection con, BlockStatus[] status, int page, int pageSize, CancellationToken ct);

@@ -54,6 +54,7 @@ internal static class RpcConsumerOperations
         "BitcoinBlake2bPayoutHandler.NotifyDelay",
         "BitcoinBlake2bPayoutHandler.AttestAsync",
         "BitcoinBlake2bPayoutHandler.NotifyAttestationFailure",
+        "BitcoinBlake2bPayoutHandler.NotifyAllocationHold",
         "BitcoinJobManager.EnsureDaemonsSynchedAsync",
         "BitcoinJobManager.PersistAndSubmitDirectCandidateAsync",
         "BitcoinJobManager.RecordDirectSubmissionOutcomeSafelyAsync",

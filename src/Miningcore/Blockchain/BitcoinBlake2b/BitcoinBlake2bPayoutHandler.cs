@@ -62,9 +62,9 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler
             chain = await ReadBlake2bPayoutContractAsync(BitcoinCommands.GetBlockchainInfo, ct);
             deployment = await ReadBlake2bPayoutContractAsync("getdeploymentinfo", ct);
         }
-        catch(JsonException)
+        catch(JsonException ex)
         {
-            throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.ContractDrift);
+            throw AttestationFailure(JsonFailureReason(ex));
         }
         catch(Exception ex) when(ex is HttpRequestException or TimeoutException ||
             ex is OperationCanceledException && !ct.IsCancellationRequested)
@@ -72,9 +72,20 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler
             throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.RpcUnavailable);
         }
         ct.ThrowIfCancellationRequested();
+        foreach(var response in new[] { identity, chain, deployment })
+        {
+            // RpcClient normally returns conversion failures as synthetic -500
+            // errors. Inspect their structural cause, never daemon error text.
+            if(response?.Error?.Code == -32601)
+                throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.ContractDrift);
+            if(response?.Error?.InnerException is JsonException json)
+                throw AttestationFailure(JsonFailureReason(json));
+        }
         if(identity?.Error != null || chain?.Error != null || deployment?.Error != null ||
-            identity?.Response == null || chain?.Response == null || deployment?.Response == null)
+            identity == null || chain == null || deployment == null)
             throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.RpcUnavailable);
+        if(identity.Response == null || chain.Response == null || deployment.Response == null)
+            throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.ContractDrift);
         if(chain.Response["initialblockdownload"]?.Type != JTokenType.Boolean)
             throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.ContractDrift);
         if(chain.Response["initialblockdownload"].Value<bool>())
@@ -103,6 +114,15 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler
 
     private static string AttestationEpisode(BitcoinBlake2bPayoutAttestationReason reason) =>
         $"bitcoin-blake2b:attestation:{reason}";
+
+    private static BitcoinBlake2bPayoutAttestationReason JsonFailureReason(JsonException error)
+    {
+        // RpcClient parses framing separately and wraps envelope conversions as
+        // serialization failures, even if their nested cause is a reader error.
+        return error is JsonReaderException
+            ? BitcoinBlake2bPayoutAttestationReason.RpcUnavailable
+            : BitcoinBlake2bPayoutAttestationReason.ContractDrift;
+    }
 
     private BitcoinBlake2bPayoutAttestationException AttestationFailure(BitcoinBlake2bPayoutAttestationReason reason)
     {
@@ -195,6 +215,15 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler
                 // Block-index evidence remains available after body pruning.
                 // Read it AFTER the wallet batch to bound stale wallet depth.
                 var header = await ReadHeaderAsync(block.Hash, ct);
+                if(block.Status == BlockStatus.Orphaned && header == null)
+                {
+                    // This is an opportunistic scan, not an unresolved pending
+                    // reward. Replacement/resynced nodes may lack stale orphans.
+                    ClearDelay(block);
+                    logger.Debug(() => $"[{LogCategory}] Stored orphan {block.BlockHeight}: header unavailable; retained for later reconciliation");
+                    result.Add(block);
+                    continue;
+                }
                 if(header?.Confirmations == -1 && header.Height == block.BlockHeight)
                 {
                     var wasOrphaned = block.Status == BlockStatus.Orphaned;
@@ -273,13 +302,33 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler
         {
             messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}] Bitcoin BLAKE2b block reconciliation delayed",
                 $"Pool {poolConfig.Id} block {block.BlockHeight} has lacked matching active-chain header and wallet coinbase evidence for at least {(int) AlertAfter.TotalMinutes} minutes. " +
-                "The reward remains pending. Check getblockheader/gettransaction, wallet indexing, synchronization and RPC proxies. Sensitive verification detail is withheld."));
+                "The stored reward remains unresolved. Check getblockheader/gettransaction, wallet indexing, synchronization and RPC proxies. Sensitive verification detail is withheld."));
             grace.MarkNotificationSent(block.PoolId, block.Id, block.Hash, ReconciliationEpisode);
         }
         catch(Exception ex)
         {
             grace.ReleaseNotification(block.PoolId, block.Id, block.Hash, ReconciliationEpisode);
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinBlake2bPayoutHandler.NotifyDelay", failure: ex);
+        }
+    }
+
+    internal void NotifyAllocationHold(Block block)
+    {
+        const string episode = "bitcoin-blake2b:allocation-history";
+        if(!grace.TryAcquireNotification(block.PoolId, block.Id, block.Hash, episode, clock.Now, TimeSpan.Zero)) return;
+        try
+        {
+            messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}] Bitcoin BLAKE2b allocation recovery withheld",
+                $"Pool {poolConfig.Id} block {block.BlockHeight}: a later or same-time custodial reward is already confirmed. " +
+                "PROP/PPLNS share history may have been consumed and recovered funds may already have been swept. " +
+                "Automatic confirmation and balance allocation are withheld. Preserve backups and audit original shares, " +
+                "credits, payments and spendable wallet backing using the documented historical recovery procedure."));
+            grace.MarkNotificationSent(block.PoolId, block.Id, block.Hash, episode);
+        }
+        catch(Exception ex)
+        {
+            grace.ReleaseNotification(block.PoolId, block.Id, block.Hash, episode);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinBlake2bPayoutHandler.NotifyAllocationHold", failure: ex);
         }
     }
 

@@ -15,6 +15,18 @@ public class BlockRepository : IBlockRepository
     }
 
     private readonly IMapper mapper;
+
+    public Task<bool> HasLaterConfirmedCustodialBlockAsync(IDbConnection con, IDbTransaction tx,
+        string poolId, DateTime created, long id)
+    {
+        // Ordinary block types exclude direct settlements without requiring
+        // optional direct-SOLO schema columns. Equal timestamps are ambiguous
+        // allocation order and are conservatively held as well.
+        const string query = @"SELECT EXISTS (SELECT 1 FROM blocks
+            WHERE poolid = @poolId AND status = 'confirmed'
+              AND (type IS NULL OR type = 'block') AND created >= @created AND id <> @id)";
+        return con.ExecuteScalarAsync<bool>(query, new { poolId, created, id }, tx);
+    }
     internal const int MaximumPublicPageSize = 100;
     private const string PublicBlockTypesFilter =
         "(type IS NULL OR type NOT IN ('auxpow-claim', 'parent-uncertain', 'merged-parent-uncertain'))";

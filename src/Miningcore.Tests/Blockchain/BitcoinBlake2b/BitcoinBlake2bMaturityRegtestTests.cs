@@ -13,6 +13,7 @@ using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Notifications.Messages;
 using Miningcore.Payments;
 using Miningcore.Payments.PaymentSchemes;
 using Miningcore.Persistence;
@@ -345,6 +346,137 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
             Assert.Equal(0, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM payments"));
             Assert.Equal(0, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM payment_batches"));
         }
+    }
+
+    [BitcoinBlake2bLedgerIntegrationFact]
+    public async Task HistoricalRecovery_AfterLaterPropOrPplnsSettlementWithPrunedShares_HoldsAllocationAcrossRestart()
+    {
+        foreach(var payoutScheme in new[] { PayoutScheme.PROP, PayoutScheme.PPLNS })
+        foreach(var status in new[] { BlockStatus.Orphaned, BlockStatus.Pending })
+        {
+            await using var node = await Node.StartAsync(true,
+                Environment.GetEnvironmentVariable(BitcoinBlake2bIntegrationFactAttribute.BinaryEnvironmentVariable),
+                new[] { "-testactivationheight=blake2b@20", "-blake2b_headline=Miningcore BLAKE2b regtest",
+                    "-testcoinbasematuritylong=30:134:140" }, 141);
+            await using var db = await BitcoinBlake2bLedgerProbe.CreateAsync(fullSchema: true);
+            var mapper = AutoMapperFactory.CreateMapper();
+            var blocks = new BlockRepository(mapper);
+            var shares = new ShareRepository(mapper);
+            var balances = new BalanceRepository(mapper);
+            var messages = Substitute.For<IMessageBus>();
+            var config = new PoolConfig
+            {
+                Id = "blake2b-history-" + payoutScheme, Coin = "bitcoin-blake2b", Template = Coin(30, 134, 140),
+                Address = await node.GetNewAddressAsync(), Daemons = new[] { node.WalletEndpoint },
+                RewardRecipients = Array.Empty<RewardRecipient>(),
+                Extra = new Dictionary<string, object> { ["minimumConfirmations"] = 1 },
+                PaymentProcessing = new PoolPaymentProcessingConfig { Enabled = true, PayoutScheme = payoutScheme },
+            };
+            var cluster = new ClusterConfig { PaymentProcessing = new ClusterPaymentProcessingConfig() };
+            var pool = Substitute.For<IMiningPool>();
+            pool.Config.Returns(config);
+            pool.NetworkStats.Returns(new BlockchainStats { BlockHeight = 141 });
+            var grace = new ActiveBlockGracePeriodTracker();
+            var contracts = new BitcoinBlake2bPayoutContractTracker();
+            async Task<BitcoinBlake2bPayoutHandler> NewHandler()
+            {
+                var value = new BitcoinBlake2bPayoutHandler(container, db.Factory, mapper, shares, blocks, balances,
+                    new PaymentRepository(mapper), new StandardClock(), messages, grace, contracts);
+                await value.ConfigureAsync(cluster, config, CancellationToken.None);
+                return value;
+            }
+            PayoutManager NewManager() => new(container, db.Factory, blocks, shares, balances, cluster,
+                messages, Substitute.For<IPayoutManagerLease>(), new ProcessStatus());
+            IPayoutScheme scheme = payoutScheme == PayoutScheme.PROP
+                ? new PROPPaymentScheme(db.Factory, shares, blocks, balances)
+                : new PPLNSPaymentScheme(db.Factory, shares, blocks, balances);
+            var older = await Reward(node, 30);
+            older.PoolId = config.Id;
+            older.Miner = await node.GetNewAddressAsync();
+            older.Created = DateTime.UtcNow.AddMinutes(-2);
+            older.Status = status; // Historical dev-build ledger, before this recovery runs.
+            older.Reward = status == BlockStatus.Orphaned ? 0 : 50;
+            older.NetworkDifficulty = 1;
+            older.Effort = older.MinerEffort = 1;
+            var later = await Reward(node, 31);
+            later.PoolId = config.Id;
+            later.Miner = await node.GetNewAddressAsync();
+            later.Created = older.Created.AddMinutes(1);
+            later.NetworkDifficulty = 1;
+            later.Effort = later.MinerEffort = 1;
+            foreach(var block in new[] { older, later })
+            {
+                Assert.True(await blocks.InsertAsync(db.Observer, null, block));
+                block.Id = await db.Observer.ExecuteScalarAsync<long>("SELECT id FROM blocks WHERE poolid=@PoolId AND hash=@Hash", block);
+            }
+            // Use persisted timestamp precision, as the production repository
+            // load does, before the immutable row-lock classification check.
+            older = await db.Factory.RunTx((con, tx) => blocks.GetBlockByIdForUpdateAsync(con, tx, older.Id));
+            later = await db.Factory.RunTx((con, tx) => blocks.GetBlockByIdForUpdateAsync(con, tx, later.Id));
+            await shares.BatchInsertAsync(db.Observer, null, new[] { older, later }.Select(block =>
+                new Miningcore.Persistence.Model.Share
+                {
+                    PoolId = config.Id, BlockHeight = block.BlockHeight, Miner = block.Miner,
+                    Difficulty = 2, NetworkDifficulty = 1, IpAddress = "127.0.0.1", Created = block.Created,
+                }).ToArray(), CancellationToken.None);
+            var handler = await NewHandler();
+            var manager = NewManager();
+            // Simulate the old processor settling B while omitting A from its
+            // pending-only load, using the actual scheme and transaction path.
+            await handler.ClassifyBlocksAsync(pool, new[] { later }, CancellationToken.None);
+            Assert.Equal(BlockStatus.Confirmed, later.Status);
+            await manager.RunBlockUpdateTransactionAsync(config, later, (con, tx) =>
+                manager.ApplyConfirmedBlockAsync(con, tx, pool, later, handler, scheme, CancellationToken.None));
+            Assert.Equal(0, await db.Observer.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM shares WHERE poolid=@PoolId AND created<=@Created", older));
+            var credited = await db.Observer.ExecuteScalarAsync<decimal>("SELECT sum(amount) FROM balances");
+            Assert.Equal(50m, credited);
+            var changes = await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM balance_changes");
+            async Task AssertHeld()
+            {
+                await manager.UpdatePoolBalancesAsync(pool, config, handler, scheme, CancellationToken.None);
+                var stored = await db.Factory.RunTx((con, tx) => blocks.GetBlockByIdForUpdateAsync(con, tx, older.Id));
+                Assert.Equal(status, stored.Status);
+                Assert.Equal(older.Reward, stored.Reward);
+                Assert.Equal(credited, await db.Observer.ExecuteScalarAsync<decimal>("SELECT sum(amount) FROM balances"));
+                Assert.Equal(changes, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM balance_changes"));
+            }
+            await AssertHeld();
+            await AssertHeld();
+            manager = NewManager();
+            handler = await NewHandler();
+            await AssertHeld();
+            var alerts = messages.ReceivedCalls().Select(x => x.GetArguments()[0]).OfType<AdminNotification>()
+                .Where(x => x.Subject.Contains("allocation recovery", StringComparison.Ordinal));
+            Assert.Single(alerts);
+            Assert.Equal(0, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM payments"));
+            Assert.Equal(0, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM payment_batches"));
+        }
+    }
+
+    [BitcoinBlake2bLedgerIntegrationFact]
+    public async Task AllocationHistoryQuery_ScopesPoolStatusTypeAndTimeWithoutOptionalDirectSchema()
+    {
+        await using var db = await BitcoinBlake2bLedgerProbe.CreateAsync();
+        await db.Observer.ExecuteAsync(@"CREATE TABLE blocks(id bigint PRIMARY KEY,
+            poolid text, status text, type text, created timestamptz);
+            INSERT INTO blocks VALUES
+            (1, 'review', 'confirmed', NULL, '2026-01-02T00:00:00Z'),
+            (2, 'review', 'confirmed', NULL, '2026-01-01T00:00:00Z'),
+            (3, 'other', 'confirmed', NULL, '2026-01-03T00:00:00Z'),
+            (4, 'review', 'confirmed', 'auxpow', '2026-01-03T00:00:00Z'),
+            (5, 'review', 'orphaned', NULL, '2026-01-03T00:00:00Z'),
+            (6, 'review', 'pending', 'block', '2026-01-03T00:00:00Z'),
+            (7, 'review', 'confirmed', 'bitcoin-coinbase-direct', '2026-01-03T00:00:00Z')");
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var created = new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc);
+        Task<bool> Read() => db.Factory.RunTx((con, tx) =>
+            repository.HasLaterConfirmedCustodialBlockAsync(con, tx, "review", created, 1));
+        Assert.False(await Read());
+        await db.Observer.ExecuteAsync("INSERT INTO blocks VALUES (8, 'review', 'confirmed', NULL, '2026-01-02T00:00:00Z')");
+        Assert.True(await Read()); // Equal timestamps cannot establish allocation order.
+        await db.Observer.ExecuteAsync("DELETE FROM blocks WHERE id=8; INSERT INTO blocks VALUES (9, 'review', 'confirmed', 'block', '2026-01-03T00:00:00Z')");
+        Assert.True(await Read());
     }
 
     [BitcoinBlake2bIntegrationFact]

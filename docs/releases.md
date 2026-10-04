@@ -571,7 +571,17 @@ immature wallet credit, alerts on prolonged contradictory evidence and quarantin
 unsupported direct-settlement rows without blocking valid custodial reconciliation.
 Custodial orphans are revisited in bounded rotating batches; matching active wallet/header
 evidence can restore them under an immutable row-lock check without re-crediting already
-confirmed rows. Fixed payout-attestation reason codes distinguish outages, synchronization,
+confirmed rows.
+PROP/PPLNS confirmation is held when a later (or ambiguously same-time) custodial
+reward is already Confirmed, including reopened Pending rows after restart. Earlier
+development builds could orphan active rewards on wallet -5 errors; subsequent
+allocations may have deleted their shares or swept recovered funds. Preserve and
+audit original allocation/payment history and spendable backing before recovery;
+do not force-confirm held rewards. Stored orphans with unavailable headers remain
+quiet during opportunistic scans, and unchanged orphan rows are not rewritten.
+Production RPC failures distinguish malformed/truncated JSON framing (701) from
+valid JSON with wrong contract shapes or missing required methods (703).
+Fixed payout-attestation reason codes distinguish outages, synchronization,
 contract drift and process-binding changes. Before upgrading, pause broadcasts and drain
 confirmed payout outcomes within the deadline: previously spendable 101–6480-confirmation
 coinbases and their unconfirmed spends/change can become unavailable. Reconcile dedicated

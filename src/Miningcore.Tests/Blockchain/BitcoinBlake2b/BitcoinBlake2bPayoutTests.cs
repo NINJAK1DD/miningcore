@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
+using Microsoft.AspNetCore.Http;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.BitcoinBlake2b;
@@ -55,6 +56,8 @@ public class BitcoinBlake2bPayoutTests : TestBase
         internal string Chain = "regtest";
         internal int WalletRequests;
         internal string AttestationFailureKind;
+        internal bool UseRealContractRpc;
+        internal JsonRpcError ObservedContractError;
         internal void SetLogger(NLog.ILogger value) => logger = value;
 
         internal Handler(IComponentContext context, IMasterClock clock, IMessageBus messages,
@@ -65,6 +68,7 @@ public class BitcoinBlake2bPayoutTests : TestBase
 
         protected override Task<RpcResponse<JObject>> ReadBlake2bPayoutContractAsync(string method, CancellationToken ct)
         {
+            if(UseRealContractRpc) return ReadRealContract(method, ct);
             ct.ThrowIfCancellationRequested();
             if(AttestationFailureKind == "transport") throw new HttpRequestException("private daemon credential");
             if(AttestationFailureKind == "malformed") throw new JsonSerializationException("private daemon credential");
@@ -81,6 +85,13 @@ public class BitcoinBlake2bPayoutTests : TestBase
                 "getdeploymentinfo" => deployment,
                 _ => throw new InvalidOperationException(method),
             }));
+        }
+
+        private async Task<RpcResponse<JObject>> ReadRealContract(string method, CancellationToken ct)
+        {
+            var result = await base.ReadBlake2bPayoutContractAsync(method, ct);
+            if(result.Error != null) ObservedContractError = result.Error;
+            return result;
         }
 
         protected override Task<RpcResponse<JObject>> GetBlockHeaderAsync(string hash, CancellationToken ct) =>
@@ -338,12 +349,22 @@ public class BitcoinBlake2bPayoutTests : TestBase
     [Fact]
     public async Task UnknownOrphanEvidence_DoesNotReopenOrReannounceStoredOrphan()
     {
-        var fixture = await Fixture();
+        var now = DateTime.UtcNow;
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(_ => now);
+        var grace = new ActiveBlockGracePeriodTracker();
+        var fixture = await Fixture(clock, grace);
         var orphan = Reward();
         orphan.Status = BlockStatus.Orphaned;
         orphan.Reward = 0;
         fixture.Handler.HeaderUnavailable = true;
         await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { orphan }, CancellationToken.None);
+        now = now.AddMinutes(31);
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { orphan }, CancellationToken.None);
+        var replacement = await Fixture(clock, grace, messages: fixture.Messages);
+        replacement.Handler.HeaderUnavailable = true;
+        await replacement.Handler.ClassifyBlocksAsync(replacement.Pool, new[] { orphan }, CancellationToken.None);
+        Assert.Empty(fixture.Messages.ReceivedCalls());
         Assert.Equal(BlockStatus.Orphaned, orphan.Status);
         Assert.False(orphan.BitcoinBlake2bCustodialEvidenceVerified);
         fixture.Handler.HeaderUnavailable = false;
@@ -355,6 +376,122 @@ public class BitcoinBlake2bPayoutTests : TestBase
         await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { orphan }, CancellationToken.None);
         Assert.Equal(BlockStatus.Confirmed, orphan.Status);
         Assert.True(orphan.BitcoinBlake2bCustodialEvidenceVerified);
+    }
+
+    [Fact]
+    public async Task ActiveStoredOrphanWithoutWalletProof_StillAlertsAfterGrace()
+    {
+        var now = DateTime.UtcNow;
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(_ => now);
+        var fixture = await Fixture(clock);
+        fixture.Handler.WalletError = new(-5, "private daemon credential", null);
+        var orphan = Reward();
+        orphan.Status = BlockStatus.Orphaned;
+        orphan.Reward = 0;
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { orphan }, CancellationToken.None);
+        now = now.AddMinutes(31);
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { orphan }, CancellationToken.None);
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { orphan }, CancellationToken.None);
+        var alert = Assert.IsType<AdminNotification>(Assert.Single(fixture.Messages.ReceivedCalls()).GetArguments()[0]);
+        Assert.Contains("unresolved", alert.Message);
+        Assert.DoesNotContain("remains pending", alert.Message);
+        Assert.DoesNotContain("private daemon credential", alert.Message);
+        Assert.Equal(BlockStatus.Orphaned, orphan.Status);
+    }
+
+    [Theory]
+    [InlineData("getnetworkinfo", "wrong-result", 703)]
+    [InlineData("getblockchaininfo", "wrong-result", 703)]
+    [InlineData("getdeploymentinfo", "wrong-result", 703)]
+    [InlineData("getnetworkinfo", "wrong-envelope", 703)]
+    [InlineData("getnetworkinfo", "null-envelope", 703)]
+    [InlineData("getnetworkinfo", "scalar-result", 703)]
+    [InlineData("getdeploymentinfo", "null-result", 703)]
+    [InlineData("getnetworkinfo", "wrong-error-code", 703)]
+    [InlineData("getdeploymentinfo", "missing-method", 703)]
+    [InlineData("getblockchaininfo", "missing-method", 703)]
+    [InlineData("getnetworkinfo", "missing-method", 703)]
+    [InlineData("getdeploymentinfo", "truncated", 701)]
+    [InlineData("getnetworkinfo", "malformed", 701)]
+    [InlineData("getblockchaininfo", "rpc-outage", 701)]
+    public async Task RealRpcClient_AttestationClassifiesStructuralErrorsWithoutLeakingPayload(string method, string fault, int code)
+    {
+        var now = DateTime.UtcNow;
+        var clock = Substitute.For<IMasterClock>();
+        clock.Now.Returns(_ => now);
+        var grace = new ActiveBlockGracePeriodTracker();
+        var fixture = await Fixture(clock, grace);
+        var requests = new System.Collections.Concurrent.ConcurrentBag<string>();
+        await using var server = await Miningcore.Tests.Rpc.RpcDiagnosticTests.Server.Start(async context =>
+        {
+            using var reader = new System.IO.StreamReader(context.Request.Body);
+            var request = JObject.Parse(await reader.ReadToEndAsync());
+            var current = request["method"].Value<string>();
+            requests.Add(current);
+            var coin = (BitcoinBlake2bTemplate) fixture.Pool.Config.Template;
+            JToken result = current switch
+            {
+                "getnetworkinfo" => new JObject { ["version"] = 290402, ["subversion"] = "/Satoshi:29.4.2/Knots:20260508/" },
+                "getblockchaininfo" => new JObject { ["chain"] = "regtest", ["initialblockdownload"] = false },
+                "getdeploymentinfo" => new JObject { ["height"] = 130, ["deployments"] = new JObject(),
+                    ["blake2b"] = new JObject { ["height"] = coin.Networks["regtest"].Blake2bActivationHeight!.Value, ["active"] = true } },
+                _ => throw new InvalidOperationException("Unexpected wallet operation during attestation"),
+            };
+            var response = new JObject { ["result"] = result, ["error"] = null, ["id"] = request["id"] };
+            var text = response.ToString(Formatting.None);
+            if(current == method)
+            {
+                switch(fault)
+                {
+                    case "wrong-result": response["result"] = new JArray("private daemon credential"); text = response.ToString(Formatting.None); break;
+                    case "scalar-result": response["result"] = "private daemon credential"; text = response.ToString(Formatting.None); break;
+                    case "null-result": response["result"] = null; text = response.ToString(Formatting.None); break;
+                    case "wrong-error-code": response["result"] = null; response["error"] = new JObject { ["code"] = "private daemon credential", ["message"] = "private daemon credential" }; text = response.ToString(Formatting.None); break;
+                    case "wrong-envelope": text = "[\"private daemon credential\"]"; break;
+                    case "null-envelope": text = "null"; break;
+                    case "missing-method":
+                    case "rpc-outage": response["result"] = null; response["error"] = new JObject { ["code"] = fault == "missing-method" ? -32601 : -28, ["message"] = "private daemon credential" }; text = response.ToString(Formatting.None); break;
+                    case "truncated": text = "{\"result\":{\"private daemon credential\":"; break;
+                    case "malformed": text = "private daemon credential"; break;
+                }
+            }
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(text);
+        });
+        fixture.Pool.Config.Daemons = new[] { server.Endpoint() };
+        await fixture.Handler.ConfigureAsync(new ClusterConfig(), fixture.Pool.Config, CancellationToken.None);
+        fixture.Handler.UseRealContractRpc = true;
+        using var logs = new Miningcore.Tests.Rpc.RpcDiagnosticTests.CapturedLogs();
+        fixture.Handler.SetLogger(logs.Logger);
+        async Task Fail() => Assert.Equal(code, (int) (await Assert.ThrowsAsync<BitcoinBlake2bPayoutAttestationException>(() =>
+            fixture.Handler.PayoutAsync(fixture.Pool, Array.Empty<Miningcore.Persistence.Model.Balance>(), CancellationToken.None))).Reason);
+        int Alerts() => fixture.Messages.ReceivedCalls().Count(x => x.GetArguments()[0] is AdminNotification);
+        await Fail();
+        Assert.Equal(code == 703 ? 1 : 0, Alerts());
+        if(fault is "wrong-result" or "wrong-envelope" or "null-envelope" or "scalar-result" or "wrong-error-code") Assert.IsType<JsonSerializationException>(fixture.Handler.ObservedContractError.InnerException);
+        if(fault is "truncated" or "malformed") Assert.IsType<JsonReaderException>(fixture.Handler.ObservedContractError.InnerException);
+        now = now.AddMinutes(31);
+        await Fail();
+        await Fail();
+        Assert.Equal(1, Alerts());
+        Assert.All(requests, value => Assert.Contains(value, new[] { "getnetworkinfo", "getblockchaininfo", "getdeploymentinfo" }));
+        Assert.All(logs.Messages, value => Assert.DoesNotContain("private daemon credential", value));
+        Assert.All(fixture.Messages.ReceivedCalls().Select(x => x.GetArguments()[0]).OfType<AdminNotification>(),
+            value => Assert.DoesNotContain("private daemon credential", value.Message));
+    }
+
+    [Fact]
+    public async Task AllocationHold_AlertsOnceAcrossHandlerRecreation()
+    {
+        var grace = new ActiveBlockGracePeriodTracker();
+        var fixture = await Fixture(grace: grace);
+        fixture.Handler.NotifyAllocationHold(Reward());
+        var replacement = await Fixture(grace: grace, messages: fixture.Messages);
+        replacement.Handler.NotifyAllocationHold(Reward());
+        var alert = Assert.IsType<AdminNotification>(Assert.Single(fixture.Messages.ReceivedCalls()).GetArguments()[0]);
+        Assert.Contains("PROP/PPLNS", alert.Message);
+        Assert.Contains("audit original shares", alert.Message);
     }
 
     [Fact]
