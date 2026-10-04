@@ -263,7 +263,7 @@ public class BitcoinDuplicateSubscriptionTests : TestBase
                 { ["rules"] = new JArray("segwit") })).ToObject<BlockTemplate>();
             manager.Initialize(template);
             await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
-                canonical: true, difficulty: 1e-9);
+                canonical: true, difficulty: 1);
             var address = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
             Assert.True((await wire.RequestAsync("mining.authorize", address + ".worker", ""))["result"].Value<bool>());
             await Subscribe(wire);
@@ -273,11 +273,16 @@ public class BitcoinDuplicateSubscriptionTests : TestBase
             string nonce = null;
             for(uint i = 0; i < 100_000; i++)
             {
-                if(job.Evaluate(wire.Connection, i).IsBlockCandidate)
+                try
                 {
-                    nonce = i.ToStringHex8();
-                    break;
+                    if(job.Evaluate(wire.Connection, i).IsBlockCandidate)
+                    {
+                        nonce = i.ToStringHex8();
+                        break;
+                    }
                 }
+                // Nonwinning hashes can fail share difficulty; keep mining for the regtest target.
+                catch(StratumException ex) when(ex.Code == StratumError.LowDifficultyShare) { }
             }
             Assert.NotNull(nonce);
             await wire.SendRequestAsync("mining.subscribe", "proxy/retry");
