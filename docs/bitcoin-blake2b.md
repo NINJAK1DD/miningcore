@@ -371,8 +371,8 @@ Missing or null request IDs take precedence: they receive error -1 without consu
 the duplicate warning or difficulty allowance, even after subscription or a warning. The
 one-warning allowance is per connection and is not reset by other requests or refill.
 This protocol does not support in-session resubscription. Buffered requests cannot reopen
-a terminal connection. Canonical Bitcoin's existing resubscription behavior is separately
-tracked in [#181](https://github.com/NINJAK1DD/miningcore/issues/181).
+a terminal connection. Canonical Bitcoin and inherited Bitcoin-family pools use the same
+[duplicate-subscription compatibility policy](bitcoin-subscription-policy.md).
 
 A per-connection async gate covers assignment mutation, pending VarDiff application,
 `mining.set_difficulty` and the immutable job/target snapshot plus `mining.notify`.
@@ -427,7 +427,7 @@ Enforcement emits one Info-level structured `DifficultyBudgetDisconnect`,
 `DuplicateSubscription` or `AssignmentPublicationFailure` event per closed connection,
 with the server-generated connection ID and no request/password/address payload. Ordinary refusals produce no dedicated logs.
 `miningcore_stratum_admission_total{pool,outcome}` counts `difficulty-refused`,
-`difficulty-disconnect`, `duplicate-subscribe` and `publication-failure`; outcomes are allowlisted and there are
+`difficulty-disconnect`, `duplicate-subscribe-warning`, `duplicate-subscribe` and `publication-failure`; outcomes are allowlisted and there are
 no per-miner, connection-ID or IP labels. Use these counters to distinguish renegotiation
 refusals from duplicate-subscription and work-publication disconnects. Each terminal
 publication failure is counted once, including failures following an accepted share.

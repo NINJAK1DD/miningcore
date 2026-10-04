@@ -18,6 +18,12 @@ public class BitcoinWorkerContext : WorkerContextBase
     private readonly SemaphoreSlim directPayoutOperationGate = new(1, 1);
     private long acceptedProofSequence;
     private bool jobsClosed;
+    private int duplicateSubscribeWarning;
+
+    // One recoverable duplicate per TCP session. Authorization, shares and
+    // difficulty changes must never reset this allowance.
+    internal bool TryWarnDuplicateSubscribe() =>
+        Interlocked.Exchange(ref duplicateSubscribeWarning, 1) == 0;
 
     // Requests are serial per connection. Managers mark this immediately after
     // proof validation, before accounting, candidate submission or observers run.

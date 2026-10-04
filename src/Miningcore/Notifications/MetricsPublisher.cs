@@ -256,7 +256,7 @@ public class MetricsPublisher : StartupGatedBackgroundService
         {
             case TelemetryCategory.StratumAdmission:
                 // Never let miner-supplied strings create metric label cardinality.
-                if(msg.Info is "difficulty-refused" or "difficulty-disconnect" or "duplicate-subscribe" or "publication-failure")
+                if(msg.Info is "difficulty-refused" or "difficulty-disconnect" or "duplicate-subscribe-warning" or "duplicate-subscribe" or "publication-failure")
                     stratumAdmissionCounter.WithLabels(msg.GroupId, msg.Info).Inc();
                 break;
             case TelemetryCategory.Share:

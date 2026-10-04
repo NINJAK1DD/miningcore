@@ -12,6 +12,7 @@ using Autofac;
 using AutoMapper;
 using Microsoft.IO;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
@@ -112,7 +113,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal BitcoinBlake2bWireSession(IComponentContext container, IMasterClock clock,
         PoolConfig config, BitcoinJobManager manager, IMessageBus bus,
         BitcoinBlake2bWireSession sharedPool = null, TimeProvider budgetTimeProvider = null, bool canonical = false,
-        double difficulty = 1e-9)
+        double difficulty = 1e-9, bool merged = false)
     {
         var streams = container.Resolve<RecyclableMemoryStreamManager>();
         scope = ((ILifetimeScope) container).BeginLifetimeScope(builder =>
@@ -120,7 +121,8 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
             builder.RegisterInstance(Substitute.For<IBlockRepository>());
             builder.RegisterInstance(Substitute.For<IShareRepository>());
         });
-        pool = sharedPool?.pool ?? (canonical ? new CanonicalPool(scope, clock, bus, streams) :
+        pool = sharedPool?.pool ?? (merged ? new MergedPool(scope, clock, bus, streams) :
+            canonical ? new CanonicalPool(scope, clock, bus, streams) :
             new TestPool(scope, clock, bus, streams, budgetTimeProvider ?? TimeProvider.System));
         if(sharedPool == null)
         {
@@ -147,7 +149,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         var socket = listener.AcceptSocket();
         Connection = new StratumConnection(new NLog.NullLogger(NLog.LogManager.LogFactory),
             streams, clock, Guid.NewGuid().ToString("N"), false);
-        var context = new BitcoinWorkerContext();
+        var context = merged ? new MergedMiningBitcoinWorkerContext() : new BitcoinWorkerContext();
         context.Init(difficulty, null, clock);
         Connection.SetContext(context);
         pool.AddConnection(Connection);
@@ -323,6 +325,9 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     // Same TCP harness, canonical production dispatcher; jobs/RPC supplied by the fixture.
     internal sealed class CanonicalPool : BitcoinPool, IWirePool
     {
+        internal Func<Miningcore.Mining.WorkerContextBase, Task<double?>> NicehashLookup;
+        protected override Task<double?> GetNicehashStaticMinDiff(Miningcore.Mining.WorkerContextBase context,
+            string coinName, string algorithm) => NicehashLookup?.Invoke(context) ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm);
         internal Func<Task> BeforeSubscribe;
         internal Func<Task> AfterConfigure;
         internal Func<Task> BeforeStaticDifficulty;
@@ -383,6 +388,42 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
             OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None);
         public Task Announce(object jobParams) => OnNewJobAsync(jobParams);
         public object CreateJob(StratumConnection connection) => CreateWorkerJob(connection, false);
+    }
+
+    // Exercise the production merged-mining subclass, including its inherited
+    // dispatcher and actual worker context, without starting auxiliary daemons.
+    internal sealed class MergedPool : MergedMiningBitcoinPool, IWirePool
+    {
+        internal MergedPool(IComponentContext ctx, IMasterClock clock,
+            IMessageBus bus, RecyclableMemoryStreamManager streams) :
+            base(ctx, new JsonSerializerSettings(), Substitute.For<IConnectionFactory>(),
+                Substitute.For<IStatsRepository>(), AutoMapperFactory.CreateMapper(), clock,
+                bus, streams, new NicehashService(Substitute.For<IHttpClientFactory>(),
+                    new Microsoft.Extensions.Caching.Memory.MemoryCache(
+                        new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()))) { }
+
+        public int JobsCreated { get; private set; }
+        protected override object CreateWorkerJob(StratumConnection connection, bool cleanJob)
+        {
+            var result = base.CreateWorkerJob(connection, cleanJob);
+            JobsCreated++;
+            return result;
+        }
+        public void SetLogger(NLog.ILogger value) => logger = value;
+        public void SetManager(BitcoinJobManager value) => manager = value;
+        public void AddConnection(StratumConnection value) => RegisterConnection(value);
+        public Task Dispatch(StratumConnection connection, JsonRpcRequest request, CancellationToken ct) =>
+            OnRequestAsync(connection, request, ct);
+        public Task UpdateVarDiff(StratumConnection connection, double difficulty) =>
+            OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None);
+        public Task Announce(object jobParams) => OnNewJobAsync(jobParams);
+        public object CreateJob(StratumConnection connection) => CreateWorkerJob(connection, false);
+        public void ClosePublicationFailure(StratumConnection connection, Exception error) =>
+            CloseRequestPublicationFailure(connection, error);
+        public Miningcore.Banning.IBanManager EnableInvalidShareBanning() =>
+            throw new NotSupportedException();
+        public Task Reject(StratumConnection connection, StratumException error, CancellationToken ct) =>
+            OnRequestErrorAsync(connection, new JsonRpcRequest { Id = 1 }, error, false, ct);
     }
 
     internal interface IWirePool

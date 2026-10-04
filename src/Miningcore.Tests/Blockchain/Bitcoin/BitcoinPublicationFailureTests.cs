@@ -2,10 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Threading.Tasks.Dataflow;
 using Autofac;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
@@ -140,7 +138,8 @@ public partial class BitcoinPublicationFailureTests : TestBase
     {
         var (config, manager, clock, bus) = Fixture();
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: true);
-        await Subscribe(wire);
+        if(method != "mining.subscribe")
+            await Subscribe(wire);
         using var logs = new LogFactory();
         var target = new NLog.Targets.MemoryTarget { Layout = "${message}|${exception:format=tostring}" };
         var logging = new NLog.Config.LoggingConfiguration();
@@ -215,8 +214,8 @@ public partial class BitcoinPublicationFailureTests : TestBase
         await wire.SendRawAsync(Request("mining.extranonce.subscribe"));
         Assert.True((await wire.ReadAsync())["result"].Value<bool>());
         Assert.Equal(3, wire.Connection.ResponseSequence);
-        wire.Canonical.BeforeCreateJob = () => throw new StratumException(StratumError.JobNotFound, "later failure");
-        await wire.SendRawAsync(Request("mining.subscribe"));
+        wire.Canonical.AfterConfigure = () => throw new StratumException(StratumError.JobNotFound, "later failure");
+        await wire.SendRawAsync(Request("mining.configure", Parameters("mining.configure")));
         await wire.ReadUntilDisconnectedAsync();
         Assert.Equal(4, wire.Connection.ResponseSequence);
     }
@@ -257,9 +256,7 @@ public partial class BitcoinPublicationFailureTests : TestBase
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: true);
         wire.Canonical.BeforeSubscribe = () =>
         {
-            var queue = (BufferBlock<object>) typeof(StratumConnection)
-                .GetField("sendQueue", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(wire.Connection);
-            queue.Complete();
+            wire.Connection.CompleteSendQueue();
             throw new StratumException(StratumError.JobNotFound, "pre-response rejection");
         };
         await wire.SendRawAsync(Request("mining.subscribe"));

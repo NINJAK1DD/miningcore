@@ -65,8 +65,48 @@ public class BitcoinPool : PoolBase
     internal readonly record struct VersionRollingNegotiation(
         VersionRollingNegotiationStatus Status, uint? Mask);
 
+    // Dispatch rejects duplicates before this extension hook. Overrides must also
+    // preserve the core guard if they invoke subscription outside normal dispatch.
     protected virtual Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest) =>
         OnSubscribeCoreAsync(connection, tsRequest);
+
+    private const string DuplicateSubscribeError =
+        "Already subscribed; another subscription attempt will close this connection";
+
+    private async Task<bool> RejectDuplicateSubscribeAsync(StratumConnection connection, JsonRpcRequest request)
+    {
+        if(request.Id == null)
+            throw new StratumException(StratumError.MinusOne, "missing request id");
+
+        var context = connection.ContextAs<BitcoinWorkerContext>();
+        if(!context.IsSubscribed)
+            return false;
+
+        if(context.TryWarnDuplicateSubscribe())
+        {
+            await connection.RespondErrorAsync(StratumError.Other, DuplicateSubscribeError, request.Id, false);
+            GuardPublicationCleanup(connection, () => PublishTelemetry(
+                TelemetryCategory.StratumAdmission, "duplicate-subscribe-warning", TimeSpan.Zero));
+        }
+        else
+            CloseDuplicateSubscription(connection);
+        return true;
+    }
+
+    protected virtual void CloseDuplicateSubscription(StratumConnection connection) =>
+        CloseStratumAdmission(connection, StratumDiagnostics.Event.DuplicateSubscription, "duplicate-subscribe");
+
+    private protected void CloseStratumAdmission(StratumConnection connection, StratumDiagnostics.Event reason, string outcome)
+    {
+        // Stop buffered dispatch and concurrent job insertion before observers.
+        connection.TryBeginDisconnect();
+        GuardPublicationCleanup(connection, () => connection.ContextAs<BitcoinWorkerContext>().CloseJobs());
+        GuardPublicationCleanup(connection, () => Disconnect(connection));
+        GuardPublicationCleanup(connection, () => StratumDiagnostics.Write(logger,
+            NLog.LogLevel.Info, reason, connection.ConnectionId));
+        GuardPublicationCleanup(connection, () => PublishTelemetry(
+            TelemetryCategory.StratumAdmission, outcome, TimeSpan.Zero));
+    }
 
     // Carry the exact parsed user agent and completed lookup together, including
     // null values, so lookup identity cannot diverge from committed worker state.
@@ -80,9 +120,11 @@ public class BitcoinPool : PoolBase
     {
         var request = tsRequest.Value;
 
-        if(request.Id == null)
-            throw new StratumException(StratumError.MinusOne, "missing request id");
-
+        // Reject before parsing parameters, allocating another extranonce,
+        // consulting NiceHash or publishing work. Existing jobs and direct
+        // payout authorization remain usable after one stray duplicate.
+        if(await RejectDuplicateSubscribeAsync(connection, request))
+            return;
         var context = connection.ContextAs<BitcoinWorkerContext>();
         var userAgent = preparedSubscription.HasValue ? preparedSubscription.Value.UserAgent : ReadSubscribeUserAgent(request);
 
@@ -897,7 +939,8 @@ public class BitcoinPool : PoolBase
             switch(request.Method)
             {
                 case BitcoinStratumMethods.Subscribe:
-                    await OnSubscribeAsync(connection, tsRequest);
+                    if(!await RejectDuplicateSubscribeAsync(connection, request))
+                        await OnSubscribeAsync(connection, tsRequest);
                     break;
 
                 case BitcoinStratumMethods.Authorize:

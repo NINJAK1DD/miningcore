@@ -2,10 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Threading.Tasks.Dataflow;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Extensions;
@@ -59,15 +57,13 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
             };
             await wire.Connection.NotifyAsync("test.queue", Array.Empty<object>());
             await sendEntered.Task.WaitAsync(BarrierTimeout);
-            var queue = (BufferBlock<object>) typeof(StratumConnection)
-                .GetField("sendQueue", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(wire.Connection);
             // Fifteen entries let the response fill the queue, then set_difficulty
             // fails. Sixteen make the response itself fail (configure already mutated).
             for(var i = 0; i < (failure == "send-queue" ? 15 : 16); i++)
                 await wire.Connection.NotifyAsync("test.queue", Array.Empty<object>());
             // Reproduce a sender freeing one slot during error logging. Against
             // swallowed suggestion failures, this permits an unmatched notify.
-            queueRecovery.Recover = () => queue.TryReceive(out _);
+            queueRecovery.Recover = () => wire.Connection.TryReceiveQueuedMessage(out _);
         }
         else
             wire.BeforeCreateJob = () =>

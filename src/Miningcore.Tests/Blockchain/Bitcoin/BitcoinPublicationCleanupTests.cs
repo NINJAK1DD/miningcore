@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
@@ -21,6 +22,47 @@ namespace Miningcore.Tests.Blockchain.Bitcoin;
 // No sockets or deadline collection: these exercise synchronous cleanup gates.
 public class BitcoinPublicationCleanupTests : TestBase
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DuplicateWarning_FailedEnqueueClosesOnceWithoutRecoveryResponse(bool canonical)
+    {
+        var coin = canonical ? "bitcoin" : "bitcoin-blake2b";
+        var config = new PoolConfig { Id = "duplicate-enqueue", Coin = coin, Template = ModuleInitializer.CoinTemplates[coin] };
+        var clock = Substitute.For<IMasterClock>();
+        var bus = Substitute.For<IMessageBus>();
+        using var scope = container.BeginLifetimeScope(builder =>
+        {
+            builder.RegisterInstance(Substitute.For<IBlockRepository>());
+            builder.RegisterInstance(Substitute.For<IShareRepository>());
+        });
+        var streams = container.Resolve<RecyclableMemoryStreamManager>();
+        BitcoinBlake2bWireSession.IWirePool pool = canonical
+            ? new BitcoinBlake2bWireSession.CanonicalPool(scope, clock, bus, streams)
+            : new BitcoinBlake2bWireSession.TestPool(scope, clock, bus, streams, TimeProvider.System);
+        pool.Configure(config, new ClusterConfig());
+        // No transport reader: deterministically decline the warning's enqueue.
+        var connection = new StratumConnection(new NLog.NullLogger(NLog.LogManager.LogFactory),
+            streams, clock, "duplicate-enqueue", false);
+        var context = new BitcoinWorkerContext { IsSubscribed = true, ExtraNonce1 = "00000001" };
+        var job = new BitcoinJob();
+        context.AddJob(job, 4);
+        connection.SetContext(context);
+        connection.CompleteSendQueue();
+        var request = new JsonRpcRequest { Id = 1, Method = BitcoinStratumMethods.Subscribe };
+        await Assert.ThrowsAsync<IOException>(() => pool.Dispatch(connection, request, CancellationToken.None));
+        Assert.Equal(1, connection.ResponseSequence);
+        Assert.True(connection.IsDisconnectRequested);
+        Assert.Empty(context.validJobs);
+        Assert.Equal("00000001", context.ExtraNonce1);
+        Assert.Throws<BitcoinJobRegistryClosedException>(() => context.AddJob(job, 4));
+        await pool.Dispatch(connection, request, CancellationToken.None);
+        Assert.Equal(1, connection.ResponseSequence);
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "publication-failure"), Arg.Any<string>());
+        bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
+            x.Info == "duplicate-subscribe-warning" || x.Info == "duplicate-subscribe"), Arg.Any<string>());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

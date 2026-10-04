@@ -65,6 +65,25 @@ Use this guide by task:
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
+## Unreleased: Bitcoin-family duplicate subscription policy
+
+Pools served by `BitcoinPool`, including Bitcoin, Litecoin, Dogecoin, Bitcoin Cash
+and inherited merged-mining Stratum, now preserve the original extranonce and work
+after a duplicate `mining.subscribe`. The first identified duplicate receives error
+`20` with `result: false`; another closes the connection without a reply. BLAKE2b
+keeps the same wire policy. Best-effort `miningcore_stratum_admission_total` counters
+with outcomes `duplicate-subscribe-warning` and `duplicate-subscribe` distinguish
+single retries from repeated attempts when telemetry publication succeeds. Terminal
+BLAKE2b difficulty-budget disconnects also permanently close the worker job registry.
+
+**Upgrade action:** test firmware/proxies on an isolated endpoint before upgrading.
+Subscribe once per upstream connection; reconnect to obtain a new assignment.
+Clients that treat the first error as fatal may reconnect, and deliberate repeat
+loops will disconnect. A terminal close can discard queued acknowledgements;
+already admitted shares retain their accounting ownership. Independent pool
+dispatchers are outside this fix. See the [protocol scope, telemetry and proxy
+guidance](bitcoin-subscription-policy.md).
+
 ## Unreleased: bounded Stratum connection admission
 
 Every internal Stratum pool now limits reconnect startup rate and concurrent dispatches
