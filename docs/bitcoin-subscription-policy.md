@@ -73,10 +73,12 @@ missing/null IDs, independent connections, a pipelined repeated-subscribe burst,
 binding and delayed persistence admission.
 
 Before the fix, the original-proof test failed against `34af171c7`: the first subscription
-assigned `f0000001`, the second assigned `f0000002`, and the coinbase transaction hash changed
-from `f45e61a56a3db6ff201d6c4aa3eba04c3b4167662524e55b7183544236453021` to
-`0bc28fd581ad8ddb924efec27fef10f91453387d47fb5d9e7d80141c4882aa46`. An outstanding
-proof with nonce `0000003c`, valid at difficulty `1e-7` under the original assignment, was
+assigned `f0000001`, the second assigned `f0000002`, and the coinbase transaction hash changed:
+
+- Original coinbase transaction ID (double SHA-256): `f45e61a56a3db6ff201d6c4aa3eba04c3b4167662524e55b7183544236453021`.
+- Rotated coinbase transaction ID (double SHA-256): `0bc28fd581ad8ddb924efec27fef10f91453387d47fb5d9e7d80141c4882aa46`.
+
+An outstanding proof with nonce `0000003c`, valid at difficulty `1e-7` under the original assignment, was
 rejected with error `23` and reconstructed difficulty `1.0937091875612106E-09`. These are
 recorded observations from a generated fixture, not fixed consensus vectors. The same test
 now accepts the original proof and retains extranonce, job count and accounting identity.
@@ -94,7 +96,7 @@ Validation on 2026-10-04:
   output. Active pool services, wallets and database configuration were not replaced.
 - The new daemon-backed TCP case used Bitcoin Core 28.1, with the official Linux archive
   verified against the repository CI SHA-256 pin
-  `07f77afd326639145b9ba9562912b2ad2ccec47b8a305bd075b4f4cb127b7ed7`. Core accepted
+  SHA-256: `07f77afd326639145b9ba9562912b2ad2ccec47b8a305bd075b4f4cb127b7ed7`. Core accepted
   both the outstanding custodial block and direct block after the duplicate warning; decoded
   coinbase IDs and payout scripts matched the original jobs. Persistence is substituted in
   this fixture; it is not a PostgreSQL ledger test.
