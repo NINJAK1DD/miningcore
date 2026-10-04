@@ -248,11 +248,18 @@ public class ConfigurationContractTests
         // it from src/Miningcore/config.schema.json before this test executes.
         var path = Path.Combine(AppContext.BaseDirectory,
             "config.schema.json");
-        var committed = JObject.Parse(File.ReadAllText(path));
+        var committedText = File.ReadAllText(path);
+        var committed = JObject.Parse(committedText);
         var generated = Program.GenerateJsonConfigSchemaDocument();
 
         Assert.True(JToken.DeepEquals(generated, committed),
             "src/Miningcore/config.schema.json is stale; regenerate it with Miningcore -gcs");
+
+        // Source-build smoke tests compare the shipped artifact byte-for-byte.
+        // DeepEquals ignores object-property order, so also check serialization,
+        // allowing only the platform-specific newline produced by the generator.
+        Assert.Equal(generated.ToString(Formatting.Indented).Replace("\r\n", "\n") + "\n",
+            committedText.Replace("\r\n", "\n"));
 
         foreach(var itemTypePath in new[]
                 {

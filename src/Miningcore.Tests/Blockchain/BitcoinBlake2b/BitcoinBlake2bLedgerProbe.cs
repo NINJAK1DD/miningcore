@@ -15,6 +15,7 @@ using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
 using Npgsql;
 using NSubstitute;
+using Miningcore.Tests.Util.Postgres;
 using Xunit;
 
 namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
@@ -60,8 +61,7 @@ internal sealed class BitcoinBlake2bLedgerProbe : IAsyncDisposable
                 CREATE TABLE balance_changes(
                     id bigserial PRIMARY KEY, poolid text NOT NULL, address text NOT NULL,
                     amount decimal(28,12) NOT NULL, usage text NULL, tags text[] NULL, created timestamptz NOT NULL);");
-            var migration = await File.ReadAllTextAsync(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-                "../../../../Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql")));
+            var migration = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_share_accounting.sql"));
             await probe.connection.ExecuteAsync(migration.Replace("\\set ON_ERROR_STOP on", string.Empty, StringComparison.Ordinal));
             return probe;
         }

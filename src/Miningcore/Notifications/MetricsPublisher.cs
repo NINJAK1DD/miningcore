@@ -67,6 +67,7 @@ public class MetricsPublisher : StartupGatedBackgroundService
     private Counter shareAccountingBatchCounter;
     private Counter shareAccountingProjectionCounter;
     private Counter ppsCreditCounter;
+    private Counter ppsArithmeticCreditCounter;
     private Counter ppsLiabilityCounter;
     private Counter mergedMiningAttributionRejectionCounter;
     private Counter unsupportedShareRelayWireFormatCounter;
@@ -184,6 +185,10 @@ public class MetricsPublisher : StartupGatedBackgroundService
             "miningcore_pps_share_credits_total",
             "Durably committed PPS share liabilities by pool and commit outcome",
             new CounterConfiguration { LabelNames = new[] { "pool", "outcome" } });
+        ppsArithmeticCreditCounter = metricFactory.CreateCounter(
+            "miningcore_pps_arithmetic_credits_total",
+            "New durable PPS liabilities by arithmetic version",
+            new CounterConfiguration { LabelNames = new[] { "pool", "version" } });
         ppsLiabilityCounter = metricFactory.CreateCounter(
             "miningcore_pps_liability_coin_total",
             "Exact calculated PPS liability in whole coin units before database balance rounding",
@@ -346,8 +351,12 @@ public class MetricsPublisher : StartupGatedBackgroundService
         {
             ppsCreditCounter.WithLabels(credit.PoolId, outcome).Inc();
             if(msg.Outcome == Persistence.Model.ShareAccountingInsertResult.Inserted)
+            {
                 ppsLiabilityCounter.WithLabels(credit.PoolId)
                     .Inc(decimal.ToDouble(credit.Amount));
+                ppsArithmeticCreditCounter.WithLabels(credit.PoolId,
+                    credit.ArithmeticVersion switch { 0 => "0", 1 => "1", _ => "invalid" }).Inc();
+            }
         }
     }
 
