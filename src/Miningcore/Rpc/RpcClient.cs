@@ -294,7 +294,9 @@ public class RpcClient
 
         try
         {
-            using var reader = new JsonTextReader(new StringReader(content));
+            // Keep wire strings as strings, including ISO-looking error messages.
+            // Typed result DTOs still convert their date fields through Json.NET.
+            using var reader = new JsonTextReader(new StringReader(content)) { DateParseHandling = DateParseHandling.None };
             var result = JToken.ReadFrom(reader);
             if(reader.Read())
                 throw new JsonReaderException("JSON-RPC response contains trailing content");
@@ -325,11 +327,21 @@ public class RpcClient
             {
                 if(error is not JObject fields)
                     throw new JsonSerializationException("JSON-RPC error envelope is incompatible");
+                var code = fields["code"];
+                var message = fields["message"];
+                if(code?.Type != JTokenType.Integer ||
+                    !int.TryParse(code.ToString(Formatting.None), System.Globalization.NumberStyles.AllowLeadingSign,
+                        System.Globalization.CultureInfo.InvariantCulture, out var errorCode) ||
+                    message?.Type != JTokenType.String)
+                    throw new JsonSerializationException("JSON-RPC error fields are incompatible");
                 // Convert only the small scalar fields; retain arbitrary daemon
                 // data without another tree copy or diagnostic disclosure.
-                result.Error = new JsonRpcError(fields["code"]?.ToObject<int>(serializer) ?? 0,
-                    fields["message"]?.ToObject<string>(serializer), ScalarOrToken(fields["data"]));
+                result.Error = new JsonRpcError(errorCode, message.Value<string>(), ScalarOrToken(fields["data"]));
             }
+            // Legacy replies can include error:null or result:null on errors.
+            // A missing success member is different from an explicit null result.
+            else if(envelope.Property("result") == null)
+                throw new JsonSerializationException("JSON-RPC success result is missing");
             foreach(var property in envelope.Properties())
             {
                 if(property.Name is "result" or "id" or "error") continue;

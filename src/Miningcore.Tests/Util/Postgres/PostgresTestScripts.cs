@@ -5,6 +5,9 @@ namespace Miningcore.Tests.Util.Postgres;
 
 internal static class PostgresTestScripts
 {
+    public static string OperatorPathFor(string name) =>
+        Path.Combine(AppContext.BaseDirectory, "Fixtures", "Ops", name);
+
     public static string PathFor(string name) =>
         Path.Combine(AppContext.BaseDirectory, "Fixtures", "Postgres", name);
 }

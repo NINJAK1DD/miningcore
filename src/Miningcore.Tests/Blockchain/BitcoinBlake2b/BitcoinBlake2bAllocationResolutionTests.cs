@@ -149,7 +149,7 @@ public class BitcoinBlake2bAllocationResolutionTests
         { start.ArgumentList.Add("-v"); start.ArgumentList.Add(pair.Key + "=" + pair.Value); }
         if(apply.HasValue)
         { start.ArgumentList.Add("-v"); start.ArgumentList.Add("apply=" + (apply.Value ? "true" : "false")); }
-        start.ArgumentList.Add("-f"); start.ArgumentList.Add(PostgresTestScripts.PathFor("resolve_blake2b_allocation_hold.sql"));
+        start.ArgumentList.Add("-f"); start.ArgumentList.Add(PostgresTestScripts.OperatorPathFor("resolve_blake2b_allocation_hold.sql"));
         using var process = Process.Start(start);
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();

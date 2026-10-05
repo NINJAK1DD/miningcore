@@ -67,6 +67,98 @@ public class RpcDiagnosticTests
         Assert.Equal(Secret, response.Error.Message);
     }
 
+    // The same wire faults exercise both HTTP paths and payout attestation.
+    public static IEnumerable<object[]> IncompleteEnvelopeBodies()
+    {
+        foreach(var error in new[]
+        {
+            "{}", "{\"message\":\"private daemon credential\"}",
+            "{\"code\":null,\"message\":\"private daemon credential\"}",
+            "{\"code\":-13}", "{\"code\":-13,\"message\":null}",
+            "{\"code\":-13,\"message\":123}", "{\"code\":-13,\"message\":true}",
+            "{\"code\":-13,\"message\":[]}", "{\"code\":-13,\"message\":{}}",
+            "{\"code\":\"-13\",\"message\":\"private daemon credential\"}",
+            "{\"code\":-13.5,\"message\":\"private daemon credential\"}",
+            "{\"code\":-13.0,\"message\":\"private daemon credential\"}",
+            "{\"code\":true,\"message\":\"private daemon credential\"}",
+            "{\"code\":[],\"message\":\"private daemon credential\"}",
+            "{\"code\":{},\"message\":\"private daemon credential\"}",
+            "{\"code\":2147483648,\"message\":\"private daemon credential\"}",
+            "{\"code\":-2147483649,\"message\":\"private daemon credential\"}",
+            "{\"code\":999999999999999999999999,\"message\":\"private daemon credential\"}",
+        })
+            yield return new object[] { "{\"result\":null,\"error\":" + error + "}" };
+        yield return new object[] { "{}" };
+        yield return new object[] { "{\"error\":null}" };
+    }
+
+    [Theory]
+    [MemberData(nameof(IncompleteEnvelopeBodies))]
+    public async Task SharedHttpDecoder_RejectsIncompleteEnvelopesInSingleAndBatch(string body)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var logs = new CapturedLogs();
+        await using var server = await Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JToken.Parse(await reader.ReadToEndAsync(deadline.Token));
+            JObject Reply(JToken item)
+            {
+                var reply = JObject.Parse(body);
+                reply["id"] = item["id"];
+                return reply;
+            }
+            var reply = request is JArray items ? (JToken) new JArray(items.Select(Reply)) : Reply(request);
+            await context.Response.WriteAsync(reply.ToString(Formatting.None), deadline.Token);
+        });
+        var client = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
+        var single = await client.ExecuteAsync(logs.Logger, "getnetworkinfo", deadline.Token);
+        var batch = await client.ExecuteBatchAsync(logs.Logger, deadline.Token,
+            new RpcRequest("getnetworkinfo"), new RpcRequest("getdeploymentinfo"));
+        foreach(var reply in batch.Append(single))
+        {
+            Assert.Null(reply.Response);
+            Assert.Equal(-500, reply.Error.Code);
+            Assert.IsType<JsonSerializationException>(reply.Error.InnerException);
+        }
+        logs.AssertSafe();
+    }
+
+    [Theory]
+    [InlineData(-2147483648)]
+    [InlineData(0)]
+    [InlineData(2147483647)]
+    public async Task SharedHttpDecoder_PreservesIntegerErrorBoundsAndWireStringMessage(int code)
+    {
+        const string message = "2026-01-02T00:00:00Z";
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var logs = new CapturedLogs();
+        await using var server = await Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JToken.Parse(await reader.ReadToEndAsync(deadline.Token));
+            JObject Reply(JToken item) => new()
+            {
+                ["id"] = item["id"], ["result"] = null,
+                ["error"] = new JObject { ["code"] = code, ["message"] = message, ["data"] = true },
+            };
+            var reply = request is JArray items ? (JToken) new JArray(items.Select(Reply)) : Reply(request);
+            await context.Response.WriteAsync(reply.ToString(Formatting.None) + " \r\n", deadline.Token);
+        });
+        var client = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
+        var single = await client.ExecuteAsync(logs.Logger, "getnetworkinfo", deadline.Token);
+        var batch = await client.ExecuteBatchAsync(logs.Logger, deadline.Token, new RpcRequest("getnetworkinfo"));
+        foreach(var reply in batch.Append(single))
+        {
+            Assert.Null(reply.Response);
+            Assert.Equal(code, reply.Error.Code);
+            Assert.Equal(message, reply.Error.Message);
+            Assert.Equal(true, reply.Error.Data);
+            Assert.Null(reply.Error.InnerException);
+        }
+        logs.AssertSafe();
+    }
+
     [Theory]
     [InlineData(false, "empty-401", "transport")]
     [InlineData(true, "empty-401", "transport")]
@@ -144,13 +236,14 @@ public class RpcDiagnosticTests
         await using var server = await Server.Start(async context =>
         {
             using var reader = new StreamReader(context.Request.Body);
-            var request = JObject.Parse(await reader.ReadToEndAsync(deadline.Token));
-            var body = new JObject
+            var request = JToken.Parse(await reader.ReadToEndAsync(deadline.Token));
+            JObject Reply(JToken item) => new()
             {
-                ["id"] = request["id"], ["error"] = null,
+                ["id"] = item["id"], ["error"] = null,
                 ["result"] = kind == "scalar" ? (JToken) "scalar-value" : kind == "typed" ? new JObject { ["hash"] = new string('a', 64), ["height"] = 321 } : null,
             };
-            await context.Response.WriteAsync(body.ToString(Formatting.None), deadline.Token);
+            var body = request is JArray items ? (JToken) new JArray(items.Select(Reply)) : Reply(request);
+            await context.Response.WriteAsync(body.ToString(Formatting.None) + " \r\n", deadline.Token);
         });
         var client = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
         if(kind == "scalar")
@@ -168,6 +261,36 @@ public class RpcDiagnosticTests
             var response = await client.ExecuteAsync<JToken>(logs.Logger, "getblocktemplate", deadline.Token);
             Assert.Null(response.Error); Assert.Null(response.Response);
         }
+        var batch = await client.ExecuteBatchAsync(logs.Logger, deadline.Token, new RpcRequest("getblocktemplate"));
+        var reply = Assert.Single(batch);
+        Assert.Null(reply.Error);
+        if(kind == "null") Assert.Null(reply.Response);
+        else Assert.NotNull(reply.Response);
+        logs.AssertSafe();
+    }
+
+    [Fact]
+    public async Task SharedHttpDecoder_PreservesWireDateStringsAndTypedDateResults()
+    {
+        const string date = "2026-01-02T00:00:00Z";
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var logs = new CapturedLogs();
+        await using var server = await Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JObject.Parse(await reader.ReadToEndAsync(deadline.Token));
+            await context.Response.WriteAsync(new JObject
+            {
+                ["id"] = request["id"], ["error"] = null,
+                ["result"] = request["method"].Value<string>() == "getblockhash" ? (JToken) date : new JObject { ["created"] = date },
+            }.ToString(Formatting.None), deadline.Token);
+        });
+        var client = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
+        var text = await client.ExecuteAsync<string>(logs.Logger, "getblockhash", deadline.Token);
+        Assert.Null(text.Error); Assert.Equal(date, text.Response);
+        var typed = await client.ExecuteAsync<Dictionary<string, DateTime>>(logs.Logger, "getblocktemplate", deadline.Token);
+        Assert.Null(typed.Error);
+        Assert.Equal(new DateTime(2026, 1, 2, 0, 0, 0, DateTimeKind.Utc), typed.Response["created"]);
         logs.AssertSafe();
     }
 

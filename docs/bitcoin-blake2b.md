@@ -28,7 +28,7 @@ later hard fork is implemented by the pinned Knots sources listed below.
   Runtime work re-attests version, chain and deployment on the first successful template
   poll after a 30-second cache expires, and before new work after a GBT/activation-parent RPC outage.
   Failed attestation RPCs withhold fresh work and retry with bounded exponential backoff
-  (1–30 seconds), restarting all identity checks after the delay. Only a complete successful
+  (1â€“30 seconds), restarting all identity checks after the delay. Only a complete successful
   attestation resets the backoff. Successful identity or deployment mismatches
   fault only the affected BLAKE2b pool and close its mining admission. Cached attestation bounds
   detection latency; it does not authenticate binaries or eliminate an endpoint replacement
@@ -190,6 +190,26 @@ Wallet spendability alone cannot reconstruct allocation history. This conservati
 guard does not certify completeness of retained shares when no later row exists.
 Historical orphans outside the scan window need the same audit.
 
+### Accounting clocks and allocation ordering
+
+All Stratum senders, relay receivers, recorders and payout owners sharing the
+accounting database must maintain synchronized UTC clocks and monitor clock offset
+and backward/forward steps. See [share relay requirements](share-relays.md).
+PROP/PPLNS share windows and the recovery guard use persisted `Created` timestamps,
+not block height. Height establishes chain order but cannot establish which share
+window a prior allocation consumed. A confirmed reward with a later or equal
+`Created` therefore quarantines an ambiguous recovery even if its block height is
+lower. Clock skew between nodes can trigger this during ordinary distributed
+operation; equal timestamps are also ambiguous. Preserve the records and use the
+audited closure below rather than rewriting timestamps or force-confirming the row.
+
+Synchronize and verify host clocks before admission, including after suspend,
+restore or failover. The relay's five-minute future-evidence rejection is an abuse
+bound, not a safe allocation clock-skew budget. Time synchronization cannot repair
+previously skewed allocations. A future CoreDRP multi-node accounting design needs
+a persisted shared allocation order and share-window identities before replacing
+this conservative guard; node-local sequence numbers and height are insufficient.
+
 ### Closing an audited allocation quarantine
 
 Quarantined is the final automatic state for ambiguous historical PROP/PPLNS allocation.
@@ -211,19 +231,29 @@ The audit case records the financial resolution separately:
    from the stored block reward. This runbook does not infer entitlement from that reward.
    If the reviewed entitlement is zero, record a zero-amount audit receipt for an actual
    affected account already in balances with that memo, leaving its balance unchanged.
-3. Use [resolve_blake2b_allocation_hold.sql](../src/Miningcore/Persistence/Postgres/Scripts/resolve_blake2b_allocation_hold.sql)
+3. Use [resolve_blake2b_allocation_hold.sql](../scripts/ops/resolve_blake2b_allocation_hold.sql)
    to validate identity, receipt/account/pool bindings, exact nonnegative total and case
    uniqueness. It only appends a resolution tag to those existing receipts. It does not
    create credits, pay, modify amounts or change the block. Default execution is a dry run
    ending in ROLLBACK. Inspect the displayed receipts before repeating with `-v apply=true`.
    Supply the exact original identities and every case receipt ID as a JSON integer array:
 
+   Choose the tool from the immutable release directory under audit (the packaged
+   file and link above use `scripts/ops/`, separate from schema `migrations/`).
+   `MININGCORE_CANDIDATE_DIR` is the absolute extracted release directory whose
+   BUILD-INFO and checksums you verified:
+
    ```bash
+   RESOLUTION_SQL="$MININGCORE_CANDIDATE_DIR/scripts/ops/resolve_blake2b_allocation_hold.sql"
+   # Installed release alternative, after verifying the active release identity:
+   # RESOLUTION_SQL="/opt/miningcore/scripts/ops/resolve_blake2b_allocation_hold.sql"
+   # Source checkout alternative, from its verified repository root:
+   # RESOLUTION_SQL="$PWD/scripts/ops/resolve_blake2b_allocation_hold.sql"
    psql -X --no-password "$AUDITED_DATABASE" \
      -v pool_id="$POOL_ID" -v block_id="$BLOCK_ID" -v block_height="$BLOCK_HEIGHT" \
      -v block_hash="$BLOCK_HASH" -v coinbase_txid="$COINBASE_TXID" -v case_id="$CASE_UUID" \
      -v credit_change_ids="$CREDIT_CHANGE_IDS_JSON" -v approved_additional_credit="$APPROVED_TOTAL" \
-     -f src/Miningcore/Persistence/Postgres/Scripts/resolve_blake2b_allocation_hold.sql
+     -f "$RESOLUTION_SQL"
    ```
 
    Use protected libpq credentials/service configuration rather than a password in the
@@ -242,7 +272,7 @@ the closure script. It cannot certify the external entitlement or funding audit.
 
 Before upgrading, drain and confirm broadcasts while still on 29.4.1, within the
 973440 upgrade deadline. The new wallet/mempool policy re-locks existing coinbases
-at depths 101–6480 and can evict their unconfirmed payouts or make change unavailable;
+at depths 101â€“6480 and can evict their unconfirmed payouts or make change unavailable;
 already-credited balances retain their liability while losing liquid backing. After
 upgrade, compare `getbalances`, payout confirmations/conflicts, usable change and
 outstanding balances before resuming. See the [upgrade runbook](bitcoin-blake2b-knots-29.4.2-review.md#stop-upgrade-reconcile-restart)
@@ -392,7 +422,7 @@ The production wire contract is Sia-style **profile 0**, with hasher time rollin
 
 All four ASIC layouts and nonzero XOR-mask variants are covered by official Knots vector
 tests (`HeaderV2_MatchesStableKnotsVectors`), but this
-does not advertise selectable wire profiles 1–3 or anti-withholding service. Production
+does not advertise selectable wire profiles 1â€“3 or anti-withholding service. Production
 uses a zero XOR key. There is no user-supplied header-flags or profile override.
 
 ### Software commissioning adapter contract
@@ -877,7 +907,7 @@ It feeds the real miner's accepted proof into the PostgreSQL accounting reposito
 PPS credit/remainder precision, duplicate replay and conflicting-payload rejection, and runs
 SOLO/PROP/PPLNS allocation against actual share/balance tables. Confirmed or orphaned PPS
 blocks cannot credit the same liability again or reverse it. Each run owns a disposable schema.
-Inspect actual test results before deployment—test code existing is not evidence that a run passed.
+Inspect actual test results before deploymentâ€”test code existing is not evidence that a run passed.
 Real-network maturity, payout liquidity, firmware behavior and long-running VarDiff require
 operator commissioning beyond isolated regtest.
 

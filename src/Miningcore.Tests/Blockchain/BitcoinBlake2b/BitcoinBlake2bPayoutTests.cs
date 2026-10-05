@@ -442,6 +442,12 @@ public class BitcoinBlake2bPayoutTests : TestBase
             var text = response.ToString(Formatting.None);
             if(current == method)
             {
+                if(fault.StartsWith("{", StringComparison.Ordinal))
+                {
+                    response = JObject.Parse(fault);
+                    response["id"] = request["id"];
+                    text = response.ToString(Formatting.None);
+                }
                 switch(fault)
                 {
                     case "wrong-result": response["result"] = new JArray("private daemon credential"); text = response.ToString(Formatting.None); break;
@@ -470,6 +476,7 @@ public class BitcoinBlake2bPayoutTests : TestBase
         await Fail();
         Assert.Equal(code == 703 ? 1 : 0, Alerts());
         if(fault is "wrong-result" or "wrong-envelope" or "null-envelope" or "scalar-result" or "wrong-error-code") Assert.IsType<JsonSerializationException>(fixture.Handler.ObservedContractError.InnerException);
+        if(fault.StartsWith("{", StringComparison.Ordinal)) Assert.IsType<JsonSerializationException>(fixture.Handler.ObservedContractError.InnerException);
         if(fault is "truncated" or "malformed") Assert.IsType<JsonReaderException>(fixture.Handler.ObservedContractError.InnerException);
         now = now.AddMinutes(31);
         await Fail();
@@ -480,6 +487,12 @@ public class BitcoinBlake2bPayoutTests : TestBase
         Assert.All(fixture.Messages.ReceivedCalls().Select(x => x.GetArguments()[0]).OfType<AdminNotification>(),
             value => Assert.DoesNotContain("private daemon credential", value.Message));
     }
+
+    [Theory]
+    [MemberData(nameof(Miningcore.Tests.Rpc.RpcDiagnosticTests.IncompleteEnvelopeBodies),
+        MemberType = typeof(Miningcore.Tests.Rpc.RpcDiagnosticTests))]
+    public Task RealRpcClient_IncompleteEnvelopesImmediatelyFailAttestation(string body) =>
+        RealRpcClient_AttestationClassifiesStructuralErrorsWithoutLeakingPayload("getnetworkinfo", body, 703);
 
     [Fact]
     public async Task AllocationHold_AlertsOnceAcrossHandlerRecreation()

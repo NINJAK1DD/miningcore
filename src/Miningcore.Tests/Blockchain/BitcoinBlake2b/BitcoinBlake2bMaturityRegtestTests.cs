@@ -483,6 +483,11 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
         Assert.True(await Read()); // Equal timestamps cannot establish allocation order.
         await db.Observer.ExecuteAsync("DELETE FROM blocks WHERE id=8; INSERT INTO blocks VALUES (9, 'review', 'confirmed', 'block', '2026-01-03T00:00:00Z')");
         Assert.True(await Read());
+        // Multi-node clock skew can reverse Created order relative to chain height.
+        // The confirmed row may already have consumed this share window: retain
+        // the conservative guard even when the candidate has the higher height.
+        await db.Observer.ExecuteAsync("ALTER TABLE blocks ADD COLUMN blockheight bigint; UPDATE blocks SET blockheight=101 WHERE id=1; UPDATE blocks SET blockheight=100 WHERE id=9");
+        Assert.True(await Read());
     }
 
     [BitcoinBlake2bIntegrationFact]

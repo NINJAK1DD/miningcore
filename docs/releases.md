@@ -586,6 +586,15 @@ Stored orphans with unavailable headers remain
 quiet during opportunistic scans, and unchanged orphan rows are not rewritten.
 Production RPC failures distinguish malformed/truncated JSON framing (701) from
 valid JSON with wrong contract shapes or missing required methods (703).
+Incomplete RPC errors (missing/non-integer/out-of-range code or non-string message)
+and success replies without a result member now fail as structural contract errors;
+explicit null results remain supported. The shared HTTP client for every coin also
+rejects trailing non-whitespace content after the complete JSON response. Proxies
+must return exactly one JSON value; whitespace and final newlines remain supported.
+The audit tool is packaged in `scripts/ops/`, outside schema migrations, with release,
+installed and source paths documented. Distributed PROP/PPLNS accounting requires
+synchronized host clocks; the Created-based recovery guard conservatively holds
+ambiguous history even when chain-height order differs.
 Single and batch responses use one decoder and reuse parsed result tokens, avoiding
 duplicate large template trees. Empty HTTP authentication failures retain transport
 classification for merged mining; its diagnostics expose fixed categories and numeric

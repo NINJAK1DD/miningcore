@@ -86,6 +86,9 @@
           Link="Fixtures/Postgres/%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="../../scripts/ops/*.sql" Link="Fixtures/Ops/%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="test.runsettings">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
