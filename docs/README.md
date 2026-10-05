@@ -32,6 +32,7 @@ wallet balances or recovery files.
 | Use REST, WebSocket events, metrics or administration | [API and monitoring](api.md) |
 | Provision and rotate administrative credentials | [Administrative API security](admin-api-security.md) |
 | Interpret safe daemon error logs and payout alerts | [RPC consumer diagnostics](rpc-consumer-diagnostics.md) |
+| Review shared HTTP daemon error formats and preserved error codes | [Daemon error compatibility](rpc-daemon-error-compatibility.md) |
 | Interpret safe miner transport and rejection logs | [Stratum diagnostics](stratum-diagnostics.md) |
 | Bound reconnect churn and size shared-address/proxy startup allowances | [Stratum connection admission](stratum-connection-admission.md) |
 | Deploy distributed Stratum/recorder roles | [Share relays](share-relays.md) |

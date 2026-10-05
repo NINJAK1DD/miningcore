@@ -422,6 +422,33 @@ CI/reviews remain historical evidence. Official release/source was rechecked on
 `58398baf33e588779685ead478e6397bb28ed3d6`, #429/#434 open/unmerged. Retain the
 immediately-before-merge upstream and #163 DATUM/direct-reward acceptance gates.
 
+## Sixth review compatibility confirmation
+
+Both supplied sixth-round reviews approve 8616eb0c and identify no new defect.
+The remaining cross-family error-format confirmation is closed by the
+[pinned daemon serializer audit](rpc-daemon-error-compatibility.md), covering
+CryptoNote/Monero, Zano, Geth, Beam wallet API, Handshake's locked bweb dependency
+and shared Xelis daemon/wallet errors. All emit integer codes and string messages;
+no evidence warrants loosening the shared decoder. Eighteen real-HTTP, source-shaped
+fixture cases preserve their code-specific inputs and arbitrary data in both
+single and batch paths, including valid empty strings. No production code or
+financial semantics change. This source audit does not certify unknown forks or
+claim live non-Bitcoin daemon tests.
+
+The reviewed 8616eb0c head already completed 16 successful checks and one intentional
+publish skip, with 3742 passed/zero failed/one benchmark skip in its full .NET lane.
+This closes the second review's stale CI observation. Before merge, recheck the
+actual PR head, its exact-head checks, reviewed Knots release/source and both open
+maturity proposals; retain #163 end-to-end/direct-reward acceptance.
+
+Sixth-round local validation (2026-10-05): **153 selected Windows tests and
+153 selected Linux tests passed, zero failures/skips**, including all 18 new family
+profiles and existing shared-RPC/real-HTTP BLAKE2b attestation cases. The evidence-only
+change uses the retained documented lab build outputs; no new live non-Bitcoin
+daemon deployment or production financial action is claimed. All 40 Markdown
+link/anchor checks, changed package-shell syntax and whitespace checks passed.
+Current-head CI is recorded on PR #207 and Issue #205 after publication.
+
 ## DATUM handoff to #163
 
 [DATUM server support remains #163](https://github.com/NINJAK1DD/miningcore/issues/163).
