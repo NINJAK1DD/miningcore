@@ -447,7 +447,15 @@ profiles and existing shared-RPC/real-HTTP BLAKE2b attestation cases. The eviden
 change uses the retained documented lab build outputs; no new live non-Bitcoin
 daemon deployment or production financial action is claimed. All 40 Markdown
 link/anchor checks, changed package-shell syntax and whitespace checks passed.
-Current-head CI is recorded on PR #207 and Issue #205 after publication.
+Initial a8eaccba CI passed every new family case but failed the explicit
+NonParallelCollectionTests membership inventory: the new RPC class had not been
+registered in that expected list. The main lane recorded 3759 passed/one failed/
+one benchmark skip; both Ubuntu package lanes recorded 3690 passed/one failed/
+44 skips. This was a test-inventory omission, not a daemon-format failure.
+The follow-up keeps the serialized RPC collection and updates its reviewed member
+list. Final affected checks, now including the assembly inventory, passed **164
+Windows and 164 Linux tests, zero failures/skips**. Current-head CI is recorded on
+PR #207 and Issue #205 after publication.
 
 ## DATUM handoff to #163
 
