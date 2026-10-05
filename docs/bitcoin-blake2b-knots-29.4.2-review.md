@@ -13,7 +13,7 @@ not an accepted current-mainnet build. There is no version bypass.
 ## Reviewed evidence
 
 The [released source](https://github.com/bitcoinknots/bitcoin/tree/58398baf33e588779685ead478e6397bb28ed3d6)
-and [29.4.1Ã¢â‚¬â€œ29.4.2 source comparison](https://github.com/bitcoinknots/bitcoin/compare/v29.4.1.knots20260508...v29.4.2.knots20260508)
+and [29.4.1–29.4.2 source comparison](https://github.com/bitcoinknots/bitcoin/compare/v29.4.1.knots20260508...v29.4.2.knots20260508)
 were reviewed against these implementation boundaries:
 
 | Source at `58398baf...` | Contract and Miningcore consequence |
@@ -96,7 +96,7 @@ revalidation, synchronization and reconciliation before resuming.
    Plan this before the deadline: pause new wallet broadcasts and verify every
    already-broadcast payout has confirmed on the validated chain before stopping
    29.4.1. Record its txid, consumed coinbases, recipients and durable batch outcome.
-   A 29.4.2 restart re-locks **all** coinbases with 101Ã¢â‚¬â€œ6480 confirmations; its mempool
+   A 29.4.2 restart re-locks **all** coinbases with 101–6480 confirmations; its mempool
    rejects their spends even when they were spendable under 29.4.1. Unconfirmed
    payouts may be evicted or not relayed by reviewed peers, and their change may
    become unavailable. A recorded payment/txid does not prove confirmation.
@@ -258,7 +258,7 @@ evidence changes, unavailable orphan evidence and already-confirmed replay refus
 | P1: persisted orphan/reactivation hole | Bounded typed-family selection and immutable row-lock admission, with fresh active wallet/header evidence and real persisted lifecycle tests for SOLO/PROP/PPLNS/PPS. |
 | P3: wallet-category log mismatch | Success logs include the reviewed `immature`/`generate` category; captured-log tests verify both. |
 | N1: upgrade re-locks prior payouts/liquidity | Runbook requires planned broadcast drain/confirmation before stopping 29.4.1, preserves unresolved outcomes if the deadline prevents confirmation, and checks `getbalances`, previous payouts/change and liabilities after upgrade. Pinned wallet/mempool source establishes the all-coinbase policy. |
-| N2: indistinguishable payout-attestation stalls | Fixed diagnostic codes 701Ã¢â‚¬â€œ704 and bounded redacted alerts distinguish RPC availability, syncing, contract drift and binding mismatch; tests cover recreation, recovery, transport/parse errors and cancellation. |
+| N2: indistinguishable payout-attestation stalls | Fixed diagnostic codes 701–704 and bounded redacted alerts distinguish RPC availability, syncing, contract drift and binding mismatch; tests cover recreation, recovery, transport/parse errors and cancellation. |
 | N3: unknown headers remain unresolved | Operator guide explains why -5 cannot prove orphaning, the once-per-episode alert policy, verified node/wallet repair/rescan and ledger/payment safeguards; unavailable evidence retains its existing status. |
 | Unused expected-work models | Moved to test fixtures and corrected the guide/release notes: production ignores optional expected-work fields and preserves target-derived accounting. |
 | User-agent diagnostic redaction | Received daemon subversion is withheld from startup errors as well as logs/alerts; private RPC inspection remains available. Tests reject malicious agents without exposing their payload. |

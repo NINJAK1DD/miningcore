@@ -28,7 +28,7 @@ later hard fork is implemented by the pinned Knots sources listed below.
   Runtime work re-attests version, chain and deployment on the first successful template
   poll after a 30-second cache expires, and before new work after a GBT/activation-parent RPC outage.
   Failed attestation RPCs withhold fresh work and retry with bounded exponential backoff
-  (1â€“30 seconds), restarting all identity checks after the delay. Only a complete successful
+  (1–30 seconds), restarting all identity checks after the delay. Only a complete successful
   attestation resets the backoff. Successful identity or deployment mismatches
   fault only the affected BLAKE2b pool and close its mining admission. Cached attestation bounds
   detection latency; it does not authenticate binaries or eliminate an endpoint replacement
@@ -272,7 +272,7 @@ the closure script. It cannot certify the external entitlement or funding audit.
 
 Before upgrading, drain and confirm broadcasts while still on 29.4.1, within the
 973440 upgrade deadline. The new wallet/mempool policy re-locks existing coinbases
-at depths 101â€“6480 and can evict their unconfirmed payouts or make change unavailable;
+at depths 101–6480 and can evict their unconfirmed payouts or make change unavailable;
 already-credited balances retain their liability while losing liquid backing. After
 upgrade, compare `getbalances`, payout confirmations/conflicts, usable change and
 outstanding balances before resuming. See the [upgrade runbook](bitcoin-blake2b-knots-29.4.2-review.md#stop-upgrade-reconcile-restart)
@@ -422,7 +422,7 @@ The production wire contract is Sia-style **profile 0**, with hasher time rollin
 
 All four ASIC layouts and nonzero XOR-mask variants are covered by official Knots vector
 tests (`HeaderV2_MatchesStableKnotsVectors`), but this
-does not advertise selectable wire profiles 1â€“3 or anti-withholding service. Production
+does not advertise selectable wire profiles 1–3 or anti-withholding service. Production
 uses a zero XOR key. There is no user-supplied header-flags or profile override.
 
 ### Software commissioning adapter contract
@@ -907,7 +907,7 @@ It feeds the real miner's accepted proof into the PostgreSQL accounting reposito
 PPS credit/remainder precision, duplicate replay and conflicting-payload rejection, and runs
 SOLO/PROP/PPLNS allocation against actual share/balance tables. Confirmed or orphaned PPS
 blocks cannot credit the same liability again or reverse it. Each run owns a disposable schema.
-Inspect actual test results before deploymentâ€”test code existing is not evidence that a run passed.
+Inspect actual test results before deployment—test code existing is not evidence that a run passed.
 Real-network maturity, payout liquidity, firmware behavior and long-running VarDiff require
 operator commissioning beyond isolated regtest.
 
