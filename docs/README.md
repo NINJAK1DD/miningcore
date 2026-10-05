@@ -32,6 +32,7 @@ wallet balances or recovery files.
 | Use REST, WebSocket events, metrics or administration | [API and monitoring](api.md) |
 | Provision and rotate administrative credentials | [Administrative API security](admin-api-security.md) |
 | Interpret safe daemon error logs and payout alerts | [RPC consumer diagnostics](rpc-consumer-diagnostics.md) |
+| Review shared HTTP daemon error formats and preserved error codes | [Daemon error compatibility](rpc-daemon-error-compatibility.md) |
 | Interpret safe miner transport and rejection logs | [Stratum diagnostics](stratum-diagnostics.md) |
 | Bound reconnect churn and size shared-address/proxy startup allowances | [Stratum connection admission](stratum-connection-admission.md) |
 | Deploy distributed Stratum/recorder roles | [Share relays](share-relays.md) |
@@ -41,6 +42,7 @@ wallet balances or recovery files.
 | Configure Litecoin–Dogecoin merged mining | [Merged mining](merged-mining-litecoin-dogecoin.md) |
 | Configure and commission DigiByte direct mining | [DigiByte](digibyte.md) |
 | Configure the separate Bitcoin BLAKE2b header-v2 chain | [Bitcoin BLAKE2b](bitcoin-blake2b.md) |
+| Review the Knots 29.4.2 maturity/RPC upgrade and DATUM handoff | [Knots 29.4.2 compatibility review](bitcoin-blake2b-knots-29.4.2-review.md) |
 | Review Scrypt daemon/template provenance | [Scrypt coin definitions](scrypt-coin-definitions.md) |
 | Review Bitcoin-family BIP310 mask safety | [Version rolling](version-rolling.md) |
 | Preserve outstanding work when miners or proxies repeat subscribe | [Bitcoin subscription policy](bitcoin-subscription-policy.md) |

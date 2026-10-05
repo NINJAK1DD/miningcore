@@ -557,8 +557,56 @@ methods. Method labels are separately allowlisted from source-controlled protoco
 
 ## Unreleased: Bitcoin BLAKE2b header-v2
 
+The current compatibility update removes the BLAKE2b startup dependency on the removed
+`getdifficulty` RPC and keeps expected BLAKE2b hash work separate from accounting units. Startup/runtime
+and payout checks enforce the reviewed long-maturity deployment and GBT transition
+contract. Wallet-aware progress and active-chain verification keep immature or
+unverified rewards pending without rescaling shares or reversing PPS liabilities.
+See the [29.4.2 review, upgrade and DATUM handoff](bitcoin-blake2b-knots-29.4.2-review.md).
+Upgrade both the daemon and Miningcore **before mainnet height 973440**. Old templates
+can include premature coinbase spends rejected by enforcing nodes after that boundary;
+keep admission stopped if revalidation/synchronization and reconciliation are incomplete.
+The dedicated payout handler verifies retained block headers on pruned nodes, preserves
+immature wallet credit, alerts on prolonged contradictory evidence and quarantines
+unsupported direct-settlement rows without blocking valid custodial reconciliation.
+Custodial orphans are revisited in bounded rotating batches; matching active wallet/header
+evidence can restore them under an immutable row-lock check without re-crediting already
+confirmed rows.
+PROP/PPLNS confirmation is held when a later (or ambiguously same-time) custodial
+reward is already Confirmed, including reopened Pending rows after restart. Earlier
+development builds could orphan active rewards on wallet -5 errors; subsequent
+allocations may have deleted their shares or swept recovered funds. Preserve and
+audit original allocation/payment history and spendable backing before recovery;
+do not force-confirm held rewards. Such holds now persist as Quarantined under the
+row lock, retain stored reward/effort and advance verified progress without crediting.
+One warning/alert follows the committed transition; subsequent scans and restarts skip
+the row. The [audited closure procedure](bitcoin-blake2b.md#closing-an-audited-allocation-quarantine)
+links existing case receipts with a metadata-only, dry-run-by-default psql script.
+Stored orphans with unavailable headers remain
+quiet during opportunistic scans, and unchanged orphan rows are not rewritten.
+Production RPC failures distinguish malformed/truncated JSON framing (701) from
+valid JSON with wrong contract shapes or missing required methods (703).
+Incomplete RPC errors (missing/non-integer/out-of-range code or non-string message)
+and success replies without a result member now fail as structural contract errors;
+explicit null results remain supported. The shared HTTP client for every coin also
+rejects trailing non-whitespace content after the complete JSON response. Proxies
+must return exactly one JSON value; whitespace and final newlines remain supported.
+The audit tool is packaged in `scripts/ops/`, outside schema migrations, with release,
+installed and source paths documented. Distributed PROP/PPLNS accounting requires
+synchronized host clocks; the Created-based recovery guard conservatively holds
+ambiguous history even when chain-height order differs.
+Single and batch responses use one decoder and reuse parsed result tokens, avoiding
+duplicate large template trees. Empty HTTP authentication failures retain transport
+classification for merged mining; its diagnostics expose fixed categories and numeric
+codes instead of daemon or exception text.
+Fixed payout-attestation reason codes distinguish outages, synchronization,
+contract drift and process-binding changes. Before upgrading, pause broadcasts and drain
+confirmed payout outcomes within the deadline: previously spendable 101–6480-confirmation
+coinbases and their unconfirmed spends/change can become unavailable. Reconcile dedicated
+wallet `getbalances`, existing payout outcomes and already-credited liabilities before resuming.
+
 The separate `bitcoin-blake2b` template and runtime target the reviewed Bitcoin Knots
-29.4.1.knots20260508 hard-fork chain. They do not replace SHA-256d `bitcoin`, enable BTC
+29.4.2.knots20260508 hard-fork chain. They do not replace SHA-256d `bitcoin`, enable BTC
 direct-coinbase settlement on another chain, or implement the DATUM pool protocol.
 The [operator guide](bitcoin-blake2b.md) describes the pinned consensus and miner contract,
 isolated wallet/node setup, accounting, startup refusal conditions and validation limitations.

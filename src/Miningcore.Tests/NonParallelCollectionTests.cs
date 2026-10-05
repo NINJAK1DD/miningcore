@@ -101,9 +101,11 @@ public class NonParallelCollectionTests
                 typeof(BitcoinDuplicateSubscriptionTests),
                 typeof(BitcoinPublicationRegtestTests),
                 typeof(BitcoinVersionRollingRegtestTests), typeof(BitcoinBlake2bRegtestTests),
+                typeof(BitcoinBlake2bMaturityRegtestTests),
                 typeof(BitcoinBlake2bStartupTests), typeof(MergedMiningPayoutRegtestTests) } };
         yield return new object[] { typeof(RpcDiagnosticCollection),
-            new[] { typeof(RpcDiagnosticTests), typeof(RpcConsumerDiagnosticTests) } };
+            new[] { typeof(RpcDiagnosticTests), typeof(RpcConsumerDiagnosticTests),
+                typeof(DaemonErrorCompatibilityTests) } };
         yield return new object[] { typeof(PayoutManagerLoggingCollection), new[] { typeof(PayoutManagerLoggingTests) } };
         yield return new object[] { typeof(IPAccessWhitelistLoggingCollection), new[] { typeof(IPAccessWhitelistLoggingTests) } };
         yield return new object[] { typeof(ShareRecoveryLoggingCollection),

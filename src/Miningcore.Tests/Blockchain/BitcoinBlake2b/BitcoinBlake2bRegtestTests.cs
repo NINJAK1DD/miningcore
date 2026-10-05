@@ -389,9 +389,9 @@ public class BitcoinBlake2bRegtestTests : TestBase
         var payments = Substitute.For<IPaymentRepository>();
         payments.TryBeginPaymentBatchAsync(Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(),
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<DateTime>()).Returns(true);
-        var handler = new BitcoinPayoutHandler(container, cf, AutoMapperFactory.CreateMapper(),
+        var handler = new BitcoinBlake2bPayoutHandler(container, cf, AutoMapperFactory.CreateMapper(),
             Substitute.For<IShareRepository>(), Substitute.For<Miningcore.Persistence.Repositories.IBlockRepository>(), balances,
-            payments, clock, Substitute.For<IMessageBus>(), new ActiveBlockGracePeriodTracker());
+            payments, clock, Substitute.For<IMessageBus>(), new ActiveBlockGracePeriodTracker(), new BitcoinBlake2bPayoutContractTracker());
         pool.Address = destination.ToString();
         await handler.ConfigureAsync(new ClusterConfig(), pool, CancellationToken.None);
         var miningPool = Substitute.For<IMiningPool>();

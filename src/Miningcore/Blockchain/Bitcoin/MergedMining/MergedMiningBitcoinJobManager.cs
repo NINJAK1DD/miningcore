@@ -326,9 +326,9 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             AuxiliaryTemplateRpcOutcome.Cancellation =>
                 "cancelled by host shutdown",
             AuxiliaryTemplateRpcOutcome.RpcError =>
-                result.Response?.Error?.Message ?? "RPC error",
+                result.Response?.Error is { } error ? $"RPC error (code {error.Code.ToString(CultureInfo.InvariantCulture)})" : "RPC error",
             AuxiliaryTemplateRpcOutcome.TransportFailure =>
-                result.Response?.Error?.Message ?? "transport failure",
+                "transport failure",
             AuxiliaryTemplateRpcOutcome.Success => "completed successfully",
             _ => "unknown auxiliary-template RPC failure",
         };
