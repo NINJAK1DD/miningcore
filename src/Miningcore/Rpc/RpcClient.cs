@@ -68,8 +68,14 @@ public class RpcClient
 
             try
             {
+                // Preserve boxed scalar contracts used by shared Ethereum/Xelis
+                // callers (notably bool/object), and reject numeric-to-string
+                // coercion. Explicit token callers still receive the parsed token.
+                if(response.Result is JValue value && !typeof(JToken).IsAssignableFrom(typeof(TResponse)))
+                    return new RpcResponse<TResponse>((TResponse) value.Value, response.Error);
+
                 if(response.Result is JToken token)
-                    return new RpcResponse<TResponse>(token.ToObject<TResponse>(serializer), response.Error);
+                    return new RpcResponse<TResponse>(token is TResponse typed ? typed : token.ToObject<TResponse>(serializer), response.Error);
 
                 return new RpcResponse<TResponse>((TResponse) response.Result, response.Error);
             }
@@ -118,7 +124,7 @@ public class RpcClient
             var response = await BatchRequestAsync(logger, ct, config, batch);
 
             return response
-                .Select(x => new RpcResponse<JToken>(x.Result != null ? JToken.FromObject(x.Result) : null, x.Error))
+                .Select(x => new RpcResponse<JToken>((JToken) x.Result, x.Error))
                 .ToArray();
         }
 
@@ -162,7 +168,7 @@ public class RpcClient
 
     #endregion // API-Surface
 
-    private async Task<JsonRpcResponse> RequestAsync(ILogger logger, CancellationToken ct, DaemonEndpointConfig endPoint, string method, object payload)
+    private async Task<JsonRpcResponse<JToken>> RequestAsync(ILogger logger, CancellationToken ct, DaemonEndpointConfig endPoint, string method, object payload)
     {
         var sw = Stopwatch.StartNew();
 
@@ -208,31 +214,11 @@ public class RpcClient
                     httpResponseChars: responseContent.Length,
                     elapsedMs: sw.ElapsedMilliseconds);
 
-                // deserialize response
-                using(var jreader = new JsonTextReader(new StringReader(responseContent)))
-                {
-                    // Read a complete JSON value before converting its RPC shape.
-                    // Keep framing failures (JsonReaderException) distinguishable
-                    // from valid JSON with an incompatible contract (serialization).
-                    var decoded = JToken.ReadFrom(jreader);
-                    JsonRpcResponse result;
-                    try
-                    {
-                        result = decoded.ToObject<JsonRpcResponse>(serializer);
-                        if(result == null)
-                            throw new JsonSerializationException("JSON-RPC response envelope is missing");
-                    }
-                    catch(JsonException ex)
-                    {
-                        // A conversion can itself raise a reader exception (for
-                        // example an invalid error.code). Framing already passed.
-                        throw new JsonSerializationException("JSON-RPC response contract is incompatible", ex);
-                    }
+                var decoded = ReadResponse(responseContent, response.StatusCode);
+                var result = DecodeEnvelope(decoded, serializer);
+                messageBus.SendTelemetry(poolId, TelemetryCategory.RpcRequest, RpcDiagnostics.Method(method), sw.Elapsed, response.IsSuccessStatusCode);
 
-                    messageBus.SendTelemetry(poolId, TelemetryCategory.RpcRequest, RpcDiagnostics.Method(method), sw.Elapsed, response.IsSuccessStatusCode);
-
-                    return result;
-                }
+                return result;
             }
         }
     }
@@ -286,18 +272,83 @@ public class RpcClient
                     httpResponseChars: responseContent.Length,
                     elapsedMs: sw.ElapsedMilliseconds);
 
-                using(var jreader = new JsonTextReader(new StringReader(responseContent)))
-                {
-                    var result = serializer.Deserialize<JsonRpcResponse<JToken>[]>(jreader);
+                var decoded = ReadResponse(responseContent, response.StatusCode);
+                if(decoded is not JArray items)
+                    throw new JsonSerializationException("JSON-RPC batch response contract is incompatible");
+                var result = items.Select(item => DecodeEnvelope(item, serializer)).ToArray();
 
-                    messageBus.SendTelemetry(poolId, TelemetryCategory.RpcRequest, "batch",
-                        sw.Elapsed, response.IsSuccessStatusCode);
+                messageBus.SendTelemetry(poolId, TelemetryCategory.RpcRequest, "batch",
+                    sw.Elapsed, response.IsSuccessStatusCode);
 
-                    return OrderBatchResponses(rpcRequests, result);
-                }
+                return OrderBatchResponses(rpcRequests, result);
             }
         }
     }
+
+    private static JToken ReadResponse(string content, HttpStatusCode status)
+    {
+        // Bitcoind authentication failures may have no RPC body. Keep these as
+        // transport failures for shared callers, without forwarding HTTP text.
+        if(string.IsNullOrWhiteSpace(content))
+            throw new HttpRequestException("JSON-RPC HTTP response was empty", null, status);
+
+        try
+        {
+            using var reader = new JsonTextReader(new StringReader(content));
+            var result = JToken.ReadFrom(reader);
+            if(reader.Read())
+                throw new JsonReaderException("JSON-RPC response contains trailing content");
+            return result;
+        }
+        catch(JsonReaderException ex) when((int) status is < 200 or >= 300)
+        {
+            throw new HttpRequestException("JSON-RPC HTTP response could not be decoded", ex, status);
+        }
+    }
+
+    internal static JsonRpcResponse<JToken> DecodeEnvelope(JToken decoded, JsonSerializer serializer)
+    {
+        try
+        {
+            if(decoded is not JObject envelope)
+                throw new JsonSerializationException("JSON-RPC response envelope is missing");
+
+            // Borrow the parsed result instead of serializing a potentially large
+            // getblocktemplate tree a second time. Only typed DTO callers convert it.
+            var result = new JsonRpcResponse<JToken>
+            {
+                Result = NullToClr(envelope["result"]),
+                Id = ScalarOrToken(envelope["id"]),
+            };
+            var error = NullToClr(envelope["error"]);
+            if(error != null)
+            {
+                if(error is not JObject fields)
+                    throw new JsonSerializationException("JSON-RPC error envelope is incompatible");
+                // Convert only the small scalar fields; retain arbitrary daemon
+                // data without another tree copy or diagnostic disclosure.
+                result.Error = new JsonRpcError(fields["code"]?.ToObject<int>(serializer) ?? 0,
+                    fields["message"]?.ToObject<string>(serializer), ScalarOrToken(fields["data"]));
+            }
+            foreach(var property in envelope.Properties())
+            {
+                if(property.Name is "result" or "id" or "error") continue;
+                result.Extra ??= new Dictionary<string, object>(StringComparer.Ordinal);
+                result.Extra[property.Name] = NullToClr(property.Value);
+            }
+            return result;
+        }
+        catch(JsonException ex)
+        {
+            // Conversion can raise JsonReaderException too. Framing already
+            // succeeded, so both single and batch expose a contract failure.
+            throw new JsonSerializationException("JSON-RPC response contract is incompatible", ex);
+        }
+    }
+
+    private static JToken NullToClr(JToken token) => token?.Type == JTokenType.Null ? null : token;
+
+    private static object ScalarOrToken(JToken token) => token is JValue scalar ? scalar.Value : token;
 
     internal static JsonRpcResponse<JToken>[] OrderBatchResponses(
         IReadOnlyCollection<JsonRpcRequest<object>> requests,

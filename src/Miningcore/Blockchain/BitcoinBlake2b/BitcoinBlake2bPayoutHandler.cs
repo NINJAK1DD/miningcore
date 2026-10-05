@@ -6,6 +6,7 @@ using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
+using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
 using Miningcore.Rpc;
@@ -19,7 +20,7 @@ using BlockStatus = Miningcore.Persistence.Model.BlockStatus;
 namespace Miningcore.Blockchain.BitcoinBlake2b;
 
 [CoinFamily(CoinFamily.BitcoinBlake2b)]
-public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler
+public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocationHoldNotifier
 {
     private readonly IActiveBlockGracePeriodTracker grace;
     private readonly BitcoinBlake2bPayoutContractTracker contracts;
@@ -312,7 +313,7 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler
         }
     }
 
-    internal void NotifyAllocationHold(Block block)
+    public void NotifyAllocationHold(Block block)
     {
         const string episode = "bitcoin-blake2b:allocation-history";
         if(!grace.TryAcquireNotification(block.PoolId, block.Id, block.Hash, episode, clock.Now, TimeSpan.Zero)) return;
@@ -321,7 +322,7 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler
             messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}] Bitcoin BLAKE2b allocation recovery withheld",
                 $"Pool {poolConfig.Id} block {block.BlockHeight}: a later or same-time custodial reward is already confirmed. " +
                 "PROP/PPLNS share history may have been consumed and recovered funds may already have been swept. " +
-                "Automatic confirmation and balance allocation are withheld. Preserve backups and audit original shares, " +
+                "The block is durably quarantined and automatic balance allocation is withheld. Preserve backups and audit original shares, " +
                 "credits, payments and spendable wallet backing using the documented historical recovery procedure."));
             grace.MarkNotificationSent(block.PoolId, block.Id, block.Hash, episode);
         }

@@ -382,7 +382,7 @@ public class PayoutManager : ProcessStatusBackgroundService
                             default:
                                 return false;
                         }
-                    }, handler is BitcoinBlake2bPayoutHandler blake2b ? blake2b.NotifyAllocationHold : null);
+                    }, handler is IBlockAllocationHoldNotifier notifier ? notifier.NotifyAllocationHold : null);
                 }
                 catch(Exception ex) when(block.Status ==
                         BlockStatus.Quarantined &&
@@ -511,8 +511,18 @@ public class PayoutManager : ProcessStatusBackgroundService
                poolConfig.PaymentProcessing.PayoutScheme is PayoutScheme.PROP or PayoutScheme.PPLNS &&
                await blockRepo.HasLaterConfirmedCustodialBlockAsync(con, tx, block.PoolId, block.Created, block.Id))
             {
-                allocationHeld = true;
-                return false;
+                // Persist a terminal scan state atomically with the history check.
+                // Preserve financial evidence; fresh wallet proof may advance
+                // progress, but cannot authorize reconstructing pruned shares.
+                block.Status = BlockStatus.Quarantined;
+                block.Reward = persisted.Reward;
+                block.Effort = persisted.Effort;
+                block.MinerEffort = persisted.MinerEffort;
+                block.NotifyBlockFoundOnUpdate = false;
+                block.NotifyBlockConfirmationProgressOnUpdate = false;
+                block.NotifyBlockUnlockedOnUpdate = false;
+                allocationHeld = await blockRepo.UpdateBlockAsync(con, tx, block);
+                return allocationHeld;
             }
 
             if(BitcoinPayoutHandler.IsDirectCoinbaseSettlement(persisted) &&
@@ -549,10 +559,11 @@ public class PayoutManager : ProcessStatusBackgroundService
             return await action(con, tx);
         });
 
-        if(allocationHeld)
+        if(updated && allocationHeld)
         {
-            logger.Warn(() => $"Bitcoin BLAKE2b block {block.BlockHeight}: automatic PROP/PPLNS allocation withheld for historical share and wallet audit");
-            notifyAllocationHold?.Invoke(block);
+            logger.Warn(() => $"Bitcoin BLAKE2b block {block.BlockHeight}: quarantined for historical share and wallet audit before PROP/PPLNS allocation");
+            TryNotifyPostCommit(poolConfig.Id, block, "allocation-hold",
+                () => notifyAllocationHold?.Invoke(block));
         }
 
         if(updated && block.NotifyBlockFoundOnUpdate)

@@ -436,14 +436,20 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
             {
                 await manager.UpdatePoolBalancesAsync(pool, config, handler, scheme, CancellationToken.None);
                 var stored = await db.Factory.RunTx((con, tx) => blocks.GetBlockByIdForUpdateAsync(con, tx, older.Id));
-                Assert.Equal(status, stored.Status);
+                Assert.Equal(BlockStatus.Quarantined, stored.Status);
                 Assert.Equal(older.Reward, stored.Reward);
+                Assert.Equal(1, stored.ConfirmationProgress);
+                Assert.Equal(older.Effort, stored.Effort);
+                Assert.Equal(older.MinerEffort, stored.MinerEffort);
+                Assert.Empty(await manager.LoadBlocksForClassificationAsync(pool, CancellationToken.None));
                 Assert.Equal(credited, await db.Observer.ExecuteScalarAsync<decimal>("SELECT sum(amount) FROM balances"));
                 Assert.Equal(changes, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM balance_changes"));
             }
             await AssertHeld();
             await AssertHeld();
             manager = NewManager();
+            grace = new ActiveBlockGracePeriodTracker();
+            contracts = new BitcoinBlake2bPayoutContractTracker();
             handler = await NewHandler();
             await AssertHeld();
             var alerts = messages.ReceivedCalls().Select(x => x.GetArguments()[0]).OfType<AdminNotification>()

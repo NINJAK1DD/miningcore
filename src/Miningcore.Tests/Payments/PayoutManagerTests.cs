@@ -1187,6 +1187,10 @@ public class PayoutManagerTests
         fixture.BlockRepository.GetBlockByIdForUpdateAsync(fixture.Connection, fixture.Transaction, classified.Id).Returns(persisted);
         fixture.BlockRepository.HasLaterConfirmedCustodialBlockAsync(fixture.Connection, fixture.Transaction,
             classified.PoolId, classified.Created, classified.Id).Returns(laterConfirmed);
+        fixture.BlockRepository.UpdateBlockAsync(fixture.Connection, fixture.Transaction, classified).Returns(true);
+        classified.ConfirmationProgress = 1;
+        classified.Reward = 49;
+        classified.NotifyBlockUnlockedOnUpdate = true;
         var actions = 0;
         var alerts = 0;
         await fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool, classified, (_, _) =>
@@ -1194,6 +1198,73 @@ public class PayoutManagerTests
         Assert.Equal(allowed ? 1 : 0, actions);
         Assert.Equal(allowed ? 0 : 1, alerts);
         Assert.Equal(persistedStatus, persisted.Status);
+        if(!allowed)
+        {
+            Assert.Equal(BlockStatus.Quarantined, classified.Status);
+            Assert.Equal(persisted.Reward, classified.Reward);
+            Assert.Equal(1, classified.ConfirmationProgress);
+            Assert.False(classified.NotifyBlockUnlockedOnUpdate);
+            await fixture.BlockRepository.Received(1).UpdateBlockAsync(fixture.Connection, fixture.Transaction, classified);
+            Assert.Empty(fixture.MessageBus.ReceivedCalls());
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Blake2bQuarantine_DoesNotNotifyFailedPersistenceOrReplayedTerminalRow(bool alreadyQuarantined)
+    {
+        var fixture = CreateFixture();
+        fixture.Pool.Template = new BitcoinBlake2bTemplate();
+        fixture.Pool.PaymentProcessing.PayoutScheme = PayoutScheme.PROP;
+        var persisted = Blake2bBlock(fixture, alreadyQuarantined ? BlockStatus.Quarantined : BlockStatus.Pending);
+        var classified = Blake2bBlock(fixture, BlockStatus.Confirmed);
+        classified.BitcoinBlake2bCustodialEvidenceVerified = true;
+        fixture.BlockRepository.GetBlockByIdForUpdateAsync(fixture.Connection, fixture.Transaction, classified.Id).Returns(persisted);
+        fixture.BlockRepository.HasLaterConfirmedCustodialBlockAsync(fixture.Connection, fixture.Transaction,
+            classified.PoolId, classified.Created, classified.Id).Returns(true);
+        fixture.BlockRepository.UpdateBlockAsync(fixture.Connection, fixture.Transaction, classified).Returns(false);
+        var actions = 0;
+        var alerts = 0;
+        await fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool, classified, (_, _) =>
+        { actions++; return Task.FromResult(true); }, _ => alerts++);
+        Assert.Equal(0, actions);
+        Assert.Equal(0, alerts);
+        Assert.Empty(fixture.MessageBus.ReceivedCalls());
+        if(alreadyQuarantined)
+            await fixture.BlockRepository.DidNotReceive().UpdateBlockAsync(Arg.Any<IDbConnection>(), Arg.Any<IDbTransaction>(), Arg.Any<Block>());
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Blake2bQuarantine_AlertsOnlyAfterCommitAndSurvivesNotificationFailure(bool failCommit)
+    {
+        var fixture = CreateFixture();
+        fixture.Pool.Template = new BitcoinBlake2bTemplate();
+        fixture.Pool.PaymentProcessing.PayoutScheme = PayoutScheme.PROP;
+        var persisted = Blake2bBlock(fixture, BlockStatus.Pending);
+        var classified = Blake2bBlock(fixture, BlockStatus.Confirmed);
+        classified.BitcoinBlake2bCustodialEvidenceVerified = true;
+        fixture.BlockRepository.GetBlockByIdForUpdateAsync(fixture.Connection, fixture.Transaction, classified.Id).Returns(persisted);
+        fixture.BlockRepository.HasLaterConfirmedCustodialBlockAsync(fixture.Connection, fixture.Transaction,
+            classified.PoolId, classified.Created, classified.Id).Returns(true);
+        fixture.BlockRepository.UpdateBlockAsync(fixture.Connection, fixture.Transaction, classified).Returns(true);
+        if(failCommit)
+            fixture.Transaction.When(x => x.Commit()).Do(_ => throw new InvalidOperationException("commit failed"));
+        var actions = 0;
+        var alerts = 0;
+        Task Run() => fixture.Manager.RunBlockUpdateTransactionAsync(fixture.Pool, classified, (_, _) =>
+            { actions++; return Task.FromResult(true); }, _ =>
+            {
+                fixture.Transaction.Received(1).Commit();
+                alerts++;
+                throw new InvalidOperationException("notification failed");
+            });
+        if(failCommit) await Assert.ThrowsAsync<InvalidOperationException>(Run);
+        else await Run();
+        Assert.Equal(0, actions);
+        Assert.Equal(failCommit ? 0 : 1, alerts);
         Assert.Empty(fixture.MessageBus.ReceivedCalls());
     }
 

@@ -20,6 +20,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Miningcore.Configuration;
+using Miningcore.Blockchain.Bitcoin.DaemonResponses;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Messaging;
 using Miningcore.Notifications.Messages;
 using Miningcore.Rpc;
@@ -45,6 +47,180 @@ public class RpcDiagnosticTests
     private const string Secret = "synthetic-private-secret";
     private const string UnsafeText = Secret + "\r\n\u0085\u2028\u2029forged-log";
     private static readonly string EncodedCredentials = Convert.ToBase64String(Encoding.UTF8.GetBytes("rpc-user:" + Secret));
+
+    [Fact]
+    public void EnvelopeDecode_BorrowsLargeResultAndOpaqueDataWithoutCloning()
+    {
+        var envelope = JObject.Parse(new JObject
+        {
+            ["result"] = new JObject { ["transactions"] = new JArray(new JObject { ["data"] = new string('a', 2_000_000) }) },
+            ["id"] = "request-1",
+            ["error"] = new JObject { ["code"] = -13, ["message"] = Secret, ["data"] = new JObject { ["opaque"] = Secret } },
+            ["extension"] = new JObject { ["opaque"] = Secret },
+        }.ToString(Formatting.None));
+        var response = RpcClient.DecodeEnvelope(envelope, new JsonSerializer());
+        Assert.Same(envelope["result"], response.Result);
+        Assert.Equal("request-1", response.Id);
+        Assert.Same(envelope["error"]["data"], response.Error.Data);
+        Assert.Same(envelope["extension"], response.Extra["extension"]);
+        Assert.Equal(-13, response.Error.Code);
+        Assert.Equal(Secret, response.Error.Message);
+    }
+
+    [Theory]
+    [InlineData(false, "empty-401", "transport")]
+    [InlineData(true, "empty-401", "transport")]
+    [InlineData(false, "text-401", "transport")]
+    [InlineData(true, "text-401", "transport")]
+    [InlineData(false, "empty-200", "transport")]
+    [InlineData(true, "empty-200", "transport")]
+    [InlineData(false, "malformed", "framing")]
+    [InlineData(true, "malformed", "framing")]
+    [InlineData(false, "truncated", "framing")]
+    [InlineData(true, "truncated", "framing")]
+    [InlineData(false, "trailing", "framing")]
+    [InlineData(true, "trailing", "framing")]
+    [InlineData(false, "envelope", "contract")]
+    [InlineData(true, "envelope", "contract")]
+    [InlineData(false, "error-code", "contract")]
+    [InlineData(true, "error-code", "contract")]
+    [InlineData(false, "daemon", "daemon")]
+    [InlineData(true, "daemon", "daemon")]
+    public async Task SharedHttpDecoder_PreservesSingleBatchAndMergedMiningFailureCategories(bool batch, string kind, string category)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var logs = new CapturedLogs();
+        await using var server = await Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JToken.Parse(await reader.ReadToEndAsync(deadline.Token));
+            context.Response.StatusCode = kind.EndsWith("401", StringComparison.Ordinal) ? 401 : kind == "daemon" ? 500 : 200;
+            JObject Reply(JToken item) => new()
+            {
+                ["id"] = item["id"], ["result"] = null,
+                ["error"] = new JObject { ["code"] = kind == "error-code" ? (JToken) Secret : -13, ["message"] = Secret },
+            };
+            var body = kind switch
+            {
+                "empty-401" or "empty-200" => " \r\n",
+                "text-401" => UnsafeText,
+                "malformed" => "{\"secret\":no-json}",
+                "truncated" => "{\"result\":",
+                "envelope" => batch ? "[7]" : "7",
+                "trailing" => (batch ? "[]" : "{}") + " {}",
+                _ => (batch ? (JToken) new JArray(((JArray) request).Select(Reply)) : Reply(request)).ToString(Formatting.None),
+            };
+            await context.Response.WriteAsync(body, deadline.Token);
+        });
+        var client = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
+        var responses = batch
+            ? (await client.ExecuteBatchAsync(logs.Logger, deadline.Token, new RpcRequest("getauxblock")))
+                .Select(x => new RpcResponse<AuxBlockTemplate>(null, x.Error)).ToArray()
+            : new[] { await client.ExecuteAsync<AuxBlockTemplate>(logs.Logger, "getauxblock", deadline.Token) };
+        foreach(var response in responses)
+        {
+            Assert.NotNull(response.Error);
+            if(category == "transport") Assert.IsType<System.Net.Http.HttpRequestException>(response.Error.InnerException);
+            if(category == "framing") Assert.IsType<JsonReaderException>(response.Error.InnerException);
+            if(category == "contract") Assert.IsType<JsonSerializationException>(response.Error.InnerException);
+            if(category == "daemon") { Assert.Null(response.Error.InnerException); Assert.Equal(-13, response.Error.Code); }
+            var outcome = MergedMiningBitcoinJobManager.ClassifyAuxiliaryTemplateRpcOutcome(response, false, false);
+            Assert.Equal(category == "transport" ? AuxiliaryTemplateRpcOutcome.TransportFailure : AuxiliaryTemplateRpcOutcome.RpcError, outcome);
+            var description = MergedMiningBitcoinJobManager.DescribeAuxiliaryTemplateRpcFailure(
+                new AuxiliaryTemplateRpcResult(response, outcome, TimeSpan.FromSeconds(1)));
+            Assert.DoesNotContain(Secret, description);
+        }
+        logs.AssertSafe();
+    }
+
+    [Theory]
+    [InlineData("scalar")]
+    [InlineData("typed")]
+    [InlineData("null")]
+    public async Task SharedHttpDecoder_PreservesScalarTypedAndNullResults(string kind)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var logs = new CapturedLogs();
+        await using var server = await Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JObject.Parse(await reader.ReadToEndAsync(deadline.Token));
+            var body = new JObject
+            {
+                ["id"] = request["id"], ["error"] = null,
+                ["result"] = kind == "scalar" ? (JToken) "scalar-value" : kind == "typed" ? new JObject { ["hash"] = new string('a', 64), ["height"] = 321 } : null,
+            };
+            await context.Response.WriteAsync(body.ToString(Formatting.None), deadline.Token);
+        });
+        var client = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
+        if(kind == "scalar")
+        {
+            var response = await client.ExecuteAsync<string>(logs.Logger, "getblockhash", deadline.Token);
+            Assert.Null(response.Error); Assert.Equal("scalar-value", response.Response);
+        }
+        else if(kind == "typed")
+        {
+            var response = await client.ExecuteAsync<AuxBlockTemplate>(logs.Logger, "getauxblock", deadline.Token);
+            Assert.Null(response.Error); Assert.Equal(321u, response.Response.Height);
+        }
+        else
+        {
+            var response = await client.ExecuteAsync<JToken>(logs.Logger, "getblocktemplate", deadline.Token);
+            Assert.Null(response.Error); Assert.Null(response.Response);
+        }
+        logs.AssertSafe();
+    }
+
+    [Theory]
+    [InlineData("false")]
+    [InlineData("true")]
+    [InlineData("42")]
+    [InlineData("1.25")]
+    [InlineData("\"scalar\"")]
+    public async Task SharedHttpDecoder_PreservesBoxedScalarConsumersAndRejectsWrongStringContract(string scalarJson)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var logs = new CapturedLogs();
+        await using var server = await Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JObject.Parse(await reader.ReadToEndAsync(deadline.Token));
+            await context.Response.WriteAsync(new JObject
+            {
+                ["id"] = request["id"], ["result"] = JToken.Parse(scalarJson), ["error"] = null,
+            }.ToString(Formatting.None), deadline.Token);
+        });
+        var client = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
+        var boxed = await client.ExecuteAsync<object>(logs.Logger, "getblocktemplate", deadline.Token);
+        var expected = ((JValue) JToken.Parse(scalarJson)).Value;
+        Assert.Null(boxed.Error);
+        Assert.Equal(expected.GetType(), boxed.Response.GetType());
+        Assert.Equal(expected, boxed.Response);
+        // These casts/patterns are used by the production Ethereum/Xelis paths.
+        if(expected is bool boolean) Assert.Equal(boolean, (bool) boxed.Response);
+        if(expected is long integer) Assert.Equal(integer, Convert.ToDecimal(boxed.Response));
+        var text = await client.ExecuteAsync<string>(logs.Logger, "getblockhash", deadline.Token);
+        if(expected is string value) { Assert.Null(text.Error); Assert.Equal(value, text.Response); }
+        else { Assert.Null(text.Response); Assert.IsType<JsonSerializationException>(text.Error.InnerException); }
+        var tokens = await client.ExecuteAsync<JToken>(logs.Logger, "getblocktemplate", deadline.Token);
+        Assert.Null(tokens.Error);
+        Assert.Equal(expected, ((JValue) tokens.Response).Value);
+        logs.AssertSafe();
+    }
+
+    [Theory]
+    [InlineData("false")]
+    [InlineData("42")]
+    [InlineData("\"scalar-data\"")]
+    public void EnvelopeDecode_PreservesPrimitiveErrorData(string scalarJson)
+    {
+        var envelope = JObject.Parse("{\"id\":1,\"result\":null,\"error\":{\"code\":-13,\"message\":\"error\",\"data\":" + scalarJson + "}}");
+        var response = RpcClient.DecodeEnvelope(envelope, new JsonSerializer());
+        var expected = ((JValue) JToken.Parse(scalarJson)).Value;
+        Assert.Equal(expected.GetType(), response.Error.Data.GetType());
+        Assert.Equal(expected, response.Error.Data);
+        Assert.Null(response.Result);
+    }
 
     [Theory]
     [InlineData(false, "success")]

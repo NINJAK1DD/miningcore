@@ -106,8 +106,12 @@ For PROP/PPLNS, automatic confirmation is withheld if an ordinary custodial row
 with a later or equal creation timestamp is already Confirmed. A later allocation
 may have consumed the older reward's shares; equal timestamps have ambiguous order.
 This locked-transaction guard also covers reopened Pending rows after restart.
-The stored status/reward is retained, no new balance credit is applied, and one
-immediate allocation-history alert is sent per affected block per process lifetime.
+The row becomes durably **Quarantined** in that transaction. Stored reward and effort
+are retained, fresh verified confirmation progress is persisted, and no balance credit
+is applied. One warning and allocation-history alert follow the committed transition.
+Pending/orphan scans skip it, including after restart, so the same hold cannot generate
+repeated warnings or credit attempts. The existing blocks API includes quarantined rows.
+If the notification fails, the durable row remains visible for operator audit.
 SOLO and booked PPS liabilities retain their existing settlement behavior.
 These changes introduce no ledger migration, share rescaling or PPS liability reversal.
 The wallet remains the final authority for funding and accepting a payout; wallet
@@ -133,7 +137,12 @@ starts a new episode. Cancellation is not an outage alert.
 RPC conversion diagnostics never inspect exception text: valid JSON with a wrong result
 or envelope shape and missing mandatory methods (-32601) produce ContractDrift.
 Malformed/truncated JSON framing produces RpcUnavailable, including errors wrapped
-by the production RpcClient. Both paths withhold financial operations.
+by the production RpcClient. Both paths withhold financial operations. Single and batch
+HTTP responses share framing/envelope decoding and retain the parsed result token
+without a second tree copy; typed DTO consumers still convert once. Empty HTTP responses
+and non-JSON HTTP failures retain a transport cause (including empty authentication 401);
+valid daemon error envelopes retain their numeric codes, even on HTTP 500. Shared
+merged-mining diagnostics report categories/codes without forwarding daemon/error text.
 Neither alerts nor startup identity errors include received user-agent/RPC payloads. Inspect
 `getnetworkinfo` privately to diagnose an incompatible customized agent.
 
@@ -180,6 +189,56 @@ Confirmed rows, rewriting creation times, switching schemes or forcing Confirmed
 Wallet spendability alone cannot reconstruct allocation history. This conservative
 guard does not certify completeness of retained shares when no later row exists.
 Historical orphans outside the scan window need the same audit.
+
+### Closing an audited allocation quarantine
+
+Quarantined is the final automatic state for ambiguous historical PROP/PPLNS allocation.
+Keep the block in that state after recovery; changing it to Pending or Confirmed would
+misrepresent automatic settlement or allow reconstruction from the wrong share window.
+The audit case records the financial resolution separately:
+
+1. Stop every financial writer using the database, including share/PPS admission and
+   payout processes. Preserve database/wallet backups and immutable candidate evidence.
+   Verify the pool is the reviewed BLAKE2b custodial pool, then reconstruct its original
+   PROP round/PPLNS window from backups. Reconcile each miner's existing credits,
+   payments, fees, journal outcomes and spendable backing. Record a case UUID, approving
+   operator and the independently reviewed remaining entitlement in the external audit.
+2. Apply any approved additional credit through the audited manual ledger procedure:
+   balances and balance_changes must agree in one transaction, with available backing
+   and no repeat payment or reversal of existing liabilities. Use the exact usage memo
+   `Audited Bitcoin BLAKE2b recovery block <database-block-id> case <case-uuid>` on all
+   case receipts. Record their IDs and their aggregate additional credit; it can differ
+   from the stored block reward. This runbook does not infer entitlement from that reward.
+   If the reviewed entitlement is zero, record a zero-amount audit receipt for an actual
+   affected account already in balances with that memo, leaving its balance unchanged.
+3. Use [resolve_blake2b_allocation_hold.sql](../src/Miningcore/Persistence/Postgres/Scripts/resolve_blake2b_allocation_hold.sql)
+   to validate identity, receipt/account/pool bindings, exact nonnegative total and case
+   uniqueness. It only appends a resolution tag to those existing receipts. It does not
+   create credits, pay, modify amounts or change the block. Default execution is a dry run
+   ending in ROLLBACK. Inspect the displayed receipts before repeating with `-v apply=true`.
+   Supply the exact original identities and every case receipt ID as a JSON integer array:
+
+   ```bash
+   psql -X --no-password "$AUDITED_DATABASE" \
+     -v pool_id="$POOL_ID" -v block_id="$BLOCK_ID" -v block_height="$BLOCK_HEIGHT" \
+     -v block_hash="$BLOCK_HASH" -v coinbase_txid="$COINBASE_TXID" -v case_id="$CASE_UUID" \
+     -v credit_change_ids="$CREDIT_CHANGE_IDS_JSON" -v approved_additional_credit="$APPROVED_TOTAL" \
+     -f src/Miningcore/Persistence/Postgres/Scripts/resolve_blake2b_allocation_hold.sql
+   ```
+
+   Use protected libpq credentials/service configuration rather than a password in the
+   command. The script quotes psql values as SQL literals; it does not interpolate them
+   into SQL identifiers or executable fragments. An invalid case aborts atomically.
+4. Repeating the same complete case is idempotent. A different case for an already-resolved
+   block is rejected; corrections require a separate reviewed ledger/audit amendment.
+   Keep the block Quarantined and retain the case tag
+   `bitcoin-blake2b:allocation-resolved:block=<id>:case=<uuid>` as its durable closure record.
+   Compare balances, payment journals and backing again before resuming admission/payouts.
+
+Real psql/PostgreSQL regressions verify dry run, application, replay, zero receipts,
+quoted pool IDs, wrong identities/status/type/pool, duplicate/missing/fractional receipt
+IDs, conflicting cases and invalid totals. The financial values remain unchanged by
+the closure script. It cannot certify the external entitlement or funding audit.
 
 Before upgrading, drain and confirm broadcasts while still on 29.4.1, within the
 973440 upgrade deadline. The new wallet/mempool policy re-locks existing coinbases
@@ -824,7 +883,7 @@ operator commissioning beyond isolated regtest.
 
 ## Immutable source provenance
 
-Daemon/RPC/maturity baseline rechecked on 2026-10-04. Historical header vector provenance remains 29.4.1 because the header primitives, PoW and vectors did not change in 29.4.2:
+Daemon/RPC/maturity baseline rechecked on 2026-10-05. Historical header vector provenance remains 29.4.1 because the header primitives, PoW and vectors did not change in 29.4.2:
 
 Loader constants enforce this reviewed compatibility boundary; they are not independent
 proof of upstream consensus. That evidence is the pinned source audit, official vectors

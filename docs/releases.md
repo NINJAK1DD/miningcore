@@ -577,10 +577,19 @@ reward is already Confirmed, including reopened Pending rows after restart. Earl
 development builds could orphan active rewards on wallet -5 errors; subsequent
 allocations may have deleted their shares or swept recovered funds. Preserve and
 audit original allocation/payment history and spendable backing before recovery;
-do not force-confirm held rewards. Stored orphans with unavailable headers remain
+do not force-confirm held rewards. Such holds now persist as Quarantined under the
+row lock, retain stored reward/effort and advance verified progress without crediting.
+One warning/alert follows the committed transition; subsequent scans and restarts skip
+the row. The [audited closure procedure](bitcoin-blake2b.md#closing-an-audited-allocation-quarantine)
+links existing case receipts with a metadata-only, dry-run-by-default psql script.
+Stored orphans with unavailable headers remain
 quiet during opportunistic scans, and unchanged orphan rows are not rewritten.
 Production RPC failures distinguish malformed/truncated JSON framing (701) from
 valid JSON with wrong contract shapes or missing required methods (703).
+Single and batch responses use one decoder and reuse parsed result tokens, avoiding
+duplicate large template trees. Empty HTTP authentication failures retain transport
+classification for merged mining; its diagnostics expose fixed categories and numeric
+codes instead of daemon or exception text.
 Fixed payout-attestation reason codes distinguish outages, synchronization,
 contract drift and process-binding changes. Before upgrading, pause broadcasts and drain
 confirmed payout outcomes within the deadline: previously spendable 101–6480-confirmation
