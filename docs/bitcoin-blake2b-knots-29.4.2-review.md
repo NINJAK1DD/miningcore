@@ -172,66 +172,24 @@ target-derived job difficulty. Existing tests exercise all four ASIC layouts, re
 Stratum proofs/accepted blocks and PostgreSQL exactly-once credit, payout schemes,
 conflicting replay rejection and preserved PPS liabilities after orphaning.
 
-Initial validation, before the review hardening below, on 2026-10-04 used the documented Windows/Ubuntu 22.04 WSL lab,
-official Knots binaries and isolated PostgreSQL. The full Linux suite passed
-**3570 tests, zero failures, one skipped benchmark**, including real Knots, Bitcoin
-Core 28.1, Litecoin 0.21.5.5, Dogecoin 1.14.9, PostgreSQL accounting and isolated
-authentication/TLS/recovery fault tests. Use CI's native-library `LD_LIBRARY_PATH`
-and `MININGCORE_TEST_POSTGRES_BIN` settings to include those native/fault checks.
-Both unmodified upstream tests passed through the reproducible CI script.
-Windows compatibility/ledger tests passed **422 tests, zero failures/skips**;
-the final maturity-focused run passed **45 tests, zero failures/skips**. Windows
-used the documented local `MININGCORE_WINDOWS_PLATFORM_TOOLSET=v142` compatibility
-setting because v143 was unavailable. A broader Windows run exposed a TLS fingerprint
-assertion failure reproduced on unchanged `dev`; its Linux counterpart passed.
-Source/test presence alone is not validation evidence.
+## Reward reconciliation and diagnostics
 
-## Review hardening
-
-The follow-up addresses both supplied reviews, including their lower-priority findings:
-
-Final follow-up validation in the same documented lab passed **3604 Linux tests,
-zero failures, one skipped benchmark**, including all real-daemon, native,
-PostgreSQL accounting and authentication/TLS/recovery checks. Unchanged native
-libraries were built from source; a complete SDK managed rebuild reused their
-checksum-verified outputs with the CI native/database environment settings.
-The Windows live/compatibility/ledger run passed **623 tests, zero failures/skips**;
-the final diagnostic/redaction run passed **76 tests, zero failures/skips**.
-Both unmodified upstream functional tests passed on cold and warm source-cache
-runs. All five offline cache/failure checks, documentation gates/links, workflow
-action pins, diagnostic source guards, Bash syntax/ShellCheck and whitespace checks
-passed. The Windows toolset and pre-existing full-suite TLS limitation above still
-apply; this evidence does not claim a passing full Windows suite.
-
-| Findings | Change and regression evidence |
+| Behavior | Implementation and regression coverage |
 | --- | --- |
-| P1, L2: pruned rewards and full-block RPC cost | Header-only reconciliation; real `-prune=1 -fastprune` fixture proves `getblock` fails for a retained coinbase header, preserves immature credit, matures it and reconciles invalidate/reconsider without its body. |
-| P2: stale catalogue source | Catalogue points at `58398baf...`; configuration test pins source and protocol together. |
-| P3, L1: misleading/missing delayed alerts | Dedicated family-specific, redacted, bounded alerts cover missing/contradictory header or wallet evidence, including wallet -5 and absent details. Tests cover active/inactive/unavailable states, recovery and handler recreation. |
-| M1: user-agent customization | Recognized prefix supports comments/appended fragments; malformed prefixes, control characters, unknown versions and release candidates remain refused. Unit cases and actual node startup/payout cover the supported options. |
-| M2: zero immature reward | Owned `details[].amount` credit survives a zero top-level wallet amount. Live tests assert the pending value; malformed, duplicate, mixed-category and overflow output evidence stays pending. |
-| M3: upgrade deadline | Upgrade before 973440; successor-review planning before proposed divergence at 979920 is explicit in the runbook/release notes. |
-| L3: one unsupported row stops the pool | Quarantine direct-settlement rows individually; preserve legacy submission metadata and continue healthy custodial reconciliation without crediting the unsupported row. |
-| L4: shared strict RPC extensions | Test-fixture response types isolate expected-work conversion; production Bitcoin-family and BLAKE2b DTOs ignore these unrelated optional extensions. |
-| L5: regtest parser mismatch | Constraints match released `chainparams.cpp`, including enforce >= 2 and enforce-before-start; loader tests and a real distinct-boundary schedule verify both. |
-| L6: coverage/fixture gaps | Added all grace/mismatch cases, PoW/PoS startup batch positions, customized agents and production payout-handler selection. Unscheduled regtest mocks now omit the deployment as Knots does. |
-| L7: CI transport/diagnostic fragility | Checksum-keyed caching, warm/cold real-daemon gates and five offline cache/diagnostic checks. |
-| Other review notes | Dedicated payout subclass, process-scoped chain/schedule binding across configuration cycles, runtime payout exceptions, and removal of the unused consensus-depth helper. Consensus boundaries remain tested by the unmodified upstream gate. |
+| Pruned rewards and full-block RPC cost | Header-only reconciliation; real `-prune=1 -fastprune` fixture proves `getblock` fails for a retained coinbase header, preserves immature credit, matures it and reconciles invalidate/reconsider without its body. |
+| Stale catalogue source | Catalogue points at `58398baf...`; configuration test pins source and protocol together. |
+| Misleading/missing delayed alerts | Dedicated family-specific, redacted, bounded alerts cover missing/contradictory header or wallet evidence, including wallet -5 and absent details. Tests cover active/inactive/unavailable states, recovery and handler recreation. |
+| User-agent customization | Recognized prefix supports comments/appended fragments; malformed prefixes, control characters, unknown versions and release candidates remain refused. Unit cases and actual node startup/payout cover the supported options. |
+| Zero immature reward | Owned `details[].amount` credit survives a zero top-level wallet amount. Live tests assert the pending value; malformed, duplicate, mixed-category and overflow output evidence stays pending. |
+| Upgrade deadline | Upgrade before 973440; successor compatibility planning before proposed divergence at 979920 is explicit in the runbook/release notes. |
+| One unsupported row stops the pool | Quarantine direct-settlement rows individually; preserve legacy submission metadata and continue healthy custodial reconciliation without crediting the unsupported row. |
+| Shared strict RPC extensions | Test-fixture response types isolate expected-work conversion; production Bitcoin-family and BLAKE2b DTOs ignore these unrelated optional extensions. |
+| Regtest parser mismatch | Constraints match released `chainparams.cpp`, including enforce >= 2 and enforce-before-start; loader tests and a real distinct-boundary schedule verify both. |
+| Coverage/fixture gaps | Added all grace/mismatch cases, PoW/PoS startup batch positions, customized agents and production payout-handler selection. Unscheduled regtest mocks now omit the deployment as Knots does. |
+| CI transport/diagnostic fragility | Checksum-keyed caching, warm/cold real-daemon gates and five offline cache/diagnostic checks. |
+| Payout isolation and binding | Dedicated payout subclass, process-scoped chain/schedule binding across configuration cycles, runtime payout exceptions, and removal of the unused consensus-depth helper. Consensus boundaries remain tested by the unmodified upstream gate. |
 
-## Re-review hardening
-
-Final re-review validation in the same documented lab passed **3635 Linux tests,
-zero failures, one skipped benchmark**, and **730 Windows live/compatibility/ledger/
-diagnostic tests, zero failures/skips**. The five maturity integration tests passed
-independently, including the new persisted lifecycle across all four schemes;
-254 focused transaction/recovery/diagnostic tests also passed. The final documentation,
-workflow-pin, diagnostic-boundary, offline cache and shell/whitespace gates passed.
-Native source and upstream functional scripts/binaries were unchanged; the Linux
-run reused checksum-verified native outputs through the complete SDK managed build.
-The previously documented Windows full-suite TLS limitation still applies.
-
-The second re-review identified a persistence gap: handler-only invalidate/reconsider
-tests did not prove recovery after Orphaned had committed. Production now reloads
+Recovery includes rewards whose Orphaned state has already committed. Production reloads
 custodial BLAKE2b orphans in keyset batches of 64 within 12960 blocks of the observed
 tip, advancing and wrapping on every normal payout cycle. This avoids repeatedly
 examining an unavailable oldest prefix. The cursor resets at process restart;
@@ -253,58 +211,28 @@ liabilities, and rejects a stale confirmed classification without extra balance
 changes or wallet payments. Separate tests cover bounded cursor wrap, immutable
 evidence changes, unavailable orphan evidence and already-confirmed replay refusal.
 
-| Re-review finding | Resolution |
+| Behavior | Implementation and regression coverage |
 | --- | --- |
-| P1: persisted orphan/reactivation hole | Bounded typed-family selection and immutable row-lock admission, with fresh active wallet/header evidence and real persisted lifecycle tests for SOLO/PROP/PPLNS/PPS. |
-| P3: wallet-category log mismatch | Success logs include the reviewed `immature`/`generate` category; captured-log tests verify both. |
-| N1: upgrade re-locks prior payouts/liquidity | Runbook requires planned broadcast drain/confirmation before stopping 29.4.1, preserves unresolved outcomes if the deadline prevents confirmation, and checks `getbalances`, previous payouts/change and liabilities after upgrade. Pinned wallet/mempool source establishes the all-coinbase policy. |
-| N2: indistinguishable payout-attestation stalls | Fixed diagnostic codes 701–704 and bounded redacted alerts distinguish RPC availability, syncing, contract drift and binding mismatch; tests cover recreation, recovery, transport/parse errors and cancellation. |
-| N3: unknown headers remain unresolved | Operator guide explains why -5 cannot prove orphaning, the once-per-episode alert policy, verified node/wallet repair/rescan and ledger/payment safeguards; unavailable evidence retains its existing status. |
+| Persisted orphan/reactivation hole | Bounded typed-family selection and immutable row-lock admission, with fresh active wallet/header evidence and real persisted lifecycle tests for SOLO/PROP/PPLNS/PPS. |
+| Wallet-category log mismatch | Success logs include the reviewed `immature`/`generate` category; captured-log tests verify both. |
+| Upgrade re-locks prior payouts/liquidity | Runbook requires planned broadcast drain/confirmation before stopping 29.4.1, preserves unresolved outcomes if the deadline prevents confirmation, and checks `getbalances`, previous payouts/change and liabilities after upgrade. Pinned wallet/mempool source establishes the all-coinbase policy. |
+| Indistinguishable payout-attestation stalls | Fixed diagnostic codes 701–704 and bounded redacted alerts distinguish RPC availability, syncing, contract drift and binding mismatch; tests cover recreation, recovery, transport/parse errors and cancellation. |
+| Unknown headers remain unresolved | Operator guide explains why -5 cannot prove orphaning, the once-per-episode alert policy, verified node/wallet repair/rescan and ledger/payment safeguards; unavailable evidence retains its existing status. |
 | Unused expected-work models | Moved to test fixtures and corrected the guide/release notes: production ignores optional expected-work fields and preserves target-derived accounting. |
 | User-agent diagnostic redaction | Received daemon subversion is withheld from startup errors as well as logs/alerts; private RPC inspection remains available. Tests reject malicious agents without exposing their payload. |
-| Commit explanation and stale PR test counts | The prior restructuring commit has a detailed body; the recovery commit and PR description record the final scope and current validation evidence. |
 
-## Third review hardening
+## Allocation recovery and RPC classification
 
-Both third-round reviews were evaluated against head `61b306781c04c61711f7c84195562c2e538a70f1`.
-The previous automated review summary covered `75dc616112e1ffe867d3133f14bd03bdb72bfab0`;
-it is historical evidence, not an automated review of the subsequent heads.
-This section records the implemented findings and their regression coverage.
-
-Final third-round validation in the documented Windows/Ubuntu 22.04 WSL lab:
-
-- Windows live/ledger/Bitcoin compatibility/RPC diagnostic suite: **805 passed,
-  zero failures/skips**, using the documented local v142 toolset.
-- Full Linux suite: **3662 passed, one failed, one skipped benchmark** (3664 total).
-  The sole failure was the unchanged Stratum test
-  `RunAsync_LocalAdmissionClosureRejectsQuietlyWithoutLeakingConnections(false)`
-  rebinding its socket with `Address already in use`; both variants passed on
-  isolated retry (**2 passed, zero failures/skips**). This is not recorded as a
-  zero-failure full lab run. Every new RPC/history test passed in the full suite.
-- The two new live historical-recovery/query tests passed independently on Windows,
-  covering actual later PROP/PPLNS allocation and deleted earlier shares, stored
-  Orphaned and reopened Pending rows, repeated recovery and handler/manager recreation.
-- Complete Linux SDK rebuild passed without warnings/errors and reused
-  checksum-verified unchanged native libraries. Native algorithms, real Knots,
-  Core/Litecoin/Dogecoin, PostgreSQL and isolated authentication/TLS/recovery faults
-  remain included. The prior full-Windows TLS fingerprint limitation still applies.
-- Documentation/link, workflow-pin, diagnostic-source, five offline upstream-cache,
-  shell and whitespace gates passed. The pinned upstream functional scripts and
-  binaries are unchanged from the previously recorded cold/warm successful runs.
-
-The new exact PR head must also pass CI; previous-head CI and the historical
-automated review summary do not establish validation of subsequent changes.
-
-| Third-round finding | Resolution |
+| Behavior | Implementation and regression coverage |
 | --- | --- |
-| P3: production RpcClient wraps contract failures as -500 | Inspect structural `JsonRpcError.InnerException`; decoded incompatible results/envelopes and missing mandatory methods (-32601) produce 703 ContractDrift and an immediate bounded alert. Null/scalar/array results and malformed error-code fields are covered. Raw RPC messages are never inspected or emitted. |
-| R3-1: stale orphan misses generate misleading pending alerts | Unavailable headers for already-stored orphans clear the delayed episode and emit only fixed/numeric Debug diagnostics. The orphan remains stored. Tests advance the clock beyond 30 minutes and recreate the handler; active headers with absent wallet proof still alert and say unresolved. |
-| R3-2: recovered PROP/PPLNS rewards can reuse consumed allocation history | Under the immutable row lock and database-wide payout lease, confirmation is withheld if another ordinary custodial Confirmed row has a later/equal Created timestamp. The guard includes reopened Pending rows after restart. It retains stored status/reward, applies no allocation and sends one immediate per-block process-lifetime alert through the shared tracker. Real Knots/PostgreSQL tests first settle the later reward through the actual PROP/PPLNS schemes and verify older shares were deleted, then verify repeated/recreated recovery produces no extra credit or payment. SOLO/PPS and ordinary recovery remain covered. |
+| Production RpcClient wraps contract failures as -500 | Inspect structural `JsonRpcError.InnerException`; decoded incompatible results/envelopes and missing mandatory methods (-32601) produce 703 ContractDrift and an immediate bounded alert. Null/scalar/array results and malformed error-code fields are covered. Raw RPC messages are never inspected or emitted. |
+| Stale orphan misses generate misleading pending alerts | Unavailable headers for already-stored orphans clear the delayed episode and emit only fixed/numeric Debug diagnostics. The orphan remains stored. Tests advance the clock beyond 30 minutes and recreate the handler; active headers with absent wallet proof still alert and say unresolved. |
+| Recovered PROP/PPLNS rewards can reuse consumed allocation history | Under the immutable row lock and database-wide payout lease, confirmation is withheld if another ordinary custodial Confirmed row has a later/equal Created timestamp. The guard includes reopened Pending rows after restart. It commits a durable Quarantined state before allocation, retains stored reward/effort and sends one post-commit alert through the shared tracker. Real Knots/PostgreSQL tests first settle the later reward through the actual PROP/PPLNS schemes and verify older shares were deleted, then verify repeated/recreated recovery produces no extra credit or payment. SOLO/PPS and ordinary recovery remain covered. |
 | JSON framing and conversion were conflated | Parse a complete JSON value before RPC-envelope conversion. Framing failures remain JsonReaderException/701; incompatible decoded envelopes are wrapped as JsonSerializationException/703 even when their conversion cause is a reader error. Real HTTP endpoint tests exercise production RpcClient, rather than only fake thrown exceptions. |
 | Unchanged Orphaned rows are rewritten every scan | Skip unchanged orphan classifications under the row lock before effort calculation, updates and notifications. Changed persisted financial/progress/effort fields still follow the guarded update. |
 | Cursor dictionary concurrency is implicit | Document that ProcessPoolsAsync serializes access; concurrent classification requires synchronization. |
 | Legacy-development upgrade hazard and recovery | Operator/release guidance explicitly covers premature orphaning on wallet -5, removed PROP/PPLNS share history and recovered funds already swept. Recovery requires original allocation/payment evidence and spendable backing; forcing status or rewriting history is not a repair. |
-| Merge/review evidence can become stale | Recheck official Knots release/source and proposals, publish validation for the new exact PR head, and retain the immediately-before-merge gate. Do not treat old automated review text as current-head approval. |
+| Dependency and CI freshness | Recheck official Knots release/source and proposals, require validation of the actual PR head and retain the immediately-before-merge gate. |
 
 The framing/conversion distinction follows the official
 [JsonReaderException contract](https://www.newtonsoft.com/json/help/html/t_newtonsoft_json_jsonreaderexception.htm)
@@ -316,27 +244,16 @@ Equal creation timestamps are conservatively treated as ambiguous allocation ord
 The guard does not certify that retained shares are complete when no later row exists;
 historical recovery still requires the documented audit and funding check.
 
-## Fourth review hardening
+## Shared RPC and audited quarantine closure
 
-The two fourth-round reviews approved `c2f220a05d0df86427e3d5cd8d89444ee06bd6f9`
-with low-priority shared-RPC and held-allocation lifecycle recommendations. On
-2026-10-05 the exact reviewed head had **16 successful check runs and one intentional
-release-publish skip**. Its [full .NET CI lane](https://github.com/NINJAK1DD/miningcore/actions/runs/37242039578/job/111552536990)
-reported **3663 passed, zero failed, one benchmark skip**. The packaged Ubuntu 26.04
-lane separately reported 3595 passed and 43 fixture/benchmark skips. These are distinct
-runs; the earlier third-round local socket collision remains recorded above.
-This CI closure supersedes the old PR description's pending status for `c2f220a05`.
-New fourth-round changes require their own exact-head CI before merge.
-
-| Fourth-round finding/recommendation | Implementation and verification |
+| Behavior | Implementation and regression coverage |
 | --- | --- |
-| R4-1: second copy of large RPC result trees | Build the small envelope from parsed fields while borrowing result, structured error data and extension tokens. JToken/JObject callers and batch wrappers return the original token; typed DTOs convert once. Boxed bool/number/string results and primitive error data retain their CLR contracts for shared Ethereum/Xelis consumers; wrong numeric-to-string conversions fail. A parsed two-megabyte transaction fixture asserts reference identity, avoiding the copy rather than relying on a timing threshold. |
-| R4-1: HTTP 401 changes non-BLAKE2b failure labels | Empty bodies retain a fixed HttpRequestException cause; non-JSON unsuccessful HTTP bodies also expose a transport cause. Valid HTTP 500 daemon RPC errors retain their code. Real HTTP tests run these through the shared single/batch client and the merged-mining classifier, asserting TransportFailure/RpcError and safe diagnostics. |
-| R4-1: divergent batch error handling | Single and batch share complete framing and envelope decoding. Malformed/truncated/trailing JSON remains a framing error; decoded invalid envelopes/error fields are structural serialization errors. Batch count, unique IDs, ordering and response correlation still use the existing guarded path. Scalar strings, typed auxiliary DTOs and null success results remain covered. |
-| R4-2: perpetual Pending/Orphaned allocation hold and Warn spam | Commit Quarantined under the immutable row lock and existing payout lease before any financial action. Retain stored reward/effort, persist fresh verified progress, suppress ordinary settlement events and emit the warning/alert only after that committed transition. Pending/orphan scans skip the durable row after restart. Unit tests reject stale terminal-row replay and failed persistence without alerts; real Knots/PostgreSQL tests retain balances/payment history across repeat cycles and recreation after actual later PROP/PPLNS share pruning. |
-| R4-2: audited recovery needs a final lifecycle | Keep Quarantined as the automatic terminal state and record the independently approved financial resolution in existing ledger receipts. The documented psql script validates block identity, account/pool/receipt bindings, all case IDs and exact approved total, then adds only a durable case tag. Default dry run rolls back; replay is idempotent and conflicting cases fail. Real psql tests exercise successful and rejected inputs while proving it cannot change balances/payments/block status. |
+| Second copy of large RPC result trees | Build the small envelope from parsed fields while borrowing result, structured error data and extension tokens. JToken/JObject callers and batch wrappers return the original token; typed DTOs convert once. Boxed bool/number/string results and primitive error data retain their CLR contracts for shared Ethereum/Xelis consumers; wrong numeric-to-string conversions fail. A parsed two-megabyte transaction fixture asserts reference identity, avoiding the copy rather than relying on a timing threshold. |
+| HTTP 401 changes non-BLAKE2b failure labels | Empty bodies retain a fixed HttpRequestException cause; non-JSON unsuccessful HTTP bodies also expose a transport cause. Valid HTTP 500 daemon RPC errors retain their code. Real HTTP tests run these through the shared single/batch client and the merged-mining classifier, asserting TransportFailure/RpcError and safe diagnostics. |
+| Divergent batch error handling | Single and batch share complete framing and envelope decoding. Malformed/truncated/trailing JSON remains a framing error; decoded invalid envelopes/error fields are structural serialization errors. Batch count, unique IDs, ordering and response correlation still use the existing guarded path. Scalar strings, typed auxiliary DTOs and null success results remain covered. |
+| Perpetual Pending/Orphaned allocation hold and Warn spam | Commit Quarantined under the immutable row lock and existing payout lease before any financial action. Retain stored reward/effort, persist fresh verified progress, suppress ordinary settlement events and emit the warning/alert only after that committed transition. Pending/orphan scans skip the durable row after restart. Unit tests reject stale terminal-row replay and failed persistence without alerts; real Knots/PostgreSQL tests retain balances/payment history across repeat cycles and recreation after actual later PROP/PPLNS share pruning. |
+| Audited recovery needs a final lifecycle | Keep Quarantined as the automatic terminal state and record the independently approved financial resolution in existing ledger receipts. The documented psql script validates block identity, account/pool/receipt bindings, all case IDs and exact approved total, then adds only a durable case tag. Default dry run rolls back; replay is idempotent and conflicting cases fail. Real psql tests exercise successful and rejected inputs while proving it cannot change balances/payments/block status. |
 | Optional notifier abstraction | PayoutManager uses the optional IBlockAllocationHoldNotifier contract instead of a BitcoinBlake2bPayoutHandler cast for post-commit notification. Notification failure cannot undo a committed quarantine. |
-| Commit-body suggestion | The user's explicit one-line `type(scope): description` preference takes precedence. Shared-RPC rationale, compatibility impact and validation are recorded in the PR and this document instead of a commit body. |
 | Additional diagnostic hardening found by HTTP regression | Merged-mining descriptions previously forwarded raw daemon/client error messages into startup diagnostics and fallback state. Descriptions now expose only fixed categories, timeout values and numeric RPC codes; synthetic private payloads in real HTTP tests must not appear. |
 
 The result-copy decision follows the official [JToken.ToObject contract](https://www.newtonsoft.com/json/help/html/M_Newtonsoft_Json_Linq_JToken_ToObject_1.htm).
@@ -346,49 +263,15 @@ No migration, new credit endpoint, amount write or fabricated share history is i
 The [operator closure procedure](bitcoin-blake2b.md#closing-an-audited-allocation-quarantine)
 retains the independent entitlement, existing-payment and spendable-backing audit.
 
-Final fourth-round validation in the documented Windows/Ubuntu 22.04 WSL lab
-(2026-10-05):
+## Deployment and RPC envelope contracts
 
-- **855 selected Windows live/ledger/Bitcoin compatibility/shared-RPC/merged-mining
-  diagnostic tests passed, zero failures/skips**, with the documented local v142 toolset.
-- **168 final focused tests passed, zero failures/skips**, including production HTTP
-  single/batch/boxed-scalar failures, commit/notification isolation and real psql audit closure.
-- Final full Linux suite: **3697 passed, one failed, one benchmark skip** (3699 total).
-  The unchanged Stratum test
-  `RejectedSecondRun_PreservesReusedReservationsAndDisposesOnlyNewOnes` failed at
-  its socket rebind with `Address already in use`, then passed isolated retry
-  (**one passed, zero failures/skips**). Every new RPC/quarantine/resolution regression
-  passed. This is not claimed as a zero-failure full local run. An earlier fourth-round
-  full run, before the final scalar-compatibility additions, passed all 3690 enabled
-  tests with one benchmark skip; it does not substitute for final-source validation.
-- The complete final Linux SDK rebuild passed with zero warnings/errors and
-  checksum-verified unchanged native libraries. Real Knots/Core/Litecoin/Dogecoin,
-  native algorithms, PostgreSQL accounting and isolated authentication/TLS/recovery
-  faults remained included. The prior full-Windows TLS fingerprint limitation remains
-  distinct from the selected Windows suite.
-- Documentation/link, workflow-pin, diagnostic-source, five offline cache, shell and
-  whitespace gates passed. Both owned disposable PostgreSQL clusters were stopped;
-  source/binary/upstream functional-test pins remain unchanged.
-
-Official source/release freshness was rechecked on 2026-10-05: released
-`v29.4.2.knots20260508`, `29.x-knots` source
-`58398baf33e588779685ead478e6397bb28ed3d6`, proposals #429/#434 still open/unmerged.
-Retain the immediately-before-merge recheck and #163 DATUM/direct-reward acceptance gates.
-
-## Fifth review hardening
-
-Both supplied fifth-round reviews examined `d84bcb328`. All actionable findings,
-observations and recommendations are addressed below. Earlier review approvals
-remain evidence for their reviewed head only.
-
-| Fifth-round finding/recommendation | Implementation and verification |
+| Behavior | Implementation and regression coverage |
 | --- | --- |
-| R5-1: source-only recovery command and packaged link | Move the unchanged metadata-only tool to `scripts/ops/`, include it at that same relative path in both Linux release archives, and keep it outside schema migrations. The runbook defaults to the verified immutable release directory and gives installed/source alternatives. Its relative tool link works from both source and packaged docs. Archive fixtures compare the exact SQL bytes, resolve the documented member/link and reject migration placement. The real psql fixture now executes the relocated production file. |
-| R5-2: incomplete RPC errors and success envelopes | Require an integer JSON code representable by the existing Int32 error contract and a string message, without string/numeric/bool coercion or default code zero. A success must contain `result`; an explicit null remains valid. Missing/null/wrong-type fields, fractional/floating/string/overflowing codes and absent results fail as JsonSerializationException in real single and batch HTTP tests. Production BLAKE2b attestation immediately reports bounded 703, with no wallet/financial action or private payload disclosure. |
-| O1: trailing JSON compatibility impact | Release notes explain the shared client rejects trailing non-whitespace content for every coin/proxy. Existing framing tests cover both paths; scalar/typed/null success and valid error tests accept final whitespace/newlines. |
-| O2: distributed clocks and Created ordering | Document synchronized UTC clocks across Stratum/relay/recorder/payout hosts, offset/step monitoring and recovery after historical skew. The real PostgreSQL history query additionally covers reversed chain-height/Created order while retaining the conservative hold. The CoreDRP handoff requires persisted shared allocation order and share-window identities before any future guard replacement; height alone does not identify consumed shares. |
+| Source-only recovery command and packaged link | Move the unchanged metadata-only tool to `scripts/ops/`, include it at that same relative path in both Linux release archives, and keep it outside schema migrations. The runbook defaults to the verified immutable release directory and gives installed/source alternatives. Its relative tool link works from both source and packaged docs. Archive fixtures compare the exact SQL bytes, resolve the documented member/link and reject migration placement. The real psql fixture now executes the relocated production file. |
+| Incomplete RPC errors and success envelopes | Require an integer JSON code representable by the existing Int32 error contract and a string message, without string/numeric/bool coercion or default code zero. A success must contain `result`; an explicit null remains valid. Missing/null/wrong-type fields, fractional/floating/string/overflowing codes and absent results fail as JsonSerializationException in real single and batch HTTP tests. Production BLAKE2b attestation immediately reports bounded 703, with no wallet/financial action or private payload disclosure. |
+| Trailing JSON compatibility | Release notes explain the shared client rejects trailing non-whitespace content for every coin/proxy. Existing framing tests cover both paths; scalar/typed/null success and valid error tests accept final whitespace/newlines. |
+| Distributed clocks and allocation order | Document synchronized UTC clocks across Stratum/relay/recorder/payout hosts, offset/step monitoring and recovery after historical skew. The real PostgreSQL history query additionally covers reversed chain-height/Created order while retaining the conservative hold. The CoreDRP handoff requires persisted shared allocation order and share-window identities before any future guard replacement; height alone does not identify consumed shares. |
 | Operator tool mistaken for migration | Dedicated `scripts/ops/` source/package placement and fixture separation make the manual audit action explicit. The SQL is byte-for-byte unchanged; no new migration or automatic financial action is introduced. |
-| Prior exact-head CI closure | Verified the reviewed `d84bcb328` head completed 16 successful checks and one intentional release-publish skip. Its full [.NET attempt 2](https://github.com/NINJAK1DD/miningcore/actions/runs/37247824230/job/111572794940) passed 3698 tests, zero failed, one benchmark skip. The initial unchanged observer assertion failure and same-commit retry are recorded in PR/issue history; this evidence does not substitute for fifth-round exact-head CI. |
 
 The [JSON-RPC response/error specification](https://www.jsonrpc.org/specification#response_object)
 requires a result on success and integer code/string message on failure. The client
@@ -400,62 +283,51 @@ including ISO-looking messages/data; typed result dates still convert through Js
 Tests retain bounded error codes, arbitrary data, boxed scalar consumers, typed dates,
 batch ID ordering and borrowed large-result tokens.
 
-Fifth-round final lab validation (2026-10-05):
+## Daemon error compatibility
 
-- **899 selected Windows tests passed, zero failures/skips**, with the documented
-  v142 build toolset and real reviewed Knots/PostgreSQL/psql fixtures.
-- **3742 full Linux tests passed, zero failures, one benchmark skip** (3743 total).
-  Real Knots/Core/Litecoin/Dogecoin, native hashing and PostgreSQL/authentication/
-  TLS/recovery suites remained included. All 44 new RPC cases and the expanded
-  clock-order query passed. The prior full-Windows TLS fingerprint limitation
-  remains distinct from this selected Windows suite.
-- The complete Linux SDK rebuild passed with zero warnings/errors; reused unchanged
-  native libraries were checksum-verified. Both Ubuntu archive fixtures validated
-  operator SQL bytes/location, packaged runbook link and migration exclusion.
-- Documentation/link, workflow-pin, diagnostic-source, five offline cache, shell
-  and whitespace gates passed. Both owned disposable databases were stopped.
-  Source/binary/upstream functional-test pins remain unchanged.
-
-Exact-head CI is recorded on PR #207 and Issue #205 after publication; previous-head
-CI/reviews remain historical evidence. Official release/source was rechecked on
-2026-10-05: `v29.4.2.knots20260508`, source
-`58398baf33e588779685ead478e6397bb28ed3d6`, #429/#434 open/unmerged. Retain the
-immediately-before-merge upstream and #163 DATUM/direct-reward acceptance gates.
-
-## Sixth review compatibility confirmation
-
-Both supplied sixth-round reviews approve 8616eb0c and identify no new defect.
-The remaining cross-family error-format confirmation is closed by the
+The shared error-format contract is validated by the
 [pinned daemon serializer audit](rpc-daemon-error-compatibility.md), covering
 CryptoNote/Monero, Zano, Geth, Beam wallet API, Handshake's locked bweb dependency
 and shared Xelis daemon/wallet errors. All emit integer codes and string messages;
 no evidence warrants loosening the shared decoder. Eighteen real-HTTP, source-shaped
 fixture cases preserve their code-specific inputs and arbitrary data in both
-single and batch paths, including valid empty strings. No production code or
-financial semantics change. This source audit does not certify unknown forks or
+single and batch paths, including valid empty strings. This source audit does not certify unknown forks or
 claim live non-Bitcoin daemon tests.
 
-The reviewed 8616eb0c head already completed 16 successful checks and one intentional
-publish skip, with 3742 passed/zero failed/one benchmark skip in its full .NET lane.
-This closes the second review's stale CI observation. Before merge, recheck the
-actual PR head, its exact-head checks, reviewed Knots release/source and both open
-maturity proposals; retain #163 end-to-end/direct-reward acceptance.
+## Validation evidence
 
-Sixth-round local validation (2026-10-05): **153 selected Windows tests and
-153 selected Linux tests passed, zero failures/skips**, including all 18 new family
-profiles and existing shared-RPC/real-HTTP BLAKE2b attestation cases. The evidence-only
-change uses the retained documented lab build outputs; no new live non-Bitcoin
-daemon deployment or production financial action is claimed. All 40 Markdown
-link/anchor checks, changed package-shell syntax and whitespace checks passed.
-Initial a8eaccba CI passed every new family case but failed the explicit
-NonParallelCollectionTests membership inventory: the new RPC class had not been
-registered in that expected list. The main lane recorded 3759 passed/one failed/
-one benchmark skip; both Ubuntu package lanes recorded 3690 passed/one failed/
-44 skips. This was a test-inventory omission, not a daemon-format failure.
-The follow-up keeps the serialized RPC collection and updates its reviewed member
-list. Final affected checks, now including the assembly inventory, passed **164
-Windows and 164 Linux tests, zero failures/skips**. Current-head CI is recorded on
-PR #207 and Issue #205 after publication.
+The documented Windows/Ubuntu 22.04 WSL lab used official Knots binaries and isolated
+PostgreSQL on 2026-10-05. The production source at `8616eb0cba58405451237cc962d252a93449b682`
+passed **899 selected Windows tests, zero failures/skips**, and **3742 full Linux tests,
+zero failures, one benchmark skip**. The suites include real Knots/Core/Litecoin/Dogecoin,
+native hashing, PostgreSQL accounting and authentication/TLS/recovery faults, 44 shared
+RPC/attestation cases and clock-order recovery coverage. Windows used the documented
+`MININGCORE_WINDOWS_PLATFORM_TOOLSET=v142` setting because v143 was unavailable.
+A broader Windows TLS fingerprint assertion failed on unchanged `dev`; these selected
+Windows results do not claim a passing full Windows suite.
+
+The complete Linux SDK rebuild passed without warnings/errors; unchanged native
+outputs were checksum-verified. Both unmodified upstream maturity tests passed on
+cold and warm source-cache runs. All five offline cache/failure checks, workflow pins,
+diagnostic-source guards, shell/whitespace gates and package fixtures passed. The
+archive fixtures verified operator SQL bytes/location, packaged links and migration
+exclusion. Both owned disposable PostgreSQL clusters were stopped.
+
+At `48ab5fcb4297866f967810d7d73664c51984d807`, the shared RPC, BLAKE2b attestation and
+explicit nonparallel collection inventory selection passed **164 Windows and 164 Linux
+tests, zero failures/skips**, including all 18 source-shaped family cases. All 40 Markdown
+link/anchor checks passed. These fixtures are real local HTTP calls, not live captures
+from non-Bitcoin daemons.
+
+CI for that same head completed **16 successful checks and one intentional release-publish
+skip**. The [full .NET lane](https://github.com/NINJAK1DD/miningcore/actions/runs/37295307646/job/111715010469)
+passed **3760 tests, zero failed, one benchmark skip** (3761 total). Both Ubuntu 22.04/26.04
+release lanes passed **3691 tests, zero failed, 44 skips** each. Windows/Ubuntu source
+builds, PostgreSQL 15–18 schema jobs, release archives, source/packaged containers and
+macOS/musl reservation lanes succeeded. These results identify their tested source;
+subsequent changes require their own checks. Current-head CI is recorded on PR #207
+and Issue #205.
+
 
 ## DATUM handoff to #163
 

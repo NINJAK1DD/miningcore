@@ -7,8 +7,7 @@ structural contract errors, returned with a synthetic -500 and a preserved
 JsonSerializationException cause. A valid daemon error retains its original code,
 message and data. The BLAKE2b financial gate classifies structural faults as 703.
 
-The sixth PR #207 review requested confirmation that this rule preserves existing
-non-Bitcoin code handling. The official source snapshots below were inspected on
+The official source snapshots below were inspected on
 2026-10-05, including serializers rather than relying only on JSON-RPC conventions.
 No reviewed serializer omits or nulls a normal error message. No runtime relaxation
 or speculative production change is warranted by this audit.
@@ -48,9 +47,7 @@ or external payout was contacted. A fork/proxy that violates the error contract
 must be reviewed and corrected at its source; code-specific settlement/capability
 handling must not be inferred from a malformed error or forced from its message.
 
-The reviewed PR head 8616eb0c completed 16 successful checks and one intentional
-release-publish skip; its full .NET lane passed 3742 tests, zero failures, one
-benchmark skip. Review round 6's pending-CI observation is therefore historical.
-New-head validation for this added evidence/test change is recorded on PR #207 and
-Issue #205. The DATUM #163 and immediately-before-merge upstream freshness gates
-remain open.
+Validation counts and their tested source heads are recorded in the
+[compatibility validation evidence](bitcoin-blake2b-knots-29.4.2-review.md#validation-evidence).
+Current-head CI is recorded on PR #207 and Issue #205. The DATUM #163 and
+immediately-before-merge upstream freshness gates remain open.
