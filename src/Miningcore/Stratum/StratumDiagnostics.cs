@@ -18,6 +18,7 @@ internal static class StratumDiagnostics
         DifficultyBudgetDisconnect, DuplicateSubscription, AssignmentPublicationFailure,
         PublicationCleanupFailure,
         CancelledFailure,
+        BannedIdentity, AutomaticBanSuppressed,
     }
 
     internal static string Method(string method) => method switch

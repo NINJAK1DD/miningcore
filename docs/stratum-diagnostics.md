@@ -120,12 +120,16 @@ ambient serializer settings. The RPC consumer record retains its existing field 
 its shared failure-category changes are covered in the
 [RPC compatibility notes](rpc-consumer-diagnostics.md#compatibility).
 
-Only diagnostic output and telemetry label projection change. The original request,
-reply, exception, authorization result, share/counter updates, mining fail-stop gate,
-socket ownership, cancellation and ban branches are not rewritten. In particular,
-the legacy junk-ban distinction is retained: a missing `Banning` object does not
+Diagnostic hardening preserves the original request, reply, exception, authorization
+result, share/counter updates, mining fail-stop gate, socket ownership and cancellation.
+Ban attribution is specified separately below. The legacy junk-ban distinction is
+retained: a missing `Banning` object does not
 ban; an existing object with unset/true `BanOnJunkReceive` does; false disables it.
 Oversized-input and malformed PROXY failures do not acquire a new junk-ban rule.
+Automatic bans now also require an attributable client; trusted headerless,
+`UNKNOWN` and pre-identity TLS sessions cannot automatically ban a shared proxy.
+Fixed Debug events `BannedIdentity` and `AutomaticBanSuppressed` retain only the
+server connection ID. See [Stratum ban attribution](stratum-ban-attribution.md).
 
 Unknown request methods now share the telemetry label `other`; request event timing
 and counting remain unchanged. Update dashboards or parsers that matched raw method

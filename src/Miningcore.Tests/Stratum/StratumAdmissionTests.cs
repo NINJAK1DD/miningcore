@@ -414,19 +414,19 @@ public partial class StratumAdmissionTests
         internal bool ThrowOnConnect;
         internal Server(StratumAdmissionConfig config, TimeProvider time = null,
             TcpProxyProtocolConfig proxy = null, int ports = 1, bool tlsAuto = false, ILogger log = null,
-            string tlsCertificate = null) : base(
+            string tlsCertificate = null, IBanManager bans = null, IPAddress listenAddress = null) : base(
             new ContainerBuilder().Build(), Substitute.For<IMessageBus>(), new RecyclableMemoryStreamManager(),
             Substitute.For<IMasterClock>())
         {
             logger = log ?? new NullLogger(LogManager.LogFactory);
-            banManager = Substitute.For<IBanManager>();
+            banManager = bans ?? Substitute.For<IBanManager>();
             clusterConfig = new ClusterConfig { Banning = new ClusterBanningConfig { BanOnJunkReceive = true } };
             // Isolate static Prometheus children across concurrently running tests.
             poolConfig = new PoolConfig { Id = Guid.NewGuid().ToString("N"), ConnectionAdmission = config };
             AdmissionTimeProvider = time ?? TimeProvider.System;
             var reservations = Enumerable.Range(0, ports).Select(_ =>
             {
-                var socket = CreateBoundSocket(new IPEndPoint(IPAddress.Loopback, 0));
+                var socket = CreateBoundSocket(new IPEndPoint(listenAddress ?? IPAddress.Loopback, 0));
                 var endpoint = new StratumEndpoint((IPEndPoint) socket.LocalEndPoint,
                     new PoolEndpoint { TcpProxyProtocol = proxy, TlsAuto = tlsAuto,
                         Tls = tlsCertificate != null, TlsPfxFile = tlsCertificate });
@@ -472,6 +472,9 @@ public partial class StratumAdmissionTests
         }
         internal Task Empty() => Until(() => TrackedConnectionTaskCount == 0 && ConnectionAdmission.Snapshot.Active == 0);
         internal Task Account(Miningcore.Blockchain.Share share, Func<Task> acknowledge) => PublishShareAndAcknowledgeAsync(share, acknowledge);
+        internal void BanAutomatically(StratumConnection connection) => BanClient(connection, TimeSpan.FromMinutes(3));
+        internal void SetJunkBanPolicy(string policy) => clusterConfig.Banning = policy == "missing" ? null :
+            new ClusterBanningConfig { BanOnJunkReceive = policy == "unset" ? null : policy == "enabled" };
         protected override Task BeforeConnectionTaskRemovalAsync(string id) => BeforeRemoval?.Invoke() ?? Task.CompletedTask;
         protected override void OnConnect(StratumConnection connection, IPEndPoint endpoint)
         {

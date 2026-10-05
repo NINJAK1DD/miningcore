@@ -166,7 +166,7 @@ public class SatoshicashPool : PoolBase
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
                 logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+                BanClient(connection, loginFailureBanTimeout);
 
                 Disconnect(connection);
             }

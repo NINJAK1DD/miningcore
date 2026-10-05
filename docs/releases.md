@@ -24,6 +24,15 @@ for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
 ## Unreleased: portable native builds and inherited overrides
 
+Stratum bans now reject a normalized forwarded client on its validated trusted
+PROXY header alone, before request parsing or address admission. Automatic
+junk/TLS, login, invalid-share and effort bans no longer target a trusted shared
+transport without a distinct validated client identity. Intentional transport
+bans remain effective, including on the next request of an established forwarded
+session. Existing ban flags and durations are retained; see
+[Stratum ban attribution](stratum-ban-attribution.md) for headerless/`UNKNOWN`,
+TLS setup, recovery and deployment requirements.
+
 Linux source and release builds now use a fixed CPU baseline, guard optional ISA
 dispatch against unavailable OS state, and explicitly select reviewed Makefiles.
 Source builds stop with exit code 64 if compiler flags, Make controls or tool

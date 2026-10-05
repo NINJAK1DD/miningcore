@@ -40,7 +40,9 @@ APPROVED = {
             "Timed out after {0} while draining {1} Stratum connection task(s). " +
             "Mining admission is closed and shutdown will continue so Share Recorder retains its recovery window.",
             ConnectionDrainTimeout, pending);''',
-        r'''logger.Info(() => $"[{connection.ConnectionId}] Disconnecting banned client @ {connection.RemoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}");''',
+        # The selected banned address is a normalized numeric client or transport
+        # address. Preserve censorship for either boundary; no header text is used.
+        r'''logger.Info(() => $"[{connection.ConnectionId}] Disconnecting banned address @ {bannedAddress.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}");''',
         r'''logger.Info(() => $"[{connection.ConnectionId}] Banning client for sending junk");''',
         r'''logger.Info(() => $"[{connection.ConnectionId}] Banning client for failing SSL handshake");''',
         # Existing AuthenticationException and security-IOException branches each

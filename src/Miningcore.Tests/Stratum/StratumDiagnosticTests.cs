@@ -644,6 +644,52 @@ public class StratumDiagnosticTests
     }
 
     [Theory]
+    [InlineData("")]
+    [InlineData("PROXY UNKNOWN ignored\r\n")]
+    [InlineData("PROXY TCP6 ::ffff:127.0.0.1 ::1 123 456\r\n")]
+    [InlineData("PROXY TCP6 ::ffff:192.0.2.211 ::1 123 456\r\n")]
+    public async Task Tcp_BitcoinLoginFailure_UsesValidatedClientAttribution(string header)
+    {
+        using var logs = new Capture();
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        builder.RegisterInstance(Substitute.For<IBlockRepository>());
+        builder.RegisterInstance(Substitute.For<IShareRepository>());
+        using var container = builder.Build();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var pool = new AuthorizationPool(container, logs.Logger, cache, false, true);
+        var worker = new BitcoinWorkerContext();
+        worker.Init(1, null, new StandardClock());
+        var server = new DiagnosticServer(container, Substitute.For<IMessageBus>(), logs.Logger)
+        {
+            Initialize = connection => connection.SetContext(worker),
+            Handler = pool.Authorize,
+        };
+        await using(var tcp = await TcpSession.Start(logs.Logger, server, new PoolEndpoint
+        {
+            TcpProxyProtocol = new TcpProxyProtocolConfig { Enable = true },
+        }))
+        {
+            await tcp.Send(header + new JObject
+            {
+                ["id"] = Hostile, ["method"] = "mining.authorize",
+                ["params"] = new JArray(Secret + "." + Hostile, Hostile),
+            }.ToString(Formatting.None) + "\n");
+            await tcp.Dispatch.WaitAsync(Deadline);
+        }
+        if(header.Contains("192.0.2.211", StringComparison.Ordinal))
+            pool.Bans.Received(1).Ban(IPAddress.Parse("192.0.2.211"), TimeSpan.FromSeconds(10));
+        else
+        {
+            pool.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
+            Assert.Contains(logs.Records, x => x["event"].Value<string>() == "AutomaticBanSuppressed");
+        }
+        Assert.False(worker.IsAuthorized);
+        Assert.Equal(1, server.Requests);
+        logs.AssertSafe();
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Listener_AcceptAndTaskRemovalFailures_AreSafeAndReleaseSocketOwnership(bool duringAccept)

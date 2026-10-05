@@ -172,7 +172,7 @@ public class EthereumPool : PoolBase
             {
                 logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+                BanClient(connection, loginFailureBanTimeout);
 
                 Disconnect(connection);
             }
@@ -382,7 +382,7 @@ public class EthereumPool : PoolBase
         {
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+                BanClient(connection, loginFailureBanTimeout);
 
                 logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 

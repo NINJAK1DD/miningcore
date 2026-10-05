@@ -262,7 +262,7 @@ public class BitcoinPool : PoolBase
                     ? $"[{connection.ConnectionId}] Banning unauthorized direct-SOLO worker for {loginFailureBanTimeout.TotalSeconds} sec"
                     : $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+                BanClient(connection, loginFailureBanTimeout);
 
                 Disconnect(connection);
             }

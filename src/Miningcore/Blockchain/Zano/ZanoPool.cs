@@ -193,7 +193,7 @@ public class ZanoPool : PoolBase
             {
                 logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+                BanClient(connection, loginFailureBanTimeout);
 
                 Disconnect(connection);
             }
@@ -404,7 +404,7 @@ public class ZanoPool : PoolBase
             {
                 logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+                BanClient(connection, loginFailureBanTimeout);
 
                 Disconnect(connection);
             }
@@ -517,7 +517,7 @@ public class ZanoPool : PoolBase
             {
                 logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+                BanClient(connection, loginFailureBanTimeout);
 
                 Disconnect(connection);
             }
