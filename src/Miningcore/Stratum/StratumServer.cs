@@ -851,8 +851,9 @@ public abstract class StratumServer
         // so custom managers with existing ::ffff:a.b.c.d keys still enforce them.
         var normalized = StratumConnectionAdmission.Normalize(address);
         return banManager.IsBanned(normalized) ||
-            normalized.AddressFamily == AddressFamily.InterNetwork &&
-            banManager.IsBanned(normalized.MapToIPv6());
+            (banManager is not IntegratedBanManager &&
+                normalized.AddressFamily == AddressFamily.InterNetwork &&
+                banManager.IsBanned(normalized.MapToIPv6()));
     }
 
     // True only after a manager invocation. Callers log positive ban outcomes only

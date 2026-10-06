@@ -185,7 +185,7 @@ public partial class StratumAdmissionTests
     [NonLoopbackTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task ExplicitMappedBan_IsEffectiveForNormalizedTransport(bool tls)
+    public async Task ExplicitMappedBan_IsEffectiveForForwardedIdentity(bool tls)
     {
         var bans = new TextKeyBanManager();
         var identity = IPAddress.Parse("192.0.2.211");
@@ -203,6 +203,44 @@ public partial class StratumAdmissionTests
         Assert.Equal((0, 0), lab.Server.ConnectionAdmission.Snapshot);
         Assert.Equal(0, lab.Server.Requests);
         Assert.False(bans.IsBanned(identity));
+        Assert.True(bans.IsBanned(legacyMappedIdentity));
+    }
+
+    [NonLoopbackFact]
+    public async Task ExplicitMappedTransportBan_IsRejectedAtAccept()
+    {
+        var bans = new TextKeyBanManager();
+        await using var lab = new BanLab(false, false, bans: bans);
+        var legacyMappedTransport = lab.Address.MapToIPv6();
+        bans.Ban(legacyMappedTransport, TimeSpan.FromMinutes(1));
+
+        await lab.Server.Rejected();
+
+        Assert.Equal(0, lab.Server.Accepted);
+        Assert.Equal(0, lab.Server.Requests);
+        await lab.Server.Empty();
+        Assert.True(bans.IsBanned(legacyMappedTransport));
+    }
+
+    [NonLoopbackTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LateExplicitMappedBan_RejectsNextForwardedRequest(bool tls)
+    {
+        var bans = new TextKeyBanManager();
+        var identity = IPAddress.Parse("192.0.2.211");
+        await using var lab = new BanLab(true, tls, bans: bans);
+        using var client = await BanSession.Connect(lab);
+        await client.Send(BanHeader(identity, mapped: true));
+        Assert.NotNull(await client.Exchange());
+
+        var legacyMappedIdentity = identity.MapToIPv6();
+        bans.Ban(legacyMappedIdentity, TimeSpan.FromMinutes(1));
+        await client.Send("{\"id\":2,\"method\":\"ping\"}\n");
+        await client.Closed();
+
+        await lab.Server.Empty();
+        Assert.Equal(1, lab.Server.Requests);
         Assert.True(bans.IsBanned(legacyMappedIdentity));
     }
 

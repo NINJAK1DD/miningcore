@@ -42,7 +42,9 @@ Dual-stack listeners now normalize `::ffff:a.b.c.d` to `a.b.c.d` throughout
 Stratum, including persisted `shares.ipaddress`, `WorkerSessionTracker` keys,
 `GetRecentyUsedIpAddressesAsync` results and address logs. Historical database
 rows are unchanged; dashboards grouping by textual IP can split historical and
-new activity until they normalize both representations. Request-time rejection
+new activity until they normalize both representations. Ban lookups also accept
+legacy `::ffff:a.b.c.d` entries from custom ban managers, while new bans use the
+plain IPv4 form. Request-time rejection
 logs changed from `Disconnecting banned client @` to `Disconnecting banned address @`
 because the selected address may be the transport. Update external log parsers.
 

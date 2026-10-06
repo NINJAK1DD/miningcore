@@ -9,7 +9,9 @@ normalized union of trusted peers on every enabled internal Stratum listener in
 every enabled pool. All automatic bans exclude that union, including direct
 connections to other listeners and forwarded claims of a different proxy's address.
 Disabled pools, external Stratum pools and disabled PROXY policies add no peers.
-IPv4-mapped IPv6 addresses use the IPv4 ban key.
+New bans use the plain IPv4 key for IPv4-mapped IPv6 addresses. Lookups also
+accept the legacy `::ffff:a.b.c.d` key so existing entries in custom ban managers
+continue to work after normalization.
 
 | Connection | Effective identity for admission and request-time ban checks | Target of an automatic client ban |
 | --- | --- | --- |
