@@ -44,8 +44,10 @@ Stratum, including persisted `shares.ipaddress`, `WorkerSessionTracker` keys,
 rows are unchanged; dashboards grouping by textual IP can split historical and
 new activity until they normalize both representations. Ban lookups also accept
 legacy `::ffff:a.b.c.d` entries from custom ban managers, while new bans use the
-plain IPv4 form. Request-time rejection
-logs changed from `Disconnecting banned client @` to `Disconnecting banned address @`
+plain IPv4 form. The integrated manager now applies its existing `127.0.0.1` and
+`::1` ban exemption after normalization, so `::ffff:127.0.0.1` is also exempt.
+Request-time rejection logs changed from `Disconnecting banned client @` to
+`Disconnecting banned address @`
 because the selected address may be the transport. Update external log parsers.
 
 ## Unreleased: portable native builds and inherited overrides
