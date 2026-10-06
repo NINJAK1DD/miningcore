@@ -68,8 +68,9 @@ legacy junk policy does not ban when the cluster `banning` object is absent;
 an existing object with unset/true `banOnJunkReceive` enables the three-minute
 junk/TLS ban, and false disables it. Malformed PROXY and oversized requests remain
 disconnect-only failures. Startup deadline, shutdown and fail-stop cancellation
-remain non-banning outcomes. The integrated manager exempts exactly `127.0.0.1`
-and `::1`, rather than the entire IPv4 loopback range.
+remain non-banning outcomes. After normalization, the integrated manager exempts
+exactly `127.0.0.1` and `::1`, including mapped `::ffff:127.0.0.1`, rather than
+the entire IPv4 loopback range.
 
 When a ban expires, the next connection or request can proceed subject to normal
 admission limits; no restart is required. Banned-client refusals still consume
