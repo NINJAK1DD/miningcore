@@ -22,16 +22,31 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
-## Unreleased: portable native builds and inherited overrides
+## Unreleased: Stratum ban attribution and address normalization
 
 Stratum bans now reject a normalized forwarded client on its validated trusted
 PROXY header alone, before request parsing or address admission. Automatic
 junk/TLS, login, invalid-share and effort bans no longer target a trusted shared
-transport without a distinct validated client identity. Intentional transport
-bans remain effective, including on the next request of an established forwarded
-session. Existing ban flags and durations are retained; see
+transport without a distinct validated client identity. Automatic bans also
+exclude every trusted proxy address across enabled cluster listeners, including
+forwarded claims and direct connections on other pools. Positive ban logs now
+require a completed manager invocation; suppression has an Info diagnostic and
+a counter with fixed outcome labels. Explicit transport bans inserted by extensions
+through `IBanManager` remain effective, including on the next request of an established
+forwarded session. The shipped integrated manager has no operator ban API or config;
+use the firewall for intentional proxy blocks. Existing ban flags and durations are retained; see
 [Stratum ban attribution](stratum-ban-attribution.md) for headerless/`UNKNOWN`,
 TLS setup, recovery and deployment requirements.
+
+Dual-stack listeners now normalize `::ffff:a.b.c.d` to `a.b.c.d` throughout
+Stratum, including persisted `shares.ipaddress`, `WorkerSessionTracker` keys,
+`GetRecentyUsedIpAddressesAsync` results and address logs. Historical database
+rows are unchanged; dashboards grouping by textual IP can split historical and
+new activity until they normalize both representations. Request-time rejection
+logs changed from `Disconnecting banned client @` to `Disconnecting banned address @`
+because the selected address may be the transport. Update external log parsers.
+
+## Unreleased: portable native builds and inherited overrides
 
 Linux source and release builds now use a fixed CPU baseline, guard optional ISA
 dispatch against unavailable OS state, and explicitly select reviewed Makefiles.

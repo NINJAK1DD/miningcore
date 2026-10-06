@@ -13,7 +13,11 @@ using System.Threading;
 using System.Threading.Tasks;
 using Miningcore.Banning;
 using Miningcore.Configuration;
+using Miningcore.Stratum;
+using Newtonsoft.Json.Linq;
 using NLog;
+using NLog.Config;
+using NLog.Targets;
 using NSubstitute;
 using Xunit;
 
@@ -21,7 +25,115 @@ namespace Miningcore.Tests.Stratum;
 
 public partial class StratumAdmissionTests
 {
-    [Theory]
+    [NonLoopbackTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AutomaticBan_ProtectsEveryClusterProxy_FromForwardedClaimsAndOtherPoolJunk(bool tls)
+    {
+        var proxyAddress = BanTransportAddress();
+        var secondProxy = IPAddress.Parse("192.0.2.254");
+        var proxyEndpoint = new PoolEndpoint { TcpProxyProtocol = new TcpProxyProtocolConfig
+            { Enable = true, Mandatory = true, ProxyAddresses = new[] { proxyAddress.ToString() } } };
+        var directEndpoint = new PoolEndpoint();
+        // The second proxy is trusted by a different pool. It need not be online
+        // for its protection to apply to the first listener that starts.
+        var secondEndpoint = new PoolEndpoint { TcpProxyProtocol = new TcpProxyProtocolConfig
+            { Enable = true, ProxyAddresses = new[] { "::ffff:192.0.2.254" } } };
+        var cluster = new ClusterConfig
+        {
+            Banning = new ClusterBanningConfig { BanOnJunkReceive = true },
+            Pools = new[] { proxyEndpoint, secondEndpoint, directEndpoint }.Select((endpoint, i) => new PoolConfig
+            {
+                Id = $"cluster-proxy-{i}", Enabled = true, EnableInternalStratum = true,
+                Ports = new System.Collections.Generic.Dictionary<int, PoolEndpoint> { [3333 + i] = endpoint },
+            }).ToArray(),
+        };
+        var bans = new IntegratedBanManager();
+        await using var proxy = new BanLab(true, tls, bans: bans, cluster: cluster, endpointConfig: proxyEndpoint);
+        await using var direct = new BanLab(false, tls, bans: bans, cluster: cluster, endpointConfig: directEndpoint);
+        using var healthy = await BanSession.Connect(proxy);
+        await healthy.Send(Header("192.0.2.212"));
+        Assert.NotNull(await healthy.Exchange());
+        using(var claim = await BanSession.Connect(proxy))
+        {
+            await claim.Send(BanHeader(secondProxy, true) + "{junk:!}\n");
+            await claim.Closed();
+        }
+        using(var junk = await BanSession.Connect(direct))
+        {
+            await junk.Send("{junk:!}\n");
+            await junk.Closed();
+        }
+        await direct.Server.Empty();
+        Assert.False(bans.IsBanned(secondProxy));
+        Assert.False(bans.IsBanned(proxyAddress));
+        Assert.NotNull(await healthy.Exchange());
+        using var subsequent = await BanSession.Connect(proxy);
+        await subsequent.Send(Header("192.0.2.213"));
+        Assert.NotNull(await subsequent.Exchange());
+    }
+
+    [NonLoopbackTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OptionalProxy_UntrustedHeaderlessJunk_BansActualSocketPeer(bool tls)
+    {
+        await using var lab = new BanLab(false, tls, mandatory: false, enableUntrustedProxy: true);
+        using(var client = await BanSession.Connect(lab))
+        {
+            await client.Send("{junk:!}\n");
+            await client.Closed();
+        }
+        await lab.Server.Empty();
+        lab.Server.Bans.Received(1).Ban(lab.Address, TimeSpan.FromMinutes(3));
+    }
+
+    [Fact]
+    public void ClusterTrust_IsNormalizedFrozenAndLimitedToEnabledStratumListeners()
+    {
+        PoolConfig Pool(string address, bool enabled = true, bool stratum = true, bool proxy = true) => new()
+        {
+            Enabled = enabled, EnableInternalStratum = stratum,
+            Ports = new System.Collections.Generic.Dictionary<int, PoolEndpoint> { [3333] = new()
+            { TcpProxyProtocol = new() { Enable = proxy, ProxyAddresses = new[] { address } } } },
+        };
+        var active = Pool("::ffff:192.0.2.254");
+        var cluster = new ClusterConfig { Pools = new[] { active,
+            Pool("192.0.2.1", enabled: false), Pool("192.0.2.2", stratum: false), Pool("192.0.2.3", proxy: false) } };
+        var snapshot = StratumClusterProxyPolicy.For(cluster);
+        active.Ports[3333].TcpProxyProtocol.ProxyAddresses[0] = "192.0.2.4";
+        Assert.Same(snapshot, StratumClusterProxyPolicy.For(cluster));
+        Assert.True(snapshot.IsTrustedProxy(IPAddress.Parse("192.0.2.254")));
+        Assert.True(snapshot.ForListener(active.Ports[3333]).IsTrustedPeer(IPAddress.Parse("192.0.2.254")));
+        foreach(var suffix in new[] { 1, 2, 3, 4 })
+            Assert.False(snapshot.IsTrustedProxy(IPAddress.Parse($"192.0.2.{suffix}")));
+        Assert.False(StratumClusterProxyPolicy.For(new ClusterConfig()).IsTrustedProxy(IPAddress.Parse("192.0.2.254")));
+        Assert.Throws<InvalidOperationException>(() => snapshot.ForListener(Pool("192.0.2.5").Ports[3333]));
+    }
+
+    [Fact]
+    public async Task AutomaticBan_ResultAndMetricsDistinguishAppliedFromUnavailable()
+    {
+        await using var server = new Server(new StratumAdmissionConfig());
+        server.Handler = (connection, _, _) => connection.RespondAsync(server.BanAutomatically(connection), 1);
+        using(var client = await server.Connect())
+            Assert.True(Newtonsoft.Json.Linq.JObject.Parse(await Exchange(client))["result"].Value<bool>());
+        await server.Empty();
+        server.Bans.Received(1).Ban(IPAddress.Loopback, TimeSpan.FromMinutes(3));
+        server.DisableBanManager();
+        using(var client = await server.Connect())
+            Assert.False(Newtonsoft.Json.Linq.JObject.Parse(await Exchange(client))["result"].Value<bool>());
+        await server.Empty();
+        using var output = new MemoryStream();
+        await Prometheus.Metrics.DefaultRegistry.CollectAndExportAsTextAsync(output);
+        var series = Encoding.UTF8.GetString(output.ToArray()).Split('\n')
+            .Where(x => x.StartsWith("miningcore_stratum_automatic_bans_total{") && x.Contains($"pool=\"{server.PoolId}\"")).ToArray();
+        Assert.Equal(2, series.Length);
+        Assert.Contains(series, x => x.Contains("outcome=\"applied\"") && x.EndsWith(" 1"));
+        Assert.Contains(series, x => x.Contains("outcome=\"unavailable\"") && x.EndsWith(" 1"));
+        Assert.DoesNotContain(series, x => x.Contains("127.0.0.1") || x.Contains("connection="));
+    }
+    [NonLoopbackTheory]
     [InlineData(false, false, false)]
     [InlineData(false, true, false)]
     [InlineData(true, false, false)]
@@ -54,7 +166,7 @@ public partial class StratumAdmissionTests
         Assert.Equal(1, lab.Server.Requests);
     }
 
-    [Theory]
+    [NonLoopbackTheory]
     [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, false)]
@@ -83,7 +195,7 @@ public partial class StratumAdmissionTests
         lab.Server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
     }
 
-    [Theory]
+    [NonLoopbackTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task ExplicitProxyTransportBan_IsEnforcedAtAcceptAndOnEstablishedForwardedRequests(bool tls)
@@ -106,7 +218,7 @@ public partial class StratumAdmissionTests
         lab.Server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
     }
 
-    [Theory]
+    [NonLoopbackTheory]
     [InlineData(false, "")]
     [InlineData(true, "")]
     [InlineData(false, "PROXY UNKNOWN ignored\r\n")]
@@ -115,7 +227,12 @@ public partial class StratumAdmissionTests
     [InlineData(true, "self")]
     public async Task TrustedProxyWithoutDistinctClientIdentity_DoesNotReceiveAutomaticJunkOrPoolBan(bool tls, string header)
     {
-        await using var lab = new BanLab(true, tls, mandatory: false);
+        using var factory = new LogFactory();
+        var messages = new MemoryTarget { Layout = "${message}" };
+        var logging = new LoggingConfiguration();
+        logging.AddRule(LogLevel.Info, LogLevel.Fatal, messages);
+        factory.Configuration = logging;
+        await using var lab = new BanLab(true, tls, mandatory: false, log: factory.GetLogger("suppression"));
         if(header == "self") header = BanHeader(lab.Address, true);
         using(var client = await BanSession.Connect(lab))
         {
@@ -124,6 +241,8 @@ public partial class StratumAdmissionTests
         }
         await lab.Server.Empty();
         lab.Server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
+        Assert.DoesNotContain(messages.Logs, message => message.Contains("Banning client", StringComparison.Ordinal));
+        Assert.Contains(messages.Logs, message => message.Contains("Automatic client ban suppressed", StringComparison.Ordinal));
         // Exercise the same helper used by login, invalid-share and miner-effort
         // policies. These callers still disconnect/reject the offending session.
         lab.Server.Handler = (connection, _, _) =>
@@ -139,19 +258,29 @@ public partial class StratumAdmissionTests
         await lab.Server.Empty();
         lab.Server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
         lab.Server.Handler = null;
+        using var output = new MemoryStream();
+        await Prometheus.Metrics.DefaultRegistry.CollectAndExportAsTextAsync(output);
+        Assert.Contains(Encoding.UTF8.GetString(output.ToArray()).Split('\n'), x =>
+            x.StartsWith("miningcore_stratum_automatic_bans_total{") && x.Contains($"pool=\"{lab.Server.PoolId}\"") &&
+            x.Contains("outcome=\"suppressed\"") && x.EndsWith(" 2"));
         using var healthy = await BanSession.Connect(lab);
         await healthy.Send(Header("192.0.2.212"));
         Assert.NotNull(await healthy.Exchange());
     }
 
-    [Theory]
+    [NonLoopbackTheory]
     [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
     public async Task PreIdentityTlsAuthenticationFailure_BansOnlyDirectTransport(bool proxy, bool auto)
     {
-        await using var lab = new BanLab(proxy, true, tlsAuto: auto);
+        using var factory = new LogFactory();
+        var messages = new MemoryTarget { Layout = "${message}" };
+        var logging = new LoggingConfiguration();
+        logging.AddRule(LogLevel.Info, LogLevel.Fatal, messages);
+        factory.Configuration = logging;
+        await using var lab = new BanLab(proxy, true, tlsAuto: auto, log: factory.GetLogger("tls-ban-result"));
         using(var client = await lab.Server.Connect(source: lab.Address))
         {
             // Invalid TLS handshake record, complete enough to fail before deadline.
@@ -160,13 +289,19 @@ public partial class StratumAdmissionTests
         }
         await lab.Server.Empty();
         lab.Server.Bans.Received(proxy ? 0 : 1).Ban(lab.Address, TimeSpan.FromMinutes(3));
-        if(proxy) lab.Server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
+        if(proxy)
+        {
+            lab.Server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
+            Assert.DoesNotContain(messages.Logs, x => x.Contains("Banning client", StringComparison.Ordinal));
+            Assert.Contains(messages.Logs, x => x.Contains("Automatic client ban suppressed", StringComparison.Ordinal));
+        }
+        else Assert.Contains(messages.Logs, x => x.Contains("Banning client for failing SSL handshake", StringComparison.Ordinal));
         using var healthy = await BanSession.Connect(lab);
         if(proxy) await healthy.Send(Header("192.0.2.212"));
         Assert.NotNull(await healthy.Exchange());
     }
 
-    [Theory]
+    [NonLoopbackTheory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task UntrustedProxyClaim_CannotBanOrAdmitTheClaimedVictim(bool tls)
@@ -184,7 +319,7 @@ public partial class StratumAdmissionTests
         lab.Server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
     }
 
-    [Theory]
+    [NonLoopbackTheory]
     [InlineData(false, false, "missing", false)]
     [InlineData(false, true, "disabled", false)]
     [InlineData(false, true, "unset", true)]
@@ -208,7 +343,7 @@ public partial class StratumAdmissionTests
         if(!banned) lab.Server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
     }
 
-    [Theory]
+    [NonLoopbackTheory]
     [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, false)]
@@ -239,7 +374,7 @@ public partial class StratumAdmissionTests
     private static string BanHeader(IPAddress address, bool mapped) => mapped
         ? $"PROXY TCP6 {address.MapToIPv6()} ::1 123 3333\r\n" : Header(address.ToString());
 
-    [Fact]
+    [NonLoopbackFact]
     public async Task BanDuringOwnedAccounting_DrainsAndAcknowledgesBeforeRejectingNextRequest()
     {
         await using var lab = new BanLab(true, true);
@@ -278,11 +413,14 @@ public partial class StratumAdmissionTests
 
     // Use a real non-loopback transport: IntegratedBanManager intentionally exempts
     // loopback, so loopback-only TLS tests cannot prove shared-proxy protection.
-    private static IPAddress BanTransportAddress() => NetworkInterface.GetAllNetworkInterfaces()
+    internal static IPAddress AvailableBanTransportAddress() => NetworkInterface.GetAllNetworkInterfaces()
         .Where(x => x.OperationalStatus == OperationalStatus.Up)
         .SelectMany(x => x.GetIPProperties().UnicastAddresses)
         .Select(x => x.Address)
-        .First(x => x.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(x));
+        .FirstOrDefault(x => x.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(x));
+
+    private static IPAddress BanTransportAddress() => AvailableBanTransportAddress() ??
+        throw new InvalidOperationException("Non-loopback test must be skipped without a local IPv4 interface");
 
     private static async Task ClosedAfterTlsAlert(TcpClient client)
     {
@@ -315,7 +453,7 @@ public partial class StratumAdmissionTests
 
         internal BanLab(bool proxy, bool tls, bool mandatory = true, bool tlsAuto = false,
             bool enableUntrustedProxy = false, IBanManager bans = null, StratumAdmissionConfig config = null,
-            ILogger log = null)
+            ILogger log = null, ClusterConfig cluster = null, PoolEndpoint endpointConfig = null)
         {
             Tls = tls;
             if(tls)
@@ -326,10 +464,16 @@ public partial class StratumAdmissionTests
                 certificatePath = Path.Combine(Path.GetTempPath(), $"ban-attribution-{Guid.NewGuid():N}.pfx");
                 File.WriteAllBytes(certificatePath, certificate.Export(X509ContentType.Pfx));
             }
+            if(endpointConfig != null)
+            {
+                endpointConfig.Tls = tls;
+                endpointConfig.TlsPfxFile = certificatePath;
+            }
             Server = new Server(config ?? new StratumAdmissionConfig(), proxy: proxy || enableUntrustedProxy
                 ? new TcpProxyProtocolConfig { Enable = true, Mandatory = mandatory,
                     ProxyAddresses = new[] { proxy ? Address.ToString() : "192.0.2.254" } } : null,
-                tlsCertificate: certificatePath, tlsAuto: tlsAuto, bans: bans, listenAddress: Address, log: log);
+                tlsCertificate: certificatePath, tlsAuto: tlsAuto, bans: bans, listenAddress: Address, log: log,
+                cluster: cluster, endpointConfig: endpointConfig);
         }
 
         public async ValueTask DisposeAsync()
@@ -391,5 +535,23 @@ public partial class StratumAdmissionTests
             stream?.Dispose();
             client?.Dispose();
         }
+    }
+}
+
+public sealed class NonLoopbackTheoryAttribute : TheoryAttribute
+{
+    public NonLoopbackTheoryAttribute()
+    {
+        if(StratumAdmissionTests.AvailableBanTransportAddress() == null)
+            Skip = "Requires a local non-loopback IPv4 interface for real ban attribution";
+    }
+}
+
+public sealed class NonLoopbackFactAttribute : FactAttribute
+{
+    public NonLoopbackFactAttribute()
+    {
+        if(StratumAdmissionTests.AvailableBanTransportAddress() == null)
+            Skip = "Requires a local non-loopback IPv4 interface for real ban attribution";
     }
 }

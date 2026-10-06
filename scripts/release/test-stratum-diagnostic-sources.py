@@ -44,6 +44,7 @@ APPROVED = {
         # address. Preserve censorship for either boundary; no header text is used.
         r'''logger.Info(() => $"[{connection.ConnectionId}] Disconnecting banned address @ {bannedAddress.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}");''',
         r'''logger.Info(() => $"[{connection.ConnectionId}] Banning client for sending junk");''',
+        r'''logger.Info(() => $"[{connection.ConnectionId}] Automatic client ban suppressed by address attribution policy");''',
         r'''logger.Info(() => $"[{connection.ConnectionId}] Banning client for failing SSL handshake");''',
         # Existing AuthenticationException and security-IOException branches each
         # contain this exact message. Both occurrences are explicitly reviewed.
@@ -126,6 +127,24 @@ def unreviewed_accesses(source: str, approved: Sequence[str]) -> list[str]:
 
 
 def main() -> int:
+    # All automatic bans belong to the central attribution helper. This narrow
+    # source rule is enforced in CI; aliases/new manager names still need review.
+    automatic_ban = re.compile(r"\bbanManager\s*[?!]*\s*\.\s*Ban\s*\(")
+    for fixture in ('banManager.Ban(address, duration);', 'banManager ?. Ban (address, duration);',
+                    'banManager!.Ban(address, duration);', 'banManager\n.\nBan(address, duration);'):
+        if not automatic_ban.search(fixture):
+            raise AssertionError("Automatic-ban guard failed its negative fixture")
+    for path in (ROOT / 'src/Miningcore').rglob('*.cs'):
+        matches = list(automatic_ban.finditer(path.read_text(encoding='utf-8')))
+        central = path.relative_to(ROOT).as_posix() == 'src/Miningcore/Stratum/StratumServer.cs'
+        if len(matches) != (1 if central else 0):
+            raise AssertionError(f"Automatic ban bypass or missing central call: {path.relative_to(ROOT)}")
+        if central:
+            source = path.read_text(encoding='utf-8')
+            start = source.index('protected bool BanClient(')
+            end = source.index('protected void OnConnectionComplete(', start)
+            if not start < matches[0].start() < end:
+                raise AssertionError("Automatic ban call moved outside the attribution helper")
     # Exercise the guard against representative accidental regressions, multiline
     # and exception-layout overloads included. Never load a live configuration.
     fixtures = [

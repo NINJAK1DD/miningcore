@@ -6,9 +6,6 @@ using Miningcore.Configuration;
 
 namespace Miningcore.Stratum;
 
-internal sealed class StratumAdmissionException : Exception;
-internal sealed class StratumBannedIdentityException : Exception;
-
 // Built once per listener before accepting connections. No mutable configuration or
 // IPAddress instance escapes into the lookup set; admission and header parsing share it.
 internal sealed class StratumProxyPolicy
@@ -38,6 +35,7 @@ internal sealed class StratumProxyPolicy
 
     internal bool Enabled { get; }
     internal bool Mandatory { get; }
+    internal IEnumerable<IPAddress> TrustedPeers => trusted.Select(address => IPAddress.Parse(address.ToString()));
     internal bool IsTrustedPeer(IPAddress peer) =>
         Enabled && trusted.Contains(StratumConnectionAdmission.Normalize(peer));
 }

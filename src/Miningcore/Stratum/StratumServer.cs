@@ -22,6 +22,7 @@ using Miningcore.Time;
 using Miningcore.Util;
 using Newtonsoft.Json;
 using NLog;
+using Prometheus;
 using Contract = Miningcore.Contracts.Contract;
 using static Miningcore.Util.ActionUtils;
 
@@ -29,6 +30,9 @@ namespace Miningcore.Stratum;
 
 public abstract class StratumServer
 {
+    private static readonly Counter automaticBans = Metrics.CreateCounter(
+        "miningcore_stratum_automatic_bans_total", "Automatic Stratum ban decisions",
+        new CounterConfiguration { LabelNames = new[] { "pool", "outcome" } });
     protected StratumServer(
         IComponentContext ctx,
         IMessageBus messageBus,
@@ -125,8 +129,9 @@ public abstract class StratumServer
                 throw new InvalidOperationException("A Stratum server instance can only run once; restart with a new instance to change admission policy");
 
             // Accept, cancellation, and final cleanup all use our copied reservation array.
+            var proxyPolicy = StratumClusterProxyPolicy.For(clusterConfig);
             var ports = cleanupListeners.Select(listener => (Listener: listener,
-                Proxy: new StratumProxyPolicy(listener.Endpoint.PoolEndpoint.TcpProxyProtocol))).ToArray();
+                Proxy: proxyPolicy.ForListener(listener.Endpoint.PoolEndpoint))).ToArray();
             var admissionConfig = (poolConfig.ConnectionAdmission ?? new StratumAdmissionConfig()).Snapshot();
             startupTimeout = TimeSpan.FromSeconds(admissionConfig.StartupTimeoutSeconds);
             ConnectionAdmission = new StratumConnectionAdmission(admissionConfig,
@@ -471,8 +476,7 @@ public abstract class StratumServer
             {
                 StartupTimeout = startupTimeout,
                 ProxyPolicy = proxyPolicy,
-                IsBanned = address => banManager?.IsBanned(address) == true ||
-                    (!address.Equals(remoteEndpoint.Address) && banManager?.IsBanned(remoteEndpoint.Address) == true),
+                IsBanned = address => FindBannedAddress(address, remoteEndpoint.Address) != null,
             };
             if(proxy)
                 connection.AdmitProxyIdentity = admission.TrySetIdentity;
@@ -668,12 +672,8 @@ public abstract class StratumServer
                 failStop.Token);
 
         // boot pre-connected clients
-        var bannedAddress = banManager?.IsBanned(connection.RemoteEndpoint.Address) == true
-            ? connection.RemoteEndpoint.Address : null;
-        if(bannedAddress == null && connection.TransportEndpoint is { } transport &&
-            !transport.Address.Equals(connection.RemoteEndpoint.Address) &&
-            banManager?.IsBanned(transport.Address) == true)
-            bannedAddress = transport.Address;
+        var bannedAddress = FindBannedAddress(connection.RemoteEndpoint?.Address,
+            connection.TransportEndpoint?.Address);
         if(bannedAddress != null)
         {
             logger.Info(() => $"[{connection.ConnectionId}] Disconnecting banned address @ {bannedAddress.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}");
@@ -783,8 +783,8 @@ public abstract class StratumServer
 
                 if(clusterConfig.Banning?.BanOnJunkReceive.HasValue == false || clusterConfig.Banning?.BanOnJunkReceive == true)
                 {
-                    logger.Info(() => $"[{connection.ConnectionId}] Banning client for sending junk");
-                    BanClient(connection, TimeSpan.FromMinutes(3));
+                    if(BanClient(connection, TimeSpan.FromMinutes(3)))
+                        logger.Info(() => $"[{connection.ConnectionId}] Banning client for sending junk");
                 }
                 break;
 
@@ -794,8 +794,8 @@ public abstract class StratumServer
 
                 if(clusterConfig.Banning?.BanOnJunkReceive.HasValue == false || clusterConfig.Banning?.BanOnJunkReceive == true)
                 {
-                    logger.Info(() => $"[{connection.ConnectionId}] Banning client for failing SSL handshake");
-                    BanClient(connection, TimeSpan.FromMinutes(3));
+                    if(BanClient(connection, TimeSpan.FromMinutes(3)))
+                        logger.Info(() => $"[{connection.ConnectionId}] Banning client for failing SSL handshake");
                 }
                 break;
 
@@ -807,8 +807,8 @@ public abstract class StratumServer
                 {
                     if(clusterConfig.Banning?.BanOnJunkReceive.HasValue == false || clusterConfig.Banning?.BanOnJunkReceive == true)
                     {
-                        logger.Info(() => $"[{connection.ConnectionId}] Banning client for failing SSL handshake");
-                        BanClient(connection, TimeSpan.FromMinutes(3));
+                        if(BanClient(connection, TimeSpan.FromMinutes(3)))
+                            logger.Info(() => $"[{connection.ConnectionId}] Banning client for failing SSL handshake");
                     }
                 }
                 break;
@@ -834,15 +834,37 @@ public abstract class StratumServer
         UnregisterConnection(connection);
     }
 
-    // All automatic connection/pool bans use the same attribution policy. Explicit
-    // operator bans continue to use IBanManager.Ban and are checked at transport accept.
-    protected void BanClient(StratumConnection connection, TimeSpan duration)
+    private IPAddress FindBannedAddress(IPAddress client, IPAddress transport)
     {
-        if(connection.AutomaticBanAddress is { } address)
-            banManager?.Ban(address, duration);
-        else
+        if(client != null && banManager?.IsBanned(client) == true)
+            return client;
+        return transport != null && !transport.Equals(client) && banManager?.IsBanned(transport) == true
+            ? transport : null;
+    }
+
+    // True only after a manager invocation. Callers log positive ban outcomes only
+    // on true; disconnect policy remains independent of address attribution.
+    protected bool BanClient(StratumConnection connection, TimeSpan duration)
+    {
+        var address = connection.AutomaticBanAddress;
+        if(address == null || StratumClusterProxyPolicy.For(clusterConfig).IsTrustedProxy(address) ||
+            (banManager is IntegratedBanManager &&
+                (address.Equals(IPAddress.Loopback) || address.Equals(IPAddress.IPv6Loopback))))
+        {
+            automaticBans.WithLabels(poolConfig.Id, "suppressed").Inc();
             StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.AutomaticBanSuppressed,
                 connection.ConnectionId);
+            logger.Info(() => $"[{connection.ConnectionId}] Automatic client ban suppressed by address attribution policy");
+            return false;
+        }
+        if(banManager == null)
+        {
+            automaticBans.WithLabels(poolConfig.Id, "unavailable").Inc();
+            return false;
+        }
+        banManager.Ban(address, duration);
+        automaticBans.WithLabels(poolConfig.Id, "applied").Inc();
+        return true;
     }
 
     protected void OnConnectionComplete(StratumConnection connection)

@@ -128,8 +128,15 @@ ban; an existing object with unset/true `BanOnJunkReceive` does; false disables 
 Oversized-input and malformed PROXY failures do not acquire a new junk-ban rule.
 Automatic bans now also require an attributable client; trusted headerless,
 `UNKNOWN` and pre-identity TLS sessions cannot automatically ban a shared proxy.
+Every trusted proxy address across enabled cluster listeners is also excluded
+from automatic bans on other pools or forwarded identities. Positive ban logs
+require a completed manager call; suppression is visible at Info and in
+`miningcore_stratum_automatic_bans_total{pool,outcome}` with fixed outcomes
+`applied`, `suppressed`, `unavailable` and no client labels.
 Fixed Debug events `BannedIdentity` and `AutomaticBanSuppressed` retain only the
-server connection ID. See [Stratum ban attribution](stratum-ban-attribution.md).
+server connection ID. Request rejection logs now say `Disconnecting banned address @`
+instead of `Disconnecting banned client @`; the selected address can be a transport.
+See [Stratum ban attribution](stratum-ban-attribution.md).
 
 Unknown request methods now share the telemetry label `other`; request event timing
 and counting remain unchanged. Update dashboards or parsers that matched raw method
@@ -240,7 +247,8 @@ The opt-out is for managed-only Windows testing, not a release packaging instruc
 The Windows CI lifecycle selection already excludes
 `RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake` (certificate rotation);
 apply that existing exclusion when reproducing the supported Windows lane. The
-Linux selection includes it. No new security test is skipped on either platform.
+Linux selection includes it. Non-loopback ban tests explicitly skip when no local
+IPv4 interface is available; provision that interface to validate proxy protection.
 On Linux use the documented source-build/native dependencies before the full suite.
 The documented WSL lab can execute the same isolated socket tests without replacing
 `/opt/miningcore`, reading live pool secrets, starting payouts or changing the regtest

@@ -683,8 +683,67 @@ public class StratumDiagnosticTests
         {
             pool.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
             Assert.Contains(logs.Records, x => x["event"].Value<string>() == "AutomaticBanSuppressed");
+            Assert.DoesNotContain(logs.Messages, x => x.Contains("Banning unauthorized", StringComparison.Ordinal));
+            Assert.Contains(logs.Messages, x => x.Contains("Automatic client ban suppressed", StringComparison.Ordinal));
         }
         Assert.False(worker.IsAuthorized);
+        Assert.Equal(1, server.Requests);
+        logs.AssertSafe();
+    }
+
+    [Theory]
+    [InlineData("", false, false)]
+    [InlineData("PROXY UNKNOWN ignored\r\n", false, false)]
+    [InlineData("PROXY TCP6 ::ffff:192.0.2.211 ::1 123 456\r\n", true, false)]
+    [InlineData("", false, true)]
+    [InlineData("PROXY UNKNOWN ignored\r\n", false, true)]
+    [InlineData("PROXY TCP6 ::ffff:192.0.2.211 ::1 123 456\r\n", true, true)]
+    public async Task Tcp_ShareBanPolicies_ReportActualOutcomeAndStillDisconnect(string header, bool banned, bool effort)
+    {
+        using var logs = new Capture();
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        builder.RegisterInstance(Substitute.For<IBlockRepository>());
+        builder.RegisterInstance(Substitute.For<IShareRepository>());
+        using var container = builder.Build();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var pool = new AuthorizationPool(container, logs.Logger, cache, false, true);
+        var worker = new BitcoinWorkerContext();
+        worker.Init(1, null, new StandardClock());
+        worker.Stats.InvalidShares = 5;
+        Exception effortFailure = null;
+        var server = new DiagnosticServer(container, Substitute.For<IMessageBus>(), logs.Logger)
+        {
+            Initialize = connection => connection.SetContext(worker),
+            Handler = async (connection, _, ct) =>
+            {
+                if(effort)
+                {
+                    try { await pool.RejectEffort(connection, ct); }
+                    catch(Exception ex) { effortFailure = ex; throw; }
+                }
+                else pool.RejectInvalidShares(connection);
+            },
+        };
+        await using(var tcp = await TcpSession.Start(logs.Logger, server, new PoolEndpoint
+        { TcpProxyProtocol = new TcpProxyProtocolConfig { Enable = true } }))
+        {
+            await tcp.Send(header + "{\"id\":1,\"method\":\"ping\"}\n");
+            await tcp.Dispatch.WaitAsync(Deadline);
+        }
+        pool.Bans.Received(banned ? 1 : 0).Ban(IPAddress.Parse("192.0.2.211"), TimeSpan.FromSeconds(30));
+        if(!banned)
+        {
+            pool.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
+            Assert.DoesNotContain(logs.Messages, x => x.Contains("Banning worker", StringComparison.Ordinal));
+        }
+        else if(!effort) Assert.Contains(logs.Messages, x => x.Contains("Banning worker for 30 sec", StringComparison.Ordinal));
+        if(effort)
+        {
+            Assert.NotNull(effortFailure);
+            Assert.DoesNotContain("Banning worker", effortFailure.Message);
+            Assert.Contains($"automatic ban applied: {banned}", effortFailure.Message);
+        }
         Assert.Equal(1, server.Requests);
         logs.AssertSafe();
     }
@@ -1009,6 +1068,22 @@ public class StratumDiagnosticTests
         }
         public Task Authorize(StratumConnection connection, JsonRpcRequest request, CancellationToken ct) =>
             OnAuthorizeAsync(connection, new Timestamped<JsonRpcRequest>(request, DateTimeOffset.UtcNow), ct);
+        public void RejectInvalidShares(StratumConnection connection)
+        {
+            poolConfig.Banning = new PoolShareBasedBanningConfig
+                { Enabled = true, CheckThreshold = 1, InvalidPercent = 50, Time = 30 };
+            ConsiderBan(connection, connection.Context, poolConfig.Banning);
+        }
+        public Task RejectEffort(StratumConnection connection, CancellationToken ct)
+        {
+            poolConfig.Banning = new PoolShareBasedBanningConfig
+                { Enabled = true, MinerEffortPercent = 100, MinerEffortTime = 30 };
+            cf.OpenConnectionAsync().Returns(Task.FromResult(Substitute.For<System.Data.IDbConnection>()));
+            blocksRepo.GetLastPoolBlockTimeAsync(default, default, default).ReturnsForAnyArgs(Task.FromResult<DateTime?>(null));
+            shareRepo.GetMinerEffortBetweenCreatedAsync(default, default, default, default, default, default)
+                .ReturnsForAnyArgs(Task.FromResult<double?>(200));
+            return SuspiciousMinerEffortCheck(connection, ct);
+        }
         protected override Task<bool> ValidateWorkerAsync(BitcoinWorkerContext worker, string miner, string password, CancellationToken ct)
         {
             Password = password;
