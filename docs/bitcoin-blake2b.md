@@ -517,7 +517,7 @@ Server-driven BLAKE2b VarDiff has an effective maximum of `65535 * 2^208`, the h
 representable difficulty (target 1), when `maxDiff` is omitted. A configured lower maximum
 is honored. This runtime ceiling applies to both share-triggered and idle retargeting
 without rewriting the operator's configuration. A genuine zero-length interval window
-uses the Unix-millisecond timestamp resolution: a conservative mean of
+retains the conservative policy mean of
 **0.001 / min(interval count, 10) seconds**, including the current
 interval, then applies normal proportional retargeting, `maxDelta` and difficulty bounds.
 A full window uses 0.0001 seconds; two intervals use 0.0005 seconds. For example, difficulty 10
@@ -561,20 +561,17 @@ success for an unfinished assignment. Host shutdown clears jobs and closes the s
 without a publication-failure diagnostic or metric. Cancellation before the request's
 early validation gate remains a no-op on assignment state.
 
-Both share and idle updates read the wall clock while holding the VarDiff state lock.
-A no-op idle sweep leaves the share timestamp, interval buffer and assignment markers
-unchanged, so a real share in the same millisecond still measures from the previous share or
-actual retarget. An idle update advances the baseline only when difficulty really changes.
-A backward timestamp, future retarget timestamp or invalid interval history resets the
-measurement window and timing baseline without changing difficulty, jobs or the last
-actual assignment marker. Later valid samples resume normal retargeting. Negative elapsed
-time is never treated as a fast-miner observation. Invalid/non-finite arithmetic inputs
-produce no retarget. These shared changes are tracked in
-[#184](https://github.com/NINJAK1DD/miningcore/issues/184); interval measurement still uses
-the wall clock, with explicit rollback recovery rather than a new monotonic timer.
-Forward clock steps can still resemble an idle interval and lower difficulty within
-configured bounds; [#185](https://github.com/NINJAK1DD/miningcore/issues/185) tracks a
-cross-family migration to monotonic elapsed time. Shared startup validation rejects non-finite or non-positive minimum
+Both share and idle updates measure intervals and retarget cooldowns with the context's
+monotonic `TimeProvider`, sampled under the VarDiff state lock. Forward and backward UTC
+corrections cannot alter an identical monotonic sample sequence. `LastUpdate` remains
+UTC assignment metadata. No-op idle sweeps preserve the real-share baseline, while actual
+retargets clear the buffer and restart the cooldown. A broken monotonic provider or invalid
+history is defensively rebased without changing the last assignment marker. Positive
+submillisecond intervals remain measurable; unresolved zeros retain the sample-count-aware
+conservative estimate above. See the [cross-family audit and validation](vardiff-monotonic.md)
+for [#185](https://github.com/NINJAK1DD/miningcore/issues/185), following the arithmetic and
+no-op-sweep fixes in [#184](https://github.com/NINJAK1DD/miningcore/issues/184).
+Shared startup validation rejects non-finite or non-positive minimum
 and configured maximum difficulties; omitting `maxDiff` remains supported.
 
 **Before upgrading:** set an explicit finite, positive `minDiff` appropriate for the coin
@@ -752,9 +749,11 @@ intervals, both with and without `maxDelta`: accepted accounting survives, the c
 remains usable, and the next difficulty/notify pair has an exactly representable target.
 Wire tests also cover idle retargeting, explicit lower maxima, retained jobs, unchanged
 configuration and untouched negotiation allowance. Shared VarDiff unit tests cover ordinary
-retargeting, extreme ratios and generic-family default bounds. Backward-clock tests cover
-both producers and protocol bounds, preserved assignments, discarded invalid samples and
-subsequent recovery. A lock-checking clock guards against reading time before the monitor.
+retargeting, extreme ratios and generic-family default bounds. Monotonic tests cover every
+concrete worker context, both UTC correction directions,
+preserved assignments, invalid-provider recovery and clock sampling under the monitor.
+New live wall-correction cases prove the same retarget and original accepted credit across
+all four payout schemes with PostgreSQL settlement.
 Run the focused suite with:
 
 ```sh

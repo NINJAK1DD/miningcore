@@ -28,8 +28,8 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
         var options = new VarDiffConfig { MinDiff = 1e-9, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
         config.Ports[wire.Connection.LocalEndpoint.Port].VarDiff = options;
-        var original = context.VarDiff = new VarDiffContext { Config = options,
-            LastTs = clock.Now.ToUnixSeconds() - 5, LastRetarget = clock.Now.ToUnixSeconds() - 100 };
+        var original = context.VarDiff = new VarDiffContext(new ManualTimeProvider()) { Config = options,
+            LastShareTimestamp = -5 * System.TimeSpan.TicksPerSecond, LastRetargetTimestamp = -100 * System.TimeSpan.TicksPerSecond };
         var entered = Signal();
         var release = Signal();
         wire.BeforeAssignment = async () =>
@@ -75,8 +75,8 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
         var options = new VarDiffConfig { MinDiff = 1e-9, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
         config.Ports[wire.Connection.LocalEndpoint.Port].VarDiff = options;
-        var original = context.VarDiff = new VarDiffContext { Config = options,
-            LastTs = clock.Now.ToUnixSeconds() - 5, LastRetarget = clock.Now.ToUnixSeconds() - 100 };
+        var original = context.VarDiff = new VarDiffContext(new ManualTimeProvider()) { Config = options,
+            LastShareTimestamp = -5 * System.TimeSpan.TicksPerSecond, LastRetargetTimestamp = -100 * System.TimeSpan.TicksPerSecond };
         var calculated = Signal();
         var release = Signal();
         var waiting = Signal();
@@ -123,8 +123,8 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         var jobs = context.validJobs.ToArray();
         var options = new VarDiffConfig { MinDiff = 1e-9, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
         config.Ports[wire.Connection.LocalEndpoint.Port].VarDiff = options;
-        context.VarDiff = new VarDiffContext { Config = options,
-            LastTs = clock.Now.ToUnixSeconds() - 30, LastRetarget = clock.Now.ToUnixSeconds() - 100 };
+        context.VarDiff = new VarDiffContext(new ManualTimeProvider()) { Config = options,
+            LastShareTimestamp = -30 * System.TimeSpan.TicksPerSecond, LastRetargetTimestamp = -100 * System.TimeSpan.TicksPerSecond };
         await wire.RetargetVarDiffAsync(true);
         await wire.RetargetVarDiffAsync(false);
         await Fence(wire);
@@ -134,9 +134,11 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ServerVarDiff_BackwardClockPreservesAssignmentAndResumesNormally(bool idle)
+    [InlineData(false, -3600)]
+    [InlineData(true, -3600)]
+    [InlineData(false, 3600)]
+    [InlineData(true, 3600)]
+    public async Task ServerVarDiff_WallClockCorrectionsPreserveAssignmentAndMonotonicRetarget(bool idle, int wallStep)
     {
         var (config, manager, clock, bus) = Fixture();
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
@@ -146,20 +148,23 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         var options = new VarDiffConfig { MinDiff = 1e-9, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
         config.Ports[wire.Connection.LocalEndpoint.Port].VarDiff = options;
         var now = clock.Now;
-        context.VarDiff = new VarDiffContext { Config = options, LastTs = now.ToUnixSeconds(),
-            LastRetarget = now.ToUnixSeconds() - 100, TimeBuffer = new CircularBuffer<double>(10) };
-        for(var i = 0; i < 10; i++)
-            context.VarDiff.TimeBuffer.PushBack(0);
-        clock.Now.Returns(now.AddSeconds(-1));
+        var time = new ManualTimeProvider();
+        context.VarDiff = new VarDiffContext(time) { Config = options, LastShareTimestamp = 0 };
+        clock.Now.Returns(now.AddSeconds(wallStep));
         await wire.RetargetVarDiffAsync(idle);
         await Fence(wire); // No assignment notification may precede this response.
         Assert.Equal(1e-9, context.Difficulty);
         Assert.Equal(jobs, context.validJobs.ToArray());
-        Assert.Null(context.VarDiff.TimeBuffer);
+        Assert.Null(context.VarDiff.LastUpdate);
+        Assert.True(context.VarDiff.TimeBuffer == null || context.VarDiff.TimeBuffer.Size == 1);
         Assert.True(wire.Connection.IsAlive);
-        clock.Now.Returns(now.AddSeconds(4));
+        // A share at the unchanged counter contributes a real zero sample.
+        // Remove it so the following five-second interval is the same for both producers.
+        context.VarDiff.TimeBuffer = null;
+        time.AdvanceMonotonic(System.TimeSpan.FromSeconds(5));
         await wire.RetargetVarDiffAsync(idle);
         await Assignment(wire, 2e-9);
+        Assert.Equal(now.AddSeconds(wallStep), context.VarDiff.LastUpdate);
         await Fence(wire);
         Assert.True(wire.Connection.IsAlive);
         bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
@@ -185,8 +190,8 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         var options = new VarDiffConfig { MinDiff = 1e-9, MaxDiff = explicitMaximum ? 3e-9 : null,
             MaxDelta = limitDelta ? 1e-9 : null, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
         config.Ports[wire.Connection.LocalEndpoint.Port].VarDiff = options;
-        context.VarDiff = new VarDiffContext { Config = options, LastTs = clock.Now.ToUnixSeconds(),
-            LastRetarget = clock.Now.ToUnixSeconds() - 10, TimeBuffer = new CircularBuffer<double>(10) };
+        context.VarDiff = new VarDiffContext(new ManualTimeProvider()) { Config = options, LastShareTimestamp = 0,
+            LastRetargetTimestamp = -10 * System.TimeSpan.TicksPerSecond, TimeBuffer = new CircularBuffer<double>(10) };
         for(var i = 0; i < 10; i++)
             context.VarDiff.TimeBuffer.PushBack(0);
         await wire.RetargetVarDiffAsync(idle);

@@ -64,7 +64,16 @@ public class BitcoinBlake2bRegtestTests : TestBase
     [BitcoinBlake2bLedgerIntegrationFact]
     public Task HeaderV2_ZeroIntervalVarDiffHonorsMaxDeltaAfterAcceptedProof() => ExerciseAsync(true, zeroAverage: true, limitDelta: true);
 
-    private async Task ExerciseAsync(bool requirePostgres, bool failPublication = false, bool zeroAverage = false, bool limitDelta = false)
+    [BitcoinBlake2bLedgerIntegrationFact]
+    public Task HeaderV2_ForwardWallCorrectionPreservesMonotonicVarDiffAndAcceptedCredit() =>
+        ExerciseAsync(true, wallStep: 3600);
+
+    [BitcoinBlake2bLedgerIntegrationFact]
+    public Task HeaderV2_BackwardWallCorrectionPreservesMonotonicVarDiffAndAcceptedCredit() =>
+        ExerciseAsync(true, wallStep: -3600);
+
+    private async Task ExerciseAsync(bool requirePostgres, bool failPublication = false, bool zeroAverage = false,
+        bool limitDelta = false, int wallStep = 0)
     {
         await using var ledger = requirePostgres ? await BitcoinBlake2bLedgerProbe.CreateAsync() : null;
         await using var node = await BitcoinPayoutHandlerRegtestTests.BitcoinCoreRegtestNode.StartAsync(
@@ -238,7 +247,7 @@ public class BitcoinBlake2bRegtestTests : TestBase
                 if(BitcoinBlake2bHeader.HashValue(proof) > BitcoinBlake2bHeader.DecodeCompactTarget(
                     BitcoinBlake2bHeader.ParseCompactBits((string) notify[6])))
                     continue;
-                if((failPublication || zeroAverage) && BitcoinBlake2bHeader.HashValue(proof) >
+                if((failPublication || zeroAverage || wallStep != 0) && BitcoinBlake2bHeader.HashValue(proof) >
                    BitcoinBlake2bHeader.DecodeCompactTarget(BitcoinBlake2bHeader.ParseCompactBits(template.Bits)))
                     continue;
                 try
@@ -255,8 +264,8 @@ public class BitcoinBlake2bRegtestTests : TestBase
                         var options = new VarDiffConfig { MinDiff = 1e-9, MaxDiff = 4e-9,
                             TargetTime = 10, RetargetTime = 1, VariancePercent = 0 };
                         pool.Ports[worker.LocalEndpoint.Port].VarDiff = options;
-                        context.VarDiff = new VarDiffContext { Config = options,
-                            LastTs = clock.Now.ToUnixSeconds() - 1, LastRetarget = clock.Now.ToUnixSeconds() - 10 };
+                        context.VarDiff = new VarDiffContext(new ManualTimeProvider()) { Config = options,
+                            LastShareTimestamp = -System.TimeSpan.TicksPerSecond, LastRetargetTimestamp = -10 * System.TimeSpan.TicksPerSecond };
                         // The proof is real and accounting completes first; remove
                         // current work only when the subsequent VarDiff publishes.
                         wire.BeforeCreateJob = () => manager.ClearCurrentJob();
@@ -290,24 +299,29 @@ public class BitcoinBlake2bRegtestTests : TestBase
                         var context = worker.ContextAs<BitcoinWorkerContext>();
                         var valid = context.Stats.ValidShares;
                         var invalid = context.Stats.InvalidShares;
+                        var wallBeforeSubmit = clock.Now;
                         VarDiffConfig options = null;
-                        if(zeroAverage)
+                        if(zeroAverage || wallStep != 0)
                         {
                             options = new VarDiffConfig { MinDiff = 1e-9, MaxDiff = null,
                                 MaxDelta = limitDelta ? 1e-9 : null, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
                             pool.Ports[worker.LocalEndpoint.Port].VarDiff = options;
-                            context.VarDiff = new VarDiffContext { Config = options, LastTs = clock.Now.ToUnixSeconds(),
-                                LastRetarget = clock.Now.ToUnixSeconds() - 10, TimeBuffer = new CircularBuffer<double>(10) };
-                            for(var i = 0; i < 10; i++)
-                                context.VarDiff.TimeBuffer.PushBack(0);
+                            context.VarDiff = new VarDiffContext(new ManualTimeProvider()) { Config = options,
+                                LastShareTimestamp = wallStep == 0 ? 0 : -5 * TimeSpan.TicksPerSecond,
+                                LastRetargetTimestamp = -10 * System.TimeSpan.TicksPerSecond, TimeBuffer = new CircularBuffer<double>(10) };
+                            if(zeroAverage)
+                                for(var i = 0; i < 10; i++)
+                                    context.VarDiff.TimeBuffer.PushBack(0);
+                            // The provider's counter stays frozen; only UTC changes.
+                            clock.Now.Returns(clock.Now.AddSeconds(wallStep));
                             bus.ClearReceivedCalls();
                         }
                         var response = await wire.RequestAsync("mining.submit", destination + ".test",
                             notify[0], "0000000000000000", time, nonceBytes.ToHexString());
                         Assert.True(response["result"]?.Value<bool>() == true, response.ToString());
-                        if(zeroAverage)
+                        if(zeroAverage || wallStep != 0)
                         {
-                            var expected = limitDelta ? 2e-9 : 1e-4;
+                            var expected = wallStep != 0 || limitDelta ? 2e-9 : 1e-4;
                             var update = await wire.ReadAsync();
                             Assert.Equal("mining.set_difficulty", update["method"].Value<string>());
                             Assert.InRange(context.Difficulty / expected, 0.99999999999999, 1.00000000000001);
@@ -319,10 +333,12 @@ public class BitcoinBlake2bRegtestTests : TestBase
                             Assert.Equal(valid + 1, context.Stats.ValidShares);
                             Assert.Equal(invalid, context.Stats.InvalidShares);
                             Assert.Null(options.MaxDiff); // Effective ceiling does not rewrite config.
+                            Assert.Equal(clock.Now, context.VarDiff.LastUpdate);
                             bus.Received(1).SendMessage(Arg.Any<Share>(), Arg.Any<string>());
                             bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
                                 x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());
                         }
+                        clock.Now.Returns(wallBeforeSubmit);
                     }
                     candidate = Assert.IsType<Share>(published);
                     if(candidate.IsBlockCandidate)
@@ -373,7 +389,9 @@ public class BitcoinBlake2bRegtestTests : TestBase
                 PoolId = pool.Id, BlockHeight = (ulong) height, Hash = candidate.BlockHash,
                 Miner = candidate.Miner,
                 TransactionConfirmationData = candidate.TransactionConfirmationData,
-                Status = Miningcore.Persistence.Model.BlockStatus.Pending, Created = clock.Now,
+                // Keep the block/share accounting boundary at the proof's UTC
+                // acceptance time even after the fixture restores its wall clock.
+                Status = Miningcore.Persistence.Model.BlockStatus.Pending, Created = candidate.Created,
             });
             acceptedShares.Add(candidate);
             var blockHex = (await node.RootRpcAsync("getblock", candidate.BlockHash, 0)).Value<string>();

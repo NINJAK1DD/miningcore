@@ -106,8 +106,8 @@ public class BitcoinPublicationRegtestTests : TestBase
         Assert.NotNull(nonce);
         var options = new VarDiffConfig { MinDiff = 1e-10, MaxDiff = 4e-10, TargetTime = 10, RetargetTime = 1, VariancePercent = 0 };
         config.Ports[wire.Connection.LocalEndpoint.Port].VarDiff = options;
-        context.VarDiff = new VarDiffContext { Config = options,
-            LastTs = clock.Now.ToUnixSeconds() - 1, LastRetarget = clock.Now.ToUnixSeconds() - 10 };
+        context.VarDiff = new VarDiffContext(new ManualTimeProvider()) { Config = options,
+            LastShareTimestamp = -System.TimeSpan.TicksPerSecond, LastRetargetTimestamp = -10 * System.TimeSpan.TicksPerSecond };
         wire.Canonical.BeforeCreateJob = () => throw new StratumException(StratumError.JobNotFound, "injected post-acceptance publication failure");
         var banManager = wire.EnableInvalidShareBanning();
         var responses = wire.Connection.ResponseSequence;

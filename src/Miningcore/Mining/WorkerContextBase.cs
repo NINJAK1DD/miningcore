@@ -59,21 +59,17 @@ public class WorkerContextBase
 
     public bool IsNicehash { get; private set; }
 
-    public void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock)
+    public void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock, TimeProvider timeProvider = null)
     {
         Difficulty = difficulty;
         LastActivity = clock.Now;
         Created = clock.Now;
         Stats = new ShareStats();
 
-        if(varDiffConfig != null)
+        VarDiff = varDiffConfig == null ? null : new VarDiffContext(timeProvider)
         {
-            VarDiff = new VarDiffContext
-            {
-                Created = Created,
-                Config = varDiffConfig
-            };
-        }
+            Config = varDiffConfig
+        };
     }
 
     public void EnqueueNewDifficulty(double difficulty)

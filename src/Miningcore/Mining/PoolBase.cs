@@ -127,6 +127,7 @@ public abstract class PoolBase : StratumServer,
 
     protected virtual async Task UpdateVarDiffAsync(StratumConnection connection, bool idle, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var context = connection.Context;
 
         if(context.VarDiff != null)
@@ -136,8 +137,8 @@ public abstract class PoolBase : StratumServer,
             var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
 
             var newDiff = !idle ?
-                VarDiffManager.Update(context, poolEndpoint.VarDiff, clock, MaximumVarDiff) :
-                VarDiffManager.IdleUpdate(context, poolEndpoint.VarDiff, clock, MaximumVarDiff);
+                VarDiffManager.Update(context, poolEndpoint.VarDiff, clock, MaximumVarDiff, ct) :
+                VarDiffManager.IdleUpdate(context, poolEndpoint.VarDiff, clock, MaximumVarDiff, ct);
 
             if(newDiff != null)
             {

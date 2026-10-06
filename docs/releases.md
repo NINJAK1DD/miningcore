@@ -296,8 +296,18 @@ delta limits avoid cancellation, and invalid/non-finite inputs produce no retarg
 BLAKE2b supplies its representable runtime ceiling; other families retain their maximum
 policy. Shared startup validation now rejects non-finite or non-positive `minDiff` and
 configured `maxDiff` values; omitted maxima remain supported. No operator configuration
-is rewritten. Forward wall-clock steps still resemble idle intervals; monotonic elapsed
-measurement is tracked separately in [#185](https://github.com/NINJAK1DD/miningcore/issues/185).
+is rewritten.
+
+[#185](https://github.com/NINJAK1DD/miningcore/issues/185) now moves elapsed share intervals,
+context creation and retarget cooldowns to each context's monotonic `TimeProvider` across
+all pool families. Forward/backward UTC corrections cannot alter identical monotonic
+sample sequences. `LastUpdate` retains its UTC assignment meaning. Positive submillisecond
+samples remain measurable; unresolved zero windows retain #184's conservative estimate
+as an explicit policy floor. Idle updates enforce the complete retarget cooldown, and
+canceled or replaced contexts are checked under the timing lock. Existing assignment
+gates, representability bounds and immutable accepted-proof credit remain intact.
+No additional configuration or database migration is required. See the
+[consumer audit, migration and validation](vardiff-monotonic.md).
 
 BLAKE2b now makes VarDiff publication failures terminal inside the assignment gate for
 both idle and share updates. Missing work, a full send queue or another exception cannot

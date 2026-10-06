@@ -35,6 +35,7 @@ wallet balances or recovery files.
 | Review shared HTTP daemon error formats and preserved error codes | [Daemon error compatibility](rpc-daemon-error-compatibility.md) |
 | Interpret safe miner transport and rejection logs | [Stratum diagnostics](stratum-diagnostics.md) |
 | Bound reconnect churn and size shared-address/proxy startup allowances | [Stratum connection admission](stratum-connection-admission.md) |
+| Review VarDiff clock corrections, lifecycle and validation | [Monotonic VarDiff timing](vardiff-monotonic.md) |
 | Enforce client bans without automatically banning shared proxies | [Stratum ban attribution](stratum-ban-attribution.md) |
 | Deploy distributed Stratum/recorder roles | [Share relays](share-relays.md) |
 | Pay canonical Bitcoin SOLO miners directly in the coinbase | [Bitcoin direct-coinbase SOLO](bitcoin-direct-solo.md) |
