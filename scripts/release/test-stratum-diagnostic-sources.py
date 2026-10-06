@@ -44,7 +44,7 @@ APPROVED = {
         # address. Preserve censorship for either boundary; no header text is used.
         r'''logger.Info(() => $"[{connection.ConnectionId}] Disconnecting banned address @ {bannedAddress.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}");''',
         r'''logger.Info(() => $"[{connection.ConnectionId}] Banning client for sending junk");''',
-        r'''logger.Info(() => $"[{connection.ConnectionId}] Automatic client ban suppressed by address attribution policy");''',
+        r'''logger.Info(() => $"[{connection.ConnectionId}] Automatic client ban suppressed (reason: {reason}) by address attribution policy");''',
         r'''logger.Info(() => $"[{connection.ConnectionId}] Banning client for failing SSL handshake");''',
         # Existing AuthenticationException and security-IOException branches each
         # contain this exact message. Both occurrences are explicitly reviewed.

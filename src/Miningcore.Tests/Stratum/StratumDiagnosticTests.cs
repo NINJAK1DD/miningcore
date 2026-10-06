@@ -743,6 +743,10 @@ public class StratumDiagnosticTests
             Assert.NotNull(effortFailure);
             Assert.DoesNotContain("Banning worker", effortFailure.Message);
             Assert.Contains($"automatic ban applied: {banned}", effortFailure.Message);
+            if(banned)
+                Assert.Contains(logs.Messages, x => x.Contains("Banning worker for suspicious effort for 30 sec", StringComparison.Ordinal));
+            else
+                Assert.DoesNotContain(logs.Messages, x => x.Contains("Banning worker for suspicious effort", StringComparison.Ordinal));
         }
         Assert.Equal(1, server.Requests);
         logs.AssertSafe();

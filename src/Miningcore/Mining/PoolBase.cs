@@ -227,6 +227,8 @@ public abstract class PoolBase : StratumServer,
                 if(minerEffort.Value >= poolConfig.Banning.MinerEffortPercent.Value)
                 {
                     var banned = BanClient(connection, TimeSpan.FromSeconds(poolConfig.Banning.MinerEffortTime.Value));
+                    if(banned)
+                        logger.Info(() => $"[{connection.ConnectionId}] Banning worker for suspicious effort for {poolConfig.Banning.MinerEffortTime.Value} sec");
 
                     throw new Exception($"Detected suspicious over-sharing-worker: Current effort over {poolConfig.Banning.MinerEffortPercent.Value}%; automatic ban applied: {banned}");
                 }

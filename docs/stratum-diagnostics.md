@@ -131,8 +131,13 @@ Automatic bans now also require an attributable client; trusted headerless,
 Every trusted proxy address across enabled cluster listeners is also excluded
 from automatic bans on other pools or forwarded identities. Positive ban logs
 require a completed manager call; suppression is visible at Info and in
-`miningcore_stratum_automatic_bans_total{pool,outcome}` with fixed outcomes
-`applied`, `suppressed`, `unavailable` and no client labels.
+`miningcore_stratum_automatic_bans_total{pool,outcome,reason}` with fixed outcomes
+`applied`, `suppressed`, `unavailable` and suppression reasons `unattributed`,
+`trusted-proxy` or `loopback` (`none` means no suppression reason). It has no
+client labels. Only configure `proxyAddresses` for actual proxy hosts: a listed
+address cannot receive an automatic ban anywhere in the cluster. A NAT gateway
+shared with miners therefore cannot be automatically banned, though connection
+and request rate limits still apply.
 Fixed Debug events `BannedIdentity` and `AutomaticBanSuppressed` retain only the
 server connection ID. Request rejection logs now say `Disconnecting banned address @`
 instead of `Disconnecting banned client @`; the selected address can be a transport.

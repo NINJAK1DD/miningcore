@@ -21,6 +21,13 @@ IPv4-mapped IPv6 addresses use the IPv4 ban key.
 | Trusted peer with `PROXY UNKNOWN` | Socket peer; ignored header fields cannot identify a client | None |
 | Untrusted, malformed, missing mandatory, or oversized PROXY header | No request dispatched; no claimed identity installed | No new automatic ban rule |
 
+Only configure `proxyAddresses` for actual proxy hosts. A listed address is never
+automatically banned anywhere in the cluster, even when a connection reaches a
+different pool directly or a forwarded identity names that address. If miners
+share a listed address through NAT, automatic bans targeting that address are
+suppressed for those miners too; connection and request rate limits still apply.
+An existing explicit ban on the address is still enforced.
+
 An existing ban on the socket transport always rejects it before connection
 registration, admission, TLS or request buffering. Immediately after trusted
 header validation, Miningcore checks both the normalized effective identity and
@@ -84,11 +91,13 @@ outside this policy.
 
 Positive `Banning…` messages are emitted only after a manager invocation. Suppressed
 automatic bans emit an Info message and the fixed Debug event `AutomaticBanSuppressed`.
-The counter `miningcore_stratum_automatic_bans_total{pool,outcome}` uses only the
-configured pool ID and `applied`, `suppressed` or `unavailable`. `applied` means the
+The counter `miningcore_stratum_automatic_bans_total{pool,outcome,reason}` uses only
+the configured pool ID and fixed values. Outcomes are `applied`, `suppressed` or
+`unavailable`. Suppression reasons are `unattributed`, `trusted-proxy` and
+`loopback`; `none` marks applied or unavailable outcomes. `applied` means the
 manager call completed; custom manager implementations determine their own storage
-semantics. The integrated manager's literal loopback exemptions count as suppressed;
-no configured manager counts as unavailable. No address or connection ID is a metric label.
+semantics. No address or connection ID is a metric label. The Info message also
+includes this fixed suppression reason so operators can diagnose a skipped ban.
 
 Diagnostics add fixed Debug events `BannedIdentity` and `AutomaticBanSuppressed`,
 with only a server connection ID. They contain no request/header/exception text,

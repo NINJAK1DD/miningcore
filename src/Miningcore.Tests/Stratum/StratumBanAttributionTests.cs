@@ -65,6 +65,8 @@ public partial class StratumAdmissionTests
             await junk.Closed();
         }
         await direct.Server.Empty();
+        await AssertAutomaticBanMetric(proxy.Server.PoolId, "suppressed", "trusted-proxy");
+        await AssertAutomaticBanMetric(direct.Server.PoolId, "suppressed", "trusted-proxy");
         Assert.False(bans.IsBanned(secondProxy));
         Assert.False(bans.IsBanned(proxyAddress));
         Assert.NotNull(await healthy.Exchange());
@@ -129,9 +131,23 @@ public partial class StratumAdmissionTests
         var series = Encoding.UTF8.GetString(output.ToArray()).Split('\n')
             .Where(x => x.StartsWith("miningcore_stratum_automatic_bans_total{") && x.Contains($"pool=\"{server.PoolId}\"")).ToArray();
         Assert.Equal(2, series.Length);
-        Assert.Contains(series, x => x.Contains("outcome=\"applied\"") && x.EndsWith(" 1"));
-        Assert.Contains(series, x => x.Contains("outcome=\"unavailable\"") && x.EndsWith(" 1"));
+        Assert.Contains(series, x => x.Contains("outcome=\"applied\"") && x.Contains("reason=\"none\"") && x.EndsWith(" 1"));
+        Assert.Contains(series, x => x.Contains("outcome=\"unavailable\"") && x.Contains("reason=\"none\"") && x.EndsWith(" 1"));
         Assert.DoesNotContain(series, x => x.Contains("127.0.0.1") || x.Contains("connection="));
+    }
+
+    [Fact]
+    public async Task IntegratedLoopbackExemption_ReportsFixedSuppressionReason()
+    {
+        var bans = new IntegratedBanManager();
+        await using var server = new Server(new StratumAdmissionConfig(), bans: bans,
+            listenAddress: IPAddress.Loopback);
+        server.Handler = (connection, _, _) => connection.RespondAsync(server.BanAutomatically(connection), 1);
+        using(var client = await server.Connect())
+            Assert.False(Newtonsoft.Json.Linq.JObject.Parse(await Exchange(client))["result"].Value<bool>());
+        await server.Empty();
+        Assert.False(bans.IsBanned(IPAddress.Loopback));
+        await AssertAutomaticBanMetric(server.PoolId, "suppressed", "loopback");
     }
     [NonLoopbackTheory]
     [InlineData(false, false, false)]
@@ -242,7 +258,7 @@ public partial class StratumAdmissionTests
         await lab.Server.Empty();
         lab.Server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
         Assert.DoesNotContain(messages.Logs, message => message.Contains("Banning client", StringComparison.Ordinal));
-        Assert.Contains(messages.Logs, message => message.Contains("Automatic client ban suppressed", StringComparison.Ordinal));
+        Assert.Contains(messages.Logs, message => message.Contains("Automatic client ban suppressed (reason: unattributed)", StringComparison.Ordinal));
         // Exercise the same helper used by login, invalid-share and miner-effort
         // policies. These callers still disconnect/reject the offending session.
         lab.Server.Handler = (connection, _, _) =>
@@ -262,7 +278,7 @@ public partial class StratumAdmissionTests
         await Prometheus.Metrics.DefaultRegistry.CollectAndExportAsTextAsync(output);
         Assert.Contains(Encoding.UTF8.GetString(output.ToArray()).Split('\n'), x =>
             x.StartsWith("miningcore_stratum_automatic_bans_total{") && x.Contains($"pool=\"{lab.Server.PoolId}\"") &&
-            x.Contains("outcome=\"suppressed\"") && x.EndsWith(" 2"));
+            x.Contains("outcome=\"suppressed\"") && x.Contains("reason=\"unattributed\"") && x.EndsWith(" 2"));
         using var healthy = await BanSession.Connect(lab);
         await healthy.Send(Header("192.0.2.212"));
         Assert.NotNull(await healthy.Exchange());
@@ -293,7 +309,8 @@ public partial class StratumAdmissionTests
         {
             lab.Server.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
             Assert.DoesNotContain(messages.Logs, x => x.Contains("Banning client", StringComparison.Ordinal));
-            Assert.Contains(messages.Logs, x => x.Contains("Automatic client ban suppressed", StringComparison.Ordinal));
+            Assert.Contains(messages.Logs, x => x.Contains("Automatic client ban suppressed (reason: unattributed)", StringComparison.Ordinal));
+            await AssertAutomaticBanMetric(lab.Server.PoolId, "suppressed", "unattributed");
         }
         else Assert.Contains(messages.Logs, x => x.Contains("Banning client for failing SSL handshake", StringComparison.Ordinal));
         using var healthy = await BanSession.Connect(lab);
@@ -373,6 +390,16 @@ public partial class StratumAdmissionTests
 
     private static string BanHeader(IPAddress address, bool mapped) => mapped
         ? $"PROXY TCP6 {address.MapToIPv6()} ::1 123 3333\r\n" : Header(address.ToString());
+
+    private static async Task AssertAutomaticBanMetric(string pool, string outcome, string reason)
+    {
+        using var output = new MemoryStream();
+        await Prometheus.Metrics.DefaultRegistry.CollectAndExportAsTextAsync(output);
+        Assert.Contains(Encoding.UTF8.GetString(output.ToArray()).Split('\n'), line =>
+            line.StartsWith("miningcore_stratum_automatic_bans_total{") &&
+            line.Contains($"pool=\"{pool}\"") && line.Contains($"outcome=\"{outcome}\"") &&
+            line.Contains($"reason=\"{reason}\"") && line.EndsWith(" 1"));
+    }
 
     [NonLoopbackFact]
     public async Task BanDuringOwnedAccounting_DrainsAndAcknowledgesBeforeRejectingNextRequest()

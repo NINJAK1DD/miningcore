@@ -32,7 +32,7 @@ public abstract class StratumServer
 {
     private static readonly Counter automaticBans = Metrics.CreateCounter(
         "miningcore_stratum_automatic_bans_total", "Automatic Stratum ban decisions",
-        new CounterConfiguration { LabelNames = new[] { "pool", "outcome" } });
+        new CounterConfiguration { LabelNames = new[] { "pool", "outcome", "reason" } });
     protected StratumServer(
         IComponentContext ctx,
         IMessageBus messageBus,
@@ -847,23 +847,25 @@ public abstract class StratumServer
     protected bool BanClient(StratumConnection connection, TimeSpan duration)
     {
         var address = connection.AutomaticBanAddress;
-        if(address == null || StratumClusterProxyPolicy.For(clusterConfig).IsTrustedProxy(address) ||
-            (banManager is IntegratedBanManager &&
-                (address.Equals(IPAddress.Loopback) || address.Equals(IPAddress.IPv6Loopback))))
+        var reason = address == null ? "unattributed" :
+            StratumClusterProxyPolicy.For(clusterConfig).IsTrustedProxy(address) ? "trusted-proxy" :
+            banManager is IntegratedBanManager &&
+                (address.Equals(IPAddress.Loopback) || address.Equals(IPAddress.IPv6Loopback)) ? "loopback" : null;
+        if(reason != null)
         {
-            automaticBans.WithLabels(poolConfig.Id, "suppressed").Inc();
+            automaticBans.WithLabels(poolConfig.Id, "suppressed", reason).Inc();
             StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.AutomaticBanSuppressed,
                 connection.ConnectionId);
-            logger.Info(() => $"[{connection.ConnectionId}] Automatic client ban suppressed by address attribution policy");
+            logger.Info(() => $"[{connection.ConnectionId}] Automatic client ban suppressed (reason: {reason}) by address attribution policy");
             return false;
         }
         if(banManager == null)
         {
-            automaticBans.WithLabels(poolConfig.Id, "unavailable").Inc();
+            automaticBans.WithLabels(poolConfig.Id, "unavailable", "none").Inc();
             return false;
         }
         banManager.Ban(address, duration);
-        automaticBans.WithLabels(poolConfig.Id, "applied").Inc();
+        automaticBans.WithLabels(poolConfig.Id, "applied", "none").Inc();
         return true;
     }
 
