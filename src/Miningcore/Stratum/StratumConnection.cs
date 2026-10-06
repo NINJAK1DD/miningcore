@@ -72,7 +72,16 @@ public class StratumConnection
 
     internal Func<object, CancellationToken, Task> SendMessageOverride { get; set; }
     internal Func<IPAddress, bool> AdmitProxyIdentity { get; set; }
+    internal Func<IPAddress, bool> IsBanned { get; set; }
     internal StratumProxyPolicy ProxyPolicy { get; init; }
+    private bool trustedProxyTransport;
+    private bool validatedProxyIdentity;
+    // A trusted transport without a TCP4/TCP6 identity cannot identify the client
+    // responsible for a fault. Even a claim of the transport's own address must
+    // not turn an automatic client ban into a shared-proxy transport ban.
+    internal IPAddress AutomaticBanAddress => trustedProxyTransport &&
+        (!validatedProxyIdentity || RemoteEndpoint.Address.Equals(TransportEndpoint.Address))
+            ? null : RemoteEndpoint?.Address;
     internal TimeSpan StartupTimeout { get; set; } = TimeSpan.FromSeconds(10);
     private Action finishStartup;
 
@@ -131,7 +140,8 @@ public class StratumConnection
         Action<StratumConnection, Exception> onError)
     {
         LocalEndpoint = endpoint.IPEndPoint;
-        RemoteEndpoint = remoteEndpoint;
+        TransportEndpoint = new IPEndPoint(StratumConnectionAdmission.Normalize(remoteEndpoint.Address), remoteEndpoint.Port);
+        RemoteEndpoint = new IPEndPoint(TransportEndpoint.Address, TransportEndpoint.Port);
         this.socket = socket;
         // Keep hard process termination and server-initiated shutdown restart-safe by default.
         // Only a clean peer EOF explicitly disarms linger(0) before stream disposal.
@@ -172,6 +182,7 @@ public class StratumConnection
             // already frozen listener policy used for transport admission above.
             var proxyPolicy = ProxyPolicy ?? new StratumProxyPolicy(endpoint.PoolEndpoint.TcpProxyProtocol);
             expectingProxyHeader = proxyPolicy.Enabled;
+            trustedProxyTransport = proxyPolicy.IsTrustedPeer(TransportEndpoint.Address);
             // prepare socket
             socket.NoDelay = true;
             socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
@@ -384,6 +395,7 @@ public class StratumConnection
     public string ConnectionId { get; }
     public IPEndPoint LocalEndpoint { get; private set; }
     public IPEndPoint RemoteEndpoint { get; private set; }
+    internal IPEndPoint TransportEndpoint { get; private set; }
     public DateTime? LastReceive { get; set; }
     public bool IsAlive { get; set; }
     public IObservable<Unit> Terminated => terminated.AsObservable();
@@ -539,6 +551,11 @@ public class StratumConnection
                         var slice = buffer.Slice(0, position.Value);
 
                         var proxyHeader = expectingProxyHeader && ProcessProxyHeader(slice, proxyProtocol);
+                        // ProcessProxyHeader has validated trust and framing before changing
+                        // identity. Reject here, before admission or parsing coalesced JSON;
+                        // a header alone is sufficient and no request bytes are required.
+                        if(proxyHeader && IsBanned?.Invoke(RemoteEndpoint.Address) == true)
+                            throw new StratumBannedIdentityException();
                         if(AdmitProxyIdentity != null)
                         {
                             if(!AdmitProxyIdentity(RemoteEndpoint.Address))
@@ -682,7 +699,7 @@ public class StratumConnection
             {
                 StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.ProxyHeader, ConnectionId, bytes: seq.Length);
 
-                RemoteEndpoint = StratumProxyProtocol.Parse(line, RemoteEndpoint);
+                RemoteEndpoint = StratumProxyProtocol.Parse(line, RemoteEndpoint, out validatedProxyIdentity);
                 logger.Info(() => $"Real-IP via Proxy-Protocol: {RemoteEndpoint.Address.CensorOrReturn(gpdrCompliantLogging)}");
             }
 

@@ -169,9 +169,8 @@ public class ErgoPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
-
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+                if(BanClient(connection, loginFailureBanTimeout))
+                    logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 Disconnect(connection);
             }

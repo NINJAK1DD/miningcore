@@ -120,12 +120,28 @@ ambient serializer settings. The RPC consumer record retains its existing field 
 its shared failure-category changes are covered in the
 [RPC compatibility notes](rpc-consumer-diagnostics.md#compatibility).
 
-Only diagnostic output and telemetry label projection change. The original request,
-reply, exception, authorization result, share/counter updates, mining fail-stop gate,
-socket ownership, cancellation and ban branches are not rewritten. In particular,
-the legacy junk-ban distinction is retained: a missing `Banning` object does not
+Diagnostic hardening preserves the original request, reply, exception, authorization
+result, share/counter updates, mining fail-stop gate, socket ownership and cancellation.
+Ban attribution is specified separately below. The legacy junk-ban distinction is
+retained: a missing `Banning` object does not
 ban; an existing object with unset/true `BanOnJunkReceive` does; false disables it.
 Oversized-input and malformed PROXY failures do not acquire a new junk-ban rule.
+Automatic bans now also require an attributable client; trusted headerless,
+`UNKNOWN` and pre-identity TLS sessions cannot automatically ban a shared proxy.
+Every trusted proxy address across enabled cluster listeners is also excluded
+from automatic bans on other pools or forwarded identities. Positive ban logs
+require a completed manager call; suppression is visible at Info and in
+`miningcore_stratum_automatic_bans_total{pool,outcome,reason}` with fixed outcomes
+`applied`, `suppressed`, `unavailable` and suppression reasons `unattributed`,
+`trusted-proxy` or `loopback` (`none` means no suppression reason). It has no
+client labels. Only configure `proxyAddresses` for actual proxy hosts: a listed
+address cannot receive an automatic ban anywhere in the cluster. A NAT gateway
+shared with miners therefore cannot be automatically banned, though connection
+and request rate limits still apply.
+Fixed Debug events `BannedIdentity` and `AutomaticBanSuppressed` retain only the
+server connection ID. Request rejection logs now say `Disconnecting banned address @`
+instead of `Disconnecting banned client @`; the selected address can be a transport.
+See [Stratum ban attribution](stratum-ban-attribution.md).
 
 Unknown request methods now share the telemetry label `other`; request event timing
 and counting remain unchanged. Update dashboards or parsers that matched raw method
@@ -236,7 +252,8 @@ The opt-out is for managed-only Windows testing, not a release packaging instruc
 The Windows CI lifecycle selection already excludes
 `RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake` (certificate rotation);
 apply that existing exclusion when reproducing the supported Windows lane. The
-Linux selection includes it. No new security test is skipped on either platform.
+Linux selection includes it. Non-loopback ban tests explicitly skip when no local
+IPv4 interface is available; provision that interface to validate proxy protection.
 On Linux use the documented source-build/native dependencies before the full suite.
 The documented WSL lab can execute the same isolated socket tests without replacing
 `/opt/miningcore`, reading live pool secrets, starting payouts or changing the regtest

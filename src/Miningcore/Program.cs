@@ -592,6 +592,8 @@ public class Program : ProcessStatusBackgroundService
                 requireAssignedTemplates: true);
             ValidateBitcoinDirectSoloDeployment(clusterConfig,
                 requireAssignedTemplates: true);
+            // Freeze all proxy trust before any pool can accept or automatically ban.
+            _ = StratumClusterProxyPolicy.For(clusterConfig);
             var listenerCoordinator = new StratumListenerReservationCoordinator(
                 logger);
             using var listenerReservations = await listenerCoordinator.ReserveAllAsync(

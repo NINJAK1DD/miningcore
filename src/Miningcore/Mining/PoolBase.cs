@@ -226,9 +226,11 @@ public abstract class PoolBase : StratumServer,
 
                 if(minerEffort.Value >= poolConfig.Banning.MinerEffortPercent.Value)
                 {
-                    banManager.Ban(connection.RemoteEndpoint.Address, TimeSpan.FromSeconds(poolConfig.Banning.MinerEffortTime.Value));
+                    var banned = BanClient(connection, TimeSpan.FromSeconds(poolConfig.Banning.MinerEffortTime.Value));
+                    if(banned)
+                        logger.Info(() => $"[{connection.ConnectionId}] Banning worker for suspicious effort for {poolConfig.Banning.MinerEffortTime.Value} sec");
 
-                    throw new Exception($"Detected suspicious over-sharing-worker: Current effort over {poolConfig.Banning.MinerEffortPercent.Value}%. Banning worker for {poolConfig.Banning.MinerEffortTime.Value} seconds");
+                    throw new Exception($"Detected suspicious over-sharing-worker: Current effort over {poolConfig.Banning.MinerEffortPercent.Value}%; automatic ban applied: {banned}");
                 }
             }
         }
@@ -302,9 +304,8 @@ public abstract class PoolBase : StratumServer,
                    (clusterConfig.Banning?.BanOnInvalidShares.HasValue == false ||
                        clusterConfig.Banning?.BanOnInvalidShares == true))
                 {
-                    logger.Info(() => $"[{connection.ConnectionId}] Banning worker for {config.Time} sec: {Math.Floor(ratioBad * 100)}% of the last {totalShares} shares were invalid");
-
-                    banManager.Ban(connection.RemoteEndpoint.Address, TimeSpan.FromSeconds(config.Time));
+                    if(BanClient(connection, TimeSpan.FromSeconds(config.Time)))
+                        logger.Info(() => $"[{connection.ConnectionId}] Banning worker for {config.Time} sec: {Math.Floor(ratioBad * 100)}% of the last {totalShares} shares were invalid");
 
                     Disconnect(connection);
                 }

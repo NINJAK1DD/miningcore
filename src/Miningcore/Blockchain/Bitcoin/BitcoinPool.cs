@@ -258,11 +258,10 @@ public class BitcoinPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => manager.DirectCoinbasePayoutEnabled
+                if(BanClient(connection, loginFailureBanTimeout))
+                    logger.Info(() => manager.DirectCoinbasePayoutEnabled
                     ? $"[{connection.ConnectionId}] Banning unauthorized direct-SOLO worker for {loginFailureBanTimeout.TotalSeconds} sec"
                     : $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
-
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
                 Disconnect(connection);
             }
