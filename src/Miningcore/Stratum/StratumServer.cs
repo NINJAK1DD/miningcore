@@ -836,10 +836,23 @@ public abstract class StratumServer
 
     private IPAddress FindBannedAddress(IPAddress client, IPAddress transport)
     {
-        if(client != null && banManager?.IsBanned(client) == true)
+        if(IsAddressBanned(client))
             return client;
-        return transport != null && !transport.Equals(client) && banManager?.IsBanned(transport) == true
+        return transport != null && !transport.Equals(client) && IsAddressBanned(transport)
             ? transport : null;
+    }
+
+    private bool IsAddressBanned(IPAddress address)
+    {
+        if(address == null || banManager == null)
+            return false;
+
+        // New bans use normalized addresses. Check the legacy mapped form too
+        // so custom managers with existing ::ffff:a.b.c.d keys still enforce them.
+        var normalized = StratumConnectionAdmission.Normalize(address);
+        return banManager.IsBanned(normalized) ||
+            normalized.AddressFamily == AddressFamily.InterNetwork &&
+            banManager.IsBanned(normalized.MapToIPv6());
     }
 
     // True only after a manager invocation. Callers log positive ban outcomes only
@@ -929,7 +942,7 @@ public abstract class StratumServer
         if(remoteEndpoint == null || banManager == null)
             return false;
 
-        if(banManager.IsBanned(remoteEndpoint.Address))
+        if(IsAddressBanned(remoteEndpoint.Address))
         {
             logger.Debug(() => $"Disconnecting banned ip {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}");
             StratumSocketCleanup.CloseAbortively(socket);

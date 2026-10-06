@@ -183,6 +183,30 @@ public partial class StratumAdmissionTests
     }
 
     [NonLoopbackTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExplicitMappedBan_IsEffectiveForNormalizedTransport(bool tls)
+    {
+        var bans = new TextKeyBanManager();
+        var identity = IPAddress.Parse("192.0.2.211");
+        var legacyMappedIdentity = identity.MapToIPv6();
+        bans.Ban(legacyMappedIdentity, TimeSpan.FromMinutes(1));
+        await using var lab = new BanLab(true, tls, bans: bans);
+
+        using(var client = await BanSession.Connect(lab))
+        {
+            await client.Send(BanHeader(identity, mapped: true));
+            await client.Closed();
+        }
+
+        await lab.Server.Empty();
+        Assert.Equal((0, 0), lab.Server.ConnectionAdmission.Snapshot);
+        Assert.Equal(0, lab.Server.Requests);
+        Assert.False(bans.IsBanned(identity));
+        Assert.True(bans.IsBanned(legacyMappedIdentity));
+    }
+
+    [NonLoopbackTheory]
     [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, false)]
@@ -399,6 +423,15 @@ public partial class StratumAdmissionTests
             line.StartsWith("miningcore_stratum_automatic_bans_total{") &&
             line.Contains($"pool=\"{pool}\"") && line.Contains($"outcome=\"{outcome}\"") &&
             line.Contains($"reason=\"{reason}\"") && line.EndsWith(" 1"));
+    }
+
+    private sealed class TextKeyBanManager : IBanManager
+    {
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> addresses = new();
+
+        public bool IsBanned(IPAddress address) => addresses.ContainsKey(address.ToString());
+
+        public void Ban(IPAddress address, TimeSpan duration) => addresses.TryAdd(address.ToString(), 0);
     }
 
     [NonLoopbackFact]
