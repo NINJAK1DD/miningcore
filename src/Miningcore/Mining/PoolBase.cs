@@ -205,7 +205,7 @@ public abstract class PoolBase : StratumServer,
     {
         ct.ThrowIfCancellationRequested();
         var worker = connection.Context;
-        WorkerAssignmentLease.ThrowIfReentrant(worker);
+        WorkerAssignmentLease.ThrowIfNestedAssignment(worker);
         var lease = new WorkerAssignmentLease(worker);
         if(skipIfBusy)
         {

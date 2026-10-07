@@ -387,7 +387,10 @@ jobs:
       env:
         LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net10.0
         MININGCORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
-      run: dotnet test --logger:"console;verbosity=detailed" --no-build --verbosity normal src
+      run: |
+        dotnet test --logger:"console;verbosity=detailed" --logger:"trx;LogFileName=linux-full.trx" \
+          --results-directory "$GITHUB_WORKSPACE/build/ci-tests" --no-build --verbosity normal src
+        python3 scripts/release/test-native-family-evidence.py --self-test "$GITHUB_WORKSPACE/build/ci-tests/linux-full.trx"
 
   pps-postgres-compatibility:
     name: PPS schema on PostgreSQL ${{ matrix.postgres }}

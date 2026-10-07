@@ -21,8 +21,11 @@ using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Conceal;
 using Miningcore.Blockchain.Cryptonote;
 using Miningcore.Blockchain.Ergo;
+using Miningcore.Blockchain.Equihash;
 using Miningcore.Blockchain.Ethereum;
 using Miningcore.Blockchain.Kaspa;
+using Miningcore.Blockchain.Progpow;
+using Miningcore.Blockchain.Warthog;
 using Miningcore.Blockchain.Zano;
 using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Progpow;
@@ -152,7 +155,7 @@ public class PoolFamilyAssignmentTests : TestBase
         Assert.False(fixture.Connection.IsDisconnectRequested);
         Assert.Equal(1, worker.AssignmentGate.CurrentCount);
         Assert.Empty(fixture.Errors.Logs); // Broadcast Guard must not hide a failure.
-        Assert.True(fixture.Messages.Count >= 2);
+        fixture.AssertFinalWireAssignment();
         await fixture.Idle().WaitAsync(Timeout);
         Assert.Equal(55, worker.Difficulty);
     }
@@ -209,7 +212,7 @@ public class PoolFamilyAssignmentTests : TestBase
         private readonly TaskCompletionSource flushed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal readonly TimestampProvider Time = new();
         internal readonly NLog.Targets.MemoryTarget Errors = new() { Layout = "${level}|${message}" };
-        internal readonly List<object> Messages = new();
+        internal readonly List<JObject> Messages = new();
         internal PoolBase Pool { get; private set; }
         internal StratumConnection Connection { get; private set; }
 
@@ -271,9 +274,23 @@ public class PoolFamilyAssignmentTests : TestBase
             SetField(manager, "poolConfig", config);
             SetField(manager, "clusterConfig", cluster);
             SetField(manager, "coin", coin);
-            SetField(manager, "network", "mainnet", optional: true);
-            SetField(manager, "maxActiveJobs", 8, optional: true);
-            SetField(manager, "PoolNoncePrefix", "00000001", optional: true);
+            // Name/type mismatches must fail for a family that relies on this
+            // state. Do not silently skip a renamed member or leave enum zero.
+            if(family is "Bitcoin" or "Equihash" or "Handshake" or "Nexa" or "Progpow" or "Satoshicash")
+            {
+                SetField(manager, "network", NBitcoin.Network.Main);
+                SetProperty(manager, "maxActiveJobs", 8);
+            }
+            else if(family is "Alephium" or "Ergo" or "Kaspa" or "Xelis")
+                SetField(manager, "network", "mainnet");
+            else if(family == "Warthog") SetField(manager, "network", WarthogNetworkType.Mainnet);
+            else if(family == "Ethereum") SetField(manager, "networkType", EthereumNetworkType.Main);
+            else if(family == "Conceal") SetField(manager, "networkType", ConcealNetworkType.Main);
+            else if(family == "Cryptonote") SetField(manager, "networkType", CryptonoteNetworkType.Main);
+            else if(family == "Zano") SetField(manager, "networkType", ZanoNetworkType.Main);
+            if(family is "Alephium" or "Beam" or "Ergo" or "Kaspa" or "Warthog" or "Xelis")
+                SetField(manager, "maxActiveJobs", 8);
+            if(family == "Beam") SetField(manager, "PoolNoncePrefix", "00000001");
             var logConfig = new NLog.Config.LoggingConfiguration();
             logConfig.AddRule(LogLevel.Error, LogLevel.Fatal, Errors);
             logs.Configuration = logConfig;
@@ -310,12 +327,13 @@ public class PoolFamilyAssignmentTests : TestBase
             var worker = Connection.Context;
             worker.IsSubscribed = worker.IsAuthorized = true;
             worker.UserAgent = "fixture";
-            SetProperty(worker, "ExtraNonce1", "00000001", optional: true);
-            SetProperty(worker, "ProtocolVersion", 2, optional: true);
+            if(family is not ("Conceal" or "Cryptonote" or "Zano"))
+                SetProperty(worker, "ExtraNonce1", "00000001");
+            if(family is "Ethereum" or "Zano") SetProperty(worker, "ProtocolVersion", 2);
             Invoke(Pool, "RegisterConnection", Connection);
             Connection.SendMessageOverride = (message, _) =>
             {
-                Messages.Add(message);
+                Messages.Add(JObject.Parse(JsonConvert.SerializeObject(message, test.jsonSerializerSettings)));
                 if(message is JsonRpcRequest<object[]> { Method: "test.assignment.fence" })
                     flushed.TrySetResult();
                 return Task.CompletedTask;
@@ -361,6 +379,50 @@ public class PoolFamilyAssignmentTests : TestBase
             await Connection.NotifyAsync("test.assignment.fence", Array.Empty<object>());
             await flushed.Task.WaitAsync(Timeout);
         }
+
+        internal void AssertFinalWireAssignment()
+        {
+            if(family == "Beam")
+            {
+                var lastJob = Messages.Last(m => m["method"]?.Value<string>() == "job");
+                Assert.Equal(55, BeamUtils.UnpackedDifficulty(lastJob["difficulty"].Value<long>()));
+                Assert.False(string.IsNullOrEmpty(lastJob["input"].Value<string>()));
+                return;
+            }
+            if(family is "Conceal" or "Cryptonote")
+            {
+                var jobs = Messages.Select(m => m["method"]?.Value<string>() == "job" ? m["params"] : m["result"]?["job"])
+                    .Where(j => j is JObject).ToArray();
+                Assert.NotEmpty(jobs);
+                // Fixed 4-byte little-endian target for difficulty 55, calculated
+                // independently from (2^256-1)/55 with protocol quantization.
+                Assert.Equal("4a90a704", jobs[^1]["target"].Value<string>());
+                Assert.False(string.IsNullOrEmpty(jobs[^1]["blob"].Value<string>()));
+                return;
+            }
+            var method = family is "Equihash" or "Progpow" ? "mining.set_target" : "mining.set_difficulty";
+            var lastAssignment = Messages.FindLastIndex(m => m["method"]?.Value<string>() == method);
+            Assert.True(lastAssignment >= 0, $"{family} did not announce its assignment");
+            var assigned = Messages[lastAssignment]["params"][0];
+            if(family == "Equihash")
+                Assert.Equal(EquihashUtils.EncodeTarget(55, ((EquihashCoinTemplate) Coin(family)).GetNetwork(NBitcoin.ChainName.Mainnet)),
+                    assigned.Value<string>());
+            else if(family == "Progpow")
+                Assert.Equal(ProgpowUtils.RavencoinEncodeTarget(55), assigned.Value<string>());
+            else if(family == "Ergo")
+            {
+                Assert.Equal(1, assigned.Value<double>()); // Normal Ergo miners receive the effective target in the job.
+                var lastJob = Messages.Last(m => m["method"]?.Value<string>() == "mining.notify");
+                var expected = BitcoinConstants.Diff1 * 1191 / 65536; // floor(65536 / 55), protocol precision.
+                Assert.Equal(expected.ToString(), lastJob["params"][6].Value<string>());
+            }
+            else
+                Assert.Equal(55, assigned.Value<double>());
+            // Some protocols apply set_difficulty to the next job, while keeping
+            // current work. The assertion here covers the last announced value;
+            // bounded in-flight proof acceptance remains tracked separately.
+            Assert.Contains(Messages, m => m["method"]?.Value<string>() == "mining.notify");
+        }
         public async ValueTask DisposeAsync()
         {
             Time.Block = false;
@@ -403,7 +465,7 @@ public class PoolFamilyAssignmentTests : TestBase
         if(family is "Equihash" or "Xelis" or "Warthog" or "Ergo" or "Satoshicash")
         {
             var job = JobNotificationSnapshotTests.CreateArrayJob(family.ToLowerInvariant()).Job;
-            SetProperty(job, "JobId", "ready", optional: true);
+            SetProperty(job, "JobId", "ready");
             return job;
         }
         if(family == "Ethereum") return new EthereumJob("ready", new EthereumBlockTemplate
@@ -455,24 +517,22 @@ public class PoolFamilyAssignmentTests : TestBase
     private static MethodInfo FindMethod(Type type, string name) => type.GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException($"Missing fixture method {type.Name}.{name}");
     private static object Invoke(object target, string name, params object[] args) => FindMethod(target.GetType(), name).Invoke(target, args);
-    private static void SetProperty(object target, string name, object value, bool optional = false)
+    private static void SetProperty(object target, string name, object value)
     {
         var property = target.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-        if(property == null && optional) return;
-        Assert.NotNull(property);
+        Assert.True(property != null, $"Missing required fixture property {target.GetType().Name}.{name}");
         property.SetValue(target, value);
     }
-    private static void SetField(object target, string name, object value, bool optional = false)
+    private static void SetField(object target, string name, object value)
     {
         for(var type = target.GetType(); type != null; type = type.BaseType)
         {
             var field = type.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.DeclaredOnly);
             if(field == null) continue;
-            if(optional && !field.FieldType.IsInstanceOfType(value)) return;
             field.SetValue(target, value);
             return;
         }
-        if(!optional) throw new InvalidOperationException($"Missing fixture field {target.GetType().Name}.{name}");
+        throw new InvalidOperationException($"Missing required fixture field {target.GetType().Name}.{name}");
     }
 
     private sealed class RestStub : HttpMessageHandler

@@ -82,8 +82,19 @@ broadcast cannot queue idle work behind a busy miner or delay the sweep's other 
 The next periodic sweep retries. Share and explicit-assignment producers still wait with
 their request/shutdown cancellation token. An ambient ownership lease detects recursive
 acquisition for the same worker, including across awaits and child tasks, and throws
-immediately. Nested assignments for different workers are allowed; a cycle back to an
-owned worker is rejected. Released ownership cannot block a later child operation.
+immediately. Nested assignments for different workers are also rejected before waiting:
+independent operations must not acquire worker A then B and B then A in opposite orders.
+Fan-out must start outside an assignment lease. Released ownership cannot block a later
+child operation, and a released lease clears its worker reference so captured contexts
+do not retain the worker's jobs through stale ownership.
+
+Background tasks, timers and subscriptions created under a lease inherit its logical
+ownership through `ExecutionContext`, even when not awaited. Prefer scheduling them
+after release. Deliberately detached work can use
+[ExecutionContext.SuppressFlow](https://learn.microsoft.com/en-us/dotnet/api/system.threading.executioncontext.suppressflow)
+only during synchronous scheduling; restore flow before any await, and never await that
+work's completion while holding the lease. This opts out of all ambient execution state,
+so it requires an explicit scheduling decision rather than changing the gate helper.
 
 Daemon/NiceHash lookups and accepted-proof/accounting work stay outside the assignment
 gate. `PoolBase` forwards cancellation to both producers and releases the gate on every
@@ -93,6 +104,8 @@ failure cleanup intentionally ignores request cancellation to close a partially 
 assignment. Idle sweeps suppress only cancellation of their owning shutdown token, including
 effort-check cancellation; independent failures retain diagnostics. BLAKE2b's additional
 terminal-publication policy remains in place on top of this shared serialization.
+NiceHash lookup cancellation by the originating request returns no override without an
+error log; independent API timeouts and HTTP failures retain diagnostics.
 
 Positive-interval proportional arithmetic, overflow/underflow recovery, configured
 minimum/maximum and `maxDelta` remain intact above the burst floor. Zero and tiny positive
@@ -127,12 +140,24 @@ Canonical Bitcoin's authorize/configure wire tests verify the shared assignment 
 `PoolFamilyAssignmentTests` additionally invokes each of the 16 concrete generic pool
 families' actual authorization/login, idle retarget and job-broadcast methods in both
 contention orderings, with a ten-second deadlock timeout and diagnostics checked for
-hidden broadcast failures. Ready jobs and daemon address replies are fixtures; gate,
+hidden broadcast failures. After an outbound queue fence, they assert the last announced
+difficulty or effective target matches the final fixed assignment, including packed Beam,
+target-based Equihash/ProgPoW, Ergo job targets and CryptoNote login/job targets. This
+exposed Handshake's missing static-authorize difficulty notification, now sent under its
+assignment gate. The native wire assertions also exposed missing full-width target copies
+in Conceal/Cryptonote, with the same padding gap in Zano. All three encoders now initialize
+padding and copy full-width/signed-prefix values; nine independent fixed vectors cover
+the 33-, 32- and 31-byte representations. Ready jobs and daemon address replies are fixtures; gate,
 request mutation, publication and connection behavior are production code. Conceal,
 Cryptonote and Zano use Linux native address/blob validation. BLAKE2b has two equivalent
 TCP wire races with a response fence. Separate concrete-family cancellation tests cover
 Ethereum, Conceal, Cryptonote and Zano, and a blocking HTTP fixture verifies NiceHash
-request cancellation. These complement the worker-context matrix rather than replacing it.
+request cancellation. Required reflection members and network enums are explicit per
+family; a renamed member fails setup rather than silently skipping it. These complement
+the worker-context matrix rather than replacing it. CI validates the full suite's TRX
+with `scripts/release/test-native-family-evidence.py`; all six native contention and three
+native cancellation cases must be present exactly once and pass. Negative fixtures
+verify the guard rejects skipped, failed, absent, duplicated and unrecognized cases.
 
 The daemon-backed `BitcoinBlake2bRegtestTests` use real header-v2 proofs from the pinned
 Knots node and PostgreSQL accounting. New forward/backward UTC correction cases hold
@@ -191,7 +216,7 @@ fields and the context's provider. Timestamp setters and context replacement are
 to the assembly; custom family code must preserve the counter-domain contract rather than
 write UTC/Unix values. Custom assignment hooks must acquire the shared worker gate and
 hold it through publication; gated core hooks must not reacquire it across `await`.
-Recursive use now throws `InvalidOperationException` instead of hanging. Prefer
+Recursive or cross-worker nested use now throws `InvalidOperationException` instead of hanging. Prefer
 `RunAssignmentAsync`; internal manual acquisitions activate the returned lease inside
 the owner's `try`, then release it in `finally`. Subscription and NiceHash overrides now
 accept the request `CancellationToken`; `OnSubscribeCoreAsync` requires a

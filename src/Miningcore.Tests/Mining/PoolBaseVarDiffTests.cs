@@ -191,14 +191,95 @@ public class PoolBaseVarDiffTests
         Assert.Equal(1, fixture.Connection.Context.AssignmentGate.CurrentCount);
     }
 
-    [Fact]
-    public async Task AssignmentOwnership_AllowsOtherWorkersAndDetectsCyclesBackToTheFirstWorker()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AssignmentOwnership_RejectsOtherWorkersBeforeWaiting(bool childTask)
     {
         await using var first = new Fixture();
         await using var second = new Fixture();
-        await first.Pool.AssignOperation(first.Connection, () => second.Pool.AssignOperation(second.Connection,
-            () => Assert.ThrowsAsync<InvalidOperationException>(() => first.Pool.AssignExplicit(first.Connection, false))))
+        await first.Pool.AssignOperation(first.Connection, async () =>
+        {
+            await Task.Yield();
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => childTask
+                ? Task.Run(() => second.Pool.AssignExplicit(second.Connection, false))
+                : second.Pool.AssignExplicit(second.Connection, false));
+            Assert.Contains("cannot nest across workers", error.Message);
+            Assert.Equal(1, second.Connection.Context.AssignmentGate.CurrentCount);
+            Assert.Equal(10, second.Connection.Context.Difficulty);
+        }).WaitAsync(Timeout);
+        Assert.Equal(1, first.Connection.Context.AssignmentGate.CurrentCount);
+        Assert.Equal(1, second.Connection.Context.AssignmentGate.CurrentCount);
+    }
+
+    [Fact]
+    public async Task IndependentOppositeOrderAssignments_BothFailWithoutDeadlockAndReleaseTheirGates()
+    {
+        await using var first = new Fixture();
+        await using var second = new Fixture();
+        var bothOwned = Signal();
+        var owners = 0;
+        Task Attempt(Fixture owner, Fixture target) => Task.Run(() => owner.Pool.AssignOperation(owner.Connection, async () =>
+        {
+            if(Interlocked.Increment(ref owners) == 2)
+                bothOwned.SetResult();
+            await bothOwned.Task.WaitAsync(Timeout);
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => target.Pool.AssignExplicit(target.Connection, false));
+            Assert.Contains("cannot nest across workers", error.Message);
+        }));
+        await Task.WhenAll(Attempt(first, second), Attempt(second, first)).WaitAsync(Timeout);
+        await Task.WhenAll(first.Pool.AssignExplicit(first.Connection, false), second.Pool.AssignExplicit(second.Connection, false))
             .WaitAsync(Timeout);
+        Assert.Equal(55, first.Connection.Context.Difficulty);
+        Assert.Equal(55, second.Connection.Context.Difficulty);
+        Assert.Equal(1, first.Connection.Context.AssignmentGate.CurrentCount);
+        Assert.Equal(1, second.Connection.Context.AssignmentGate.CurrentCount);
+    }
+
+    [Fact]
+    public async Task DetachedBackgroundAssignment_WithSuppressedFlowWaitsThenAcquiresAfterOwnerRelease()
+    {
+        await using var fixture = new Fixture();
+        var waiting = Signal();
+        fixture.Pool.AssignmentWaiting = () => waiting.TrySetResult();
+        Task child = null;
+        await fixture.Pool.AssignOperation(fixture.Connection, async () =>
+        {
+            // Suppression applies only to synchronous task scheduling, never await.
+            using(ExecutionContext.SuppressFlow())
+                child = Task.Run(() => fixture.Pool.AssignExplicit(fixture.Connection, false));
+            await waiting.Task.WaitAsync(Timeout);
+            Assert.False(child.IsCompleted);
+            Assert.Equal(10, fixture.Connection.Context.Difficulty);
+        }).WaitAsync(Timeout);
+        await child.WaitAsync(Timeout);
+        Assert.Equal(55, fixture.Connection.Context.Difficulty);
+        Assert.Equal(1, fixture.Connection.Context.AssignmentGate.CurrentCount);
+    }
+
+    [Fact]
+    public async Task ReleasedParentOwnership_DoesNotPermitChildToNestAnotherWorker()
+    {
+        await using var first = new Fixture();
+        await using var second = new Fixture();
+        var releaseChild = Signal();
+        Task child = null;
+        await first.Pool.AssignOperation(first.Connection, () =>
+        {
+            child = Task.Run(async () =>
+            {
+                await releaseChild.Task;
+                await second.Pool.AssignOperation(second.Connection, async () =>
+                {
+                    var error = await Assert.ThrowsAsync<InvalidOperationException>(() => first.Pool.AssignExplicit(first.Connection, false));
+                    Assert.Contains("cannot nest across workers", error.Message);
+                });
+            });
+            return Task.CompletedTask;
+        }).WaitAsync(Timeout);
+        releaseChild.SetResult();
+        await child.WaitAsync(Timeout);
+        Assert.Equal(10, first.Connection.Context.Difficulty);
         Assert.Equal(1, first.Connection.Context.AssignmentGate.CurrentCount);
         Assert.Equal(1, second.Connection.Context.AssignmentGate.CurrentCount);
     }
