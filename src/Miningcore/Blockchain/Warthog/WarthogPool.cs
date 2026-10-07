@@ -91,13 +91,18 @@ public class WarthogPool : PoolBase
         // Nicehash support
         var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
 
-        if(nicehashDiff.HasValue)
+        var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+        try
         {
-            logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
+            if(nicehashDiff.HasValue)
+            {
+                logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
 
-            context.VarDiff = null; // disable vardiff
-            context.SetDifficulty(nicehashDiff.Value);
+                context.VarDiff = null; // disable vardiff
+                context.SetDifficulty(nicehashDiff.Value);
+            }
         }
+        finally { assignmentGate.Release(); }
     }
     
     protected virtual async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -152,22 +157,28 @@ public class WarthogPool : PoolBase
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue &&
+                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
+                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                {
+                    context.VarDiff = null; // disable vardiff
+                    context.SetDifficulty(staticDiff.Value);
 
-                logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                }
+
+                var minerJobParams = CreateWorkerJob(connection, context.IsAuthorized);
+
+                // send intial update
+                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
             }
-
-            var minerJobParams = CreateWorkerJob(connection, context.IsAuthorized);
-
-            // send intial update
-            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
+            finally { assignmentGate.Release(); }
         }
 
         else
@@ -294,7 +305,7 @@ public class WarthogPool : PoolBase
     {
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<WarthogWorkerContext>();
             var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);

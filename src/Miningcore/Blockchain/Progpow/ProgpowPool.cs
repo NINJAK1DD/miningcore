@@ -95,19 +95,24 @@ public class ProgpowPool : PoolBase
         // Nicehash support
         var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
 
-        if(nicehashDiff.HasValue)
+        var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+        try
         {
-            logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
+            if(nicehashDiff.HasValue)
+            {
+                logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
 
-            context.VarDiff = null; // disable vardiff
-            context.SetDifficulty(nicehashDiff.Value);
+                context.VarDiff = null; // disable vardiff
+                context.SetDifficulty(nicehashDiff.Value);
+            }
+
+            // Initial work starts a clean job set independently of prior broadcasts.
+            var minerJobParams = CreateWorkerJob(connection, true);
+            // send initial update
+            await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
+            await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, minerJobParams);
         }
-
-        // Initial work starts a clean job set independently of prior broadcasts.
-        var minerJobParams = CreateWorkerJob(connection, true);
-        // send initial update
-        await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
-        await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, minerJobParams);
+        finally { assignmentGate.Release(); }
     }
 
     protected virtual async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -155,18 +160,24 @@ public class ProgpowPool : PoolBase
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue &&
+                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
+                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                {
+                    context.VarDiff = null; // disable vardiff
+                    context.SetDifficulty(staticDiff.Value);
 
-                logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
-                await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
+                    await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
+                }
             }
+            finally { assignmentGate.Release(); }
         }
 
         else
@@ -302,7 +313,7 @@ public class ProgpowPool : PoolBase
         // Bind this broadcast to its own flag while miner callbacks are running.
         var cleanJobs = notification.CleanJobs;
 
-        await Guard(() => ForEachMinerAsync(async (connection, _) =>
+        await Guard(() => ForEachMinerAssignmentAsync(async (connection, _) =>
         {
             var context = connection.ContextAs<ProgpowWorkerContext>();
 

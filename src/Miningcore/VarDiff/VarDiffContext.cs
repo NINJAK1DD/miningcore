@@ -15,8 +15,8 @@ public class VarDiffContext
     // All timestamps belong to this immutable provider's counter domain.
     public TimeProvider TimeProvider { get; }
     public long CreatedTimestamp { get; }
-    public long? LastShareTimestamp { get; set; }
-    public long LastRetargetTimestamp { get; set; }
+    public long? LastShareTimestamp { get; internal set; }
+    public long LastRetargetTimestamp { get; internal set; }
     // Measured elapsed seconds, never absolute wall-clock timestamps.
     public CircularBuffer<double> TimeBuffer { get; set; }
     // UTC assignment metadata retained for previous-difficulty share validation.

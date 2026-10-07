@@ -82,19 +82,24 @@ public class NexaPool : PoolBase
         // Nicehash support
         var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
 
-        if(nicehashDiff.HasValue)
+        var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+        try
         {
-            logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
+            if(nicehashDiff.HasValue)
+            {
+                logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
 
-            context.VarDiff = null; // disable vardiff
-            context.SetDifficulty(nicehashDiff.Value);
+                context.VarDiff = null; // disable vardiff
+                context.SetDifficulty(nicehashDiff.Value);
+            }
+
+            var minerJobParams = CreateWorkerJob(connection, context.IsSubscribed);
+
+            // send intial update
+            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
         }
-
-        var minerJobParams = CreateWorkerJob(connection, context.IsSubscribed);
-
-        // send intial update
-        await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
+        finally { assignmentGate.Release(); }
     }
 
     protected virtual async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -142,18 +147,24 @@ public class NexaPool : PoolBase
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue &&
+                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
+                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                {
+                    context.VarDiff = null; // disable vardiff
+                    context.SetDifficulty(staticDiff.Value);
 
-                logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
-                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                    await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                }
             }
+            finally { assignmentGate.Release(); }
         }
 
         else
@@ -265,50 +276,55 @@ public class NexaPool : PoolBase
 
     private async Task OnSuggestDifficultyAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
     {
-        var request = tsRequest.Value;
-        var context = connection.ContextAs<NexaWorkerContext>();
-
-        // Nicehash's stupid validator insists on "error" property present
-        // in successful responses which is a violation of the JSON-RPC spec
-        // [Respect the goddamn standards Nicehack :(]
-        var response = new JsonRpcResponse<object>(true, request.Id);
-
-        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
-        {
-            response.Extra = new Dictionary<string, object>();
-            response.Extra["error"] = null;
-        }
-
-        // acknowledge
-        await connection.RespondAsync(response);
-
+        var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
         try
         {
-            var requestedDiff = (double) Convert.ChangeType(request.Params, TypeCode.Double)!;
+            var request = tsRequest.Value;
+            var context = connection.ContextAs<NexaWorkerContext>();
 
-            // client may suggest higher-than-base difficulty, but not a lower one
-            var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
+            // Nicehash's stupid validator insists on "error" property present
+            // in successful responses which is a violation of the JSON-RPC spec
+            // [Respect the goddamn standards Nicehack :(]
+            var response = new JsonRpcResponse<object>(true, request.Id);
 
-            if(requestedDiff > poolEndpoint.Difficulty)
+            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
             {
-                context.SetDifficulty(requestedDiff);
-                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                response.Extra = new Dictionary<string, object>();
+                response.Extra["error"] = null;
+            }
 
-                logger.Info(() => $"[{connection.ConnectionId}] Difficulty set to {requestedDiff} as requested by miner");
+            // acknowledge
+            await connection.RespondAsync(response);
+
+            try
+            {
+                var requestedDiff = (double) Convert.ChangeType(request.Params, TypeCode.Double)!;
+
+                // client may suggest higher-than-base difficulty, but not a lower one
+                var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
+
+                if(requestedDiff > poolEndpoint.Difficulty)
+                {
+                    context.SetDifficulty(requestedDiff);
+                    await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+
+                    logger.Info(() => $"[{connection.ConnectionId}] Difficulty set to {requestedDiff} as requested by miner");
+                }
+            }
+
+            catch(Exception ex)
+            {
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "NexaPool.OnSuggestDifficultyAsync", failure: ex);
             }
         }
-
-        catch(Exception ex)
-        {
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "NexaPool.OnSuggestDifficultyAsync", failure: ex);
-        }
+        finally { assignmentGate.Release(); }
     }
 
     protected virtual async Task OnNewJobAsync(object jobParams)
     {
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<NexaWorkerContext>();
             var minerJobParams = CreateWorkerJob(connection, true);

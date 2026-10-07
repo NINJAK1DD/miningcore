@@ -145,21 +145,27 @@ public class ErgoPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue &&
+                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
+                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                {
+                    context.VarDiff = null; // disable vardiff
+                    context.SetDifficulty(staticDiff.Value);
 
-                logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                }
+
+                var minerJobParams = CreateWorkerJob(connection, context.IsAuthorized);
+
+                // send intial update
+                await SendJob(connection, context, minerJobParams);
             }
-
-            var minerJobParams = CreateWorkerJob(connection, context.IsAuthorized);
-
-            // send intial update
-            await SendJob(connection, context, minerJobParams);
+            finally { assignmentGate.Release(); }
         }
 
         else
@@ -274,7 +280,7 @@ public class ErgoPool : PoolBase
     {
         logger.Info(() => $"Broadcasting job {jobParams[0]}");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<ErgoWorkerContext>();
             var minerJobParams = CreateWorkerJob(connection, (bool) jobParams[^1]);

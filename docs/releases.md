@@ -302,10 +302,14 @@ is rewritten.
 context creation and retarget cooldowns to each context's monotonic `TimeProvider` across
 all pool families. Forward/backward UTC corrections cannot alter identical monotonic
 sample sequences. `LastUpdate` retains its UTC assignment meaning. Positive submillisecond
-samples remain measurable; unresolved zero windows retain #184's conservative estimate
-as an explicit policy floor. Idle updates enforce the complete retarget cooldown, and
-canceled or replaced contexts are checked under the timing lock. Existing assignment
-gates, representability bounds and immutable accepted-proof credit remain intact.
+samples remain measurable; zero and tiny positive means use #184's sample-count-aware
+estimate as a burst-rate floor. Ordinary positive arithmetic above the floor is retained.
+Idle updates require both full inactivity and retarget intervals; the old one-second
+inactivity allowance is removed. Canceled or replaced contexts are checked under the
+timing lock. Every family now shares a worker assignment gate across calculation,
+publication, fixed/NiceHash changes and pending-difficulty broadcasts. Explicit assignments
+clear deferred difficulty. Expected shutdown cancellation is not logged as a sweep error.
+Representability bounds and immutable accepted-proof credit remain intact.
 No additional configuration or database migration is required. See the
 [consumer audit, migration and validation](vardiff-monotonic.md).
 

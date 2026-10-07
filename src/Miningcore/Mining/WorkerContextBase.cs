@@ -15,9 +15,22 @@ public class WorkerContextBase
 {
     private double? pendingDifficulty;
     private string userAgent;
+    private VarDiffContext varDiff;
+    // One gate for the worker lifetime, including replacement/disabled contexts.
+    // Never dispose while asynchronous assignment producers may still be waiting.
+    internal SemaphoreSlim AssignmentGate { get; } = new(1, 1);
 
     public ShareStats Stats { get; set; }
-    public VarDiffContext VarDiff { get; set; }
+    public VarDiffContext VarDiff
+    {
+        get => varDiff;
+        internal set
+        {
+            if(!ReferenceEquals(varDiff, value))
+                pendingDifficulty = null;
+            varDiff = value;
+        }
+    }
     public DateTime Created { get; set; }
     public DateTime LastActivity { get; set; }
     public bool IsAuthorized { get; set; }
@@ -61,6 +74,7 @@ public class WorkerContextBase
 
     public void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock, TimeProvider timeProvider = null)
     {
+        pendingDifficulty = null;
         Difficulty = difficulty;
         LastActivity = clock.Now;
         Created = clock.Now;
@@ -94,6 +108,8 @@ public class WorkerContextBase
 
     public void SetDifficulty(double difficulty)
     {
+        // An explicit assignment supersedes any deferred dynamic assignment.
+        pendingDifficulty = null;
         PreviousDifficulty = Difficulty;
         Difficulty = difficulty;
     }

@@ -54,20 +54,6 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     }
 
     private readonly PoolOperationGate operations = new();
-    private readonly ConditionalWeakTable<StratumConnection, SemaphoreSlim> assignmentGates = new();
-
-    // Serialize mutations and their complete wire assignment, not individual sends.
-    // Never hold this gate across daemon RPC or external HTTP lookups.
-    // Callers release the returned instance only after successful acquisition.
-    // Internal virtual entry provides deterministic contention barriers in tests.
-    // Weak ownership allows reclamation with the connection;
-    // do not dispose while waiters exist. AvailableWaitHandle is never used.
-    internal virtual async ValueTask<SemaphoreSlim> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct)
-    {
-        var gate = assignmentGates.GetValue(connection, static _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(ct);
-        return gate;
-    }
 
     private bool IsAdmissionClosed(StratumConnection connection) => connection.IsDisconnectRequested || operations.IsClosed ||
         difficultyBudgets.TryGetValue(connection, out var budget) && budget.IsClosed;
@@ -342,7 +328,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             ct.ThrowIfCancellationRequested();
             try
             {
-                await base.UpdateVarDiffAsync(connection, idle, ct);
+                await UpdateVarDiffCoreAsync(connection, idle, ct);
             }
             catch(Exception ex)
             {
@@ -649,7 +635,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 // close here; unlike pre-request/pre-VarDiff cancellation, it
                 // cannot preserve the session. Host shutdown suppresses telemetry.
                 ct.ThrowIfCancellationRequested();
-                await base.ApplyStaticDifficultyAsync(connection, difficulty, ct);
+                await ApplyStaticDifficultyCoreAsync(connection, difficulty, ct);
                 await CompleteAssignmentAsync(connection, previousDifficulty, BitcoinStratumMethods.Authorize);
             }
             catch(Exception ex)

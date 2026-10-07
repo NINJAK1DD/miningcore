@@ -516,16 +516,16 @@ existing parser. The exact parsed value is reused for execution.
 Server-driven BLAKE2b VarDiff has an effective maximum of `65535 * 2^208`, the highest
 representable difficulty (target 1), when `maxDiff` is omitted. A configured lower maximum
 is honored. This runtime ceiling applies to both share-triggered and idle retargeting
-without rewriting the operator's configuration. A genuine zero-length interval window
-retains the conservative policy mean of
+without rewriting the operator's configuration. Zero and tiny positive interval windows
+use a conservative minimum policy mean of
 **0.001 / min(interval count, 10) seconds**, including the current
 interval, then applies normal proportional retargeting, `maxDelta` and difficulty bounds.
 A full window uses 0.0001 seconds; two intervals use 0.0005 seconds. For example, difficulty 10
 with a ten-second target and a full zero window becomes 1,000,000 without a delta limit, or 12
 with `maxDelta: 2`; two zero intervals produce 200,000 without a delta limit. It does not
 automatically jump to the protocol maximum. For target intervals at or below the estimate,
-an unresolved zero window holds the current difficulty, subject to configured bounds,
-instead of lowering it. Positive measured intervals retain their proportional calculation.
+a burst window below that mean holds the current difficulty, subject to configured bounds,
+instead of lowering it. Positive measured intervals above the floor retain their proportional calculation.
 Extreme positive ratios avoid
 intermediate overflow/underflow, and delta limiting uses the previous difficulty plus
 or minus the limit, avoiding cancellation. The shared VarDiff arithmetic fixes also apply
@@ -567,8 +567,9 @@ corrections cannot alter an identical monotonic sample sequence. `LastUpdate` re
 UTC assignment metadata. No-op idle sweeps preserve the real-share baseline, while actual
 retargets clear the buffer and restart the cooldown. A broken monotonic provider or invalid
 history is defensively rebased without changing the last assignment marker. Positive
-submillisecond intervals remain measurable; unresolved zeros retain the sample-count-aware
-conservative estimate above. See the [cross-family audit and validation](vardiff-monotonic.md)
+submillisecond intervals remain measurable; zero and tiny positive means use the sample-count-aware
+burst floor above. The shared worker gate also serializes generic-family fixed/NiceHash assignments,
+VarDiff publication and deferred-difficulty application. See the [cross-family audit and validation](vardiff-monotonic.md)
 for [#185](https://github.com/NINJAK1DD/miningcore/issues/185), following the arithmetic and
 no-op-sweep fixes in [#184](https://github.com/NINJAK1DD/miningcore/issues/184).
 Shared startup validation rejects non-finite or non-positive minimum
@@ -752,8 +753,9 @@ configuration and untouched negotiation allowance. Shared VarDiff unit tests cov
 retargeting, extreme ratios and generic-family default bounds. Monotonic tests cover every
 concrete worker context, both UTC correction directions,
 preserved assignments, invalid-provider recovery and clock sampling under the monitor.
-New live wall-correction cases prove the same retarget and original accepted credit across
-all four payout schemes with PostgreSQL settlement.
+Injected wall-correction cases preserve the same retarget and original accepted credit
+through real proofs and all four payout schemes with PostgreSQL settlement. Clock
+independence itself is established by the deterministic counter/UTC tests.
 Run the focused suite with:
 
 ```sh

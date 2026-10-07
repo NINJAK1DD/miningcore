@@ -76,6 +76,7 @@ public abstract class PoolBase : StratumServer,
     protected static readonly Regex regexStaticDiff = new(@";?d=(\d*(\.\d+)?)", RegexOptions.Compiled);
     protected const string PasswordControlVarsSeparator = ";";
     private StratumListenerReservationSession stratumListenerReservations;
+    internal TimeProvider VarDiffTimeProvider { get; set; } = TimeProvider.System;
 
     protected abstract Task SetupJobManager(CancellationToken ct);
     protected virtual void NotifyPoolOnline()
@@ -113,7 +114,7 @@ public abstract class PoolBase : StratumServer,
         var poolEndpoint = poolConfig.Ports[ipEndPoint.Port];
         var varDiff = poolConfig.EnableInternalStratum == true ? poolEndpoint.VarDiff : null;
 
-        context.Init(poolEndpoint.Difficulty, varDiff, clock);
+        context.Init(poolEndpoint.Difficulty, varDiff, clock, VarDiffTimeProvider);
         connection.SetContext(context);
 
         // StratumConnection bounds TLS, PROXY framing and the first complete request with
@@ -126,6 +127,13 @@ public abstract class PoolBase : StratumServer,
     protected virtual double MaximumVarDiff => double.MaxValue;
 
     protected virtual async Task UpdateVarDiffAsync(StratumConnection connection, bool idle, CancellationToken ct)
+    {
+        await RunAssignmentAsync(connection, () => UpdateVarDiffCoreAsync(connection, idle, ct), ct);
+    }
+
+    // Call only while owning the worker's assignment gate. BLAKE2b uses this
+    // core inside its terminal-publication boundary without acquiring twice.
+    protected async Task UpdateVarDiffCoreAsync(StratumConnection connection, bool idle, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var context = connection.Context;
@@ -161,8 +169,7 @@ public abstract class PoolBase : StratumServer,
 
                 await Guard(() => ForEachMinerAsync(async (connection, _ct) =>
                 {
-                    await Guard(() => UpdateVarDiffAsync(connection, true, _ct),
-                        ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.RunVardiffIdleUpdaterAsync", failure: ex));
+                    await UpdateIdleVarDiffAsync(connection, _ct);
                 }, ct));
 
                 logger.Debug(() => "Vardiff Idle Update pass ends");
@@ -181,7 +188,40 @@ public abstract class PoolBase : StratumServer,
         return Task.CompletedTask;
     }
 
+    internal Task UpdateIdleVarDiffAsync(StratumConnection connection, CancellationToken ct) =>
+        Guard(() => UpdateVarDiffAsync(connection, true, ct), ex =>
+        {
+            if(ex is not OperationCanceledException || !ct.IsCancellationRequested)
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.RunVardiffIdleUpdaterAsync", failure: ex);
+        });
+
     #endregion // VarDiff
+
+    // Serialize calculation, state mutation and complete asynchronous publication.
+    // Acquire after daemon/NiceHash lookups, never around share validation/accounting.
+    // All producers for a worker use this gate even when VarDiff is replaced/disabled.
+    internal virtual async ValueTask<SemaphoreSlim> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct)
+    {
+        var gate = connection.Context.AssignmentGate;
+        await gate.WaitAsync(ct);
+        return gate;
+    }
+
+    protected async Task RunAssignmentAsync(StratumConnection connection, Func<Task> assignment,
+        CancellationToken ct = default)
+    {
+        var gate = await EnterAssignmentAsync(connection, ct);
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            if(!connection.IsDisconnectRequested)
+                await assignment();
+        }
+        finally { gate.Release(); }
+    }
+
+    protected Task ForEachMinerAssignmentAsync(Func<StratumConnection, CancellationToken, Task> func) =>
+        ForEachMinerAsync((connection, ct) => RunAssignmentAsync(connection, () => func(connection, ct), ct));
 
     protected Task ForEachMinerAsync(Func<StratumConnection, CancellationToken, Task> func)
     {
@@ -205,6 +245,10 @@ public abstract class PoolBase : StratumServer,
                 }
             }
 
+            catch(OperationCanceledException) when(_ct.IsCancellationRequested)
+            {
+                // Normal shutdown, including cancellation of effort-check RPCs.
+            }
             catch(Exception ex)
             {
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.ForEachMinerAsync", failure: ex);

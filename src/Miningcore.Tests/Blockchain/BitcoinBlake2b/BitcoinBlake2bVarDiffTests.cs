@@ -141,15 +141,16 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     public async Task ServerVarDiff_WallClockCorrectionsPreserveAssignmentAndMonotonicRetarget(bool idle, int wallStep)
     {
         var (config, manager, clock, bus) = Fixture();
-        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
+        var options = new VarDiffConfig { MinDiff = 1e-9, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
+        var time = new ManualTimeProvider();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            varDiff: options, varDiffTimeProvider: time);
         await Subscribe(wire);
         var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
         var jobs = context.validJobs.ToArray();
-        var options = new VarDiffConfig { MinDiff = 1e-9, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
-        config.Ports[wire.Connection.LocalEndpoint.Port].VarDiff = options;
         var now = clock.Now;
-        var time = new ManualTimeProvider();
-        context.VarDiff = new VarDiffContext(time) { Config = options, LastShareTimestamp = 0 };
+        Assert.Same(time, context.VarDiff.TimeProvider); // Production OnConnect -> Init wiring.
+        await wire.RetargetVarDiffAsync(false); // First real share baseline.
         clock.Now.Returns(now.AddSeconds(wallStep));
         await wire.RetargetVarDiffAsync(idle);
         await Fence(wire); // No assignment notification may precede this response.
@@ -188,9 +189,9 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
         var originalJobs = context.validJobs.ToArray();
         var options = new VarDiffConfig { MinDiff = 1e-9, MaxDiff = explicitMaximum ? 3e-9 : null,
-            MaxDelta = limitDelta ? 1e-9 : null, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
+            MaxDelta = limitDelta ? 1e-9 : null, TargetTime = 10, RetargetTime = idle ? 1e-7 : 1, VariancePercent = 1 };
         config.Ports[wire.Connection.LocalEndpoint.Port].VarDiff = options;
-        context.VarDiff = new VarDiffContext(new ManualTimeProvider()) { Config = options, LastShareTimestamp = 0,
+        context.VarDiff = new VarDiffContext(new ManualTimeProvider()) { Config = options, LastShareTimestamp = idle ? -1 : 0,
             LastRetargetTimestamp = -10 * System.TimeSpan.TicksPerSecond, TimeBuffer = new CircularBuffer<double>(10) };
         for(var i = 0; i < 10; i++)
             context.VarDiff.TimeBuffer.PushBack(0);

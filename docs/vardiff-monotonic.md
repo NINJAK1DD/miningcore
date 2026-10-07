@@ -59,26 +59,37 @@ existing assignment marker.
 
 The first share starts its own sample/cooldown baseline without retargeting. An idle
 producer before the first share uses context creation. Idle retargets require both
-inactivity eligibility and the full monotonic retarget cooldown; the existing one-second
-scheduler margin cannot shorten that cooldown. No-op idle sweeps preserve the next
+the full inactivity interval and the full monotonic retarget cooldown. The old one-second
+inactivity allowance is removed: a sweep before either deadline waits for the next sweep.
+No-op idle sweeps preserve the next
 real share's baseline and buffer. Actual retargets clear the buffer and restart the
 cooldown. A broken counter moving backward or poisoned interval history is defensively
 rebased without changing the last assignment marker.
 
 An idle producer skips a contended monitor. Share producers recheck cancellation and
-context identity after acquiring the monitor, so a disabled/replaced context observed
-while waiting cannot supply a stale calculation. `PoolBase` checks cancellation before
-the operation and forwards its token to both producers. BLAKE2b's existing assignment
-gate still serializes enabled-state checks, calculation and publication with fixed
-assignments. Its terminal failure and shutdown boundaries remain in place; the
-migration introduces no new assignment/publication protocol for other families.
+context identity after acquiring the monitor, rejecting a context replaced while waiting
+for that monitor. The monitor check alone does not protect asynchronous publication.
+Every pool family therefore also uses one asynchronous worker assignment gate across
+the enabled-state check, calculation and complete publication. Static/NiceHash assignments,
+difficulty suggestions and pending-difficulty broadcasts use the same gate. An explicit
+assignment clears deferred difficulty; replacement/disable cannot resurrect an old queue.
+A fixed assignment either commits before calculation or follows a completed dynamic
+publication, with the fixed assignment winning. The gate belongs to the worker lifetime,
+so replacing its VarDiff context does not replace its synchronization domain.
+
+Daemon/NiceHash lookups and accepted-proof/accounting work stay outside the assignment
+gate. `PoolBase` forwards cancellation to both producers and releases the gate on every
+exit. Idle sweeps suppress only cancellation of their owning shutdown token, including
+effort-check cancellation; independent failures retain diagnostics. BLAKE2b's additional
+terminal-publication policy remains in place on top of this shared serialization.
 
 Positive-interval proportional arithmetic, overflow/underflow recovery, configured
-minimum/maximum and `maxDelta` remain intact. Unresolved zero windows retain the
-conservative **0.001 / min(interval count, 10)** second policy estimate from #184,
-including the current interval. This is now an explicit policy floor rather than a
-claim about the monotonic provider's resolution. Sparse zero windows cannot claim the
-same rate as full windows; tiny target intervals do not cause a zero estimate to lower
+minimum/maximum and `maxDelta` remain intact above the burst floor. Zero and tiny positive
+means use at least **0.001 / min(interval count, 10)** seconds, including the current
+interval. This conservative rate policy extends #184's zero-window estimate to positive
+server-processing gaps in coalesced TCP bursts. Measured intervals remain unchanged in
+the buffer; the floor applies only to the inferred rate. Sparse burst windows cannot claim
+the same rate as full windows; tiny target intervals do not cause the floor to lower
 difficulty. BLAKE2b still supplies its representable maximum without rewriting config.
 
 ## Regression and live validation
@@ -89,18 +100,28 @@ first share, idle before first share, strict cooldown, resets, replacement/disab
 contexts, canceled operations, real monitor contention and provider-specific units.
 `VarDiffManagerTests` retain arithmetic, zero-window, poisoned-history, no-op sweep and
 configured-bound coverage, and explicitly measure positive submillisecond intervals.
+They also cover zero, 100 ns and 20 microsecond bursts with sparse/full buffers,
+small-target holds and configured/protocol bounds. `PoolBaseVarDiffTests` exercise both
+post-identity-check and pre-publication race orderings across every worker context, with
+immediate and deferred publication, replacement/disable, cancellation and failure exits.
 
 The BLAKE2b wire tests cover both wall-step directions, retained jobs, representable
 new work, disable-before-calculation and assignment-before-fixed-difficulty races.
 Existing cancellation and publication-failure cases use deterministic monotonic
 contexts. Canonical Bitcoin's publication and accepted-credit fixtures are migrated too.
+The TCP harness initializes contexts through production `OnConnect -> Init`; the wall-step
+wire cases inject the provider there. Separate tests verify the default System provider.
+Canonical Bitcoin's authorize/configure wire tests verify the shared assignment gate.
 
 The daemon-backed `BitcoinBlake2bRegtestTests` use real header-v2 proofs from the pinned
 Knots node and PostgreSQL accounting. New forward/backward UTC correction cases hold
 the monotonic interval at five seconds and verify the same retarget, matching target
 notification, original proof difficulty, usable connection and exactly-once settlement
 for SOLO, PPS, PROP and PPLNS. Existing zero-window, delta-limit and terminal-publication
-cases remain enabled. These tests require both environment variables; skipped daemon
+cases remain enabled. UTC corrections and monotonic samples are injected test inputs,
+not clock changes on a running host. Deterministic tests establish clock independence;
+the live daemon/database adds proof validation and settlement evidence. These tests
+require both environment variables; skipped daemon
 or ledger tests do not count as live evidence:
 
 ```sh
@@ -132,34 +153,12 @@ CI's bootstrap-role privileges inside the disposable PostgreSQL instance for tha
 Those privileges belong only to test infrastructure, never the original lab or production
 runtime role.
 
-## Validation on 7 October 2026
+## Validation evidence
 
-Validation used the documented Ubuntu 26.04 WSL lab with .NET SDK 10.0.112,
-PostgreSQL 18.6 and the checksum-verified Knots pin above. The isolated checkout was
-`/home/ubuntu/issue-185/miningcore`; all 926 C# source files were byte-identical to the
-Windows fix checkout. The native build compiled all 25 components and passed the
-repository warning audit with zero warnings and zero errors.
-
-The focused Linux filter above passed **695 tests, zero failures, zero skips**.
-Its TRX explicitly records both new forward/backward live-proof cases as passed.
-The Windows managed regression filter passed **676 tests, zero failures**, with
-19 daemon/ledger cases explicitly skipped there and enabled in Linux. Repository-local
-documentation links and heading anchors passed verification.
-
-The complete Linux suite passed **3,875 tests, zero failures**, with only the opt-in
-`Run_Benchmarks` test skipped (3,876 total). Both new live-proof correction cases also
-passed in this full run. The full suite used CI's native loader path and bootstrap-role
-privileges inside the disposable database; two initial environment-only failures
-(native library discovery and the legacy partition fixture's `SET ROLE`) were corrected
-before this clean rerun. The focused live run used the dedicated fixture administrator.
-
-The lab's existing non-administrator `miningcore` role correctly failed the production
-migration guard during initial fixture setup. The successful live run used a separate
-temporary PostgreSQL instance on loopback port 55485, with its own fixture administrator
-and a private parent directory. The original lab role/database and migration guard
-were left intact. The broader lab suite also exercised real Bitcoin Core 31.1,
-Litecoin 0.21.5.8 and Dogecoin 1.14.9 binaries. Raw build logs and TRX results are kept
-under `build/issue-185` in the fix checkout and isolated Linux checkout.
+Dated run results and environment details are recorded in
+[PR #209](https://github.com/NINJAK1DD/miningcore/pull/209).
+The commands above describe reproducible validation without depending on a particular
+developer machine or local checkout path.
 
 ## Upgrade impact
 
@@ -167,7 +166,10 @@ No configuration or database migration is introduced by #185. VarDiff's runtime
 timestamps are not persisted and are recreated when connections reconnect. Operators
 may see more accurate adaptation for submillisecond shares and during UTC corrections.
 Custom code using the old runtime timing fields must use the renamed integer counter
-fields and the context's provider; UTC/Unix timestamps cannot be assigned to them.
+fields and the context's provider. Timestamp setters and context replacement are internal
+to the assembly; custom family code must preserve the counter-domain contract rather than
+write UTC/Unix values. Custom assignment hooks must acquire the shared worker gate and
+hold it through publication; gated core hooks must not reacquire it across `await`.
 The existing positive `minDiff`/timing validation requirements from #184 still apply.
 UTC-based request-age, job timestamp, activity and payout policies are outside this
 elapsed-time change. Live regtest evidence does not establish physical-miner firmware

@@ -8,8 +8,7 @@ namespace Miningcore.VarDiff;
 public static class VarDiffManager
 {
     private const int BufferSize = 10;  // Last 10 shares should be enough
-    private const double SafetyMargin = 1;    // ensure we don't miss a cycle due a sub-second fraction delta;
-    private const double ZeroWindowEstimate = 0.001; // Conservative policy for unresolved zero intervals.
+    private const double MinimumWindow = 0.001; // Bound rates inferred from coalesced share bursts.
 
     public static double? Update(WorkerContextBase context, VarDiffConfig options, IMasterClock clock,
         double protocolMaximum = double.MaxValue, CancellationToken ct = default)
@@ -102,10 +101,7 @@ public static class VarDiffManager
                 return null;
             var timeDelta = ElapsedSeconds(ctx, previousTs, ts);
 
-            timeDelta += SafetyMargin;
-
-            // Check inactivity as well as the actual retarget cooldown. The
-            // scheduler margin must never shorten the assignment cooldown.
+            // Both inactivity and the assignment cooldown must fully elapse.
             if(timeDelta < options.RetargetTime ||
                ElapsedSeconds(ctx, ctx.LastRetargetTimestamp, ts) < options.RetargetTime)
                 return null;
@@ -114,7 +110,7 @@ public static class VarDiffManager
             var maxDiff = Math.Min(options.MaxDiff ?? protocolMaximum, protocolMaximum);
 
             // Always calculate the time until now even there is no share submitted.
-            var timeTotal = (ctx.TimeBuffer?.Sum() ?? 0) + (timeDelta - SafetyMargin);
+            var timeTotal = (ctx.TimeBuffer?.Sum() ?? 0) + timeDelta;
             var sampleCount = (ctx.TimeBuffer?.Size ?? 0) + 1;
             var avg = timeTotal / sampleCount;
 
@@ -165,23 +161,23 @@ public static class VarDiffManager
            !double.IsFinite(maximum) || maximum <= 0)
             return false;
 
-        // Keep the conservative one-millisecond policy floor for unresolved zeros.
-        // Scale the estimate to the available intervals (at most ten), so a
-        // sparse window cannot claim the same rate as a full zero window.
-        if(average == 0)
+        // Processing gaps in a coalesced TCP burst do not establish miner rate.
+        // Apply the same floor to zero and tiny positive windows, while keeping
+        // the original measured intervals in the buffer.
+        var minimumAverage = MinimumWindow / Math.Min(sampleCount, BufferSize);
+        if(average < minimumAverage)
         {
             // A full buffer plus the current interval gives eleven samples.
             // Cap at ten to retain the conservative 0.0001-second full-window
             // estimate instead of increasing the retarget another ten percent.
-            var zeroWindowAverage = ZeroWindowEstimate / Math.Min(sampleCount, BufferSize);
-            // Coarse zero samples cannot justify a downward adjustment when
+            // A floor cannot justify a downward adjustment when
             // the configured target interval is already at/below this estimate.
-            if(targetTime <= zeroWindowAverage)
+            if(targetTime <= minimumAverage)
             {
                 result = Math.Min(difficulty, maximum);
                 return true;
             }
-            average = zeroWindowAverage;
+            average = minimumAverage;
         }
 
         var product = difficulty * targetTime;

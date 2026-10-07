@@ -109,39 +109,44 @@ public class CryptonotePool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                // Static diff
+                if(staticDiff.HasValue &&
+                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
+                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                {
+                    context.VarDiff = null; // disable vardiff
+                    context.SetDifficulty(staticDiff.Value);
 
-                logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {staticDiff.Value}");
+                }
+
+                // respond
+                var loginResponse = new CryptonoteLoginResponse
+                {
+                    Id = connection.ConnectionId,
+                    Job = CreateWorkerJob(connection)
+                };
+
+                // Nicehash's stupid validator insists on "error" property present
+                // in successful responses which is a violation of the JSON-RPC spec
+                // [Respect the goddamn standards Nicehack :(]
+                var response = new JsonRpcResponse<object>(loginResponse, request.Id);
+
+                if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+                {
+                    response.Extra = new Dictionary<string, object>();
+                    response.Extra["error"] = null;
+                }
+
+                await connection.RespondAsync(response);
+
+                // log association
+                logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
             }
-
-            // respond
-            var loginResponse = new CryptonoteLoginResponse
-            {
-                Id = connection.ConnectionId,
-                Job = CreateWorkerJob(connection)
-            };
-
-            // Nicehash's stupid validator insists on "error" property present
-            // in successful responses which is a violation of the JSON-RPC spec
-            // [Respect the goddamn standards Nicehack :(]
-            var response = new JsonRpcResponse<object>(loginResponse, request.Id);
-
-            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
-            {
-                response.Extra = new Dictionary<string, object>();
-                response.Extra["error"] = null;
-            }
-
-            await connection.RespondAsync(response);
-
-            // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
+            finally { assignmentGate.Release(); }
         }
 
         else
@@ -160,33 +165,38 @@ public class CryptonotePool : PoolBase
 
     private async Task OnGetJobAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
     {
-        var request = tsRequest.Value;
-        var context = connection.ContextAs<CryptonoteWorkerContext>();
-
-        if(request.Id == null)
-            throw new StratumException(StratumError.MinusOne, "missing request id");
-
-        var getJobRequest = request.ParamsAs<CryptonoteGetJobRequest>();
-
-        // validate worker
-        if(connection.ConnectionId != getJobRequest?.WorkerId || !context.IsAuthorized)
-            throw new StratumException(StratumError.MinusOne, "unauthorized");
-
-        var job = CreateWorkerJob(connection);
-
-        // Nicehash's stupid validator insists on "error" property present
-        // in successful responses which is a violation of the JSON-RPC spec
-        // [Respect the goddamn standards Nicehack :(]
-        var response = new JsonRpcResponse<object>(job, request.Id);
-
-        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+        try
         {
-            response.Extra = new Dictionary<string, object>();
-            response.Extra["error"] = null;
-        }
+            var request = tsRequest.Value;
+            var context = connection.ContextAs<CryptonoteWorkerContext>();
 
-        // respond
-        await connection.RespondAsync(response);
+            if(request.Id == null)
+                throw new StratumException(StratumError.MinusOne, "missing request id");
+
+            var getJobRequest = request.ParamsAs<CryptonoteGetJobRequest>();
+
+            // validate worker
+            if(connection.ConnectionId != getJobRequest?.WorkerId || !context.IsAuthorized)
+                throw new StratumException(StratumError.MinusOne, "unauthorized");
+
+            var job = CreateWorkerJob(connection);
+
+            // Nicehash's stupid validator insists on "error" property present
+            // in successful responses which is a violation of the JSON-RPC spec
+            // [Respect the goddamn standards Nicehack :(]
+            var response = new JsonRpcResponse<object>(job, request.Id);
+
+            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+            {
+                response.Extra = new Dictionary<string, object>();
+                response.Extra["error"] = null;
+            }
+
+            // respond
+            await connection.RespondAsync(response);
+        }
+        finally { assignmentGate.Release(); }
     }
 
     private CryptonoteJobParams CreateWorkerJob(StratumConnection connection)
@@ -325,7 +335,7 @@ public class CryptonotePool : PoolBase
     {
         logger.Info(() => "Broadcasting jobs");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             // send job
             var job = CreateWorkerJob(connection);

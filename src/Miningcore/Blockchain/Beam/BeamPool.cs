@@ -93,49 +93,55 @@ public class BeamPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
             
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue &&
+                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
+                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                {
+                    context.VarDiff = null; // disable vardiff
+                    context.SetDifficulty(staticDiff.Value);
 
-                logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                }
+
+                // setup worker context
+                context.IsSubscribed = true;
+
+                // response
+                var loginResponse = new BeamLoginResponse {
+                    Code = BeamConstants.BeamRpcLoginSuccess,
+                    Description = "Login successful",
+                    Nonceprefix = manager.GetSubscriberData(connection),
+                    Forkheight = manager?.Forkheight,
+                    Forkheight2 = manager?.Forkheight2
+                };
+
+                // respond
+                await connection.NotifyAsync(loginResponse);
+
+                // log association
+                logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
+
+                var minerJobParams = CreateWorkerJob(connection);
+                logger.Info(() => $"Broadcasting job {minerJobParams[0]}");
+
+                // response
+                var jobResponse = new BeamJobResponse {
+                    Id = (string) minerJobParams[0],
+                    Height = (ulong) minerJobParams[1],
+                    Difficulty = BeamUtils.PackedDifficulty(connection.Context.Difficulty),
+                    Input = (string) minerJobParams[4],
+                    Nonceprefix = context.ExtraNonce1
+                };
+
+                // respond
+                await connection.NotifyAsync(jobResponse);
             }
-            
-            // setup worker context
-            context.IsSubscribed = true;
-            
-            // response
-            var loginResponse = new BeamLoginResponse {
-                Code = BeamConstants.BeamRpcLoginSuccess,
-                Description = "Login successful",
-                Nonceprefix = manager.GetSubscriberData(connection),
-                Forkheight = manager?.Forkheight,
-                Forkheight2 = manager?.Forkheight2
-            };
-            
-            // respond
-            await connection.NotifyAsync(loginResponse);
-            
-            // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
-            
-            var minerJobParams = CreateWorkerJob(connection);
-            logger.Info(() => $"Broadcasting job {minerJobParams[0]}");
-            
-            // response
-            var jobResponse = new BeamJobResponse {
-                Id = (string) minerJobParams[0],
-                Height = (ulong) minerJobParams[1],
-                Difficulty = BeamUtils.PackedDifficulty(connection.Context.Difficulty),
-                Input = (string) minerJobParams[4],
-                Nonceprefix = context.ExtraNonce1
-            };
-            
-            // respond
-            await connection.NotifyAsync(jobResponse);
+            finally { assignmentGate.Release(); }
         }
 
         else
@@ -365,7 +371,7 @@ public class BeamPool : PoolBase
     {
         logger.Info(() => $"Broadcasting job {jobParams[0]}");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<BeamWorkerContext>();
             var minerJobParams = CreateWorkerJob(connection);
