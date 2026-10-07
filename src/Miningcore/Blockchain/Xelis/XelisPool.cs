@@ -44,7 +44,7 @@ public class XelisPool : PoolBase
     private XelisPoolConfigExtra extraPoolConfig;
     private XelisCoinTemplate coin;
 
-    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
 
@@ -89,11 +89,13 @@ public class XelisPool : PoolBase
         context.IsSubscribed = true;
 
         // Nicehash support
-        var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+        var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName(), ct);
 
-        var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+        var assignmentGate = await EnterAssignmentAsync(connection, ct);
         try
         {
+            assignmentGate.Activate();
+            ct.ThrowIfCancellationRequested();
             if(nicehashDiff.HasValue)
             {
                 logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
@@ -163,6 +165,7 @@ public class XelisPool : PoolBase
             var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
+                assignmentGate.Activate();
                 ct.ThrowIfCancellationRequested();
                 // Static diff
                 if(staticDiff.HasValue &&
@@ -389,7 +392,7 @@ public class XelisPool : PoolBase
                     break;
 
                 case XelisStratumMethods.Subscribe:
-                    await OnSubscribeAsync(connection, tsRequest);
+                    await OnSubscribeAsync(connection, tsRequest, ct);
                     break;
 
                 case XelisStratumMethods.SubmitShare:

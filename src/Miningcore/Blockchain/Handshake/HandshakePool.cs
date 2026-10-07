@@ -94,6 +94,7 @@ public class HandshakePool : PoolBase
             var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
+                assignmentGate.Activate();
                 ct.ThrowIfCancellationRequested();
                 // Static diff
                 if(staticDiff.HasValue &&
@@ -124,7 +125,7 @@ public class HandshakePool : PoolBase
         }
     }
 
-    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
 
@@ -170,11 +171,13 @@ public class HandshakePool : PoolBase
         context.UserAgent = requestParams.FirstOrDefault()?.Trim();
 
         // Nicehash support
-        var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+        var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName(), ct);
 
-        var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+        var assignmentGate = await EnterAssignmentAsync(connection, ct);
         try
         {
+            assignmentGate.Activate();
+            ct.ThrowIfCancellationRequested();
             if(nicehashDiff.HasValue)
             {
                 logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
@@ -428,7 +431,7 @@ public class HandshakePool : PoolBase
                     break;
 
                 case BitcoinStratumMethods.Subscribe:
-                    await OnSubscribeAsync(connection, tsRequest);
+                    await OnSubscribeAsync(connection, tsRequest, ct);
                     break;
 
                 case BitcoinStratumMethods.SubmitShare:

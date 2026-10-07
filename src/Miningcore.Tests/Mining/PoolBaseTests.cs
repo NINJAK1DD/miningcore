@@ -33,6 +33,45 @@ public class PoolBaseTests
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
 
     [Fact]
+    public async Task NicehashLookup_ForwardsRequestCancellationToHttp()
+    {
+        using var container = BuildContainer();
+        using var handler = new CancelableNicehashHandler();
+        using var http = new HttpClient(handler);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var pool = new TestPool(container, Substitute.For<IMessageBus>(), new NicehashService(factory, cache));
+        pool.Configure(new PoolConfig { Id = "nicehash-cancel", Template = new BitcoinTemplate { Symbol = "BTC" } },
+            new ClusterConfig { Nicehash = new NicehashClusterConfig { EnableAutoDiff = true } });
+        using var cancel = new CancellationTokenSource();
+        var lookup = pool.LookupNicehash(new WorkerContextBase { UserAgent = "NiceHash" }, cancel.Token);
+        await handler.Entered.Task.WaitAsync(TestTimeout);
+        cancel.Cancel();
+        await handler.Canceled.Task.WaitAsync(TestTimeout);
+        // The existing Nicehash service logs lookup errors and returns no override.
+        // The caller's subsequent gate acquisition observes the canceled request.
+        Assert.Null(await lookup.WaitAsync(TestTimeout));
+    }
+
+    private sealed class CancelableNicehashHandler : HttpMessageHandler
+    {
+        internal readonly TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal readonly TaskCompletionSource Canceled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Entered.TrySetResult();
+            try { await Task.Delay(Timeout.InfiniteTimeSpan, ct); }
+            catch(OperationCanceledException) when(ct.IsCancellationRequested)
+            {
+                Canceled.TrySetResult();
+                throw;
+            }
+            throw new InvalidOperationException("Expected cancellation");
+        }
+    }
+
+    [Fact]
     public async Task RunAsync_InternalStratumWithoutReservation_FailsBeforeOnline()
     {
         var messageBus = new MessageBus();
@@ -247,6 +286,9 @@ public class PoolBaseTests
 
     private sealed class TestPool : PoolBase
     {
+        internal Task<double?> LookupNicehash(WorkerContextBase worker, CancellationToken ct) =>
+            GetNicehashStaticMinDiff(worker, "Bitcoin", "SHA256", ct);
+
         public TestPool(IComponentContext ctx, IMessageBus messageBus,
             NicehashService nicehashService) : base(ctx,
             new JsonSerializerSettings(),

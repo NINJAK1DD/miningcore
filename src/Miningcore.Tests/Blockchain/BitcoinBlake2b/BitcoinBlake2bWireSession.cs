@@ -17,6 +17,7 @@ using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Nicehash;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
@@ -236,21 +237,23 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         internal Func<Task> AfterConfigure;
 
         protected override Task<double?> GetNicehashStaticMinDiff(Miningcore.Mining.WorkerContextBase context,
-            string coinName, string algorithm) => NicehashLookup?.Invoke(context) ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm);
+            string coinName, string algorithm, CancellationToken ct) => NicehashLookup?.Invoke(context) ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm, ct);
         internal Action BeforeCreateJob;
         internal Action AssignmentWaiting;
         internal Action AssignmentAcquired;
         internal Func<Task> BeforeAssignment;
         internal Func<Task> BeforeVarDiffPublication;
 
-        internal override async ValueTask<SemaphoreSlim> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct)
+        internal override async ValueTask<WorkerAssignmentLease> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct, bool skipIfBusy = false)
         {
             if(BeforeAssignment != null)
                 await BeforeAssignment();
-            var wait = base.EnterAssignmentAsync(connection, ct);
+            var wait = base.EnterAssignmentAsync(connection, ct, skipIfBusy);
             if(!wait.IsCompleted)
                 AssignmentWaiting?.Invoke();
             var gate = await wait;
+            if(gate == null)
+                return null;
             try
             {
                 AssignmentAcquired?.Invoke();
@@ -320,7 +323,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         public async Task UpdateVarDiff(StratumConnection connection, double difficulty)
         {
             var gate = await EnterAssignmentAsync(connection, CancellationToken.None);
-            try { await OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None); }
+            try { gate.Activate(); await OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None); }
             finally { gate.Release(); }
         }
         public Task RetargetVarDiff(StratumConnection connection, bool idle, CancellationToken ct) =>
@@ -333,7 +336,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     {
         internal Func<Miningcore.Mining.WorkerContextBase, Task<double?>> NicehashLookup;
         protected override Task<double?> GetNicehashStaticMinDiff(Miningcore.Mining.WorkerContextBase context,
-            string coinName, string algorithm) => NicehashLookup?.Invoke(context) ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm);
+            string coinName, string algorithm, CancellationToken ct) => NicehashLookup?.Invoke(context) ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm, ct);
         internal Func<Task> BeforeSubscribe;
         internal Func<Task> AfterConfigure;
         internal Func<Task> BeforeStaticDifficulty;
@@ -377,11 +380,11 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         }
         public Task Dispatch(StratumConnection connection, JsonRpcRequest request,
             CancellationToken ct) => OnRequestAsync(connection, request, ct);
-        protected override async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> request)
+        protected override async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> request, CancellationToken ct)
         {
             if(BeforeSubscribe != null)
                 await BeforeSubscribe();
-            await base.OnSubscribeAsync(connection, request);
+            await base.OnSubscribeAsync(connection, request, ct);
         }
         protected override async Task OnConfigureMiningAsync(StratumConnection connection,
             Timestamped<JsonRpcRequest> request, double? validatedMinimumDifficulty = null)
@@ -401,9 +404,9 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
             OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None);
         public Task RetargetVarDiff(StratumConnection connection, bool idle, CancellationToken ct) =>
             UpdateVarDiffAsync(connection, idle, ct);
-        internal override async ValueTask<SemaphoreSlim> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct)
+        internal override async ValueTask<WorkerAssignmentLease> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct, bool skipIfBusy = false)
         {
-            var wait = base.EnterAssignmentAsync(connection, ct);
+            var wait = base.EnterAssignmentAsync(connection, ct, skipIfBusy);
             if(!wait.IsCompleted)
                 AssignmentWaiting?.Invoke();
             return await wait;

@@ -128,7 +128,7 @@ public abstract class PoolBase : StratumServer,
 
     protected virtual async Task UpdateVarDiffAsync(StratumConnection connection, bool idle, CancellationToken ct)
     {
-        await RunAssignmentAsync(connection, () => UpdateVarDiffCoreAsync(connection, idle, ct), ct);
+        await RunAssignmentAsync(connection, () => UpdateVarDiffCoreAsync(connection, idle, ct), ct, skipIfBusy: idle);
     }
 
     // Call only while owning the worker's assignment gate. BLAKE2b uses this
@@ -200,19 +200,32 @@ public abstract class PoolBase : StratumServer,
     // Serialize calculation, state mutation and complete asynchronous publication.
     // Acquire after daemon/NiceHash lookups, never around share validation/accounting.
     // All producers for a worker use this gate even when VarDiff is replaced/disabled.
-    internal virtual async ValueTask<SemaphoreSlim> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct)
+    internal virtual async ValueTask<WorkerAssignmentLease> EnterAssignmentAsync(StratumConnection connection,
+        CancellationToken ct, bool skipIfBusy = false)
     {
-        var gate = connection.Context.AssignmentGate;
-        await gate.WaitAsync(ct);
-        return gate;
+        ct.ThrowIfCancellationRequested();
+        var worker = connection.Context;
+        WorkerAssignmentLease.ThrowIfReentrant(worker);
+        var lease = new WorkerAssignmentLease(worker);
+        if(skipIfBusy)
+        {
+            if(!worker.AssignmentGate.Wait(0, ct))
+                return null;
+        }
+        else
+            await worker.AssignmentGate.WaitAsync(ct);
+        return lease;
     }
 
     protected async Task RunAssignmentAsync(StratumConnection connection, Func<Task> assignment,
-        CancellationToken ct = default)
+        CancellationToken ct = default, bool skipIfBusy = false)
     {
-        var gate = await EnterAssignmentAsync(connection, ct);
+        var gate = await EnterAssignmentAsync(connection, ct, skipIfBusy);
+        if(gate == null)
+            return;
         try
         {
+            gate.Activate();
             ct.ThrowIfCancellationRequested();
             if(!connection.IsDisconnectRequested)
                 await assignment();
@@ -375,10 +388,11 @@ public abstract class PoolBase : StratumServer,
         await Task.WhenAll(tasks);
     }
 
-    protected virtual async Task<double?> GetNicehashStaticMinDiff(WorkerContextBase context, string coinName, string algoName)
+    protected virtual async Task<double?> GetNicehashStaticMinDiff(WorkerContextBase context, string coinName, string algoName,
+        CancellationToken ct)
     {
         if(context.IsNicehash && clusterConfig.Nicehash?.EnableAutoDiff == true)
-            return await nicehashService.GetStaticDiff(coinName, algoName, CancellationToken.None);
+            return await nicehashService.GetStaticDiff(coinName, algoName, ct);
 
         return null;
     }

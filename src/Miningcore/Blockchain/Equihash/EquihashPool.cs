@@ -193,7 +193,7 @@ public class EquihashPool : PoolBase
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
             // Nicehash support
-            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName(), ct);
 
             if(nicehashDiff.HasValue)
             {
@@ -211,6 +211,7 @@ public class EquihashPool : PoolBase
             var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
+                assignmentGate.Activate();
                 ct.ThrowIfCancellationRequested();
                 // Static diff
                 if(staticDiff.HasValue &&
@@ -341,11 +342,13 @@ public class EquihashPool : PoolBase
         }
     }
 
-    private async Task OnSuggestTargetAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnSuggestTargetAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
-        var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+        var assignmentGate = await EnterAssignmentAsync(connection, ct);
         try
         {
+            assignmentGate.Activate();
+            ct.ThrowIfCancellationRequested();
             var request = tsRequest.Value;
             var context = connection.ContextAs<EquihashWorkerContext>();
 
@@ -406,7 +409,7 @@ public class EquihashPool : PoolBase
                     break;
 
                 case EquihashStratumMethods.SuggestTarget:
-                    await OnSuggestTargetAsync(connection, tsRequest);
+                    await OnSuggestTargetAsync(connection, tsRequest, ct);
                     break;
 
                 case BitcoinStratumMethods.ExtraNonceSubscribe:

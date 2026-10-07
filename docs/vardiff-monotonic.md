@@ -77,9 +77,20 @@ A fixed assignment either commits before calculation or follows a completed dyna
 publication, with the fixed assignment winning. The gate belongs to the worker lifetime,
 so replacing its VarDiff context does not replace its synchronization domain.
 
+Idle sweeps try the asynchronous gate without waiting, so a slow authorization or
+broadcast cannot queue idle work behind a busy miner or delay the sweep's other workers.
+The next periodic sweep retries. Share and explicit-assignment producers still wait with
+their request/shutdown cancellation token. An ambient ownership lease detects recursive
+acquisition for the same worker, including across awaits and child tasks, and throws
+immediately. Nested assignments for different workers are allowed; a cycle back to an
+owned worker is rejected. Released ownership cannot block a later child operation.
+
 Daemon/NiceHash lookups and accepted-proof/accounting work stay outside the assignment
 gate. `PoolBase` forwards cancellation to both producers and releases the gate on every
-exit. Idle sweeps suppress only cancellation of their owning shutdown token, including
+exit. Request tokens also reach NiceHash HTTP preparation. Bitcoin subscription's core
+requires a prepared result, preventing a fallback HTTP lookup inside its gate. BLAKE2b's
+failure cleanup intentionally ignores request cancellation to close a partially published
+assignment. Idle sweeps suppress only cancellation of their owning shutdown token, including
 effort-check cancellation; independent failures retain diagnostics. BLAKE2b's additional
 terminal-publication policy remains in place on top of this shared serialization.
 
@@ -112,6 +123,16 @@ contexts. Canonical Bitcoin's publication and accepted-credit fixtures are migra
 The TCP harness initializes contexts through production `OnConnect -> Init`; the wall-step
 wire cases inject the provider there. Separate tests verify the default System provider.
 Canonical Bitcoin's authorize/configure wire tests verify the shared assignment gate.
+
+`PoolFamilyAssignmentTests` additionally invokes each of the 16 concrete generic pool
+families' actual authorization/login, idle retarget and job-broadcast methods in both
+contention orderings, with a ten-second deadlock timeout and diagnostics checked for
+hidden broadcast failures. Ready jobs and daemon address replies are fixtures; gate,
+request mutation, publication and connection behavior are production code. Conceal,
+Cryptonote and Zano use Linux native address/blob validation. BLAKE2b has two equivalent
+TCP wire races with a response fence. Separate concrete-family cancellation tests cover
+Ethereum, Conceal, Cryptonote and Zano, and a blocking HTTP fixture verifies NiceHash
+request cancellation. These complement the worker-context matrix rather than replacing it.
 
 The daemon-backed `BitcoinBlake2bRegtestTests` use real header-v2 proofs from the pinned
 Knots node and PostgreSQL accounting. New forward/backward UTC correction cases hold
@@ -170,7 +191,19 @@ fields and the context's provider. Timestamp setters and context replacement are
 to the assembly; custom family code must preserve the counter-domain contract rather than
 write UTC/Unix values. Custom assignment hooks must acquire the shared worker gate and
 hold it through publication; gated core hooks must not reacquire it across `await`.
+Recursive use now throws `InvalidOperationException` instead of hanging. Prefer
+`RunAssignmentAsync`; internal manual acquisitions activate the returned lease inside
+the owner's `try`, then release it in `finally`. Subscription and NiceHash overrides now
+accept the request `CancellationToken`; `OnSubscribeCoreAsync` requires a
+`PreparedSubscription` value obtained before acquiring the gate. Downstream overrides
+must update these signatures and preserve the preparation/commit boundary.
 The existing positive `minDiff`/timing validation requirements from #184 still apply.
 UTC-based request-age, job timestamp, activity and payout policies are outside this
 elapsed-time change. Live regtest evidence does not establish physical-miner firmware
 compatibility or long-running mainnet performance.
+
+Two pre-existing protocol behaviors are tracked separately: bounded previous-difficulty
+grace after static assignments in [#210](https://github.com/NINJAK1DD/miningcore/issues/210),
+and coherent canonical Bitcoin minimum-difficulty notifications in
+[#211](https://github.com/NINJAK1DD/miningcore/issues/211). Their acceptance criteria include
+proof credit and live wire validation; this timing change retains their current behavior.

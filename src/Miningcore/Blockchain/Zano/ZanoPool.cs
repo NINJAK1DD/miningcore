@@ -92,7 +92,7 @@ public class ZanoPool : PoolBase
         context.IsSubscribed = true;
     }
 
-    private async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
         var context = connection.ContextAs<ZanoWorkerContext>();
@@ -152,7 +152,7 @@ public class ZanoPool : PoolBase
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
             // Nicehash support
-            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName(), ct);
 
             if(nicehashDiff.HasValue)
             {
@@ -167,9 +167,11 @@ public class ZanoPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
+                assignmentGate.Activate();
+                ct.ThrowIfCancellationRequested();
                 // Static diff
                 if(staticDiff.HasValue &&
                    (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
@@ -308,7 +310,7 @@ public class ZanoPool : PoolBase
 
     #region // Protocol V1 handlers - https://github.com/sammy007/open-ethereum-pool/blob/master/docs/STRATUM.md
 
-    private async Task OnLoginAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnLoginAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
         var context = connection.ContextAs<ZanoWorkerContext>();
@@ -357,7 +359,7 @@ public class ZanoPool : PoolBase
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
             // Nicehash support
-            var nicehashDiff = await GetNicehashStaticMinDiff(context, manager.Coin.Name, manager.Coin.GetAlgorithmName());
+            var nicehashDiff = await GetNicehashStaticMinDiff(context, manager.Coin.Name, manager.Coin.GetAlgorithmName(), ct);
 
             if(nicehashDiff.HasValue)
             {
@@ -372,9 +374,11 @@ public class ZanoPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
+                assignmentGate.Activate();
+                ct.ThrowIfCancellationRequested();
                 // Static diff
                 if(staticDiff.HasValue &&
                    (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
@@ -419,7 +423,7 @@ public class ZanoPool : PoolBase
         }
     }
 
-    private async Task OnSubmitLoginAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnSubmitLoginAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
         var context = connection.ContextAs<ZanoWorkerContext>();
@@ -474,7 +478,7 @@ public class ZanoPool : PoolBase
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
             // Nicehash support
-            var nicehashDiff = await GetNicehashStaticMinDiff(context, manager.Coin.Name, manager.Coin.GetAlgorithmName());
+            var nicehashDiff = await GetNicehashStaticMinDiff(context, manager.Coin.Name, manager.Coin.GetAlgorithmName(), ct);
 
             if(nicehashDiff.HasValue)
             {
@@ -489,9 +493,11 @@ public class ZanoPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
+                assignmentGate.Activate();
+                ct.ThrowIfCancellationRequested();
                 // Static diff
                 if(staticDiff.HasValue &&
                    (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
@@ -536,11 +542,13 @@ public class ZanoPool : PoolBase
         }
     }
 
-    private async Task OnGetJobAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnGetJobAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
-        var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+        var assignmentGate = await EnterAssignmentAsync(connection, ct);
         try
         {
+            assignmentGate.Activate();
+            ct.ThrowIfCancellationRequested();
             var request = tsRequest.Value;
             var context = connection.ContextAs<ZanoWorkerContext>();
 
@@ -835,7 +843,7 @@ public class ZanoPool : PoolBase
                 case ZanoStratumMethods.Authorize:
                     EnsureProtocolVersion(context, 2);
 
-                    await OnAuthorizeAsync(connection, tsRequest);
+                    await OnAuthorizeAsync(connection, tsRequest, ct);
                     break;
 
                 case ZanoStratumMethods.SubmitShare:
@@ -866,20 +874,20 @@ public class ZanoPool : PoolBase
                 case ZanoStratumMethods.Login:
                     context.ProtocolVersion = 1;    // lock in protocol version
 
-                    await OnLoginAsync(connection, tsRequest);
+                    await OnLoginAsync(connection, tsRequest, ct);
                     break;
 
                 case ZanoStratumMethods.SubmitLogin:
                     context.ProtocolVersion = 1;    // lock in protocol version
 
-                    await OnSubmitLoginAsync(connection, tsRequest);
+                    await OnSubmitLoginAsync(connection, tsRequest, ct);
                     break;
 
                 case ZanoStratumMethods.GetWork:
                 case ZanoStratumMethods.GetJob:
                     EnsureProtocolVersion(context, 1);
 
-                    await OnGetJobAsync(connection, tsRequest);
+                    await OnGetJobAsync(connection, tsRequest, ct);
                     break;
 
                 case ZanoStratumMethods.Submit:

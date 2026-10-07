@@ -42,7 +42,7 @@ public class SatoshicashPool : PoolBase
     protected SatoshicashJobManager manager;
     private BitcoinTemplate coin;
 
-    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
 
@@ -81,11 +81,13 @@ public class SatoshicashPool : PoolBase
         context.UserAgent = requestParams.FirstOrDefault()?.Trim();
 
         // Nicehash support
-        var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+        var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName(), ct);
 
-        var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+        var assignmentGate = await EnterAssignmentAsync(connection, ct);
         try
         {
+            assignmentGate.Activate();
+            ct.ThrowIfCancellationRequested();
             if(nicehashDiff.HasValue)
             {
                 logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
@@ -151,6 +153,7 @@ public class SatoshicashPool : PoolBase
             var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
+                assignmentGate.Activate();
                 ct.ThrowIfCancellationRequested();
                 // Static diff
                 if(staticDiff.HasValue &&
@@ -275,11 +278,13 @@ public class SatoshicashPool : PoolBase
         }
     }
 
-    private async Task OnSuggestDifficultyAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnSuggestDifficultyAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
-        var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+        var assignmentGate = await EnterAssignmentAsync(connection, ct);
         try
         {
+            assignmentGate.Activate();
+            ct.ThrowIfCancellationRequested();
             var request = tsRequest.Value;
             var context = connection.ContextAs<SatoshicashWorkerContext>();
 
@@ -416,7 +421,7 @@ public class SatoshicashPool : PoolBase
             switch(request.Method)
             {
                 case BitcoinStratumMethods.Subscribe:
-                    await OnSubscribeAsync(connection, tsRequest);
+                    await OnSubscribeAsync(connection, tsRequest, ct);
                     break;
 
                 case BitcoinStratumMethods.Authorize:
@@ -428,7 +433,7 @@ public class SatoshicashPool : PoolBase
                     break;
 
                 case BitcoinStratumMethods.SuggestDifficulty:
-                    await OnSuggestDifficultyAsync(connection, tsRequest);
+                    await OnSuggestDifficultyAsync(connection, tsRequest, ct);
                     break;
 
                 case BitcoinStratumMethods.ExtraNonceSubscribe:

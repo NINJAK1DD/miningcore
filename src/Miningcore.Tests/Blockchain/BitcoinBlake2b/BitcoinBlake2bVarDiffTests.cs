@@ -16,6 +16,78 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 public partial class BitcoinBlake2bDifficultyBudgetTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConcreteBlake2b_AuthorizationIdleAndBroadcastCompleteUnderContention(bool idleOwnsGate)
+    {
+        var (config, manager, clock, bus) = Fixture();
+        var time = new ManualTimeProvider();
+        var options = new VarDiffConfig { MinDiff = 1e-9, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            varDiff: options, varDiffTimeProvider: time);
+        await Subscribe(wire);
+        await wire.SendRequestAsync("mining.authorize", "test.worker", "x");
+        Assert.True((await wire.ReadAsync())["result"].Value<bool>());
+        await wire.RetargetVarDiffAsync(false);
+        time.AdvanceMonotonic(System.TimeSpan.FromSeconds(5));
+        var reached = Signal();
+        var release = Signal();
+        var bothWaiting = Signal();
+        var waiters = 0;
+        wire.AssignmentWaiting = () =>
+        {
+            if(System.Threading.Interlocked.Increment(ref waiters) == 2)
+                bothWaiting.TrySetResult();
+        };
+        Task idle;
+        if(idleOwnsGate)
+        {
+            wire.BeforeVarDiffPublication = async () =>
+            {
+                reached.TrySetResult();
+                await release.Task.WaitAsync(BarrierTimeout);
+            };
+            idle = wire.RetargetVarDiffAsync(true);
+            await reached.Task.WaitAsync(BarrierTimeout);
+        }
+        else
+        {
+            await wire.Connection.Context.AssignmentGate.WaitAsync();
+            idle = wire.RetargetVarDiffAsync(true);
+            await idle.WaitAsync(BarrierTimeout);
+        }
+        Task authorize = null, broadcast = null;
+        try
+        {
+            authorize = wire.DispatchBufferedAsync("mining.authorize", "test.worker", Password(4e-9));
+            broadcast = wire.AnnounceJobAsync(new object[] { "ready", false });
+            await bothWaiting.Task.WaitAsync(BarrierTimeout);
+        }
+        finally
+        {
+            if(idleOwnsGate) release.TrySetResult();
+            else wire.Connection.Context.AssignmentGate.Release();
+        }
+        await Task.WhenAll(idle, authorize, broadcast).WaitAsync(BarrierTimeout);
+        await wire.SendRequestAsync("mining.extranonce.subscribe"); // Third TCP request is the FIFO fence.
+        JObject message;
+        var announcedFixed = false;
+        do
+        {
+            message = await wire.ReadAsync();
+            if(message["method"]?.Value<string>() == "mining.set_difficulty")
+                announcedFixed |= message["params"][0].Value<double>() == 4e-9;
+        } while(message["id"]?.Type != JTokenType.Integer || message["id"].Value<int>() != 3);
+        Assert.True(message["result"].Value<bool>());
+        Assert.True(announcedFixed);
+        Assert.Equal(4e-9, wire.Connection.Context.Difficulty);
+        Assert.Null(wire.Connection.Context.VarDiff);
+        Assert.False(wire.Connection.Context.HasPendingDifficulty);
+        Assert.True(wire.Connection.IsAlive);
+        Assert.Equal(1, wire.Connection.Context.AssignmentGate.CurrentCount);
+    }
+
+    [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, false)]

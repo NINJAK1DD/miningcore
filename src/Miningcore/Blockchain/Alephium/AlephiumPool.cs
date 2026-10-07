@@ -175,7 +175,7 @@ public class AlephiumPool : PoolBase
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
             // Nicehash support
-            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName(), ct);
 
             if(nicehashDiff.HasValue)
             {
@@ -193,6 +193,7 @@ public class AlephiumPool : PoolBase
             var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
+                assignmentGate.Activate();
                 ct.ThrowIfCancellationRequested();
                 // Static diff
                 if(staticDiff.HasValue &&
@@ -502,9 +503,9 @@ public class AlephiumPool : PoolBase
         }
     }
 
-    protected override async Task<double?> GetNicehashStaticMinDiff(WorkerContextBase context, string coinName, string algoName)
+    protected override async Task<double?> GetNicehashStaticMinDiff(WorkerContextBase context, string coinName, string algoName, CancellationToken ct)
     {
-        var result = await base.GetNicehashStaticMinDiff(context, coinName, algoName);
+        var result = await base.GetNicehashStaticMinDiff(context, coinName, algoName, ct);
 
         // adjust value to fit with our target value calculation
         if(result.HasValue)

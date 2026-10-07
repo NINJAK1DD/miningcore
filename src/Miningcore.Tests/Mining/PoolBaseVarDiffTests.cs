@@ -147,7 +147,7 @@ public class PoolBaseVarDiffTests
         fixture.Pool.AssignmentWaiting = () => waiting.TrySetResult();
         try
         {
-            var update = fixture.Pool.Retarget(fixture.Connection, true, cancel.Token);
+            var update = fixture.Pool.Retarget(fixture.Connection, false, cancel.Token);
             await waiting.Task.WaitAsync(Timeout);
             cancel.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => update);
@@ -168,6 +168,82 @@ public class PoolBaseVarDiffTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Pool.Retarget(fixture.Connection, true));
         await fixture.Pool.AssignExplicit(fixture.Connection, false).WaitAsync(Timeout);
         Assert.Equal(55, fixture.Connection.Context.Difficulty);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecursiveAssignment_FailsImmediatelyAcrossAwaitAndReleasesTheGate(bool childTask)
+    {
+        await using var fixture = new Fixture();
+        await fixture.Pool.AssignOperation(fixture.Connection, async () =>
+        {
+            await Task.Yield();
+            var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => childTask
+                ? Task.Run(() => fixture.Pool.AssignExplicit(fixture.Connection, false))
+                : fixture.Pool.AssignExplicit(fixture.Connection, false));
+            Assert.Contains("re-enter", failure.Message);
+            Assert.Equal(0, fixture.Connection.Context.AssignmentGate.CurrentCount);
+            Assert.Equal(10, fixture.Connection.Context.Difficulty);
+        }).WaitAsync(Timeout);
+        await fixture.Pool.AssignExplicit(fixture.Connection, false).WaitAsync(Timeout);
+        Assert.Equal(55, fixture.Connection.Context.Difficulty);
+        Assert.Equal(1, fixture.Connection.Context.AssignmentGate.CurrentCount);
+    }
+
+    [Fact]
+    public async Task AssignmentOwnership_AllowsOtherWorkersAndDetectsCyclesBackToTheFirstWorker()
+    {
+        await using var first = new Fixture();
+        await using var second = new Fixture();
+        await first.Pool.AssignOperation(first.Connection, () => second.Pool.AssignOperation(second.Connection,
+            () => Assert.ThrowsAsync<InvalidOperationException>(() => first.Pool.AssignExplicit(first.Connection, false))))
+            .WaitAsync(Timeout);
+        Assert.Equal(1, first.Connection.Context.AssignmentGate.CurrentCount);
+        Assert.Equal(1, second.Connection.Context.AssignmentGate.CurrentCount);
+    }
+
+    [Fact]
+    public async Task ChildOperation_AfterOwnerReleasedCanAcquireWithoutStaleAmbientOwnership()
+    {
+        await using var fixture = new Fixture();
+        var releaseChild = Signal();
+        Task child = null;
+        await fixture.Pool.AssignOperation(fixture.Connection, () =>
+        {
+            child = Task.Run(async () =>
+            {
+                await releaseChild.Task;
+                await fixture.Pool.AssignExplicit(fixture.Connection, false);
+            });
+            return Task.CompletedTask;
+        });
+        releaseChild.SetResult();
+        await child.WaitAsync(Timeout);
+        Assert.Equal(55, fixture.Connection.Context.Difficulty);
+        Assert.Equal(1, fixture.Connection.Context.AssignmentGate.CurrentCount);
+    }
+
+    [Fact]
+    public async Task ContendedIdleSweep_SkipsWithoutTouchingTimingOrQueueingBehindTheOwner()
+    {
+        await using var fixture = new Fixture();
+        var context = fixture.Connection.Context;
+        var timestamp = context.VarDiff.LastShareTimestamp;
+        fixture.Time.Timestamp = 30 * TimeSpan.TicksPerSecond;
+        await context.AssignmentGate.WaitAsync();
+        try
+        {
+            await fixture.Pool.Retarget(fixture.Connection, true).WaitAsync(Timeout);
+            Assert.Equal(timestamp, context.VarDiff.LastShareTimestamp);
+            Assert.Null(context.VarDiff.LastUpdate);
+            Assert.False(context.HasPendingDifficulty);
+            Assert.Empty(fixture.Pool.Notifications);
+            Assert.Equal(0, context.AssignmentGate.CurrentCount);
+        }
+        finally { context.AssignmentGate.Release(); }
+        await fixture.Pool.Retarget(fixture.Connection, true).WaitAsync(Timeout);
+        Assert.Single(fixture.Pool.Notifications);
     }
 
     [Theory]
@@ -312,6 +388,8 @@ public class PoolBaseVarDiffTests
         internal Task Sweep(Func<Task> operation, CancellationToken ct) => ForEachMinerAsync((_, _) => operation(), ct);
         internal Task Retarget(StratumConnection connection, bool idle, CancellationToken ct = default) =>
             UpdateVarDiffAsync(connection, idle, ct);
+        internal Task AssignOperation(StratumConnection connection, Func<Task> operation) =>
+            RunAssignmentAsync(connection, operation);
         internal Task AssignExplicit(StratumConnection connection, bool replace) => RunAssignmentAsync(connection, () =>
         {
             connection.Context.VarDiff = replace ? new VarDiffContext(new ManualTimeProvider())
@@ -321,9 +399,9 @@ public class PoolBaseVarDiffTests
             return Task.CompletedTask;
         });
 
-        internal override async ValueTask<SemaphoreSlim> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct)
+        internal override async ValueTask<WorkerAssignmentLease> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct, bool skipIfBusy = false)
         {
-            var wait = base.EnterAssignmentAsync(connection, ct);
+            var wait = base.EnterAssignmentAsync(connection, ct, skipIfBusy);
             if(!wait.IsCompleted)
                 AssignmentWaiting?.Invoke();
             return await wait;

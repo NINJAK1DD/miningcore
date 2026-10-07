@@ -45,7 +45,7 @@ public class ConcealPool : PoolBase
     private ConcealJobManager manager;
     private string minerAlgo;
 
-    private async Task OnLoginAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnLoginAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
         var context = connection.ContextAs<ConcealWorkerContext>();
@@ -94,7 +94,7 @@ public class ConcealPool : PoolBase
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
             // Nicehash support
-            var nicehashDiff = await GetNicehashStaticMinDiff(context, manager.Coin.Name, manager.Coin.GetAlgorithmName());
+            var nicehashDiff = await GetNicehashStaticMinDiff(context, manager.Coin.Name, manager.Coin.GetAlgorithmName(), ct);
 
             if(nicehashDiff.HasValue)
             {
@@ -109,9 +109,11 @@ public class ConcealPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
+                assignmentGate.Activate();
+                ct.ThrowIfCancellationRequested();
                 // Static diff
                 if(staticDiff.HasValue &&
                    (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
@@ -163,11 +165,13 @@ public class ConcealPool : PoolBase
         }
     }
 
-    private async Task OnGetJobAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnGetJobAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
-        var assignmentGate = await EnterAssignmentAsync(connection, CancellationToken.None);
+        var assignmentGate = await EnterAssignmentAsync(connection, ct);
         try
         {
+            assignmentGate.Activate();
+            ct.ThrowIfCancellationRequested();
             var request = tsRequest.Value;
             var context = connection.ContextAs<ConcealWorkerContext>();
 
@@ -413,11 +417,11 @@ public class ConcealPool : PoolBase
             switch(request.Method)
             {
                 case ConcealStratumMethods.Login:
-                    await OnLoginAsync(connection, tsRequest);
+                    await OnLoginAsync(connection, tsRequest, ct);
                     break;
 
                 case ConcealStratumMethods.GetJob:
-                    await OnGetJobAsync(connection, tsRequest);
+                    await OnGetJobAsync(connection, tsRequest, ct);
                     break;
 
                 case ConcealStratumMethods.Submit:

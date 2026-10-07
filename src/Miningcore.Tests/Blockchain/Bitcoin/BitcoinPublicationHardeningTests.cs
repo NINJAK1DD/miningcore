@@ -319,7 +319,9 @@ public partial class BitcoinPublicationFailureTests
         else
         {
             Assert.Null(wire.DispatchError);
-            Assert.Equal(1, wire.Connection.ResponseSequence);
+            // EOF cancels preparation before the subscription assignment gate;
+            // the canceled request must not begin a response/publication.
+            Assert.Equal(0, wire.Connection.ResponseSequence);
             Assert.Equal(StratumConnectionCompletionReason.PeerEof, wire.Connection.CompletionReason);
         }
         bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "publication-failure"), Arg.Any<string>());

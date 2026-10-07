@@ -67,15 +67,15 @@ public class BitcoinPool : PoolBase
 
     // Dispatch rejects duplicates before this extension hook. Overrides must also
     // preserve the core guard if they invoke subscription outside normal dispatch.
-    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         if(await RejectDuplicateSubscribeAsync(connection, tsRequest.Value))
             return;
         var userAgent = ReadSubscribeUserAgent(tsRequest.Value);
         var lookupContext = new BitcoinWorkerContext { UserAgent = userAgent };
         var prepared = new PreparedSubscription(userAgent,
-            await GetNicehashStaticMinDiff(lookupContext, coin.Name, coin.GetAlgorithmName()));
-        await RunAssignmentAsync(connection, () => OnSubscribeCoreAsync(connection, tsRequest, prepared));
+            await GetNicehashStaticMinDiff(lookupContext, coin.Name, coin.GetAlgorithmName(), ct));
+        await RunAssignmentAsync(connection, () => OnSubscribeCoreAsync(connection, tsRequest, prepared), ct);
     }
 
     private const string DuplicateSubscribeError =
@@ -124,7 +124,7 @@ public class BitcoinPool : PoolBase
         request.ParamsAs<string[]>()?.FirstOrDefault()?.Trim();
 
     protected async Task OnSubscribeCoreAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest,
-        PreparedSubscription? preparedSubscription = null)
+        PreparedSubscription preparedSubscription)
     {
         var request = tsRequest.Value;
 
@@ -134,7 +134,7 @@ public class BitcoinPool : PoolBase
         if(await RejectDuplicateSubscribeAsync(connection, request))
             return;
         var context = connection.ContextAs<BitcoinWorkerContext>();
-        var userAgent = preparedSubscription.HasValue ? preparedSubscription.Value.UserAgent : ReadSubscribeUserAgent(request);
+        var userAgent = preparedSubscription.UserAgent;
 
         var data = new object[]
         {
@@ -165,8 +165,7 @@ public class BitcoinPool : PoolBase
         context.UserAgent = userAgent;
 
         // Nicehash support
-        var nicehashDiff = preparedSubscription.HasValue ? preparedSubscription.Value.NicehashDifficulty :
-            await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+        var nicehashDiff = preparedSubscription.NicehashDifficulty;
 
         if(nicehashDiff.HasValue)
         {
@@ -955,7 +954,7 @@ public class BitcoinPool : PoolBase
             {
                 case BitcoinStratumMethods.Subscribe:
                     if(!await RejectDuplicateSubscribeAsync(connection, request))
-                        await OnSubscribeAsync(connection, tsRequest);
+                        await OnSubscribeAsync(connection, tsRequest, ct);
                     break;
 
                 case BitcoinStratumMethods.Authorize:

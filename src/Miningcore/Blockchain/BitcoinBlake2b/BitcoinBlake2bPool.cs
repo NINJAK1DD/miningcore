@@ -282,6 +282,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             var gate = await EnterAssignmentAsync(connection, ct);
             try
             {
+                gate.Activate();
                 var context = connection.ContextAs<BitcoinWorkerContext>();
                 if(IsAdmissionClosed(connection) || !context.IsSubscribed)
                     return;
@@ -320,9 +321,12 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         // Include the enabled-state check and calculation in the assignment
         // transition. A fixed-difficulty request must not disable VarDiff while
         // a calculation based on the previous assignment is awaiting publication.
-        var gate = await EnterAssignmentAsync(connection, ct);
+        var gate = await EnterAssignmentAsync(connection, ct, skipIfBusy: idle);
+        if(gate == null)
+            return;
         try
         {
+            gate.Activate();
             if(IsAdmissionClosed(connection))
                 return;
             ct.ThrowIfCancellationRequested();
@@ -434,7 +438,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 // subtype; this is the same template used by BitcoinPool.
                 var template = (BitcoinTemplate) poolConfig.Template;
                 subscription = new PreparedSubscription(userAgent,
-                    await GetNicehashStaticMinDiff(lookupContext, template.Name, template.GetAlgorithmName()));
+                    await GetNicehashStaticMinDiff(lookupContext, template.Name, template.GetAlgorithmName(), ct));
             }
 
             var gate = await EnterAssignmentAsync(connection, ct);
@@ -444,6 +448,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             var previousVarDiff = context.VarDiff;
             try
             {
+                gate.Activate();
                 if(IsAdmissionClosed(connection))
                     return;
                 ct.ThrowIfCancellationRequested();
@@ -461,7 +466,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                         // Intentionally bypass OnSubscribeAsync: BLAKE2b owns the
                         // preparation/commit boundary here. Overrides of that inherited
                         // hook do not customize this pool's subscription dispatch.
-                        await OnSubscribeCoreAsync(connection, request, subscription);
+                        await OnSubscribeCoreAsync(connection, request, subscription.Value);
                     else
                         await OnSuggestDifficultyAsync(connection, request, new ParsedSuggestedDifficulty(suggestedDifficulty));
                     await CompleteAssignmentAsync(connection, previousDifficulty, request.Value.Method);
@@ -588,6 +593,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             var gate = await EnterAssignmentAsync(connection, ct);
             try
             {
+                gate.Activate();
                 if(IsAdmissionClosed(connection))
                     return;
                 var context = connection.ContextAs<BitcoinWorkerContext>();
@@ -610,6 +616,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             var gate = await EnterAssignmentAsync(connection, CancellationToken.None);
             try
             {
+                gate.Activate();
                 CloseAssignmentPublicationFailure(connection, ex,
                     !(ex is OperationCanceledException && (ct.IsCancellationRequested || operations.IsClosed)));
             }
@@ -625,6 +632,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         var gate = await EnterAssignmentAsync(connection, ct);
         try
         {
+            gate.Activate();
             if(IsAdmissionClosed(connection))
                 return;
             var previousDifficulty = connection.Context.Difficulty;
