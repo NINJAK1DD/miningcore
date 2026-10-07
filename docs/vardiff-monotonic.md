@@ -114,8 +114,8 @@ Use an isolated regression node/database and a dedicated fixture administrator.
 The production schema's migration guard correctly refuses a non-administrator runtime
 role that owns the credit tables; do not grant the production runtime role migration
 privileges to make a lab pass. The reviewed Knots release is
-`29.4.2.knots20260508`; its Linux archive SHA-256 is
-`b59d0445a317e21a03dc29425db3aba79b27d5125230b1a2b1dce62e120827c5`, matching the
+`29.4.2.knots20260508`; its Linux archive checksum is
+SHA-256 `b59d0445a317e21a03dc29425db3aba79b27d5125230b1a2b1dce62e120827c5`, matching the
 repository's CI pin. See the [BLAKE2b guide](bitcoin-blake2b.md) for daemon and
 accounting lab contracts.
 
