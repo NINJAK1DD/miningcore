@@ -274,6 +274,9 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
 
     protected override async Task OnNewJobAsync(object jobParams)
     {
+        // This fan-out owns gates manually for terminal-publication semantics.
+        // Reject inherited ownership before Guard/per-miner failure handling.
+        WorkerAssignmentLease.ThrowIfNestedAssignment(null);
         if(operations.IsClosed)
             return;
         logger.Info(() => $"Broadcasting base job {((object[]) jobParams)[0]} (worker IDs include a difficulty suffix)");

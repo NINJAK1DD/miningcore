@@ -328,6 +328,46 @@ public class PoolBaseVarDiffTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NestedAssignmentBroadcast_FailsBeforeIterationWithoutDisconnectingMiners(bool populated)
+    {
+        await using var owner = new Fixture();
+        await using var peer = new Fixture();
+        owner.Connection.Context.IsAuthorized = populated;
+        peer.Connection.Context.IsAuthorized = populated;
+        owner.Pool.AddConnection(peer.Connection);
+        using var logs = new LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${level}|${message}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(LogLevel.Error, LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        owner.Pool.SetLogger(logs.GetLogger("nested-broadcast"));
+        var publications = 0;
+        Task Publish() { Interlocked.Increment(ref publications); return Task.CompletedTask; }
+
+        await owner.Pool.AssignOperation(owner.Connection, async () =>
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => owner.Pool.Broadcast(Publish));
+            Assert.Contains("cannot nest", error.Message);
+            Assert.Equal(0, publications);
+            Assert.Empty(target.Logs);
+            Assert.Equal(0, owner.Connection.Context.AssignmentGate.CurrentCount);
+            Assert.Equal(1, peer.Connection.Context.AssignmentGate.CurrentCount);
+            Assert.False(owner.Connection.IsDisconnectRequested);
+            Assert.False(peer.Connection.IsDisconnectRequested);
+        }).WaitAsync(Timeout);
+
+        await owner.Pool.Broadcast(Publish).WaitAsync(Timeout);
+        Assert.Equal(populated ? 2 : 0, publications);
+        Assert.True(owner.Connection.IsAlive);
+        Assert.True(peer.Connection.IsAlive);
+        Assert.Equal(1, owner.Connection.Context.AssignmentGate.CurrentCount);
+        Assert.Equal(1, peer.Connection.Context.AssignmentGate.CurrentCount);
+        Assert.Empty(target.Logs);
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public async Task MinerSweep_OnlySuppressesCancellationOfItsOwningToken(bool shutdown)
@@ -427,7 +467,7 @@ public class PoolBaseVarDiffTests
                 Template = new BitcoinTemplate { Symbol = "BTC" } }, new ClusterConfig());
             client.Connect(endpoint);
             var socket = listener.AcceptSocket();
-            Connection = new StratumConnection(new NullLogger(LogManager.LogFactory), streams, clock, "race", false);
+            Connection = new StratumConnection(new NullLogger(LogManager.LogFactory), streams, clock, Guid.NewGuid().ToString("N"), false);
             Pool.Connect(Connection, endpoint);
             Pool.AddConnection(Connection);
             dispatch = Connection.DispatchAsync(socket, stop.Token, new StratumEndpoint(endpoint, port),
@@ -467,6 +507,7 @@ public class PoolBaseVarDiffTests
         internal void Connect(StratumConnection connection, IPEndPoint endpoint) => OnConnect(connection, endpoint);
         internal void AddConnection(StratumConnection connection) => RegisterConnection(connection);
         internal Task Sweep(Func<Task> operation, CancellationToken ct) => ForEachMinerAsync((_, _) => operation(), ct);
+        internal Task Broadcast(Func<Task> operation) => ForEachMinerAssignmentAsync((_, _) => operation());
         internal Task Retarget(StratumConnection connection, bool idle, CancellationToken ct = default) =>
             UpdateVarDiffAsync(connection, idle, ct);
         internal Task AssignOperation(StratumConnection connection, Func<Task> operation) =>

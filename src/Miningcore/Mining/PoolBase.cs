@@ -233,8 +233,13 @@ public abstract class PoolBase : StratumServer,
         finally { gate.Release(); }
     }
 
-    protected Task ForEachMinerAssignmentAsync(Func<StratumConnection, CancellationToken, Task> func) =>
-        ForEachMinerAsync((connection, ct) => RunAssignmentAsync(connection, () => func(connection, ct), ct));
+    protected Task ForEachMinerAssignmentAsync(Func<StratumConnection, CancellationToken, Task> func)
+    {
+        // Reject at the producer, before per-miner exception handling can turn
+        // inherited ownership into a pool-wide series of disconnects.
+        WorkerAssignmentLease.ThrowIfNestedAssignment(null);
+        return ForEachMinerAsync((connection, ct) => RunAssignmentAsync(connection, () => func(connection, ct), ct));
+    }
 
     protected Task ForEachMinerAsync(Func<StratumConnection, CancellationToken, Task> func)
     {

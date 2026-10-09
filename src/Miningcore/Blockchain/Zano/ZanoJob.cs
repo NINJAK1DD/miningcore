@@ -66,7 +66,12 @@ public class ZanoJob
 
     protected virtual string EncodeTarget(double difficulty, int size = 32)
     {
-        var diff = BigInteger.ValueOf((long) (difficulty * 255d));
+        if(!double.IsFinite(difficulty) || difficulty <= 0)
+            throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty must be finite and positive");
+        // A sub-unit difficulty requires more than 256 target bits. Saturate at
+        // the easiest representable target before quantization/division; this
+        // also prevents a zero divisor below 1/255. Keep worker credit unchanged.
+        var diff = BigInteger.ValueOf((long) (Math.Max(1d, difficulty) * 255d));
         var quotient = ZanoConstants.Diff1.Divide(diff).Multiply(BigInteger.ValueOf(255));
         var bytes = quotient.ToByteArray().AsSpan();
         Span<byte> padded = stackalloc byte[ZanoConstants.TargetPaddingLength];

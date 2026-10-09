@@ -15,6 +15,57 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public partial class BitcoinBlake2bDifficultyBudgetTests
 {
+    [Fact]
+    public async Task NestedBlake2bBroadcast_FailsBeforeIterationAndPreservesBothMinersWork()
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var owner = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
+        await using var peer = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, owner);
+        await Subscribe(owner);
+        await Subscribe(peer);
+        foreach(var wire in new[] { owner, peer })
+        {
+            await wire.SendRequestAsync("mining.authorize", "test.worker", "x");
+            Assert.True((await wire.ReadAsync())["result"].Value<bool>());
+        }
+        using var logs = new NLog.LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${level}|${message}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(NLog.LogLevel.Error, NLog.LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        owner.SetLogger(logs.GetLogger("nested-blake2b-broadcast"));
+        var ownerJobs = owner.Connection.ContextAs<BitcoinWorkerContext>().validJobs.ToArray();
+        var peerJobs = peer.Connection.ContextAs<BitcoinWorkerContext>().validJobs.ToArray();
+        var responses = owner.Connection.ResponseSequence + peer.Connection.ResponseSequence;
+        var jobs = owner.JobsCreated;
+
+        await owner.AssignOperationAsync(async () =>
+        {
+            var error = await Assert.ThrowsAsync<System.InvalidOperationException>(() =>
+                owner.AnnounceJobAsync(new object[] { "nested", false }));
+            Assert.Contains("cannot nest", error.Message);
+            Assert.Equal(jobs, owner.JobsCreated);
+            Assert.Equal(responses, owner.Connection.ResponseSequence + peer.Connection.ResponseSequence);
+            Assert.Equal(ownerJobs, owner.Connection.ContextAs<BitcoinWorkerContext>().validJobs.ToArray());
+            Assert.Equal(peerJobs, peer.Connection.ContextAs<BitcoinWorkerContext>().validJobs.ToArray());
+            Assert.False(owner.Connection.IsDisconnectRequested);
+            Assert.False(peer.Connection.IsDisconnectRequested);
+            Assert.Empty(target.Logs);
+        }).WaitAsync(BarrierTimeout);
+
+        await owner.AnnounceJobAsync(new object[] { "normal", false }).WaitAsync(BarrierTimeout);
+        Assert.Equal(jobs + 2, owner.JobsCreated);
+        foreach(var wire in new[] { owner, peer })
+        {
+            Assert.Equal("mining.notify", (await wire.ReadAsync())["method"].Value<string>());
+            await Fence(wire);
+            Assert.True(wire.Connection.IsAlive);
+            Assert.Equal(1, wire.Connection.Context.AssignmentGate.CurrentCount);
+        }
+        Assert.False(owner.MiningFaulted);
+        Assert.Empty(target.Logs);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

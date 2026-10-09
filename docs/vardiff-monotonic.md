@@ -84,7 +84,10 @@ their request/shutdown cancellation token. An ambient ownership lease detects re
 acquisition for the same worker, including across awaits and child tasks, and throws
 immediately. Nested assignments for different workers are also rejected before waiting:
 independent operations must not acquire worker A then B and B then A in opposite orders.
-Fan-out must start outside an assignment lease. Released ownership cannot block a later
+Fan-out must start outside an assignment lease. Generic assignment broadcasts and the
+BLAKE2b broadcast reject inherited ownership at their entry point, before per-miner
+error handling; a nested broadcast fails once without disconnecting the pool's miners.
+Released ownership cannot block a later
 child operation, and a released lease clears its worker reference so captured contexts
 do not retain the worker's jobs through stale ownership.
 
@@ -146,8 +149,14 @@ target-based Equihash/ProgPoW, Ergo job targets and CryptoNote login/job targets
 exposed Handshake's missing static-authorize difficulty notification, now sent under its
 assignment gate. The native wire assertions also exposed missing full-width target copies
 in Conceal/Cryptonote, with the same padding gap in Zano. All three encoders now initialize
-padding and copy full-width/signed-prefix values; nine independent fixed vectors cover
-the 33-, 32- and 31-byte representations. Ready jobs and daemon address replies are fixtures; gate,
+padding and copy full-width/signed-prefix values. Nine independent fixed vectors cover
+the 33-, 32- and 31-byte representations. Eighteen sub-unit vectors additionally verify
+saturation at the easiest uint256 target, including below 1/255 and the smallest positive
+double. Only target encoding is saturated; configured worker difficulty and proof credit
+are unchanged. Fifteen invalid-input cases reject zero, negative and non-finite difficulty.
+Two generic broadcast cases and a two-miner BLAKE2b TCP case verify nested fan-out rejects
+before iteration, preserves connections/work and permits a later normal broadcast.
+Ready jobs and daemon address replies are fixtures; gate,
 request mutation, publication and connection behavior are production code. Conceal,
 Cryptonote and Zano use Linux native address/blob validation. BLAKE2b has two equivalent
 TCP wire races with a response fence. Separate concrete-family cancellation tests cover

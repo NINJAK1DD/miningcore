@@ -58,6 +58,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal void FailJobPipeline() => ((BitcoinBlake2bPool) pool)
         .HandleBlake2bPipelineFailure(new InvalidOperationException("test pipeline failure"));
     internal bool MiningFaulted => ((TestPool) pool).MiningFaulted;
+    internal Task AssignOperationAsync(Func<Task> operation) => ((TestPool) pool).AssignOperation(Connection, operation);
     internal Action BeforeConfigure { set => ((TestPool) pool).BeforeConfigure = value; }
     internal Func<Task> AfterConfigure { set => ((TestPool) pool).AfterConfigure = value; }
     internal Action BeforeCreateJob { set => ((TestPool) pool).BeforeCreateJob = value; }
@@ -329,6 +330,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         public Task RetargetVarDiff(StratumConnection connection, bool idle, CancellationToken ct) =>
             UpdateVarDiffAsync(connection, idle, ct);
         public Task Announce(object jobParams) => OnNewJobAsync(jobParams);
+        internal Task AssignOperation(StratumConnection connection, Func<Task> operation) => RunAssignmentAsync(connection, operation);
         public object CreateJob(StratumConnection connection) => CreateWorkerJob(connection, false);
     }
     // Same TCP harness, canonical production dispatcher; jobs/RPC supplied by the fixture.

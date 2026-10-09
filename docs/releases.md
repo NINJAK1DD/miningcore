@@ -22,6 +22,20 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased: Handshake difficulty notification and CryptoNote-family targets
+
+Handshake static-difficulty authorization now sends `mining.set_difficulty` under
+the worker assignment gate, so miners receive the difficulty the server enforces.
+Notification failure closes the connection; reconnect to obtain a fresh assignment.
+
+Conceal, Cryptonote and Zano now copy full-width targets and discard only the signed
+integer prefix, with explicit zero padding for shorter values. Low-difficulty ports
+previously advertised zero or incompletely padded targets. Positive difficulty below
+one now advertises the easiest representable target (`ffffffff` for the CryptoNote
+short target; all 32 bytes `ff` for Zano), including below the old 1/255 division limit.
+Configured worker difficulty and accepted-share credit are retained. No configuration
+or database migration is required. See the [assignment and target validation](vardiff-monotonic.md).
+
 ## Unreleased: Stratum ban attribution and address normalization
 
 Stratum bans now reject a normalized forwarded client on its validated trusted
