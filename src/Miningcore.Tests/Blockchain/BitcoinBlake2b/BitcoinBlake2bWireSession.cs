@@ -290,7 +290,8 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
                     new Microsoft.Extensions.Caching.Memory.MemoryCache(
                         new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions())), budgetTimeProvider) { }
 
-        public int JobsCreated { get; private set; }
+        private int jobsCreated;
+        public int JobsCreated => Volatile.Read(ref jobsCreated);
         internal int ConnectionCount => connections.Count;
         public Miningcore.Banning.IBanManager EnableInvalidShareBanning()
         {
@@ -304,7 +305,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         {
             BeforeCreateJob?.Invoke();
             var result = base.CreateWorkerJob(connection, cleanJob);
-            JobsCreated++;
+            Interlocked.Increment(ref jobsCreated);
             return result;
         }
 
