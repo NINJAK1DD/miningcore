@@ -26,7 +26,7 @@ using Xunit;
 
 namespace Miningcore.Tests.Mining;
 
-public class CryptonoteDifficultyCreditTests
+public class CryptonoteDifficultyCreditTests : TestBase
 {
     private sealed class LinuxNativeTheoryAttribute : TheoryAttribute
     {
