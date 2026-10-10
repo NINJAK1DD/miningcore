@@ -185,22 +185,98 @@ public class PoolFamilyAssignmentTests : TestBase
         await using var fixture = await Fixture.Create(this, family);
         var worker = fixture.Connection.Context;
         var original = worker.VarDiff;
-        await Assert.ThrowsAsync<StratumException>(() => fixture.Authorize(difficulty: invalid));
+        var method = family == "Zano" ? "mining.authorize" : "login";
+        await fixture.PrepareFreshLogin(method);
+        await fixture.DispatchLogin(method, invalid, 1);
+        fixture.AssertOneSuccess(1);
+        Assert.True(worker.IsAuthorized);
+        Assert.True(worker.IsSubscribed);
         Assert.Equal(10, worker.Difficulty);
         Assert.Same(original, worker.VarDiff);
         Assert.False(worker.HasPendingDifficulty);
-        await fixture.Authorize(difficulty: 1);
-        await fixture.Flush();
+        await fixture.DispatchLogin(method, 1, 2);
+        fixture.AssertOneSuccess(2);
         Assert.Equal(1, worker.Difficulty);
         Assert.Null(worker.VarDiff);
-        if(worker is ConcealWorkerContext conceal) Assert.Equal(1, Assert.Single(conceal.validJobs).Difficulty);
-        if(worker is CryptonoteWorkerContext cryptonote) Assert.Equal(1, Assert.Single(cryptonote.validJobs).Difficulty);
-        if(worker is ZanoWorkerContext zano) Assert.Equal(1, Assert.Single(zano.validJobs).Difficulty);
+        if(worker is ConcealWorkerContext conceal) Assert.Equal(1, conceal.validJobs.Last().Difficulty);
+        if(worker is CryptonoteWorkerContext cryptonote) Assert.Equal(1, cryptonote.validJobs.Last().Difficulty);
+        if(worker is ZanoWorkerContext zano) Assert.Equal(1, zano.validJobs.Last().Difficulty);
         var targets = fixture.Messages.Select(m => m["method"]?.Value<string>() == "job" ? m["params"] : (m["result"] as JObject)?["job"])
             .OfType<JObject>().Where(j => j["target"] != null).ToArray();
         if(family != "Zano") Assert.Equal("ffffffff", targets.Last()["target"].Value<string>());
         Assert.Empty(fixture.Errors.Logs);
         Assert.True(fixture.Connection.IsAlive);
+    }
+
+    public static IEnumerable<object[]> NativeLoginHints =>
+        from path in new[] { ("Conceal", "login"), ("Cryptonote", "login"),
+            ("Zano", "login"), ("Zano", "eth_submitLogin"), ("Zano", "mining.authorize") }
+        from nicehash in new[] { false, true }
+        from oversized in new[] { false, true }
+        select new object[] { path.Item1, path.Item2, nicehash, oversized };
+
+    [LinuxNativeTheory]
+    [MemberData(nameof(NativeLoginHints))]
+    public async Task NativePool_DispatchedHintsKeepOneResponseAndValidWork(string family, string protocol, bool nicehash, bool oversized)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        var worker = fixture.Connection.Context;
+        await fixture.PrepareFreshLogin(protocol);
+        var original = worker.VarDiff;
+        var invalid = oversized ? Math.BitIncrement(worker.MaximumDifficulty) : 0.5;
+        if(nicehash) fixture.SetNicehashHint(invalid);
+        await fixture.DispatchLogin(protocol, nicehash ? null : invalid, 1, nicehash);
+        fixture.AssertOneSuccess(1);
+        Assert.True(worker.IsAuthorized);
+        Assert.True(worker.IsSubscribed);
+        Assert.Equal(10, worker.Difficulty);
+        Assert.Same(original, worker.VarDiff);
+        Assert.False(worker.HasPendingDifficulty);
+        Assert.Equal(oversized ? 1 : 0, fixture.Warnings.Logs.Count);
+        if(oversized) Assert.Contains("CryptonoteDifficulty.StaticHintIgnored", fixture.Warnings.Logs.Single());
+        await fixture.Broadcast();
+        await fixture.Flush();
+        if(worker is ConcealWorkerContext conceal) Assert.All(conceal.validJobs, j => Assert.Equal(10, j.Difficulty));
+        if(worker is CryptonoteWorkerContext cryptonote) Assert.All(cryptonote.validJobs, j => Assert.Equal(10, j.Difficulty));
+        if(worker is ZanoWorkerContext zano) Assert.All(zano.validJobs, j => Assert.Equal(10, j.Difficulty));
+        if(nicehash) fixture.SetNicehashHint(1);
+        await fixture.DispatchLogin(protocol, 1, 2, nicehash);
+        fixture.AssertOneSuccess(2);
+        Assert.Equal(1, worker.Difficulty);
+        Assert.Null(worker.VarDiff);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.Empty(fixture.Errors.Logs);
+        Assert.True(fixture.Connection.IsAlive);
+    }
+
+    [LinuxNativeTheory]
+    [InlineData("Conceal", "login")]
+    [InlineData("Cryptonote", "login")]
+    [InlineData("Zano", "login")]
+    [InlineData("Zano", "eth_submitLogin")]
+    [InlineData("Zano", "mining.authorize")]
+    public async Task NativePool_DispatchedLoginWaitsBeforeAuthorizing(string family, string protocol)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        await fixture.PrepareFreshLogin(protocol);
+        var worker = fixture.Connection.Context;
+        await worker.AssignmentGate.WaitAsync();
+        Task request;
+        try
+        {
+            request = fixture.DispatchLogin(protocol, 55, 1);
+            await fixture.RequestEntered.Task.WaitAsync(Timeout);
+            Assert.False(worker.IsAuthorized);
+            Assert.Equal(protocol == "mining.authorize", worker.IsSubscribed);
+            Assert.DoesNotContain(fixture.Messages, m => m["id"]?.Type == JTokenType.Integer && m["id"].Value<int>() == 1);
+            Assert.Equal(10, worker.Difficulty);
+        }
+        finally { worker.AssignmentGate.Release(); }
+        await request.WaitAsync(Timeout);
+        fixture.AssertOneSuccess(1);
+        Assert.True(worker.IsAuthorized);
+        Assert.Equal(55, worker.Difficulty);
     }
 
     private sealed class LinuxNativeTheoryAttribute : TheoryAttribute
@@ -238,13 +314,18 @@ public class PoolFamilyAssignmentTests : TestBase
         private readonly CancellationTokenSource stop = new();
         private readonly TcpClient client = new(AddressFamily.InterNetwork);
         private Task dispatch;
+        private Task wireRead;
         private readonly DaemonStub daemon = new();
         private readonly LogFactory logs = new();
         private string family;
+        private ClusterConfig cluster;
         private object job;
-        private readonly TaskCompletionSource flushed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource flushed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource requestHandled;
+        internal TaskCompletionSource RequestEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal readonly TimestampProvider Time = new();
         internal readonly NLog.Targets.MemoryTarget Errors = new() { Layout = "${level}|${message}" };
+        internal readonly NLog.Targets.MemoryTarget Warnings = new() { Layout = "${level}|${message}" };
         internal readonly List<JObject> Messages = new();
         internal PoolBase Pool { get; private set; }
         internal StratumConnection Connection { get; private set; }
@@ -300,7 +381,7 @@ public class PoolFamilyAssignmentTests : TestBase
             var config = new PoolConfig { Id = "concrete-" + family, EnableInternalStratum = true, Template = coin,
                 Extra = new Dictionary<string, object> { ["z-address"] = "fixture", ["enableStaticDifficulty"] = true },
                 Ports = new Dictionary<int, PoolEndpoint> { [endpoint.Port] = port } };
-            var cluster = new ClusterConfig { Banning = new ClusterBanningConfig { BanOnLoginFailure = false } };
+            cluster = new ClusterConfig { Banning = new ClusterBanningConfig { BanOnLoginFailure = false } };
             Pool.Configure(config, cluster);
             Pool.VarDiffTimeProvider = Time;
             SetField(Pool, "manager", manager);
@@ -326,6 +407,7 @@ public class PoolFamilyAssignmentTests : TestBase
             if(family == "Beam") SetField(manager, "PoolNoncePrefix", "00000001");
             var logConfig = new NLog.Config.LoggingConfiguration();
             logConfig.AddRule(LogLevel.Error, LogLevel.Fatal, Errors);
+            logConfig.AddRule(LogLevel.Warn, LogLevel.Warn, Warnings);
             logs.Configuration = logConfig;
             var logger = logs.GetLogger(config.Id);
             SetField(Pool, "logger", logger);
@@ -364,15 +446,22 @@ public class PoolFamilyAssignmentTests : TestBase
                 SetProperty(worker, "ExtraNonce1", "00000001");
             if(family is "Ethereum" or "Zano") SetProperty(worker, "ProtocolVersion", 2);
             Invoke(Pool, "RegisterConnection", Connection);
+            var onRequest = poolType.GetMethod("OnRequestAsync", BindingFlags.Instance | BindingFlags.NonPublic, null,
+                new[] { typeof(StratumConnection), typeof(Timestamped<JsonRpcRequest>), typeof(CancellationToken) }, null);
+            Assert.NotNull(onRequest);
             Connection.SendMessageOverride = (message, _) =>
             {
-                Messages.Add(JObject.Parse(JsonConvert.SerializeObject(message, test.jsonSerializerSettings)));
-                if(message is JsonRpcRequest<object[]> { Method: "test.assignment.fence" })
-                    flushed.TrySetResult();
+                RecordMessage(JObject.Parse(JsonConvert.SerializeObject(message, test.jsonSerializerSettings)));
                 return Task.CompletedTask;
             };
             dispatch = Connection.DispatchAsync(socket, stop.Token, new StratumEndpoint(endpoint, port),
-                (IPEndPoint) socket.RemoteEndPoint, null, (_, _, _) => Task.CompletedTask, _ => { }, (_, _) => { });
+                (IPEndPoint) socket.RemoteEndPoint, null, async (connection, request, ct) =>
+                {
+                    RequestEntered.TrySetResult();
+                    try { await (Task) onRequest.Invoke(Pool, new object[] { connection,
+                        new Timestamped<JsonRpcRequest>(request, clock.Now), ct }); requestHandled?.TrySetResult(); }
+                    catch(Exception ex) { requestHandled?.TrySetException(ex); throw; }
+                }, _ => { }, (_, _) => { });
             Assert.Null(VarDiffManager.Update(worker, options, clock));
             Time.Timestamp = 5 * TimeSpan.TicksPerSecond;
         }
@@ -410,8 +499,78 @@ public class PoolFamilyAssignmentTests : TestBase
         }
         internal async Task Flush()
         {
+            flushed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             await Connection.NotifyAsync("test.assignment.fence", Array.Empty<object>());
             await flushed.Task.WaitAsync(Timeout);
+        }
+
+        internal async Task PrepareFreshLogin(string protocol)
+        {
+            // These cases exercise both directions of the production TCP transport.
+            Connection.SendMessageOverride = null;
+            wireRead = ReadWireMessages();
+            Connection.Context.IsAuthorized = Connection.Context.IsSubscribed = false;
+            if(family == "Zano")
+            {
+                SetProperty(Connection.Context, "ProtocolVersion", 0);
+                if(protocol == "mining.authorize")
+                    await DispatchRequest(new JsonRpcRequest("mining.subscribe", new[] { "fixture", "fixture" }, 0));
+            }
+            RequestEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        private void RecordMessage(JObject message)
+        {
+            Messages.Add(message);
+            if(message["method"]?.Value<string>() == "test.assignment.fence")
+                flushed.TrySetResult();
+        }
+
+        private async Task ReadWireMessages()
+        {
+            using var reader = new System.IO.StreamReader(client.GetStream(), Encoding.UTF8, leaveOpen: true);
+            try
+            {
+                while(await reader.ReadLineAsync(stop.Token) is { } line)
+                    RecordMessage(JObject.Parse(line));
+            }
+            catch(Exception) when(stop.IsCancellationRequested) { }
+        }
+
+        internal Task DispatchLogin(string method, double? difficulty, int id, bool nicehash = false)
+        {
+            const string address = "48nhyWcSey31ngSEhV8j8NPm6B8PistCQJBjjDjmTvRSTWYg6iocAw131vE2JPh3ps33vgQDKLrUx3fcErusYWcMJBxpm1d";
+            var password = difficulty.HasValue ? "d=" + difficulty.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture) : "x";
+            var agent = nicehash ? "NiceHash" : "fixture";
+            Connection.Context.UserAgent = agent;
+            object parameters = method == "login" ? JObject.FromObject(new { login = address, pass = password, agent }) :
+                new[] { address + ".worker", password, agent };
+            return DispatchRequest(new JsonRpcRequest(method, parameters, id));
+        }
+
+        private async Task DispatchRequest(JsonRpcRequest request)
+        {
+            requestHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await client.GetStream().WriteAsync(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(request) + "\n"));
+            await requestHandled.Task.WaitAsync(Timeout);
+            await Flush();
+        }
+
+        internal void AssertOneSuccess(int id)
+        {
+            var response = Assert.Single(Messages.Where(m => m["id"]?.Type == JTokenType.Integer && m["id"].Value<int>() == id));
+            Assert.True(response["error"] == null || response["error"].Type == JTokenType.Null);
+            Assert.NotNull(response["result"]);
+            Assert.NotEqual(false, response["result"].Type == JTokenType.Boolean ? response["result"].Value<bool>() : true);
+        }
+
+        internal void SetNicehashHint(double difficulty)
+        {
+            var coin = Pool.Config.Template;
+            var algorithm = coin.Name == "Monero" && coin.GetAlgorithmName() == "RandomX" ? "randomxmonero" : coin.GetAlgorithmName();
+            cache.Set("nicehash_algos", new Dictionary<string, Miningcore.Nicehash.API.NicehashMiningAlgorithm>(StringComparer.OrdinalIgnoreCase)
+                { [algorithm] = new() { Algorithm = algorithm, MinimalPoolDifficulty = difficulty } });
+            cluster.Nicehash = new NicehashClusterConfig { EnableAutoDiff = true };
         }
 
         internal void AssertFinalWireAssignment()
@@ -467,6 +626,8 @@ public class PoolFamilyAssignmentTests : TestBase
             {
                 if(dispatch != null)
                     await dispatch.WaitAsync(Timeout);
+                if(wireRead != null)
+                    await wireRead.WaitAsync(Timeout);
             }
             finally
             {

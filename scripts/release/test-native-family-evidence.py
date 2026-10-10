@@ -10,6 +10,10 @@ CONTENTION = "NativeConcretePool_AuthorizationIdleAndBroadcastCompleteUnderConte
 CANCELLATION = "NativePool_AuthorizationCancellationDoesNotCommitQueuedDifficulty"
 REQUEST = "NativePool_SubUnitRequestCannotPublishUnderweightedWork"
 PROOF = "NativeProof_AfterRejectedSubUnitAssignmentRetainsRepresentableCredit"
+HINT = "NativePool_DispatchedHintsKeepOneResponseAndValidWork"
+WAIT = "NativePool_DispatchedLoginWaitsBeforeAuthorizing"
+PATHS = (("Conceal", "login"), ("Cryptonote", "login"), ("Zano", "login"),
+         ("Zano", "eth_submitLogin"), ("Zano", "mining.authorize"))
 EXPECTED = {
     (method, family, ordering)
     for family in ("Conceal", "Cryptonote", "Zano")
@@ -19,6 +23,9 @@ EXPECTED |= {(REQUEST, family, invalid) for family in ("Conceal", "Cryptonote", 
              for invalid in ("0.5", "0.1", "0.00390625")}
 EXPECTED |= {(PROOF, family, invalid) for family in ("Conceal", "Cryptonote")
              for invalid in ("0.5", "0.1", "0.00390625")}
+EXPECTED |= {(HINT, family, (protocol, nicehash, oversized)) for family, protocol in PATHS
+             for nicehash in ("False", "True") for oversized in ("False", "True")}
+EXPECTED |= {(WAIT, family, protocol) for family, protocol in PATHS}
 
 
 def validate(root):
@@ -26,7 +33,7 @@ def validate(root):
     for result in root.iter(f"{{{NAMESPACE}}}UnitTestResult"):
         name = result.get("testName", "")
         method = name.split("(", 1)[0]
-        if method not in (CONTENTION, CANCELLATION, REQUEST, PROOF):
+        if method not in (CONTENTION, CANCELLATION, REQUEST, PROOF, HINT, WAIT):
             continue
         family = re.search(r'\bfamily:\s*"([^"\r\n]+)"', name)
         ordering = re.search(r"\binvalid:\s*([0-9.]+)\b", name) if method in (REQUEST, PROOF) else \
@@ -36,6 +43,13 @@ def validate(root):
         # Compare the represented double, while still rejecting other values.
         if method in (REQUEST, PROOF) and value is not None:
             value = str(float(value))
+        if method in (HINT, WAIT):
+            protocol = re.search(r'\bprotocol:\s*"([^"\r\n]+)"', name)
+            value = protocol.group(1) if protocol else None
+            if method == HINT:
+                nicehash = re.search(r"\bnicehash:\s*(True|False)\b", name)
+                oversized = re.search(r"\boversized:\s*(True|False)\b", name)
+                value = (value, nicehash.group(1) if nicehash else None, oversized.group(1) if oversized else None)
         key = (method, family.group(1) if family else None, value)
         if key not in EXPECTED:
             raise ValueError(f"Unrecognized native-family case: {name}")
@@ -49,7 +63,12 @@ def fixture():
     root = ET.Element(f"{{{NAMESPACE}}}TestRun")
     for method, family, ordering in sorted(EXPECTED, key=str):
         name = f'{method}(family: "{family}"'
-        if ordering is not None:
+        if method == HINT:
+            protocol, nicehash, oversized = ordering
+            name += f', protocol: "{protocol}", nicehash: {nicehash}, oversized: {oversized}'
+        elif method == WAIT:
+            name += f', protocol: "{ordering}"'
+        elif ordering is not None:
             name += f", {'invalid' if method in (REQUEST, PROOF) else 'idleOwnsGate'}: {ordering}"
         ET.SubElement(root, f"{{{NAMESPACE}}}UnitTestResult", testName=name + ")", outcome="Passed")
     return root
@@ -97,7 +116,7 @@ def main():
             validate(ET.parse(args.trx).getroot())
         except (OSError, ET.ParseError, ValueError) as error:
             parser.exit(1, f"{error}\n")
-        print("All 24 required Linux-native family/credit cases executed and passed")
+        print(f"All {len(EXPECTED)} required Linux-native family/credit cases executed and passed")
     elif not args.self_test:
         parser.error("provide a TRX file or --self-test")
 

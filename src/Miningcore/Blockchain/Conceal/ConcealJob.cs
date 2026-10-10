@@ -64,7 +64,7 @@ public class ConcealJob
 
     private string EncodeTarget(double difficulty, int size = 4)
     {
-        Cryptonote.CryptonoteDifficulty.Validate(difficulty);
+        Cryptonote.CryptonoteDifficulty.Validate(difficulty, size == 4 ? Cryptonote.CryptonoteDifficulty.ShortTargetMaximum : Cryptonote.CryptonoteDifficulty.FullTargetMaximum);
         var diff = BigInteger.ValueOf(checked((long) (difficulty * 255d)));
         var quotient = ConcealConstants.Diff1.Divide(diff).Multiply(BigInteger.ValueOf(255));
         var bytes = quotient.ToByteArray().AsSpan();
@@ -77,6 +77,9 @@ public class ConcealJob
             bytes.CopyTo(padded.Slice(padLength, bytes.Length));
         else
             bytes.Slice(bytes.Length - padded.Length, padded.Length).CopyTo(padded);
+
+        if(padded[..size].IndexOfAnyExcept((byte) 0) < 0)
+            throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty produces a zero target");
 
         padded = padded[..size];
         padded.Reverse();
@@ -101,7 +104,7 @@ public class ConcealJob
 
     public void PrepareWorkerJob(ConcealWorkerJob workerJob, out string blob, out string target)
     {
-        Cryptonote.CryptonoteDifficulty.Validate(workerJob.Difficulty);
+        Cryptonote.CryptonoteDifficulty.Validate(workerJob.Difficulty, Cryptonote.CryptonoteDifficulty.ShortTargetMaximum);
         workerJob.Height = BlockTemplate.Height;
         workerJob.ExtraNonce = (uint) Interlocked.Increment(ref extraNonce);
 
@@ -178,7 +181,7 @@ public class ConcealJob
         var result = new Share
         {
             BlockHeight = BlockTemplate.Height,
-            Difficulty = Cryptonote.CryptonoteDifficulty.Validate(stratumDifficulty),
+            Difficulty = Cryptonote.CryptonoteDifficulty.Validate(stratumDifficulty, Cryptonote.CryptonoteDifficulty.ShortTargetMaximum),
         };
 
         if(isBlockCandidate)

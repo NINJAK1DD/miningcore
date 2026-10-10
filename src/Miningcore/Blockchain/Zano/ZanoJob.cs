@@ -66,7 +66,7 @@ public class ZanoJob
 
     protected virtual string EncodeTarget(double difficulty, int size = 32)
     {
-        Cryptonote.CryptonoteDifficulty.Validate(difficulty);
+        Cryptonote.CryptonoteDifficulty.Validate(difficulty, size == 4 ? Cryptonote.CryptonoteDifficulty.ShortTargetMaximum : Cryptonote.CryptonoteDifficulty.FullTargetMaximum);
         var diff = BigInteger.ValueOf(checked((long) (difficulty * 255d)));
         var quotient = ZanoConstants.Diff1.Divide(diff).Multiply(BigInteger.ValueOf(255));
         var bytes = quotient.ToByteArray().AsSpan();
@@ -79,6 +79,9 @@ public class ZanoJob
             bytes.CopyTo(padded.Slice(padLength, bytes.Length));
         else
             bytes.Slice(bytes.Length - padded.Length, padded.Length).CopyTo(padded);
+
+        if(padded[..size].IndexOfAnyExcept((byte) 0) < 0)
+            throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty produces a zero target");
 
         padded = padded[..size];
 
@@ -93,7 +96,7 @@ public class ZanoJob
 
     public virtual ZanoWorkerJob PrepareWorkerJob(double difficulty)
     {
-        Cryptonote.CryptonoteDifficulty.Validate(difficulty);
+        Cryptonote.CryptonoteDifficulty.Validate(difficulty, Cryptonote.CryptonoteDifficulty.FullTargetMaximum);
         var workerExtraNonce = (uint) Interlocked.Increment(ref extraNonce);
 
         if(extraNonce < 0)

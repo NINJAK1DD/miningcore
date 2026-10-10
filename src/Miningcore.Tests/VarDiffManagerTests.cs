@@ -260,6 +260,37 @@ public class VarDiffManagerTests
     }
 
     [Theory]
+    [InlineData("inverted")]
+    [InlineData("infinite")]
+    [InlineData("nan")]
+    [InlineData("zero")]
+    public void InvalidBounds_StillRecordRealSharesAndRecoverWithoutAFrozenInterval(string invalid)
+    {
+        var time = new ManualTimeProvider();
+        var clock = new MockMasterClock();
+        var options = new VarDiffConfig { MinDiff = 1, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
+        var worker = new WorkerContextBase();
+        worker.Init(10, options, clock, time);
+        Assert.Null(VarDiffManager.Update(worker, options, clock));
+        var baseline = worker.VarDiff.LastRetargetTimestamp;
+        options.MaxDiff = invalid switch { "infinite" => double.PositiveInfinity, "nan" => double.NaN,
+            "zero" => 0, _ => 0.5 };
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(3));
+        Assert.Null(VarDiffManager.Update(worker, options, clock,
+            protocolMaximum: invalid == "infinite" ? double.PositiveInfinity : double.MaxValue));
+        Assert.Equal(time.GetTimestamp(), worker.VarDiff.LastShareTimestamp);
+        Assert.Equal(new[] { 3d }, worker.VarDiff.TimeBuffer.ToArray());
+        Assert.Equal(baseline, worker.VarDiff.LastRetargetTimestamp);
+        Assert.Null(worker.VarDiff.LastUpdate);
+        Assert.Null(VarDiffManager.IdleUpdate(worker, options, clock));
+        Assert.Equal(new[] { 3d }, worker.VarDiff.TimeBuffer.ToArray());
+        options.MaxDiff = null;
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(2));
+        Assert.Equal(40, VarDiffManager.Update(worker, options, clock));
+        Assert.Empty(worker.VarDiff.TimeBuffer); // A changed assignment starts a new window.
+    }
+
+    [Theory]
     [InlineData(0.0001)]
     [InlineData(0.000001)]
     public void ZeroAverage_DoesNotLowerDifficultyForSubsecondTargets(double target)

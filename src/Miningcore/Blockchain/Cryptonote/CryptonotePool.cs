@@ -84,10 +84,7 @@ public class CryptonotePool : PoolBase
         // validate login
         var result = manager.ValidateAddress(addressToValidate);
 
-        context.IsSubscribed = result;
-        context.IsAuthorized = result;
-
-        if(context.IsAuthorized)
+        if(result)
         {
             // extract control vars from password
             var passParts = loginRequest.Password?.Split(PasswordControlVarsSeparator);
@@ -109,21 +106,14 @@ public class CryptonotePool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            if(staticDiff.HasValue)
-                CryptonoteDifficulty.ValidateRequest(staticDiff.Value);
-
             var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
                 assignmentGate.Activate();
                 ct.ThrowIfCancellationRequested();
                 // Static diff
-                if(staticDiff.HasValue &&
-                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                if(staticDiff.HasValue && CryptonoteDifficulty.TryApplyStaticHint(context, staticDiff.Value, logger))
                 {
-                    context.SetDifficulty(staticDiff.Value);
-                    context.VarDiff = null; // disable vardiff only after validation
 
                     logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {staticDiff.Value}");
                 }
@@ -134,6 +124,8 @@ public class CryptonotePool : PoolBase
                     Id = connection.ConnectionId,
                     Job = CreateWorkerJob(connection)
                 };
+
+                context.IsSubscribed = context.IsAuthorized = true;
 
                 // Nicehash's stupid validator insists on "error" property present
                 // in successful responses which is a violation of the JSON-RPC spec
@@ -156,6 +148,7 @@ public class CryptonotePool : PoolBase
 
         else
         {
+            context.IsSubscribed = context.IsAuthorized = false;
             await connection.RespondErrorAsync(StratumError.MinusOne, "invalid login", request.Id);
 
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
@@ -470,7 +463,7 @@ public class CryptonotePool : PoolBase
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
-        CryptonoteDifficulty.ValidatePool(pc);
+        CryptonoteDifficulty.ValidatePool(pc, CryptonoteDifficulty.ShortTargetMaximum);
         base.Configure(pc, cc);
     }
 

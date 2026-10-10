@@ -156,13 +156,17 @@ target-based Equihash/ProgPoW, Ergo job targets and CryptoNote login/job targets
 exposed Handshake's missing static-authorize difficulty notification, now sent under its
 assignment gate. The native wire assertions also exposed missing full-width target copies
 in Conceal/Cryptonote, with the same padding gap in Zano. All three encoders now initialize
-padding and copy full-width/signed-prefix values. Twelve independent fixed vectors cover
-the 33-, 32- and 31-byte representations and the largest safe assignment. Forty-five
+padding and copy full-width/signed-prefix values. Thirteen independent fixed vectors cover
+the 33-, 32- and 31-byte representations and each protocol's largest safe assignment. Fifty-three
 invalid-input cases reject sub-unit, non-positive, non-finite and oversized difficulty,
 including the old 1/255 division edge and the signed-long conversion boundary.
-These three families require assigned difficulty in **[1, BitDecrement(2^63 / 255)]**:
-startup configuration, request preparation, direct/queued worker assignments, dynamic
-retargeting and job preparation enforce the range. Invalid assignments preserve current,
+Conceal/Cryptonote require assigned difficulty in **[1, BitDecrement(2^32)]**; Zano uses
+**[1, BitDecrement(2^63 / 255)]**. The short-target ceiling prevents a zero four-byte target:
+[XMRig's target parser](https://github.com/xmrig/xmrig/blob/master/src/base/net/stratum/Job.cpp)
+divides by the decoded uint32. The boundary `01000000` is checked using that parser's
+integer arithmetic, and all encoders reject zero output defensively.
+Startup configuration, direct/queued worker assignments, dynamic
+retargeting and job preparation enforce the appropriate range. Invalid assignments preserve current,
 previous and pending credit state. There is no target-only saturation policy. Zano
 validates the assigned unit before its existing `difficulty / shareMultiplier` credit
 normalization; the normalized persisted value can legitimately be below 1.
@@ -173,8 +177,15 @@ has managed reward-calculation coverage, not a claimed live Zano daemon proof. P
 restricted by this repository to audited Bitcoin-family pools; it is not enabled here.
 Four direct/guarded generic broadcast cases, a direct two-miner BLAKE2b case and a real
 BLAKE2b job-pipeline case verify rejection, diagnostics and the differing isolation
-policies. Nine actual-family request cases reject sub-unit static requests before
-publishing work, then successfully publish difficulty-1 jobs.
+policies. Static/NiceHash hints retain their existing application threshold: sub-minimum
+hints are ignored; an eligible but unrepresentable hint produces one bounded Warn and
+is ignored, preserving the assignment and VarDiff. Preparation and the assignment gate
+precede authorization state/success. Nine sub-unit TCP request cases preserve valid
+work and then publish difficulty-1 jobs. Twenty TCP hint cases cover password and
+NiceHash inputs on Conceal/Cryptonote login and all three Zano login/authorize paths;
+five blocked-gate TCP cases prove no early authorization or response. Each request id
+has exactly one success response, and the connection remains usable. Real-share timing
+bookkeeping continues when invalid bounds prevent a retarget; idle no-op state remains unchanged.
 Ready jobs and daemon address replies are fixtures; gate,
 request mutation, publication and connection behavior are production code. Conceal,
 Cryptonote and Zano use Linux native address/blob validation. BLAKE2b has two equivalent
@@ -184,7 +195,8 @@ request cancellation. Required reflection members and network enums are explicit
 family; a renamed member fails setup rather than silently skipping it. These complement
 the worker-context matrix rather than replacing it. CI validates the full suite's TRX
 with `scripts/release/test-native-family-evidence.py`; all six native contention, three
-native cancellation, nine sub-unit request and six accepted-proof credit cases must
+native cancellation, nine sub-unit request, six accepted-proof credit, twenty TCP hint
+and five blocked-gate cases (49 total) must
 be present exactly once and pass. Negative fixtures
 verify the guard rejects skipped, failed, absent, duplicated and unrecognized cases.
 

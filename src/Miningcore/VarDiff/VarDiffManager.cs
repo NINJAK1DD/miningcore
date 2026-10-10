@@ -32,13 +32,6 @@ public static class VarDiffManager
             {
                 if(RebaseInvalidTiming(ctx, ts, ctx.LastShareTimestamp.Value))
                     return null;
-                var minDiff = Math.Max(options.MinDiff, context.MinimumDifficulty);
-                var maxDiff = Math.Min(options.MaxDiff ?? protocolMaximum, protocolMaximum);
-                if(!double.IsFinite(maxDiff) || maxDiff <= 0)
-                    return null;
-                maxDiff = Math.Min(maxDiff, context.MaximumDifficulty);
-                if(minDiff > maxDiff)
-                    return null;
                 var timeDelta = ElapsedSeconds(ctx, ctx.LastShareTimestamp.Value, ts);
 
                 // make sure buffer exists as this point
@@ -52,6 +45,16 @@ public static class VarDiffManager
                 // Once there is a share submitted, store the time into the buffer and update the last time.
                 ctx.TimeBuffer.PushBack(timeDelta);
                 ctx.LastShareTimestamp = ts;
+
+                // A real share remains a sample even when its configured range
+                // cannot produce a valid assignment. Do not freeze its baseline.
+                var minDiff = Math.Max(options.MinDiff, context.MinimumDifficulty);
+                var maxDiff = Math.Min(options.MaxDiff ?? protocolMaximum, protocolMaximum);
+                if(!double.IsFinite(maxDiff) || maxDiff <= 0)
+                    return null;
+                maxDiff = Math.Min(maxDiff, context.MaximumDifficulty);
+                if(minDiff > maxDiff)
+                    return null;
 
                 // Check if we need to change the difficulty
                 var variance = options.TargetTime * (options.VariancePercent / 100.0);

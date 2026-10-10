@@ -1,4 +1,7 @@
 using Miningcore.Configuration;
+using Miningcore.Mining;
+using Miningcore.Rpc;
+using NLog;
 
 namespace Miningcore.Blockchain.Cryptonote;
 
@@ -7,44 +10,55 @@ namespace Miningcore.Blockchain.Cryptonote;
 internal static class CryptonoteDifficulty
 {
     internal const double Minimum = 1d;
-    // BitDecrement avoids double rounding to 2^63 during the *255 conversion.
-    internal static readonly double Maximum = Math.BitDecrement(9223372036854775808d / 255d);
+    // A four-byte target must remain nonzero on the wire (e.g. XMRig's parser).
+    internal static readonly double ShortTargetMaximum = Math.BitDecrement(4294967296d);
+    // Full-width targets also need headroom for the signed *255 conversion.
+    internal static readonly double FullTargetMaximum = Math.BitDecrement(9223372036854775808d / 255d);
 
-    internal static double Validate(double difficulty)
+    internal static bool IsRepresentable(double difficulty, double maximum) =>
+        double.IsFinite(difficulty) && difficulty >= Minimum && difficulty <= maximum;
+
+    internal static double Validate(double difficulty, double maximum)
     {
-        if(!double.IsFinite(difficulty) || difficulty < Minimum || difficulty > Maximum)
+        if(!IsRepresentable(difficulty, maximum))
             throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty is outside the representable target range");
         return difficulty;
     }
 
-    internal static void ValidatePool(PoolConfig config)
+    internal static void ValidatePool(PoolConfig config, double maximum)
     {
         ArgumentNullException.ThrowIfNull(config);
         foreach(var port in config.Ports?.Values ?? Enumerable.Empty<PoolEndpoint>())
         {
-            Validate(port.Difficulty);
+            Validate(port.Difficulty, maximum);
             if(port.VarDiff != null)
             {
-                Validate(port.VarDiff.MinDiff);
+                Validate(port.VarDiff.MinDiff, maximum);
                 if(port.VarDiff.MaxDiff.HasValue)
-                    Validate(port.VarDiff.MaxDiff.Value);
+                    Validate(port.VarDiff.MaxDiff.Value, maximum);
             }
         }
     }
 
-    internal static void ValidateRequest(double difficulty)
+    // Caller holds the worker assignment gate. Preserve the existing eligibility
+    // rule: ignored hints must not turn a valid login into a failure.
+    internal static bool TryApplyStaticHint(WorkerContextBase context, double difficulty, ILogger logger)
     {
-        try { Validate(difficulty); }
-        catch(ArgumentOutOfRangeException)
+        if(!(context.VarDiff != null ? difficulty >= context.VarDiff.Config.MinDiff : difficulty > context.Difficulty))
+            return false;
+        if(!IsRepresentable(difficulty, context.MaximumDifficulty))
         {
-            throw new Stratum.StratumException(Stratum.StratumError.MinusOne,
-                "Difficulty is outside the representable target range");
+            RpcConsumerDiagnostics.Write(logger, LogLevel.Warn, "CryptonoteDifficulty.StaticHintIgnored");
+            return false;
         }
+        context.SetDifficulty(difficulty);
+        context.VarDiff = null;
+        return true;
     }
 
     internal static double NormalizeShareCredit(double difficulty, double multiplier)
     {
-        Validate(difficulty);
+        Validate(difficulty, FullTargetMaximum);
         if(!double.IsFinite(multiplier) || multiplier <= 0)
             throw new ArgumentOutOfRangeException(nameof(multiplier));
         var credit = difficulty / multiplier;

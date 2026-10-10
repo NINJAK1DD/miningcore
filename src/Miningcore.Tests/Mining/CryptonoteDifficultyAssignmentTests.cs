@@ -19,7 +19,10 @@ public class CryptonoteDifficultyAssignmentTests
         {
             foreach(var type in new[] { typeof(ConcealWorkerContext), typeof(CryptonoteWorkerContext), typeof(ZanoWorkerContext) })
             foreach(var value in new[] { 0.5d, 0.1d, 1d / 256d, double.Epsilon,
-                Math.BitIncrement(CryptonoteDifficulty.Maximum), double.MaxValue })
+                Math.BitIncrement(CryptonoteDifficulty.FullTargetMaximum), double.MaxValue })
+                yield return new object[] { type, value };
+            foreach(var type in new[] { typeof(ConcealWorkerContext), typeof(CryptonoteWorkerContext) })
+            foreach(var value in new[] { 4294967296d, Math.BitIncrement(4294967296d), 5e9d, CryptonoteDifficulty.FullTargetMaximum })
                 yield return new object[] { type, value };
         }
     }
@@ -65,7 +68,7 @@ public class CryptonoteDifficultyAssignmentTests
         worker.SetDifficulty(10);
         time.AdvanceMonotonic(TimeSpan.FromSeconds(100));
         Assert.Equal(1, VarDiffManager.IdleUpdate(worker, options, clock));
-        worker.SetDifficulty(CryptonoteDifficulty.Maximum);
+        worker.SetDifficulty(worker.MaximumDifficulty);
         worker.VarDiff = new VarDiffContext(time) { Config = options };
         Assert.Null(VarDiffManager.Update(worker, options, clock));
         time.AdvanceMonotonic(TimeSpan.FromSeconds(1));
@@ -79,7 +82,8 @@ public class CryptonoteDifficultyAssignmentTests
     [InlineData("maximum")]
     public void Configuration_RejectsUnrepresentableBounds(string field)
     {
-        foreach(var value in new[] { 0.5d, 0.1d, 1d / 256d, double.MaxValue })
+        foreach(var maximum in new[] { CryptonoteDifficulty.ShortTargetMaximum, CryptonoteDifficulty.FullTargetMaximum })
+        foreach(var value in new[] { 0.5d, 0.1d, 1d / 256d, Math.BitIncrement(maximum), double.MaxValue })
         {
             var options = new VarDiffConfig { MinDiff = 1, MaxDiff = 100 };
             var endpoint = new PoolEndpoint { Difficulty = 10, VarDiff = options };
@@ -87,14 +91,14 @@ public class CryptonoteDifficultyAssignmentTests
             if(field == "minimum") options.MinDiff = value;
             if(field == "maximum") options.MaxDiff = value;
             Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.ValidatePool(new PoolConfig
-                { Ports = new Dictionary<int, PoolEndpoint> { [3333] = endpoint } }));
+                { Ports = new Dictionary<int, PoolEndpoint> { [3333] = endpoint } }, maximum));
         }
     }
 
     [Fact]
     public void UpperBoundary_HasPositiveNonOverflowingQuantizedDivisor()
     {
-        Assert.True(checked((long) (CryptonoteDifficulty.Validate(CryptonoteDifficulty.Maximum) * 255d)) > 0);
-        Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.Validate(Math.BitIncrement(CryptonoteDifficulty.Maximum)));
+        Assert.True(checked((long) (CryptonoteDifficulty.Validate(CryptonoteDifficulty.FullTargetMaximum, CryptonoteDifficulty.FullTargetMaximum) * 255d)) > 0);
+        Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.Validate(Math.BitIncrement(CryptonoteDifficulty.FullTargetMaximum), CryptonoteDifficulty.FullTargetMaximum));
     }
 }

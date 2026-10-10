@@ -8,8 +8,8 @@ namespace Miningcore.Blockchain.Cryptonote;
 public class CryptonoteWorkerContext : WorkerContextBase
 {
     internal override double MinimumDifficulty => CryptonoteDifficulty.Minimum;
-    internal override double MaximumDifficulty => CryptonoteDifficulty.Maximum;
-    protected override double ValidateDifficulty(double value) => CryptonoteDifficulty.Validate(value);
+    internal override double MaximumDifficulty => CryptonoteDifficulty.ShortTargetMaximum;
+    protected override double ValidateDifficulty(double value) => CryptonoteDifficulty.Validate(value, MaximumDifficulty);
     /// <summary>
     /// Usually a wallet address
     /// NOTE: May include paymentid (seperated by a dot .)

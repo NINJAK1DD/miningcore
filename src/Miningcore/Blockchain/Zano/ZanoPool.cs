@@ -130,23 +130,7 @@ public class ZanoPool : PoolBase
         // validate login
         var result = manager.ValidateAddress(addressToValidate);
 
-        context.IsAuthorized = result;
-
-        // Nicehash's stupid validator insists on "error" property present
-        // in successful responses which is a violation of the JSON-RPC spec
-        // [We miss you Oliver <3 We miss you so much <3 Respect the goddamn standards Nicehash :(]
-        var response = new JsonRpcResponse<object>(context.IsAuthorized, request.Id);
-
-        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
-        {
-            response.Extra = new Dictionary<string, object>();
-            response.Extra["error"] = null;
-        }
-
-        // respond
-        await connection.RespondAsync(response);
-
-        if(context.IsAuthorized)
+        if(result)
         {
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
@@ -167,26 +151,22 @@ public class ZanoPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            if(staticDiff.HasValue)
-                Cryptonote.CryptonoteDifficulty.ValidateRequest(staticDiff.Value);
-
             var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
                 assignmentGate.Activate();
                 ct.ThrowIfCancellationRequested();
                 // Static diff
-                if(staticDiff.HasValue &&
-                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                if(staticDiff.HasValue && Cryptonote.CryptonoteDifficulty.TryApplyStaticHint(context, staticDiff.Value, logger))
                 {
-                    context.SetDifficulty(staticDiff.Value);
-                    context.VarDiff = null; // disable vardiff only after validation
 
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
                 }
 
                 var job = CreateWorkerJob(connection);
+
+                context.IsAuthorized = true;
+                await RespondAuthorizationAsync(connection, request.Id, true);
 
                 await connection.NotifyAsync(ZanoStratumMethods.SetDifficulty, new object[] { context.Difficulty });
                 await connection.NotifyAsync(ZanoStratumMethods.MiningNotify, job);
@@ -199,6 +179,8 @@ public class ZanoPool : PoolBase
 
         else
         {
+            context.IsAuthorized = false;
+            await RespondAuthorizationAsync(connection, request.Id, false);
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 if(BanClient(connection, loginFailureBanTimeout))
@@ -207,6 +189,16 @@ public class ZanoPool : PoolBase
                 Disconnect(connection);
             }
         }
+    }
+
+    private Task RespondAuthorizationAsync(StratumConnection connection, object requestId, bool authorized)
+    {
+        var response = new JsonRpcResponse<object>(authorized, requestId);
+        if(connection.Context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        {
+            response.Extra = new Dictionary<string, object> { ["error"] = null };
+        }
+        return connection.RespondAsync(response);
     }
 
     private async Task OnSubmitAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -352,10 +344,7 @@ public class ZanoPool : PoolBase
         // validate login
         var result = manager.ValidateAddress(addressToValidate);
 
-        context.IsSubscribed = result;
-        context.IsAuthorized = result;
-
-        if(context.IsAuthorized)
+        if(result)
         {
             // extract control vars from password
             var passParts = loginRequest.Password?.Split(PasswordControlVarsSeparator);
@@ -377,21 +366,14 @@ public class ZanoPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            if(staticDiff.HasValue)
-                Cryptonote.CryptonoteDifficulty.ValidateRequest(staticDiff.Value);
-
             var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
                 assignmentGate.Activate();
                 ct.ThrowIfCancellationRequested();
                 // Static diff
-                if(staticDiff.HasValue &&
-                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                if(staticDiff.HasValue && Cryptonote.CryptonoteDifficulty.TryApplyStaticHint(context, staticDiff.Value, logger))
                 {
-                    context.SetDifficulty(staticDiff.Value);
-                    context.VarDiff = null; // disable vardiff only after validation
 
                     logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {staticDiff.Value}");
                 }
@@ -399,6 +381,7 @@ public class ZanoPool : PoolBase
                 // Nicehash's stupid validator insists on "error" property present
                 // in successful responses which is a violation of the JSON-RPC spec
                 // [Respect the goddamn standards Nicehack :(]
+                context.IsSubscribed = context.IsAuthorized = true;
                 var response = new JsonRpcResponse<object>(true, request.Id);
 
                 if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
@@ -417,6 +400,7 @@ public class ZanoPool : PoolBase
 
         else
         {
+            context.IsSubscribed = context.IsAuthorized = false;
             await connection.RespondErrorAsync(StratumError.MinusOne, "invalid login", request.Id);
 
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
@@ -474,10 +458,7 @@ public class ZanoPool : PoolBase
         // validate login
         var result = manager.ValidateAddress(addressToValidate);
 
-        context.IsSubscribed = result;
-        context.IsAuthorized = result;
-
-        if(context.IsAuthorized)
+        if(result)
         {
             // extract control vars from password
             var passParts = password?.Split(PasswordControlVarsSeparator);
@@ -499,21 +480,14 @@ public class ZanoPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            if(staticDiff.HasValue)
-                Cryptonote.CryptonoteDifficulty.ValidateRequest(staticDiff.Value);
-
             var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
                 assignmentGate.Activate();
                 ct.ThrowIfCancellationRequested();
                 // Static diff
-                if(staticDiff.HasValue &&
-                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                if(staticDiff.HasValue && Cryptonote.CryptonoteDifficulty.TryApplyStaticHint(context, staticDiff.Value, logger))
                 {
-                    context.SetDifficulty(staticDiff.Value);
-                    context.VarDiff = null; // disable vardiff only after validation
 
                     logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {staticDiff.Value}");
                 }
@@ -521,6 +495,7 @@ public class ZanoPool : PoolBase
                 // Nicehash's stupid validator insists on "error" property present
                 // in successful responses which is a violation of the JSON-RPC spec
                 // [Respect the goddamn standards Nicehack :(]
+                context.IsSubscribed = context.IsAuthorized = true;
                 var response = new JsonRpcResponse<object>(true, request.Id);
 
                 if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
@@ -539,6 +514,7 @@ public class ZanoPool : PoolBase
 
         else
         {
+            context.IsSubscribed = context.IsAuthorized = false;
             await connection.RespondErrorAsync(StratumError.MinusOne, "invalid login", request.Id);
 
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
@@ -766,7 +742,7 @@ public class ZanoPool : PoolBase
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
-        Cryptonote.CryptonoteDifficulty.ValidatePool(pc);
+        Cryptonote.CryptonoteDifficulty.ValidatePool(pc, Cryptonote.CryptonoteDifficulty.FullTargetMaximum);
         coin = pc.Template.As<ZanoCoinTemplate>();
 
         base.Configure(pc, cc);

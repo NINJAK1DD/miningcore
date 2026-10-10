@@ -33,10 +33,21 @@ integer prefix, with explicit zero padding for shorter values. Low-difficulty po
 previously advertised zero or incompletely padded targets. These three families now
 reject assigned difficulty below **1** instead of saturating only the wire target and
 underweighting accepted work. Startup checks cover endpoint difficulty and explicit
-VarDiff minimum/maximum; static/NiceHash requests, direct/queued assignments and job
-preparation share the same bounds. The upper limit is the largest safe double below
-`2^63 / 255` (approximately `3.617008641903833e16`); larger finite values are rejected
-before the signed divisor conversion. Dynamic retargeting respects these bounds too.
+VarDiff minimum/maximum, direct/queued assignments and job preparation share the same
+protocol bounds. Conceal/Cryptonote's four-byte targets require difficulty below `2^32`
+(maximum `Math.BitDecrement(4294967296d)`, approximately `4.294967296e9`), keeping the
+wire target nonzero and consumable by CryptoNote miners. Zano's full-width target retains
+the largest safe double below `2^63 / 255` (approximately `3.617008641903833e16`).
+Encoders also reject zero target output defensively. Dynamic retargeting respects the
+appropriate protocol ceiling.
+
+Static/NiceHash values remain hints: values below the existing minimum/application
+threshold are ignored. A hint that would otherwise apply but lies outside the protocol
+range is logged once at Warn and ignored, retaining the current assignment and VarDiff.
+Login preparation completes before authorization state or success is committed. Zano v2
+sends one authorization response followed by difficulty/job notifications under its gate.
+This avoids duplicate success/error responses and preserves previously successful logins
+with sub-unit hints. Direct invalid assignments and invalid startup bounds still fail.
 
 **Upgrade action:** raise any sub-unit endpoint/VarDiff bounds on Conceal, Cryptonote
 or Zano to at least 1 and remove oversized bounds before restarting. Zano's protocol

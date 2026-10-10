@@ -187,6 +187,7 @@ internal static class RpcConsumerOperations
         "PayoutManager.UpdatePoolBalancesAsync",
         "PoolBase.ForEachMinerAsync",
         "PoolBase.NestedAssignmentBroadcast",
+        "CryptonoteDifficulty.StaticHintIgnored",
         "PoolBase.LoadStatsAsync",
         "PoolBase.RunAsync",
         "PoolBase.RunVardiffIdleUpdaterAsync",
