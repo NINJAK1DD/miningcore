@@ -230,7 +230,7 @@ jobs:
         echo "MININGCORE_TEST_BLAKE2B_BITCOIND=$install_root/bin/bitcoind" >> "$GITHUB_ENV"
 
     - name: Cache checksum-pinned Knots source
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/knots-reviewed-source
         key: knots-2942-source-11c0b99a82b8b1c9c29ab76d9b0507ce1017813665741627b3f3883a4c2f7a7f
@@ -245,7 +245,7 @@ jobs:
 
     - name: Preserve failed Knots maturity diagnostics
       if: failure() && steps.knots-maturity.outcome == 'failure'
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: knots-maturity-diagnostics
         path: ${{ runner.temp }}/knots-maturity-diagnostics
