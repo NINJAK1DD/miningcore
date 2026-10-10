@@ -193,7 +193,7 @@ public class EquihashPool : PoolBase
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
             // Nicehash support
-            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName(), ct);
 
             if(nicehashDiff.HasValue)
             {
@@ -208,24 +208,31 @@ public class EquihashPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                assignmentGate.Activate();
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue &&
+                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
+                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                {
+                    context.VarDiff = null; // disable vardiff
+                    context.SetDifficulty(staticDiff.Value);
 
-                logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
-                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                    await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                }
+
+                var minerJobParams = CreateWorkerJob(connection, context.IsAuthorized);
+
+                // send intial update
+                await connection.NotifyAsync(EquihashStratumMethods.SetTarget, new object[] { EncodeTarget(context.Difficulty) });
+                await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
             }
-
-            var minerJobParams = CreateWorkerJob(connection, context.IsAuthorized);
-
-            // send intial update
-            await connection.NotifyAsync(EquihashStratumMethods.SetTarget, new object[] { EncodeTarget(context.Difficulty) });
-            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
+            finally { assignmentGate.Release(); }
         }
 
         else
@@ -335,42 +342,49 @@ public class EquihashPool : PoolBase
         }
     }
 
-    private async Task OnSuggestTargetAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnSuggestTargetAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
-        var request = tsRequest.Value;
-        var context = connection.ContextAs<EquihashWorkerContext>();
-
-        if(request.Id == null)
-            throw new StratumException(StratumError.MinusOne, "missing request id");
-
-        var requestParams = request.ParamsAs<string[]>();
-        var target = requestParams.FirstOrDefault();
-
-        if(!string.IsNullOrEmpty(target))
+        var assignmentGate = await EnterAssignmentAsync(connection, ct);
+        try
         {
-            if(System.Numerics.BigInteger.TryParse(target, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var targetBig))
+            assignmentGate.Activate();
+            ct.ThrowIfCancellationRequested();
+            var request = tsRequest.Value;
+            var context = connection.ContextAs<EquihashWorkerContext>();
+
+            if(request.Id == null)
+                throw new StratumException(StratumError.MinusOne, "missing request id");
+
+            var requestParams = request.ParamsAs<string[]>();
+            var target = requestParams.FirstOrDefault();
+
+            if(!string.IsNullOrEmpty(target))
             {
-                var newDiff = (double) new BigRational(manager.ChainConfig.Diff1BValue, targetBig);
-                var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
-
-                if(newDiff >= poolEndpoint.Difficulty)
+                if(System.Numerics.BigInteger.TryParse(target, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var targetBig))
                 {
-                    context.EnqueueNewDifficulty(newDiff);
-                    context.ApplyPendingDifficulty();
+                    var newDiff = (double) new BigRational(manager.ChainConfig.Diff1BValue, targetBig);
+                    var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
 
-                    await connection.NotifyAsync(EquihashStratumMethods.SetTarget, new object[] { EncodeTarget(context.Difficulty) });
+                    if(newDiff >= poolEndpoint.Difficulty)
+                    {
+                        context.EnqueueNewDifficulty(newDiff);
+                        context.ApplyPendingDifficulty();
+
+                        await connection.NotifyAsync(EquihashStratumMethods.SetTarget, new object[] { EncodeTarget(context.Difficulty) });
+                    }
+
+                    else
+                        await connection.RespondErrorAsync(StratumError.Other, "suggested difficulty too low", request.Id);
                 }
 
                 else
-                    await connection.RespondErrorAsync(StratumError.Other, "suggested difficulty too low", request.Id);
+                    await connection.RespondErrorAsync(StratumError.Other, "invalid target", request.Id);
             }
 
             else
                 await connection.RespondErrorAsync(StratumError.Other, "invalid target", request.Id);
         }
-
-        else
-            await connection.RespondErrorAsync(StratumError.Other, "invalid target", request.Id);
+        finally { assignmentGate.Release(); }
     }
 
     protected override async Task OnRequestAsync(StratumConnection connection,
@@ -395,7 +409,7 @@ public class EquihashPool : PoolBase
                     break;
 
                 case EquihashStratumMethods.SuggestTarget:
-                    await OnSuggestTargetAsync(connection, tsRequest);
+                    await OnSuggestTargetAsync(connection, tsRequest, ct);
                     break;
 
                 case BitcoinStratumMethods.ExtraNonceSubscribe:
@@ -433,7 +447,7 @@ public class EquihashPool : PoolBase
                 break;
         }
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<EquihashWorkerContext>();
             var minerJobParams = CreateWorkerJob(connection, cleanJob);

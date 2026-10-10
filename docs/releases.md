@@ -22,6 +22,69 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased: Handshake difficulty notification and CryptoNote-family targets
+
+Handshake static-difficulty authorization now sends `mining.set_difficulty` under
+the worker assignment gate, so miners receive the difficulty the server enforces.
+Notification failure closes the connection; reconnect to obtain a fresh assignment.
+
+Conceal, Cryptonote and Zano now copy full-width targets and discard only the signed
+integer prefix, with explicit zero padding for shorter values. Low-difficulty ports
+previously advertised zero or incompletely padded targets. These three families now
+reject assigned difficulty below **1** instead of saturating only the wire target and
+underweighting accepted work. Startup checks cover endpoint difficulty and explicit
+VarDiff minimum/maximum, direct/queued assignments and job preparation share the same
+protocol bounds. Conceal/Cryptonote's four-byte targets now retain at least **101 target
+units**, limiting excess miner work per nominally credited share to **less than 1%**.
+The maximum whole-number assignment is **42,524,428** (`Math.Floor(Math.BitDecrement(4294967296d / 101d))`).
+Nonzero targets alone were insufficient: at difficulty `2.2e9`, rounding to one target
+unit made an XMRig miner perform approximately 1.95 times its credited work. The lower
+ceiling bounds that truncation while retaining the four-byte protocol and nominal credit.
+Ordinary assignments around `1e5`–`1e6` remain supported. Zano's full-width target retains
+the largest safe double below `2^63 / 255` (approximately `3.617008641903833e16`).
+Encoders also reject zero or insufficient-precision short target output defensively. Dynamic retargeting respects the
+appropriate protocol ceiling.
+
+Conceal/Cryptonote now round valid assigned difficulty **down to a whole number** before
+storing current/previous/pending work. For example, `1.5` and `1.99` assign and credit
+difficulty 1; `2.5` assigns 2. This prevents XMRig's integer conversion from advertising
+easier work than the pool's `0.99` validation threshold. Endpoint/static/NiceHash assignments
+and VarDiff use the same policy. Effective VarDiff minimums round up and maximums round
+down; ranges containing no whole-number assignment fail startup. The rounded starting
+endpoint must lie within the resulting integer range. Positive `maxDelta` below 1 is
+rejected at startup for these two families; omitted or zero retains the unlimited policy.
+Final integer retargets satisfy both the effective range and `MaxDelta` simultaneously.
+If their intersection contains no integer, the update preserves retarget metadata and
+timing samples without assigning new work. Encoders and
+job preparation reject fractional short assignments that bypass normalization. Zano's
+full-width assignments keep their fractional values.
+
+Static/NiceHash values remain hints: values below the existing minimum/application
+threshold are ignored. A hint that would otherwise apply but lies outside the protocol
+range is logged once at Warn and ignored, retaining the current assignment and VarDiff.
+Login preparation completes before authorization state or success is committed. Zano v2
+sends one authorization response followed by difficulty/job notifications under its gate.
+This avoids duplicate success/error responses and preserves previously successful logins
+with sub-unit hints. Direct invalid assignments and invalid startup bounds still fail.
+
+**Upgrade action:** raise any sub-unit endpoint/VarDiff bounds on Conceal, Cryptonote
+or Zano to at least 1 and remove oversized bounds before restarting. Conceal/Cryptonote
+endpoint difficulty and explicit VarDiff bounds above approximately **42.5 million** must
+be reduced, including configurations previously allowed below `2^32`. With no explicit
+VarDiff maximum, the protocol ceiling applies automatically. Fractional endpoint/hint
+values round down; use whole-number settings to express an exact short-target assignment.
+Explicit VarDiff bounds must contain at least one integer, and the rounded endpoint must
+lie within them. For example, minimum `1.5` and maximum `2.5` require starting difficulty
+2; starting `1.5` rounds to 1 and is rejected. Set a positive `maxDelta` to at least 1,
+or omit it/set it to zero for unlimited steps. Oversized miner/NiceHash
+hints continue to be warned and ignored; they do not disable VarDiff or fail login. Zano's protocol
+assignment uses this floor before its existing share-multiplier normalization for
+persisted credit. Existing stored shares are unchanged. No database migration is
+required. See the [assignment and target validation](vardiff-monotonic.md).
+
+Large proxy/NiceHash connections can exceed the configured target share rate at this
+ceiling. Compatible higher-precision targets are tracked in [Issue #213](https://github.com/NINJAK1DD/miningcore/issues/213).
+
 ## Unreleased: Stratum ban attribution and address normalization
 
 Stratum bans now reject a normalized forwarded client on its validated trusted
@@ -296,8 +359,22 @@ delta limits avoid cancellation, and invalid/non-finite inputs produce no retarg
 BLAKE2b supplies its representable runtime ceiling; other families retain their maximum
 policy. Shared startup validation now rejects non-finite or non-positive `minDiff` and
 configured `maxDiff` values; omitted maxima remain supported. No operator configuration
-is rewritten. Forward wall-clock steps still resemble idle intervals; monotonic elapsed
-measurement is tracked separately in [#185](https://github.com/NINJAK1DD/miningcore/issues/185).
+is rewritten.
+
+[#185](https://github.com/NINJAK1DD/miningcore/issues/185) now moves elapsed share intervals,
+context creation and retarget cooldowns to each context's monotonic `TimeProvider` across
+all pool families. Forward/backward UTC corrections cannot alter identical monotonic
+sample sequences. `LastUpdate` retains its UTC assignment meaning. Positive submillisecond
+samples remain measurable; zero and tiny positive means use #184's sample-count-aware
+estimate as a burst-rate floor. Ordinary positive arithmetic above the floor is retained.
+Idle updates require both full inactivity and retarget intervals; the old one-second
+inactivity allowance is removed. Canceled or replaced contexts are checked under the
+timing lock. Every family now shares a worker assignment gate across calculation,
+publication, fixed/NiceHash changes and pending-difficulty broadcasts. Explicit assignments
+clear deferred difficulty. Expected shutdown cancellation is not logged as a sweep error.
+Representability bounds and immutable accepted-proof credit remain intact.
+No additional configuration or database migration is required. See the
+[consumer audit, migration and validation](vardiff-monotonic.md).
 
 BLAKE2b now makes VarDiff publication failures terminal inside the assignment gate for
 both idle and share updates. Missing work, a full send queue or another exception cannot

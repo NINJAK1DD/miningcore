@@ -516,16 +516,16 @@ existing parser. The exact parsed value is reused for execution.
 Server-driven BLAKE2b VarDiff has an effective maximum of `65535 * 2^208`, the highest
 representable difficulty (target 1), when `maxDiff` is omitted. A configured lower maximum
 is honored. This runtime ceiling applies to both share-triggered and idle retargeting
-without rewriting the operator's configuration. A genuine zero-length interval window
-uses the Unix-millisecond timestamp resolution: a conservative mean of
+without rewriting the operator's configuration. Zero and tiny positive interval windows
+use a conservative minimum policy mean of
 **0.001 / min(interval count, 10) seconds**, including the current
 interval, then applies normal proportional retargeting, `maxDelta` and difficulty bounds.
 A full window uses 0.0001 seconds; two intervals use 0.0005 seconds. For example, difficulty 10
 with a ten-second target and a full zero window becomes 1,000,000 without a delta limit, or 12
 with `maxDelta: 2`; two zero intervals produce 200,000 without a delta limit. It does not
 automatically jump to the protocol maximum. For target intervals at or below the estimate,
-an unresolved zero window holds the current difficulty, subject to configured bounds,
-instead of lowering it. Positive measured intervals retain their proportional calculation.
+a burst window below that mean holds the current difficulty, subject to configured bounds,
+instead of lowering it. Positive measured intervals above the floor retain their proportional calculation.
 Extreme positive ratios avoid
 intermediate overflow/underflow, and delta limiting uses the previous difficulty plus
 or minus the limit, avoiding cancellation. The shared VarDiff arithmetic fixes also apply
@@ -561,20 +561,18 @@ success for an unfinished assignment. Host shutdown clears jobs and closes the s
 without a publication-failure diagnostic or metric. Cancellation before the request's
 early validation gate remains a no-op on assignment state.
 
-Both share and idle updates read the wall clock while holding the VarDiff state lock.
-A no-op idle sweep leaves the share timestamp, interval buffer and assignment markers
-unchanged, so a real share in the same millisecond still measures from the previous share or
-actual retarget. An idle update advances the baseline only when difficulty really changes.
-A backward timestamp, future retarget timestamp or invalid interval history resets the
-measurement window and timing baseline without changing difficulty, jobs or the last
-actual assignment marker. Later valid samples resume normal retargeting. Negative elapsed
-time is never treated as a fast-miner observation. Invalid/non-finite arithmetic inputs
-produce no retarget. These shared changes are tracked in
-[#184](https://github.com/NINJAK1DD/miningcore/issues/184); interval measurement still uses
-the wall clock, with explicit rollback recovery rather than a new monotonic timer.
-Forward clock steps can still resemble an idle interval and lower difficulty within
-configured bounds; [#185](https://github.com/NINJAK1DD/miningcore/issues/185) tracks a
-cross-family migration to monotonic elapsed time. Shared startup validation rejects non-finite or non-positive minimum
+Both share and idle updates measure intervals and retarget cooldowns with the context's
+monotonic `TimeProvider`, sampled under the VarDiff state lock. Forward and backward UTC
+corrections cannot alter an identical monotonic sample sequence. `LastUpdate` remains
+UTC assignment metadata. No-op idle sweeps preserve the real-share baseline, while actual
+retargets clear the buffer and restart the cooldown. A broken monotonic provider or invalid
+history is defensively rebased without changing the last assignment marker. Positive
+submillisecond intervals remain measurable; zero and tiny positive means use the sample-count-aware
+burst floor above. The shared worker gate also serializes generic-family fixed/NiceHash assignments,
+VarDiff publication and deferred-difficulty application. See the [cross-family audit and validation](vardiff-monotonic.md)
+for [#185](https://github.com/NINJAK1DD/miningcore/issues/185), following the arithmetic and
+no-op-sweep fixes in [#184](https://github.com/NINJAK1DD/miningcore/issues/184).
+Shared startup validation rejects non-finite or non-positive minimum
 and configured maximum difficulties; omitting `maxDiff` remains supported.
 
 **Before upgrading:** set an explicit finite, positive `minDiff` appropriate for the coin
@@ -752,9 +750,12 @@ intervals, both with and without `maxDelta`: accepted accounting survives, the c
 remains usable, and the next difficulty/notify pair has an exactly representable target.
 Wire tests also cover idle retargeting, explicit lower maxima, retained jobs, unchanged
 configuration and untouched negotiation allowance. Shared VarDiff unit tests cover ordinary
-retargeting, extreme ratios and generic-family default bounds. Backward-clock tests cover
-both producers and protocol bounds, preserved assignments, discarded invalid samples and
-subsequent recovery. A lock-checking clock guards against reading time before the monitor.
+retargeting, extreme ratios and generic-family default bounds. Monotonic tests cover every
+concrete worker context, both UTC correction directions,
+preserved assignments, invalid-provider recovery and clock sampling under the monitor.
+Injected wall-correction cases preserve the same retarget and original accepted credit
+through real proofs and all four payout schemes with PostgreSQL settlement. Clock
+independence itself is established by the deterministic counter/UTC tests.
 Run the focused suite with:
 
 ```sh

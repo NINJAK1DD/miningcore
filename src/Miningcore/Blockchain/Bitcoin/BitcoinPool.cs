@@ -67,8 +67,16 @@ public class BitcoinPool : PoolBase
 
     // Dispatch rejects duplicates before this extension hook. Overrides must also
     // preserve the core guard if they invoke subscription outside normal dispatch.
-    protected virtual Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest) =>
-        OnSubscribeCoreAsync(connection, tsRequest);
+    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
+    {
+        if(await RejectDuplicateSubscribeAsync(connection, tsRequest.Value))
+            return;
+        var userAgent = ReadSubscribeUserAgent(tsRequest.Value);
+        var lookupContext = new BitcoinWorkerContext { UserAgent = userAgent };
+        var prepared = new PreparedSubscription(userAgent,
+            await GetNicehashStaticMinDiff(lookupContext, coin.Name, coin.GetAlgorithmName(), ct));
+        await RunAssignmentAsync(connection, () => OnSubscribeCoreAsync(connection, tsRequest, prepared), ct);
+    }
 
     private const string DuplicateSubscribeError =
         "Already subscribed; another subscription attempt will close this connection";
@@ -116,7 +124,7 @@ public class BitcoinPool : PoolBase
         request.ParamsAs<string[]>()?.FirstOrDefault()?.Trim();
 
     protected async Task OnSubscribeCoreAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest,
-        PreparedSubscription? preparedSubscription = null)
+        PreparedSubscription preparedSubscription)
     {
         var request = tsRequest.Value;
 
@@ -126,7 +134,7 @@ public class BitcoinPool : PoolBase
         if(await RejectDuplicateSubscribeAsync(connection, request))
             return;
         var context = connection.ContextAs<BitcoinWorkerContext>();
-        var userAgent = preparedSubscription.HasValue ? preparedSubscription.Value.UserAgent : ReadSubscribeUserAgent(request);
+        var userAgent = preparedSubscription.UserAgent;
 
         var data = new object[]
         {
@@ -157,8 +165,7 @@ public class BitcoinPool : PoolBase
         context.UserAgent = userAgent;
 
         // Nicehash support
-        var nicehashDiff = preparedSubscription.HasValue ? preparedSubscription.Value.NicehashDifficulty :
-            await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+        var nicehashDiff = preparedSubscription.NicehashDifficulty;
 
         if(nicehashDiff.HasValue)
         {
@@ -245,9 +252,12 @@ public class BitcoinPool : PoolBase
 
             if(manager.DirectCoinbasePayoutEnabled && context.IsSubscribed)
             {
-                var minerJobParams = CreateWorkerJob(connection, true);
-                await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify,
-                    minerJobParams);
+                await RunAssignmentAsync(connection, async () =>
+                {
+                    var minerJobParams = CreateWorkerJob(connection, true);
+                    await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify,
+                        minerJobParams);
+                }, ct);
             }
         }
 
@@ -274,7 +284,12 @@ public class BitcoinPool : PoolBase
             context.VarDiff == null && difficulty.Value > context.Difficulty);
 
     // Address validation and identity updates finish before this assignment-only hook.
-    protected virtual async Task ApplyStaticDifficultyAsync(StratumConnection connection,
+    protected virtual Task ApplyStaticDifficultyAsync(StratumConnection connection,
+        double? staticDiff, CancellationToken ct) =>
+        RunAssignmentAsync(connection, () => ApplyStaticDifficultyCoreAsync(connection, staticDiff, ct), ct);
+
+    // BLAKE2b invokes the same mutation inside its own gated failure boundary.
+    protected async Task ApplyStaticDifficultyCoreAsync(StratumConnection connection,
         double? staticDiff, CancellationToken ct)
     {
         var context = connection.ContextAs<BitcoinWorkerContext>();
@@ -751,7 +766,7 @@ public class BitcoinPool : PoolBase
     {
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
-        async Task BroadcastAsync() => await ForEachMinerAsync(async (connection, ct) =>
+        async Task BroadcastAsync() => await ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             if(connection.IsDisconnectRequested)
                 return;
@@ -939,7 +954,7 @@ public class BitcoinPool : PoolBase
             {
                 case BitcoinStratumMethods.Subscribe:
                     if(!await RejectDuplicateSubscribeAsync(connection, request))
-                        await OnSubscribeAsync(connection, tsRequest);
+                        await OnSubscribeAsync(connection, tsRequest, ct);
                     break;
 
                 case BitcoinStratumMethods.Authorize:
@@ -951,11 +966,11 @@ public class BitcoinPool : PoolBase
                     break;
 
                 case BitcoinStratumMethods.SuggestDifficulty:
-                    await OnSuggestDifficultyAsync(connection, tsRequest);
+                    await RunAssignmentAsync(connection, () => OnSuggestDifficultyAsync(connection, tsRequest), ct);
                     break;
 
                 case BitcoinStratumMethods.MiningConfigure:
-                    await OnConfigureMiningAsync(connection, tsRequest);
+                    await RunAssignmentAsync(connection, () => OnConfigureMiningAsync(connection, tsRequest), ct);
                     // ignored
                     break;
 

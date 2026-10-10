@@ -92,7 +92,7 @@ public class ZanoPool : PoolBase
         context.IsSubscribed = true;
     }
 
-    private async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
         var context = connection.ContextAs<ZanoWorkerContext>();
@@ -130,29 +130,13 @@ public class ZanoPool : PoolBase
         // validate login
         var result = manager.ValidateAddress(addressToValidate);
 
-        context.IsAuthorized = result;
-
-        // Nicehash's stupid validator insists on "error" property present
-        // in successful responses which is a violation of the JSON-RPC spec
-        // [We miss you Oliver <3 We miss you so much <3 Respect the goddamn standards Nicehash :(]
-        var response = new JsonRpcResponse<object>(context.IsAuthorized, request.Id);
-
-        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
-        {
-            response.Extra = new Dictionary<string, object>();
-            response.Extra["error"] = null;
-        }
-
-        // respond
-        await connection.RespondAsync(response);
-
-        if(context.IsAuthorized)
+        if(result)
         {
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
             // Nicehash support
-            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName(), ct);
 
             if(nicehashDiff.HasValue)
             {
@@ -167,28 +151,36 @@ public class ZanoPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                assignmentGate.Activate();
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue && Cryptonote.CryptonoteDifficulty.TryApplyStaticHint(context, staticDiff.Value, logger))
+                {
 
-                logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                }
+
+                var job = CreateWorkerJob(connection);
+
+                context.IsAuthorized = true;
+                await RespondAuthorizationAsync(connection, request.Id, true);
+
+                await connection.NotifyAsync(ZanoStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                await connection.NotifyAsync(ZanoStratumMethods.MiningNotify, job);
+
+                // log association
+                logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
             }
-
-            var job = CreateWorkerJob(connection);
-
-            await connection.NotifyAsync(ZanoStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-            await connection.NotifyAsync(ZanoStratumMethods.MiningNotify, job);
-
-            // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
+            finally { assignmentGate.Release(); }
         }
 
         else
         {
+            context.IsAuthorized = false;
+            await RespondAuthorizationAsync(connection, request.Id, false);
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 if(BanClient(connection, loginFailureBanTimeout))
@@ -197,6 +189,16 @@ public class ZanoPool : PoolBase
                 Disconnect(connection);
             }
         }
+    }
+
+    private Task RespondAuthorizationAsync(StratumConnection connection, object requestId, bool authorized)
+    {
+        var response = new JsonRpcResponse<object>(authorized, requestId);
+        if(connection.Context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        {
+            response.Extra = new Dictionary<string, object> { ["error"] = null };
+        }
+        return connection.RespondAsync(response);
     }
 
     private async Task OnSubmitAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -303,7 +305,7 @@ public class ZanoPool : PoolBase
 
     #region // Protocol V1 handlers - https://github.com/sammy007/open-ethereum-pool/blob/master/docs/STRATUM.md
 
-    private async Task OnLoginAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnLoginAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
         var context = connection.ContextAs<ZanoWorkerContext>();
@@ -342,17 +344,14 @@ public class ZanoPool : PoolBase
         // validate login
         var result = manager.ValidateAddress(addressToValidate);
 
-        context.IsSubscribed = result;
-        context.IsAuthorized = result;
-
-        if(context.IsAuthorized)
+        if(result)
         {
             // extract control vars from password
             var passParts = loginRequest.Password?.Split(PasswordControlVarsSeparator);
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
             // Nicehash support
-            var nicehashDiff = await GetNicehashStaticMinDiff(context, manager.Coin.Name, manager.Coin.GetAlgorithmName());
+            var nicehashDiff = await GetNicehashStaticMinDiff(context, manager.Coin.Name, manager.Coin.GetAlgorithmName(), ct);
 
             if(nicehashDiff.HasValue)
             {
@@ -367,36 +366,41 @@ public class ZanoPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                assignmentGate.Activate();
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue && Cryptonote.CryptonoteDifficulty.TryApplyStaticHint(context, staticDiff.Value, logger))
+                {
 
-                logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {staticDiff.Value}");
+                }
+
+                // Nicehash's stupid validator insists on "error" property present
+                // in successful responses which is a violation of the JSON-RPC spec
+                // [Respect the goddamn standards Nicehack :(]
+                context.IsSubscribed = context.IsAuthorized = true;
+                var response = new JsonRpcResponse<object>(true, request.Id);
+
+                if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+                {
+                    response.Extra = new Dictionary<string, object>();
+                    response.Extra["error"] = null;
+                }
+
+                await connection.RespondAsync(response);
+
+                // log association
+                logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
             }
-
-            // Nicehash's stupid validator insists on "error" property present
-            // in successful responses which is a violation of the JSON-RPC spec
-            // [Respect the goddamn standards Nicehack :(]
-            var response = new JsonRpcResponse<object>(true, request.Id);
-
-            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
-            {
-                response.Extra = new Dictionary<string, object>();
-                response.Extra["error"] = null;
-            }
-
-            await connection.RespondAsync(response);
-
-            // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
+            finally { assignmentGate.Release(); }
         }
 
         else
         {
+            context.IsSubscribed = context.IsAuthorized = false;
             await connection.RespondErrorAsync(StratumError.MinusOne, "invalid login", request.Id);
 
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
@@ -409,7 +413,7 @@ public class ZanoPool : PoolBase
         }
     }
 
-    private async Task OnSubmitLoginAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnSubmitLoginAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
         var context = connection.ContextAs<ZanoWorkerContext>();
@@ -454,17 +458,14 @@ public class ZanoPool : PoolBase
         // validate login
         var result = manager.ValidateAddress(addressToValidate);
 
-        context.IsSubscribed = result;
-        context.IsAuthorized = result;
-
-        if(context.IsAuthorized)
+        if(result)
         {
             // extract control vars from password
             var passParts = password?.Split(PasswordControlVarsSeparator);
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
             // Nicehash support
-            var nicehashDiff = await GetNicehashStaticMinDiff(context, manager.Coin.Name, manager.Coin.GetAlgorithmName());
+            var nicehashDiff = await GetNicehashStaticMinDiff(context, manager.Coin.Name, manager.Coin.GetAlgorithmName(), ct);
 
             if(nicehashDiff.HasValue)
             {
@@ -479,36 +480,41 @@ public class ZanoPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                assignmentGate.Activate();
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue && Cryptonote.CryptonoteDifficulty.TryApplyStaticHint(context, staticDiff.Value, logger))
+                {
 
-                logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {staticDiff.Value}");
+                }
+
+                // Nicehash's stupid validator insists on "error" property present
+                // in successful responses which is a violation of the JSON-RPC spec
+                // [Respect the goddamn standards Nicehack :(]
+                context.IsSubscribed = context.IsAuthorized = true;
+                var response = new JsonRpcResponse<object>(true, request.Id);
+
+                if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+                {
+                    response.Extra = new Dictionary<string, object>();
+                    response.Extra["error"] = null;
+                }
+
+                await connection.RespondAsync(response);
+
+                // log association
+                logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
             }
-
-            // Nicehash's stupid validator insists on "error" property present
-            // in successful responses which is a violation of the JSON-RPC spec
-            // [Respect the goddamn standards Nicehack :(]
-            var response = new JsonRpcResponse<object>(true, request.Id);
-
-            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
-            {
-                response.Extra = new Dictionary<string, object>();
-                response.Extra["error"] = null;
-            }
-
-            await connection.RespondAsync(response);
-
-            // log association
-            logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
+            finally { assignmentGate.Release(); }
         }
 
         else
         {
+            context.IsSubscribed = context.IsAuthorized = false;
             await connection.RespondErrorAsync(StratumError.MinusOne, "invalid login", request.Id);
 
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
@@ -521,33 +527,40 @@ public class ZanoPool : PoolBase
         }
     }
 
-    private async Task OnGetJobAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnGetJobAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
-        var request = tsRequest.Value;
-        var context = connection.ContextAs<ZanoWorkerContext>();
-
-        if(request.Id == null)
-            throw new StratumException(StratumError.MinusOne, "missing request id");
-
-        // authorized worker
-        if(!context.IsAuthorized)
-            throw new StratumException(StratumError.MinusOne, "unauthorized");
-
-        var job = CreateWorkerJob(connection);
-
-        // Nicehash's stupid validator insists on "error" property present
-        // in successful responses which is a violation of the JSON-RPC spec
-        // [Respect the goddamn standards Nicehack :(]
-        var response = new JsonRpcResponse<object[]>(job, request.Id);
-
-        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        var assignmentGate = await EnterAssignmentAsync(connection, ct);
+        try
         {
-            response.Extra = new Dictionary<string, object>();
-            response.Extra["error"] = null;
-        }
+            assignmentGate.Activate();
+            ct.ThrowIfCancellationRequested();
+            var request = tsRequest.Value;
+            var context = connection.ContextAs<ZanoWorkerContext>();
 
-        // respond
-        await connection.RespondAsync(response);
+            if(request.Id == null)
+                throw new StratumException(StratumError.MinusOne, "missing request id");
+
+            // authorized worker
+            if(!context.IsAuthorized)
+                throw new StratumException(StratumError.MinusOne, "unauthorized");
+
+            var job = CreateWorkerJob(connection);
+
+            // Nicehash's stupid validator insists on "error" property present
+            // in successful responses which is a violation of the JSON-RPC spec
+            // [Respect the goddamn standards Nicehack :(]
+            var response = new JsonRpcResponse<object[]>(job, request.Id);
+
+            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+            {
+                response.Extra = new Dictionary<string, object>();
+                response.Extra["error"] = null;
+            }
+
+            // respond
+            await connection.RespondAsync(response);
+        }
+        finally { assignmentGate.Release(); }
     }
 
     private async Task OnSubmitWorkAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -689,7 +702,7 @@ public class ZanoPool : PoolBase
     {
         logger.Info(() => "Broadcasting jobs");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<ZanoWorkerContext>();
 
@@ -729,6 +742,7 @@ public class ZanoPool : PoolBase
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
+        Cryptonote.CryptonoteDifficulty.ValidateFullTargetPool(pc);
         coin = pc.Template.As<ZanoCoinTemplate>();
 
         base.Configure(pc, cc);
@@ -815,7 +829,7 @@ public class ZanoPool : PoolBase
                 case ZanoStratumMethods.Authorize:
                     EnsureProtocolVersion(context, 2);
 
-                    await OnAuthorizeAsync(connection, tsRequest);
+                    await OnAuthorizeAsync(connection, tsRequest, ct);
                     break;
 
                 case ZanoStratumMethods.SubmitShare:
@@ -846,20 +860,20 @@ public class ZanoPool : PoolBase
                 case ZanoStratumMethods.Login:
                     context.ProtocolVersion = 1;    // lock in protocol version
 
-                    await OnLoginAsync(connection, tsRequest);
+                    await OnLoginAsync(connection, tsRequest, ct);
                     break;
 
                 case ZanoStratumMethods.SubmitLogin:
                     context.ProtocolVersion = 1;    // lock in protocol version
 
-                    await OnSubmitLoginAsync(connection, tsRequest);
+                    await OnSubmitLoginAsync(connection, tsRequest, ct);
                     break;
 
                 case ZanoStratumMethods.GetWork:
                 case ZanoStratumMethods.GetJob:
                     EnsureProtocolVersion(context, 1);
 
-                    await OnGetJobAsync(connection, tsRequest);
+                    await OnGetJobAsync(connection, tsRequest, ct);
                     break;
 
                 case ZanoStratumMethods.Submit:

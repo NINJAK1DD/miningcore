@@ -15,9 +15,28 @@ public class WorkerContextBase
 {
     private double? pendingDifficulty;
     private string userAgent;
+    private VarDiffContext varDiff;
+    private double difficulty;
+    private double? previousDifficulty;
+    internal virtual double MinimumDifficulty => 0;
+    internal virtual double MaximumDifficulty => double.MaxValue;
+    internal virtual bool RequiresIntegerDifficulty => false;
+    protected virtual double ValidateDifficulty(double value) => value;
+    // One gate for the worker lifetime, including replacement/disabled contexts.
+    // Never dispose while asynchronous assignment producers may still be waiting.
+    internal SemaphoreSlim AssignmentGate { get; } = new(1, 1);
 
     public ShareStats Stats { get; set; }
-    public VarDiffContext VarDiff { get; set; }
+    public VarDiffContext VarDiff
+    {
+        get => varDiff;
+        internal set
+        {
+            if(!ReferenceEquals(varDiff, value))
+                pendingDifficulty = null;
+            varDiff = value;
+        }
+    }
     public DateTime Created { get; set; }
     public DateTime LastActivity { get; set; }
     public bool IsAuthorized { get; set; }
@@ -26,12 +45,16 @@ public class WorkerContextBase
     /// <summary>
     /// Difficulty assigned to this worker, either static or updated through VarDiffManager
     /// </summary>
-    public double Difficulty { get; set; }
+    public double Difficulty { get => difficulty; set => difficulty = ValidateDifficulty(value); }
 
     /// <summary>
     /// Previous difficulty assigned to this worker
     /// </summary>
-    public double? PreviousDifficulty { get; set; }
+    public double? PreviousDifficulty
+    {
+        get => previousDifficulty;
+        set => previousDifficulty = value.HasValue ? ValidateDifficulty(value.Value) : null;
+    }
 
     /// <summary>
     /// Usually a wallet address
@@ -59,26 +82,24 @@ public class WorkerContextBase
 
     public bool IsNicehash { get; private set; }
 
-    public void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock)
+    public void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock, TimeProvider timeProvider = null)
     {
+        difficulty = ValidateDifficulty(difficulty);
+        pendingDifficulty = null;
         Difficulty = difficulty;
         LastActivity = clock.Now;
         Created = clock.Now;
         Stats = new ShareStats();
 
-        if(varDiffConfig != null)
+        VarDiff = varDiffConfig == null ? null : new VarDiffContext(timeProvider)
         {
-            VarDiff = new VarDiffContext
-            {
-                Created = Created,
-                Config = varDiffConfig
-            };
-        }
+            Config = varDiffConfig
+        };
     }
 
     public void EnqueueNewDifficulty(double difficulty)
     {
-        pendingDifficulty = difficulty;
+        pendingDifficulty = ValidateDifficulty(difficulty);
     }
 
     public bool HasPendingDifficulty => pendingDifficulty.HasValue;
@@ -98,7 +119,10 @@ public class WorkerContextBase
 
     public void SetDifficulty(double difficulty)
     {
-        PreviousDifficulty = Difficulty;
+        difficulty = ValidateDifficulty(difficulty);
+        // An explicit assignment supersedes any deferred dynamic assignment.
+        pendingDifficulty = null;
+        previousDifficulty = Difficulty;
         Difficulty = difficulty;
     }
 

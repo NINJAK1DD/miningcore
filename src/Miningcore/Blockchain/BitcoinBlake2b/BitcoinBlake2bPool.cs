@@ -54,20 +54,6 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     }
 
     private readonly PoolOperationGate operations = new();
-    private readonly ConditionalWeakTable<StratumConnection, SemaphoreSlim> assignmentGates = new();
-
-    // Serialize mutations and their complete wire assignment, not individual sends.
-    // Never hold this gate across daemon RPC or external HTTP lookups.
-    // Callers release the returned instance only after successful acquisition.
-    // Internal virtual entry provides deterministic contention barriers in tests.
-    // Weak ownership allows reclamation with the connection;
-    // do not dispose while waiters exist. AvailableWaitHandle is never used.
-    internal virtual async ValueTask<SemaphoreSlim> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct)
-    {
-        var gate = assignmentGates.GetValue(connection, static _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(ct);
-        return gate;
-    }
 
     private bool IsAdmissionClosed(StratumConnection connection) => connection.IsDisconnectRequested || operations.IsClosed ||
         difficultyBudgets.TryGetValue(connection, out var budget) && budget.IsClosed;
@@ -237,15 +223,17 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
 
         if(poolConfig.EnableInternalStratum == true)
         {
-            disposables.Add(manager.Jobs
-                .Select(job => Observable.FromAsync(() => OnNewJobAsync(job)))
-                .Concat()
-                .Subscribe(_ => { }, HandleBlake2bPipelineFailure));
+            disposables.Add(SubscribeJobNotifications(manager.Jobs));
             await manager.Jobs.Take(1).ToTask(ct);
         }
         else
             disposables.Add(manager.Jobs.Subscribe(_ => { }, HandleBlake2bPipelineFailure));
     }
+
+    internal IDisposable SubscribeJobNotifications(IObservable<object> jobs) => jobs
+        .Select(job => Observable.FromAsync(() => OnNewJobAsync(job)))
+        .Concat()
+        .Subscribe(_ => { }, HandleBlake2bPipelineFailure);
 
     internal void HandleBlake2bPipelineFailure(Exception ex)
     {
@@ -288,6 +276,9 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
 
     protected override async Task OnNewJobAsync(object jobParams)
     {
+        // This fan-out owns gates manually for terminal-publication semantics.
+        // Reject inherited ownership before Guard/per-miner failure handling.
+        WorkerAssignmentLease.ThrowIfNestedAssignment(null);
         if(operations.IsClosed)
             return;
         logger.Info(() => $"Broadcasting base job {((object[]) jobParams)[0]} (worker IDs include a difficulty suffix)");
@@ -296,6 +287,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             var gate = await EnterAssignmentAsync(connection, ct);
             try
             {
+                gate.Activate();
                 var context = connection.ContextAs<BitcoinWorkerContext>();
                 if(IsAdmissionClosed(connection) || !context.IsSubscribed)
                     return;
@@ -334,15 +326,18 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         // Include the enabled-state check and calculation in the assignment
         // transition. A fixed-difficulty request must not disable VarDiff while
         // a calculation based on the previous assignment is awaiting publication.
-        var gate = await EnterAssignmentAsync(connection, ct);
+        var gate = await EnterAssignmentAsync(connection, ct, skipIfBusy: idle);
+        if(gate == null)
+            return;
         try
         {
+            gate.Activate();
             if(IsAdmissionClosed(connection))
                 return;
             ct.ThrowIfCancellationRequested();
             try
             {
-                await base.UpdateVarDiffAsync(connection, idle, ct);
+                await UpdateVarDiffCoreAsync(connection, idle, ct);
             }
             catch(Exception ex)
             {
@@ -448,7 +443,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 // subtype; this is the same template used by BitcoinPool.
                 var template = (BitcoinTemplate) poolConfig.Template;
                 subscription = new PreparedSubscription(userAgent,
-                    await GetNicehashStaticMinDiff(lookupContext, template.Name, template.GetAlgorithmName()));
+                    await GetNicehashStaticMinDiff(lookupContext, template.Name, template.GetAlgorithmName(), ct));
             }
 
             var gate = await EnterAssignmentAsync(connection, ct);
@@ -458,6 +453,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             var previousVarDiff = context.VarDiff;
             try
             {
+                gate.Activate();
                 if(IsAdmissionClosed(connection))
                     return;
                 ct.ThrowIfCancellationRequested();
@@ -475,7 +471,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                         // Intentionally bypass OnSubscribeAsync: BLAKE2b owns the
                         // preparation/commit boundary here. Overrides of that inherited
                         // hook do not customize this pool's subscription dispatch.
-                        await OnSubscribeCoreAsync(connection, request, subscription);
+                        await OnSubscribeCoreAsync(connection, request, subscription.Value);
                     else
                         await OnSuggestDifficultyAsync(connection, request, new ParsedSuggestedDifficulty(suggestedDifficulty));
                     await CompleteAssignmentAsync(connection, previousDifficulty, request.Value.Method);
@@ -602,6 +598,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             var gate = await EnterAssignmentAsync(connection, ct);
             try
             {
+                gate.Activate();
                 if(IsAdmissionClosed(connection))
                     return;
                 var context = connection.ContextAs<BitcoinWorkerContext>();
@@ -624,6 +621,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             var gate = await EnterAssignmentAsync(connection, CancellationToken.None);
             try
             {
+                gate.Activate();
                 CloseAssignmentPublicationFailure(connection, ex,
                     !(ex is OperationCanceledException && (ct.IsCancellationRequested || operations.IsClosed)));
             }
@@ -639,6 +637,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         var gate = await EnterAssignmentAsync(connection, ct);
         try
         {
+            gate.Activate();
             if(IsAdmissionClosed(connection))
                 return;
             var previousDifficulty = connection.Context.Difficulty;
@@ -649,7 +648,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 // close here; unlike pre-request/pre-VarDiff cancellation, it
                 // cannot preserve the session. Host shutdown suppresses telemetry.
                 ct.ThrowIfCancellationRequested();
-                await base.ApplyStaticDifficultyAsync(connection, difficulty, ct);
+                await ApplyStaticDifficultyCoreAsync(connection, difficulty, ct);
                 await CompleteAssignmentAsync(connection, previousDifficulty, BitcoinStratumMethods.Authorize);
             }
             catch(Exception ex)

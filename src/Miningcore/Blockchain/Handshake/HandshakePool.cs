@@ -91,16 +91,25 @@ public class HandshakePool : PoolBase
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                assignmentGate.Activate();
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue &&
+                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
+                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                {
+                    context.VarDiff = null; // disable vardiff
+                    context.SetDifficulty(staticDiff.Value);
 
-                logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+
+                    await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                }
             }
+            finally { assignmentGate.Release(); }
         }
 
         else
@@ -118,7 +127,7 @@ public class HandshakePool : PoolBase
         }
     }
 
-    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
 
@@ -164,21 +173,28 @@ public class HandshakePool : PoolBase
         context.UserAgent = requestParams.FirstOrDefault()?.Trim();
 
         // Nicehash support
-        var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+        var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName(), ct);
 
-        if(nicehashDiff.HasValue)
+        var assignmentGate = await EnterAssignmentAsync(connection, ct);
+        try
         {
-            logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
+            assignmentGate.Activate();
+            ct.ThrowIfCancellationRequested();
+            if(nicehashDiff.HasValue)
+            {
+                logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
 
-            context.VarDiff = null; // disable vardiff
-            context.SetDifficulty(nicehashDiff.Value);
+                context.VarDiff = null; // disable vardiff
+                context.SetDifficulty(nicehashDiff.Value);
+            }
+
+            var minerJobParams = CreateWorkerJob(connection, context.IsSubscribed);
+
+            // send intial update
+            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
         }
-
-        var minerJobParams = CreateWorkerJob(connection, context.IsSubscribed);
-
-        // send intial update
-        await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
+        finally { assignmentGate.Release(); }
     }
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
@@ -323,7 +339,7 @@ public class HandshakePool : PoolBase
     {
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<HandshakeWorkerContext>();
             var minerJobParams = CreateWorkerJob(connection, true);
@@ -417,7 +433,7 @@ public class HandshakePool : PoolBase
                     break;
 
                 case BitcoinStratumMethods.Subscribe:
-                    await OnSubscribeAsync(connection, tsRequest);
+                    await OnSubscribeAsync(connection, tsRequest, ct);
                     break;
 
                 case BitcoinStratumMethods.SubmitShare:

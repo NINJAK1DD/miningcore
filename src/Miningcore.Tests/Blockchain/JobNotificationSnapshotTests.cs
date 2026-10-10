@@ -127,7 +127,7 @@ public class JobNotificationSnapshotTests : TestBase
         }
     }
 
-    private static ProgpowJob CreateProgpowJob(string family)
+    internal static ProgpowJob CreateProgpowJob(string family)
     {
         ProgpowJob job = family switch
         {
@@ -306,7 +306,7 @@ public class JobNotificationSnapshotTests : TestBase
         var request = new Timestamped<JsonRpcRequest>(
             new JsonRpcRequest(BitcoinStratumMethods.Subscribe, new[] { "test-miner" }, 1), DateTimeOffset.UtcNow);
         await (Task) FindMethod(typeof(ProgpowPool), "OnSubscribeAsync",
-            typeof(StratumConnection), typeof(Timestamped<JsonRpcRequest>)).Invoke(pool, new object[] { connection, request });
+            typeof(StratumConnection), typeof(Timestamped<JsonRpcRequest>), typeof(CancellationToken)).Invoke(pool, new object[] { connection, request, CancellationToken.None });
 
         Assert.True(context.IsSubscribed);
         Assert.True(connection.TryReceiveQueuedMessage(out var response));
@@ -380,7 +380,7 @@ public class JobNotificationSnapshotTests : TestBase
         throw new InvalidOperationException($"Test fixture field {type.Name}.{name} no longer exists");
     }
 
-    private static (Func<bool, object[]> Get, object[] Template, int FlagIndex, object Job) CreateArrayJob(string family)
+    internal static (Func<bool, object[]> Get, object[] Template, int FlagIndex, object Job) CreateArrayJob(string family)
     {
         if(family == "ergo")
         {
