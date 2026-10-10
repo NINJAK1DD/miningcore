@@ -31,7 +31,12 @@ def validate(root):
         family = re.search(r'\bfamily:\s*"([^"\r\n]+)"', name)
         ordering = re.search(r"\binvalid:\s*([0-9.]+)\b", name) if method in (REQUEST, PROOF) else \
             re.search(r"\bidleOwnsGate:\s*(True|False)\b", name)
-        key = (method, family.group(1) if family else None, ordering.group(1) if ordering else None)
+        value = ordering.group(1) if ordering else None
+        # xUnit can print 0.1 as the round-trip spelling 0.10000000000000001.
+        # Compare the represented double, while still rejecting other values.
+        if method in (REQUEST, PROOF) and value is not None:
+            value = str(float(value))
+        key = (method, family.group(1) if family else None, value)
         if key not in EXPECTED:
             raise ValueError(f"Unrecognized native-family case: {name}")
         results.setdefault(key, []).append(result.get("outcome"))
@@ -52,6 +57,10 @@ def fixture():
 
 def self_test():
     validate(fixture())
+    verbose = fixture()
+    for result in verbose:
+        result.set("testName", result.get("testName").replace("invalid: 0.1)", "invalid: 0.10000000000000001)"))
+    validate(verbose)
     invalid = []
     for outcome in ("NotExecuted", "Failed", ""):
         root = fixture()
