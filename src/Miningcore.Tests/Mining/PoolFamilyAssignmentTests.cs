@@ -208,6 +208,39 @@ public class PoolFamilyAssignmentTests : TestBase
         Assert.True(fixture.Connection.IsAlive);
     }
 
+    public static IEnumerable<object[]> NativeFractionalHints =>
+        from family in new[] { "Conceal", "Cryptonote" }
+        from nicehash in new[] { false, true }
+        from hint in new[] { 1.5, 1.99, 2.5 }
+        select new object[] { family, nicehash, hint };
+
+    [LinuxNativeTheory]
+    [MemberData(nameof(NativeFractionalHints))]
+    public async Task NativePool_DispatchedFractionalHintPublishesIntegerCredit(string family, bool nicehash, double hint)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        await fixture.PrepareFreshLogin("login");
+        if(nicehash) fixture.SetNicehashHint(hint);
+        await fixture.DispatchLogin("login", nicehash ? null : hint, 1, nicehash);
+        fixture.AssertOneSuccess(1);
+        var expected = Math.Floor(hint);
+        var worker = fixture.Connection.Context;
+        Assert.Equal(expected, worker.Difficulty);
+        Assert.Null(worker.VarDiff);
+        Assert.True(worker.IsAuthorized && worker.IsSubscribed);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        if(worker is ConcealWorkerContext conceal) Assert.All(conceal.validJobs, job => Assert.Equal(expected, job.Difficulty));
+        if(worker is CryptonoteWorkerContext cryptonote) Assert.All(cryptonote.validJobs, job => Assert.Equal(expected, job.Difficulty));
+        var job = fixture.Messages.Last(message => message["method"]?.Value<string>() == "job")["params"];
+        var raw = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(Convert.FromHexString(job["target"].Value<string>()));
+        var minerTarget = ulong.MaxValue / (uint.MaxValue / (ulong) raw);
+        Assert.InRange((double) ulong.MaxValue / minerTarget / expected, 0.99, 1.01);
+        Assert.Empty(fixture.Errors.Logs);
+        Assert.Empty(fixture.Warnings.Logs);
+        Assert.True(fixture.Connection.IsAlive);
+    }
+
     public static IEnumerable<object[]> NativeLoginHints =>
         from path in new[] { ("Conceal", "login"), ("Cryptonote", "login"),
             ("Zano", "login"), ("Zano", "eth_submitLogin"), ("Zano", "mining.authorize") }

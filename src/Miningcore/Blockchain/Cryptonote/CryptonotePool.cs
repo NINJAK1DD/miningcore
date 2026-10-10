@@ -115,7 +115,7 @@ public class CryptonotePool : PoolBase
                 if(staticDiff.HasValue && CryptonoteDifficulty.TryApplyStaticHint(context, staticDiff.Value, logger))
                 {
 
-                    logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {context.Difficulty}");
                 }
 
                 // respond

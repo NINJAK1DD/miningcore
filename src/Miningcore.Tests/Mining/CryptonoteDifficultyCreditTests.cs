@@ -43,10 +43,24 @@ public class CryptonoteDifficultyCreditTests : TestBase
     [InlineData("Cryptonote", 0.5)]
     [InlineData("Cryptonote", 0.1)]
     [InlineData("Cryptonote", 0.00390625)]
-    public async Task NativeProof_AfterRejectedSubUnitAssignmentRetainsRepresentableCredit(string family, double invalid)
+    public Task NativeProof_AfterRejectedSubUnitAssignmentRetainsRepresentableCredit(string family, double invalid) =>
+        VerifyNativeProof(family, invalid);
+
+    [LinuxNativeTheory]
+    [InlineData("Conceal", 1.5)]
+    [InlineData("Conceal", 1.99)]
+    [InlineData("Conceal", 2.5)]
+    [InlineData("Cryptonote", 1.5)]
+    [InlineData("Cryptonote", 1.99)]
+    [InlineData("Cryptonote", 2.5)]
+    public Task NativeProof_FractionalAssignmentUsesRoundedCredit(string family, double hint) =>
+        VerifyNativeProof(family, 0.5, hint);
+
+    private async Task VerifyNativeProof(string family, double invalid, double requested = 1)
     {
+        var expected = Math.Floor(requested);
         WorkerContextBase worker = family == "Conceal" ? new ConcealWorkerContext() : new CryptonoteWorkerContext();
-        worker.Init(1, null, new MockMasterClock());
+        worker.Init(requested, null, new MockMasterClock());
         Assert.Throws<ArgumentOutOfRangeException>(() => worker.SetDifficulty(invalid));
         var connection = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(),
             new MockMasterClock(), "proof-credit", false);
@@ -57,6 +71,19 @@ public class CryptonoteDifficultyCreditTests : TestBase
         Share accepted;
         string target, miningBlob;
         var hash = new byte[32];
+        string FindProofNonce(Cryptonight.Algorithm algorithm)
+        {
+            var candidate = miningBlob.HexToByteArray();
+            for(uint nonce = 0; nonce < 1000; nonce++)
+            {
+                var bytes = BitConverter.GetBytes(nonce);
+                bytes.CopyTo(candidate, ConcealConstants.BlobNonceOffset);
+                Cryptonight.CryptonightHash(candidate, hash, algorithm, 101);
+                if(BitConverter.ToUInt64(hash, 24) < ulong.MaxValue / expected)
+                    return bytes.ToHexString();
+            }
+            throw new InvalidOperationException("No native fixture proof found");
+        }
         if(family == "Conceal")
         {
             var job = new ConcealJob(new Miningcore.Blockchain.Conceal.DaemonResponses.GetBlockTemplateResponse
@@ -65,9 +92,9 @@ public class CryptonoteDifficultyCreditTests : TestBase
                 new PoolConfig(), new ClusterConfig(), "previous");
             var assignment = new ConcealWorkerJob("job", worker.Difficulty);
             job.PrepareWorkerJob(assignment, out miningBlob, out target);
-            Cryptonight.CryptonightHash(miningBlob.HexToByteArray(), hash, Cryptonight.Algorithm.CN_CCX, 101);
-            accepted = job.ProcessShare("00000000", assignment.ExtraNonce, hash.ToHexString(), connection).Share;
-            Assert.Equal(1, assignment.Difficulty);
+            var nonce = FindProofNonce(Cryptonight.Algorithm.CN_CCX);
+            accepted = job.ProcessShare(nonce, assignment.ExtraNonce, hash.ToHexString(), connection).Share;
+            Assert.Equal(expected, assignment.Difficulty);
         }
         else
         {
@@ -77,15 +104,15 @@ public class CryptonoteDifficultyCreditTests : TestBase
                 new PoolConfig(), new ClusterConfig(), "previous", "credit-fixture");
             var assignment = new CryptonoteWorkerJob("job", worker.Difficulty);
             job.PrepareWorkerJob(assignment, out miningBlob, out target);
-            Cryptonight.CryptonightHash(miningBlob.HexToByteArray(), hash, Cryptonight.Algorithm.CN_0, 101);
-            accepted = job.ProcessShare("00000000", assignment.ExtraNonce, hash.ToHexString(), connection).Share;
-            Assert.Equal(1, assignment.Difficulty);
+            var nonce = FindProofNonce(Cryptonight.Algorithm.CN_0);
+            accepted = job.ProcessShare(nonce, assignment.ExtraNonce, hash.ToHexString(), connection).Share;
+            Assert.Equal(expected, assignment.Difficulty);
         }
-        Assert.Equal("ffffffff", target);
+        Assert.Equal(expected == 1 ? "ffffffff" : "ffffff7f", target);
         Assert.NotEmpty(miningBlob);
-        Assert.Equal(1, worker.Difficulty);
-        Assert.Equal(1, accepted.Difficulty);
-        await AssertRewardWeights(accepted, 1);
+        Assert.Equal(expected, worker.Difficulty);
+        Assert.Equal(expected, accepted.Difficulty);
+        await AssertRewardWeights(accepted, expected);
     }
 
     [Theory]

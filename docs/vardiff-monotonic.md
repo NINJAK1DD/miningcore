@@ -157,11 +157,12 @@ exposed Handshake's missing static-authorize difficulty notification, now sent u
 assignment gate. The native wire assertions also exposed missing full-width target copies
 in Conceal/Cryptonote, with the same padding gap in Zano. All three encoders now initialize
 padding and copy full-width/signed-prefix values. Thirteen independent fixed vectors cover
-the 33-, 32- and 31-byte representations and each protocol's largest safe assignment. Sixty-five
+the 33-, 32- and 31-byte representations and each protocol's largest safe assignment. Seventy-one
 invalid-input cases reject sub-unit, non-positive, non-finite and oversized difficulty,
 including the old 1/255 division edge and the signed-long conversion boundary.
-Conceal/Cryptonote require assigned difficulty in **[1, BitDecrement(2^32 / 101)]**
-(maximum approximately **42.5 million**); Zano uses **[1, BitDecrement(2^63 / 255)]**.
+Conceal/Cryptonote require whole-number assigned difficulty in **[1, 42,524,428]**;
+valid fractional inputs round down before assignment. Zano uses **[1, BitDecrement(2^63 / 255)]**
+and retains fractional values.
 The short-target ceiling retains at least **101 target units**:
 [XMRig's target parser](https://github.com/xmrig/xmrig/blob/master/src/base/net/stratum/Job.cpp)
 divides by the decoded uint32 using integer arithmetic. A nonzero target alone does not
@@ -172,7 +173,14 @@ which is below **1% excess work**. This is an explicit precision tolerance, not 
 equality between continuous nominal difficulty and the miner's integer target.
 The boundary `65000000` is checked using both divisions in the miner parser. Two precision
 regressions check ordinary assignments, the ceiling and both neighboring doubles at all
-9,900 target-bin transitions from 101 through 10,000 units. Values `1e8`, `1e9`, `2.2e9`,
+9,900 target-bin transitions from 101 through 10,000 units after normalizing assignments.
+They also assert the lower ratio is at least `0.99`, covering `1.5`, `1.99`, `2.5` and both
+neighboring doubles around integer transitions below 100. Current/previous/pending
+difficulty, startup endpoints and applied password/NiceHash hints use whole-number
+assignments. Effective VarDiff bounds round inward (minimum up, maximum down); empty
+integer ranges fail startup. MaxDelta and no-op timing state are preserved by rounding
+before deciding whether an assignment changed. Jobs/encoders reject fractional assignments
+that bypass normalization. Values `1e8`, `1e9`, `2.2e9`,
 `3e9` and the former ceiling are rejected before assignment or encoding. Encoders also
 reject zero or insufficient-precision short output defensively. The four-byte format and
 nominal credit remain unchanged; no miner capability negotiation or credit rewrite is needed.
@@ -185,7 +193,11 @@ reduce endpoint/explicit VarDiff bounds above the new precision ceiling before u
 an unspecified VarDiff maximum is capped automatically. See the [release notes](releases.md).
 Native Conceal/CryptoNote proofs after rejected 0.5, 0.1 and 1/256 assignments verify
 the difficulty-1 target and accepted credit, production persistence mapping and actual
-PROP/PPLNS reward calculations with repository fixtures. Zano's multiplier-credit path
+PROP/PPLNS reward calculations with repository fixtures. Six more
+native proof cases after fractional 1.5, 1.99 and 2.5 assignments verify rounded accepted
+credit and the same persistence/reward paths. Twelve TCP password/NiceHash cases verify
+one response, whole-number issued jobs and both sides of the target precision bound.
+Zano's multiplier-credit path
 has managed reward-calculation coverage, not a claimed live Zano daemon proof. PPS is
 restricted by this repository to audited Bitcoin-family pools; it is not enabled here.
 Four direct/guarded generic broadcast cases, a direct two-miner BLAKE2b case and a real
@@ -208,10 +220,14 @@ request cancellation. Required reflection members and network enums are explicit
 family; a renamed member fails setup rather than silently skipping it. These complement
 the worker-context matrix rather than replacing it. CI validates the full suite's TRX
 with `scripts/release/test-native-family-evidence.py`; all six native contention, three
-native cancellation, nine sub-unit request, six accepted-proof credit, twenty TCP hint
-and five blocked-gate cases (49 total) must
+native cancellation, nine sub-unit request, six accepted-proof credit, twenty TCP hint,
+five blocked-gate, twelve fractional-hint and six fractional-proof cases (67 total) must
 be present exactly once and pass. Negative fixtures
 verify the guard rejects skipped, failed, absent, duplicated and unrecognized cases.
+
+The short-target ceiling can increase share rates for large proxy/NiceHash connections.
+[Issue #213](https://github.com/NINJAK1DD/miningcore/issues/213) tracks compatible higher-precision
+targets and live interoperability/accounting validation.
 
 The daemon-backed `BitcoinBlake2bRegtestTests` use real header-v2 proofs from the pinned
 Knots node and PostgreSQL accounting. New forward/backward UTC correction cases hold

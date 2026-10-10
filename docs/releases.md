@@ -36,7 +36,7 @@ underweighting accepted work. Startup checks cover endpoint difficulty and expli
 VarDiff minimum/maximum, direct/queued assignments and job preparation share the same
 protocol bounds. Conceal/Cryptonote's four-byte targets now retain at least **101 target
 units**, limiting excess miner work per nominally credited share to **less than 1%**.
-The maximum is `Math.BitDecrement(4294967296d / 101d)` (approximately `42,524,428.67326732`).
+The maximum whole-number assignment is **42,524,428** (`Math.Floor(Math.BitDecrement(4294967296d / 101d))`).
 Nonzero targets alone were insufficient: at difficulty `2.2e9`, rounding to one target
 unit made an XMRig miner perform approximately 1.95 times its credited work. The lower
 ceiling bounds that truncation while retaining the four-byte protocol and nominal credit.
@@ -44,6 +44,16 @@ Ordinary assignments around `1e5`–`1e6` remain supported. Zano's full-width ta
 the largest safe double below `2^63 / 255` (approximately `3.617008641903833e16`).
 Encoders also reject zero or insufficient-precision short target output defensively. Dynamic retargeting respects the
 appropriate protocol ceiling.
+
+Conceal/Cryptonote now round valid assigned difficulty **down to a whole number** before
+storing current/previous/pending work. For example, `1.5` and `1.99` assign and credit
+difficulty 1; `2.5` assigns 2. This prevents XMRig's integer conversion from advertising
+easier work than the pool's `0.99` validation threshold. Endpoint/static/NiceHash assignments
+and VarDiff use the same policy. Effective VarDiff minimums round up and maximums round
+down; ranges containing no whole-number assignment fail startup. Rounding respects
+`MaxDelta`; a rounded no-op preserves retarget metadata and timing samples. Encoders and
+job preparation reject fractional short assignments that bypass normalization. Zano's
+full-width assignments keep their fractional values.
 
 Static/NiceHash values remain hints: values below the existing minimum/application
 threshold are ignored. A hint that would otherwise apply but lies outside the protocol
@@ -57,11 +67,16 @@ with sub-unit hints. Direct invalid assignments and invalid startup bounds still
 or Zano to at least 1 and remove oversized bounds before restarting. Conceal/Cryptonote
 endpoint difficulty and explicit VarDiff bounds above approximately **42.5 million** must
 be reduced, including configurations previously allowed below `2^32`. With no explicit
-VarDiff maximum, the protocol ceiling applies automatically. Oversized miner/NiceHash
+VarDiff maximum, the protocol ceiling applies automatically. Fractional endpoint/hint
+values round down; use whole-number settings to express an exact short-target assignment.
+Explicit VarDiff bounds must contain at least one integer. Oversized miner/NiceHash
 hints continue to be warned and ignored; they do not disable VarDiff or fail login. Zano's protocol
 assignment uses this floor before its existing share-multiplier normalization for
 persisted credit. Existing stored shares are unchanged. No database migration is
 required. See the [assignment and target validation](vardiff-monotonic.md).
+
+Large proxy/NiceHash connections can exceed the configured target share rate at this
+ceiling. Compatible higher-precision targets are tracked in [Issue #213](https://github.com/NINJAK1DD/miningcore/issues/213).
 
 ## Unreleased: Stratum ban attribution and address normalization
 

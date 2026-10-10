@@ -66,7 +66,8 @@ public class ZanoJob
 
     protected virtual string EncodeTarget(double difficulty, int size = 32)
     {
-        Cryptonote.CryptonoteDifficulty.Validate(difficulty, size == 4 ? Cryptonote.CryptonoteDifficulty.ShortTargetMaximum : Cryptonote.CryptonoteDifficulty.FullTargetMaximum);
+        if(size == 4) Cryptonote.CryptonoteDifficulty.ValidateShortAssignment(difficulty);
+        else Cryptonote.CryptonoteDifficulty.Validate(difficulty, Cryptonote.CryptonoteDifficulty.FullTargetMaximum);
         var diff = BigInteger.ValueOf(checked((long) (difficulty * 255d)));
         var quotient = ZanoConstants.Diff1.Divide(diff).Multiply(BigInteger.ValueOf(255));
         var bytes = quotient.ToByteArray().AsSpan();

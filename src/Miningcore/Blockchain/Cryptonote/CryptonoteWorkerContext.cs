@@ -9,7 +9,8 @@ public class CryptonoteWorkerContext : WorkerContextBase
 {
     internal override double MinimumDifficulty => CryptonoteDifficulty.Minimum;
     internal override double MaximumDifficulty => CryptonoteDifficulty.ShortTargetMaximum;
-    protected override double ValidateDifficulty(double value) => CryptonoteDifficulty.Validate(value, MaximumDifficulty);
+    internal override bool RequiresIntegerDifficulty => true;
+    protected override double ValidateDifficulty(double value) => CryptonoteDifficulty.NormalizeShortAssignment(value);
     /// <summary>
     /// Usually a wallet address
     /// NOTE: May include paymentid (seperated by a dot .)

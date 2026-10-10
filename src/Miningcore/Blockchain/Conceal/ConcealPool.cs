@@ -115,7 +115,7 @@ public class ConcealPool : PoolBase
                 if(staticDiff.HasValue && Cryptonote.CryptonoteDifficulty.TryApplyStaticHint(context, staticDiff.Value, logger))
                 {
 
-                    logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {context.Difficulty}");
                 }
 
                 // respond

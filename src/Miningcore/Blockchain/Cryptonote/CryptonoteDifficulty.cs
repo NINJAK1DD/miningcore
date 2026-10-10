@@ -14,7 +14,7 @@ internal static class CryptonoteDifficulty
     // bounds miner work / nominal credit below 1 + 1/101, hence below 1%.
     // Keep the legacy four-byte wire format and nominal accounting units.
     internal const uint ShortTargetMinimum = 101;
-    internal static readonly double ShortTargetMaximum = Math.BitDecrement(4294967296d / ShortTargetMinimum);
+    internal static readonly double ShortTargetMaximum = Math.Floor(Math.BitDecrement(4294967296d / ShortTargetMinimum));
     // Full-width targets also need headroom for the signed *255 conversion.
     internal static readonly double FullTargetMaximum = Math.BitDecrement(9223372036854775808d / 255d);
 
@@ -25,6 +25,17 @@ internal static class CryptonoteDifficulty
     {
         if(!IsRepresentable(difficulty, maximum))
             throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty is outside the representable target range");
+        return difficulty;
+    }
+
+    internal static double NormalizeShortAssignment(double difficulty) =>
+        Math.Floor(Validate(difficulty, ShortTargetMaximum));
+
+    internal static double ValidateShortAssignment(double difficulty)
+    {
+        Validate(difficulty, ShortTargetMaximum);
+        if(difficulty != Math.Floor(difficulty))
+            throw new ArgumentOutOfRangeException(nameof(difficulty), "Short-target assignments require whole-number difficulty");
         return difficulty;
     }
 
@@ -39,6 +50,9 @@ internal static class CryptonoteDifficulty
                 Validate(port.VarDiff.MinDiff, maximum);
                 if(port.VarDiff.MaxDiff.HasValue)
                     Validate(port.VarDiff.MaxDiff.Value, maximum);
+                if(maximum == ShortTargetMaximum &&
+                   Math.Ceiling(port.VarDiff.MinDiff) > Math.Floor(port.VarDiff.MaxDiff ?? maximum))
+                    throw new ArgumentOutOfRangeException(nameof(config), "VarDiff bounds contain no whole-number assignment");
             }
         }
     }
@@ -54,7 +68,10 @@ internal static class CryptonoteDifficulty
             RpcConsumerDiagnostics.Write(logger, LogLevel.Warn, "CryptonoteDifficulty.StaticHintIgnored");
             return false;
         }
-        context.SetDifficulty(difficulty);
+        var assignment = context.RequiresIntegerDifficulty ? Math.Floor(difficulty) : difficulty;
+        if(!(context.VarDiff != null ? assignment >= context.VarDiff.Config.MinDiff : assignment > context.Difficulty))
+            return false;
+        context.SetDifficulty(assignment);
         context.VarDiff = null;
         return true;
     }

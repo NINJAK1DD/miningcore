@@ -53,6 +53,11 @@ public static class VarDiffManager
                 if(!double.IsFinite(maxDiff) || maxDiff <= 0)
                     return null;
                 maxDiff = Math.Min(maxDiff, context.MaximumDifficulty);
+                if(context.RequiresIntegerDifficulty)
+                {
+                    minDiff = Math.Ceiling(minDiff);
+                    maxDiff = Math.Floor(maxDiff);
+                }
                 if(minDiff > maxDiff)
                     return null;
 
@@ -66,7 +71,7 @@ public static class VarDiffManager
 
                 // Possible New Diff
                 if(TryCalculateDifficulty(difficulty, options.TargetTime, avg, sampleCount, maxDiff, out var newDiff) &&
-                   TryApplyNewDiff(ref newDiff, difficulty, minDiff, maxDiff, ts, ctx, options, clock))
+                   TryApplyNewDiff(ref newDiff, difficulty, minDiff, maxDiff, ts, ctx, options, clock, context.RequiresIntegerDifficulty))
                     return newDiff;
             }
 
@@ -119,6 +124,11 @@ public static class VarDiffManager
             if(!double.IsFinite(maxDiff) || maxDiff <= 0)
                 return null;
             maxDiff = Math.Min(maxDiff, context.MaximumDifficulty);
+            if(context.RequiresIntegerDifficulty)
+            {
+                minDiff = Math.Ceiling(minDiff);
+                maxDiff = Math.Floor(maxDiff);
+            }
             if(minDiff > maxDiff)
                 return null;
 
@@ -129,7 +139,7 @@ public static class VarDiffManager
 
             // Possible New Diff
             if(TryCalculateDifficulty(difficulty, options.TargetTime, avg, sampleCount, maxDiff, out var newDiff) &&
-               TryApplyNewDiff(ref newDiff, difficulty, minDiff, maxDiff, ts, ctx, options, clock))
+               TryApplyNewDiff(ref newDiff, difficulty, minDiff, maxDiff, ts, ctx, options, clock, context.RequiresIntegerDifficulty))
             {
                 // A no-op sweep is not a share. Preserve the next real share's
                 // elapsed interval unless a new assignment starts a fresh window.
@@ -213,7 +223,7 @@ public static class VarDiffManager
     /// Assumes to be called with lock held
     /// </summary>
     private static bool TryApplyNewDiff(ref double newDiff, double oldDiff, double minDiff, double maxDiff, long ts,
-        VarDiffContext ctx, VarDiffConfig options, IMasterClock clock)
+        VarDiffContext ctx, VarDiffConfig options, IMasterClock clock, bool requiresInteger)
     {
         // Max delta
         if(options.MaxDelta is > 0)
@@ -227,6 +237,14 @@ public static class VarDiffManager
                 else if(newDiff < oldDiff)
                     newDiff = oldDiff - options.MaxDelta.Value;
             }
+        }
+
+        if(requiresInteger)
+        {
+            newDiff = Math.Floor(newDiff);
+            // Flooring a downward delta must not exceed the configured limit.
+            if(options.MaxDelta is > 0 && newDiff < oldDiff - options.MaxDelta.Value)
+                newDiff = Math.Ceiling(oldDiff - options.MaxDelta.Value);
         }
 
         // Clamp to valid range

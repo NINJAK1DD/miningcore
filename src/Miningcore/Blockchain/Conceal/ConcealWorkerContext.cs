@@ -9,7 +9,8 @@ public class ConcealWorkerContext : WorkerContextBase
 {
     internal override double MinimumDifficulty => Cryptonote.CryptonoteDifficulty.Minimum;
     internal override double MaximumDifficulty => Cryptonote.CryptonoteDifficulty.ShortTargetMaximum;
-    protected override double ValidateDifficulty(double value) => Cryptonote.CryptonoteDifficulty.Validate(value, MaximumDifficulty);
+    internal override bool RequiresIntegerDifficulty => true;
+    protected override double ValidateDifficulty(double value) => Cryptonote.CryptonoteDifficulty.NormalizeShortAssignment(value);
     /// <summary>
     /// Usually a wallet address
     /// NOTE: May include paymentid (seperated by a dot .)

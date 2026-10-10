@@ -20,6 +20,7 @@ public class WorkerContextBase
     private double? previousDifficulty;
     internal virtual double MinimumDifficulty => 0;
     internal virtual double MaximumDifficulty => double.MaxValue;
+    internal virtual bool RequiresIntegerDifficulty => false;
     protected virtual double ValidateDifficulty(double value) => value;
     // One gate for the worker lifetime, including replacement/disabled contexts.
     // Never dispose while asynchronous assignment producers may still be waiting.

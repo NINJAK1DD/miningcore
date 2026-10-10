@@ -12,6 +12,8 @@ REQUEST = "NativePool_SubUnitRequestCannotPublishUnderweightedWork"
 PROOF = "NativeProof_AfterRejectedSubUnitAssignmentRetainsRepresentableCredit"
 HINT = "NativePool_DispatchedHintsKeepOneResponseAndValidWork"
 WAIT = "NativePool_DispatchedLoginWaitsBeforeAuthorizing"
+FRACTIONAL = "NativePool_DispatchedFractionalHintPublishesIntegerCredit"
+FRACTIONAL_PROOF = "NativeProof_FractionalAssignmentUsesRoundedCredit"
 PATHS = (("Conceal", "login"), ("Cryptonote", "login"), ("Zano", "login"),
          ("Zano", "eth_submitLogin"), ("Zano", "mining.authorize"))
 EXPECTED = {
@@ -26,6 +28,10 @@ EXPECTED |= {(PROOF, family, invalid) for family in ("Conceal", "Cryptonote")
 EXPECTED |= {(HINT, family, (protocol, nicehash, oversized)) for family, protocol in PATHS
              for nicehash in ("False", "True") for oversized in ("False", "True")}
 EXPECTED |= {(WAIT, family, protocol) for family, protocol in PATHS}
+EXPECTED |= {(FRACTIONAL, family, (nicehash, hint)) for family in ("Conceal", "Cryptonote")
+             for nicehash in ("False", "True") for hint in ("1.5", "1.99", "2.5")}
+EXPECTED |= {(FRACTIONAL_PROOF, family, hint) for family in ("Conceal", "Cryptonote")
+             for hint in ("1.5", "1.99", "2.5")}
 
 
 def validate(root):
@@ -33,7 +39,7 @@ def validate(root):
     for result in root.iter(f"{{{NAMESPACE}}}UnitTestResult"):
         name = result.get("testName", "")
         method = name.split("(", 1)[0]
-        if method not in (CONTENTION, CANCELLATION, REQUEST, PROOF, HINT, WAIT):
+        if method not in (CONTENTION, CANCELLATION, REQUEST, PROOF, HINT, WAIT, FRACTIONAL, FRACTIONAL_PROOF):
             continue
         family = re.search(r'\bfamily:\s*"([^"\r\n]+)"', name)
         ordering = re.search(r"\binvalid:\s*([0-9.]+)\b", name) if method in (REQUEST, PROOF) else \
@@ -50,6 +56,12 @@ def validate(root):
                 nicehash = re.search(r"\bnicehash:\s*(True|False)\b", name)
                 oversized = re.search(r"\boversized:\s*(True|False)\b", name)
                 value = (value, nicehash.group(1) if nicehash else None, oversized.group(1) if oversized else None)
+        if method in (FRACTIONAL, FRACTIONAL_PROOF):
+            hint = re.search(r"\bhint:\s*([0-9.]+)\b", name)
+            value = str(float(hint.group(1))) if hint else None
+            if method == FRACTIONAL:
+                nicehash = re.search(r"\bnicehash:\s*(True|False)\b", name)
+                value = (nicehash.group(1) if nicehash else None, value)
         key = (method, family.group(1) if family else None, value)
         if key not in EXPECTED:
             raise ValueError(f"Unrecognized native-family case: {name}")
@@ -66,6 +78,11 @@ def fixture():
         if method == HINT:
             protocol, nicehash, oversized = ordering
             name += f', protocol: "{protocol}", nicehash: {nicehash}, oversized: {oversized}'
+        elif method == FRACTIONAL:
+            nicehash, hint = ordering
+            name += f", nicehash: {nicehash}, hint: {hint}"
+        elif method == FRACTIONAL_PROOF:
+            name += f", hint: {ordering}"
         elif method == WAIT:
             name += f', protocol: "{ordering}"'
         elif ordering is not None:
