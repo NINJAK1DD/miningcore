@@ -196,7 +196,7 @@ public class PoolFamilyAssignmentTests : TestBase
         if(worker is ConcealWorkerContext conceal) Assert.Equal(1, Assert.Single(conceal.validJobs).Difficulty);
         if(worker is CryptonoteWorkerContext cryptonote) Assert.Equal(1, Assert.Single(cryptonote.validJobs).Difficulty);
         if(worker is ZanoWorkerContext zano) Assert.Equal(1, Assert.Single(zano.validJobs).Difficulty);
-        var targets = fixture.Messages.Select(m => m["method"]?.Value<string>() == "job" ? m["params"] : m["result"]?["job"])
+        var targets = fixture.Messages.Select(m => m["method"]?.Value<string>() == "job" ? m["params"] : (m["result"] as JObject)?["job"])
             .OfType<JObject>().Where(j => j["target"] != null).ToArray();
         if(family != "Zano") Assert.Equal("ffffffff", targets.Last()["target"].Value<string>());
         Assert.Empty(fixture.Errors.Logs);
