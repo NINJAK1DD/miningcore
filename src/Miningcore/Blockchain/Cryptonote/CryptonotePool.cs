@@ -463,7 +463,7 @@ public class CryptonotePool : PoolBase
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
-        CryptonoteDifficulty.ValidatePool(pc, CryptonoteDifficulty.ShortTargetMaximum);
+        CryptonoteDifficulty.ValidateShortTargetPool(pc);
         base.Configure(pc, cc);
     }
 

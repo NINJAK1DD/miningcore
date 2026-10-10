@@ -39,7 +39,13 @@ internal static class CryptonoteDifficulty
         return difficulty;
     }
 
-    internal static void ValidatePool(PoolConfig config, double maximum)
+    internal static void ValidateShortTargetPool(PoolConfig config) =>
+        ValidatePool(config, ShortTargetMaximum, shortTarget: true);
+
+    internal static void ValidateFullTargetPool(PoolConfig config) =>
+        ValidatePool(config, FullTargetMaximum, shortTarget: false);
+
+    private static void ValidatePool(PoolConfig config, double maximum, bool shortTarget)
     {
         ArgumentNullException.ThrowIfNull(config);
         foreach(var port in config.Ports?.Values ?? Enumerable.Empty<PoolEndpoint>())
@@ -50,7 +56,7 @@ internal static class CryptonoteDifficulty
                 Validate(port.VarDiff.MinDiff, maximum);
                 if(port.VarDiff.MaxDiff.HasValue)
                     Validate(port.VarDiff.MaxDiff.Value, maximum);
-                if(maximum == ShortTargetMaximum)
+                if(shortTarget)
                 {
                     if(port.VarDiff.MaxDelta is double delta &&
                        (!double.IsFinite(delta) || delta < 0 || delta is > 0 and < 1))

@@ -742,7 +742,7 @@ public class ZanoPool : PoolBase
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
-        Cryptonote.CryptonoteDifficulty.ValidatePool(pc, Cryptonote.CryptonoteDifficulty.FullTargetMaximum);
+        Cryptonote.CryptonoteDifficulty.ValidateFullTargetPool(pc);
         coin = pc.Template.As<ZanoCoinTemplate>();
 
         base.Configure(pc, cc);

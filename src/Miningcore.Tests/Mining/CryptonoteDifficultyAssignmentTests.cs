@@ -85,7 +85,11 @@ public class CryptonoteDifficultyAssignmentTests
     [InlineData("maximum")]
     public void Configuration_RejectsUnrepresentableBounds(string field)
     {
-        foreach(var maximum in new[] { CryptonoteDifficulty.ShortTargetMaximum, CryptonoteDifficulty.FullTargetMaximum })
+        foreach(var (validate, maximum) in new (Action<PoolConfig>, double)[]
+        {
+            (CryptonoteDifficulty.ValidateShortTargetPool, CryptonoteDifficulty.ShortTargetMaximum),
+            (CryptonoteDifficulty.ValidateFullTargetPool, CryptonoteDifficulty.FullTargetMaximum),
+        })
         foreach(var value in new[] { 0.5d, 0.1d, 1d / 256d, Math.BitIncrement(maximum), double.MaxValue })
         {
             var options = new VarDiffConfig { MinDiff = 1, MaxDiff = 100 };
@@ -93,8 +97,8 @@ public class CryptonoteDifficultyAssignmentTests
             if(field == "endpoint") endpoint.Difficulty = value;
             if(field == "minimum") options.MinDiff = value;
             if(field == "maximum") options.MaxDiff = value;
-            Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.ValidatePool(new PoolConfig
-                { Ports = new Dictionary<int, PoolEndpoint> { [3333] = endpoint } }, maximum));
+            Assert.Throws<ArgumentOutOfRangeException>(() => validate(new PoolConfig
+                { Ports = new Dictionary<int, PoolEndpoint> { [3333] = endpoint } }));
         }
     }
 
@@ -201,8 +205,8 @@ public class CryptonoteDifficultyAssignmentTests
     {
         var config = new PoolConfig { Ports = new Dictionary<int, PoolEndpoint>
             { [3333] = new() { Difficulty = 3, VarDiff = new() { MinDiff = 2.1, MaxDiff = 2.9 } } } };
-        Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.ValidatePool(config, CryptonoteDifficulty.ShortTargetMaximum));
-        CryptonoteDifficulty.ValidatePool(config, CryptonoteDifficulty.FullTargetMaximum);
+        Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.ValidateShortTargetPool(config));
+        CryptonoteDifficulty.ValidateFullTargetPool(config);
     }
 
     [Fact]
@@ -214,27 +218,27 @@ public class CryptonoteDifficultyAssignmentTests
         var endpoint = new PoolEndpoint { Difficulty = 1.5, VarDiff = options };
         var config = new PoolConfig { Ports = new Dictionary<int, PoolEndpoint> { [3333] = endpoint } };
         Assert.True(new PoolEndpointValidator().Validate(endpoint).IsValid);
-        var frozen = Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.ValidatePool(config, CryptonoteDifficulty.ShortTargetMaximum));
+        var frozen = Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.ValidateShortTargetPool(config));
         Assert.Contains("maxDelta", frozen.Message);
         options.MaxDelta = 1;
-        var start = Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.ValidatePool(config, CryptonoteDifficulty.ShortTargetMaximum));
+        var start = Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.ValidateShortTargetPool(config));
         Assert.Contains("Normalized endpoint difficulty", start.Message);
         endpoint.Difficulty = 3.5;
-        Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.ValidatePool(config, CryptonoteDifficulty.ShortTargetMaximum));
+        Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.ValidateShortTargetPool(config));
         endpoint.Difficulty = 2.5;
         foreach(var invalid in new[] { double.Epsilon, 0.5, Math.BitDecrement(1d), -1, double.NaN, double.PositiveInfinity })
         {
             options.MaxDelta = invalid;
-            Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.ValidatePool(config, CryptonoteDifficulty.ShortTargetMaximum));
+            Assert.Throws<ArgumentOutOfRangeException>(() => CryptonoteDifficulty.ValidateShortTargetPool(config));
         }
         foreach(var valid in new double?[] { null, 0, 1, 1.5, double.MaxValue })
         {
             options.MaxDelta = valid;
-            CryptonoteDifficulty.ValidatePool(config, CryptonoteDifficulty.ShortTargetMaximum);
+            CryptonoteDifficulty.ValidateShortTargetPool(config);
         }
         endpoint.Difficulty = 1.5;
         options.MaxDelta = 0.5;
-        CryptonoteDifficulty.ValidatePool(config, CryptonoteDifficulty.FullTargetMaximum); // Zano retains continuous policy.
+        CryptonoteDifficulty.ValidateFullTargetPool(config); // Zano retains continuous policy.
         Assert.Equal(1.5, endpoint.Difficulty); // Validation never reconciles config silently.
     }
 

@@ -462,7 +462,7 @@ public class ConcealPool : PoolBase
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
-        Cryptonote.CryptonoteDifficulty.ValidatePool(pc, Cryptonote.CryptonoteDifficulty.ShortTargetMaximum);
+        Cryptonote.CryptonoteDifficulty.ValidateShortTargetPool(pc);
         base.Configure(pc, cc);
     }
 
