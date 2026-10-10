@@ -50,8 +50,12 @@ storing current/previous/pending work. For example, `1.5` and `1.99` assign and 
 difficulty 1; `2.5` assigns 2. This prevents XMRig's integer conversion from advertising
 easier work than the pool's `0.99` validation threshold. Endpoint/static/NiceHash assignments
 and VarDiff use the same policy. Effective VarDiff minimums round up and maximums round
-down; ranges containing no whole-number assignment fail startup. Rounding respects
-`MaxDelta`; a rounded no-op preserves retarget metadata and timing samples. Encoders and
+down; ranges containing no whole-number assignment fail startup. The rounded starting
+endpoint must lie within the resulting integer range. Positive `maxDelta` below 1 is
+rejected at startup for these two families; omitted or zero retains the unlimited policy.
+Final integer retargets satisfy both the effective range and `MaxDelta` simultaneously.
+If their intersection contains no integer, the update preserves retarget metadata and
+timing samples without assigning new work. Encoders and
 job preparation reject fractional short assignments that bypass normalization. Zano's
 full-width assignments keep their fractional values.
 
@@ -69,7 +73,10 @@ endpoint difficulty and explicit VarDiff bounds above approximately **42.5 milli
 be reduced, including configurations previously allowed below `2^32`. With no explicit
 VarDiff maximum, the protocol ceiling applies automatically. Fractional endpoint/hint
 values round down; use whole-number settings to express an exact short-target assignment.
-Explicit VarDiff bounds must contain at least one integer. Oversized miner/NiceHash
+Explicit VarDiff bounds must contain at least one integer, and the rounded endpoint must
+lie within them. For example, minimum `1.5` and maximum `2.5` require starting difficulty
+2; starting `1.5` rounds to 1 and is rejected. Set a positive `maxDelta` to at least 1,
+or omit it/set it to zero for unlimited steps. Oversized miner/NiceHash
 hints continue to be warned and ignored; they do not disable VarDiff or fail login. Zano's protocol
 assignment uses this floor before its existing share-multiplier normalization for
 persisted credit. Existing stored shares are unchanged. No database migration is

@@ -225,33 +225,47 @@ public static class VarDiffManager
     private static bool TryApplyNewDiff(ref double newDiff, double oldDiff, double minDiff, double maxDiff, long ts,
         VarDiffContext ctx, VarDiffConfig options, IMasterClock clock, bool requiresInteger)
     {
-        // Max delta
-        if(options.MaxDelta is > 0)
-        {
-            var delta = Math.Abs(newDiff - oldDiff);
-
-            if(delta > options.MaxDelta)
-            {
-                if(newDiff > oldDiff)
-                    newDiff = oldDiff + options.MaxDelta.Value;
-                else if(newDiff < oldDiff)
-                    newDiff = oldDiff - options.MaxDelta.Value;
-            }
-        }
-
         if(requiresInteger)
         {
-            newDiff = Math.Floor(newDiff);
-            // Flooring a downward delta must not exceed the configured limit.
-            if(options.MaxDelta is > 0 && newDiff < oldDiff - options.MaxDelta.Value)
-                newDiff = Math.Ceiling(oldDiff - options.MaxDelta.Value);
+            // Both constraints must hold on the final assignment. An outside-range
+            // worker or runtime configuration change must not let a bounds clamp
+            // override MaxDelta. An empty integer intersection is a no-op.
+            var lower = minDiff;
+            var upper = maxDiff;
+            if(options.MaxDelta is double limit && (!double.IsFinite(limit) || limit < 0))
+                return false;
+            if(options.MaxDelta is > 0)
+            {
+                lower = Math.Max(lower, oldDiff - options.MaxDelta.Value);
+                upper = Math.Min(upper, oldDiff + options.MaxDelta.Value);
+            }
+            lower = Math.Ceiling(lower);
+            upper = Math.Floor(upper);
+            if(!double.IsFinite(lower) || !double.IsFinite(upper) || lower > upper)
+                return false;
+            newDiff = Math.Clamp(Math.Floor(newDiff), lower, upper);
+            if(options.MaxDelta is > 0 && Math.Abs(newDiff - oldDiff) > options.MaxDelta.Value)
+                return false;
         }
-
-        // Clamp to valid range
-        if(newDiff < minDiff)
-            newDiff = minDiff;
-        if(newDiff > maxDiff)
-            newDiff = maxDiff;
+        else
+        {
+            // Preserve continuous-difficulty families' existing delta/bounds policy.
+            if(options.MaxDelta is > 0)
+            {
+                var delta = Math.Abs(newDiff - oldDiff);
+                if(delta > options.MaxDelta)
+                {
+                    if(newDiff > oldDiff)
+                        newDiff = oldDiff + options.MaxDelta.Value;
+                    else if(newDiff < oldDiff)
+                        newDiff = oldDiff - options.MaxDelta.Value;
+                }
+            }
+            if(newDiff < minDiff)
+                newDiff = minDiff;
+            if(newDiff > maxDiff)
+                newDiff = maxDiff;
+        }
 
         // RTC if the Diff is changed
         if(!(newDiff < oldDiff) && !(newDiff > oldDiff))

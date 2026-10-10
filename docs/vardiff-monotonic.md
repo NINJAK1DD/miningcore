@@ -178,8 +178,15 @@ They also assert the lower ratio is at least `0.99`, covering `1.5`, `1.99`, `2.
 neighboring doubles around integer transitions below 100. Current/previous/pending
 difficulty, startup endpoints and applied password/NiceHash hints use whole-number
 assignments. Effective VarDiff bounds round inward (minimum up, maximum down); empty
-integer ranges fail startup. MaxDelta and no-op timing state are preserved by rounding
-before deciding whether an assignment changed. Jobs/encoders reject fractional assignments
+integer ranges fail startup. The normalized starting endpoint must also lie within those
+effective bounds. Positive `maxDelta` below 1 fails startup for these two families because
+it cannot produce an integer step; omitted or zero `maxDelta` retains the unlimited policy.
+Each final integer retarget is chosen from the intersection of the effective bounds and
+the current difficulty plus/minus `maxDelta`. An empty intersection is a no-op, preserving
+retarget metadata and timing samples even for legacy or externally changed worker state.
+Regression cases reproduce the conflicting `1.5` startup/`[1.5, 2.5]` range/`0.5` delta and
+check both regular and idle updates against range and delta constraints together.
+Jobs/encoders reject fractional assignments
 that bypass normalization. Values `1e8`, `1e9`, `2.2e9`,
 `3e9` and the former ceiling are rejected before assignment or encoding. Encoders also
 reject zero or insufficient-precision short output defensively. The four-byte format and

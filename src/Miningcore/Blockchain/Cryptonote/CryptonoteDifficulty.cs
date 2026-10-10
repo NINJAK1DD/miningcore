@@ -50,9 +50,19 @@ internal static class CryptonoteDifficulty
                 Validate(port.VarDiff.MinDiff, maximum);
                 if(port.VarDiff.MaxDiff.HasValue)
                     Validate(port.VarDiff.MaxDiff.Value, maximum);
-                if(maximum == ShortTargetMaximum &&
-                   Math.Ceiling(port.VarDiff.MinDiff) > Math.Floor(port.VarDiff.MaxDiff ?? maximum))
-                    throw new ArgumentOutOfRangeException(nameof(config), "VarDiff bounds contain no whole-number assignment");
+                if(maximum == ShortTargetMaximum)
+                {
+                    if(port.VarDiff.MaxDelta is double delta &&
+                       (!double.IsFinite(delta) || delta < 0 || delta is > 0 and < 1))
+                        throw new ArgumentOutOfRangeException(nameof(config), "Short-target VarDiff maxDelta must be finite and either zero (unlimited) or at least 1");
+                    var minimum = Math.Ceiling(port.VarDiff.MinDiff);
+                    var upper = Math.Floor(port.VarDiff.MaxDiff ?? maximum);
+                    if(minimum > upper)
+                        throw new ArgumentOutOfRangeException(nameof(config), "VarDiff bounds contain no whole-number assignment");
+                    var starting = NormalizeShortAssignment(port.Difficulty);
+                    if(starting < minimum || starting > upper)
+                        throw new ArgumentOutOfRangeException(nameof(config), "Normalized endpoint difficulty must lie within the whole-number VarDiff bounds");
+                }
             }
         }
     }
