@@ -109,6 +109,9 @@ public class ConcealPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
+            if(staticDiff.HasValue)
+                Cryptonote.CryptonoteDifficulty.ValidateRequest(staticDiff.Value);
+
             var assignmentGate = await EnterAssignmentAsync(connection, ct);
             try
             {
@@ -119,8 +122,8 @@ public class ConcealPool : PoolBase
                    (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
                        context.VarDiff == null && staticDiff.Value > context.Difficulty))
                 {
-                    context.VarDiff = null; // disable vardiff
                     context.SetDifficulty(staticDiff.Value);
+                    context.VarDiff = null; // disable vardiff only after validation
 
                     logger.Info(() => $"[{connection.ConnectionId}] Static difficulty set to {staticDiff.Value}");
                 }
@@ -462,6 +465,12 @@ public class ConcealPool : PoolBase
         {
             await connection.RespondErrorAsync(ex.Code, ex.Message, request.Id, false);
         }
+    }
+
+    public override void Configure(PoolConfig pc, ClusterConfig cc)
+    {
+        Cryptonote.CryptonoteDifficulty.ValidatePool(pc);
+        base.Configure(pc, cc);
     }
 
     public override double HashrateFromShares(double shares, double interval)

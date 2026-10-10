@@ -86,7 +86,14 @@ immediately. Nested assignments for different workers are also rejected before w
 independent operations must not acquire worker A then B and B then A in opposite orders.
 Fan-out must start outside an assignment lease. Generic assignment broadcasts and the
 BLAKE2b broadcast reject inherited ownership at their entry point, before per-miner
-error handling; a nested broadcast fails once without disconnecting the pool's miners.
+error handling. A generic nested broadcast logs one Error diagnostic before throwing;
+the family's outer `Guard` may swallow the exception, but the dropped job is visible
+and a later broadcast can proceed. BLAKE2b's real `FromAsync -> Concat` job pipeline
+routes this programming error to its existing pool-fault handler: that pool becomes
+offline and stops mining until operator restart, while other pools continue. The
+entry check preserves miner connections and existing job registries; it does not
+bypass BLAKE2b's isolation policy. Calling the broadcast method directly outside its
+pipeline tests only the entry rejection, not the pool's pipeline failure policy.
 Released ownership cannot block a later
 child operation, and a released lease clears its worker reference so captured contexts
 do not retain the worker's jobs through stale ownership.
@@ -149,13 +156,25 @@ target-based Equihash/ProgPoW, Ergo job targets and CryptoNote login/job targets
 exposed Handshake's missing static-authorize difficulty notification, now sent under its
 assignment gate. The native wire assertions also exposed missing full-width target copies
 in Conceal/Cryptonote, with the same padding gap in Zano. All three encoders now initialize
-padding and copy full-width/signed-prefix values. Nine independent fixed vectors cover
-the 33-, 32- and 31-byte representations. Eighteen sub-unit vectors additionally verify
-saturation at the easiest uint256 target, including below 1/255 and the smallest positive
-double. Only target encoding is saturated; configured worker difficulty and proof credit
-are unchanged. Fifteen invalid-input cases reject zero, negative and non-finite difficulty.
-Two generic broadcast cases and a two-miner BLAKE2b TCP case verify nested fan-out rejects
-before iteration, preserves connections/work and permits a later normal broadcast.
+padding and copy full-width/signed-prefix values. Twelve independent fixed vectors cover
+the 33-, 32- and 31-byte representations and the largest safe assignment. Forty-five
+invalid-input cases reject sub-unit, non-positive, non-finite and oversized difficulty,
+including the old 1/255 division edge and the signed-long conversion boundary.
+These three families require assigned difficulty in **[1, BitDecrement(2^63 / 255)]**:
+startup configuration, request preparation, direct/queued worker assignments, dynamic
+retargeting and job preparation enforce the range. Invalid assignments preserve current,
+previous and pending credit state. There is no target-only saturation policy. Zano
+validates the assigned unit before its existing `difficulty / shareMultiplier` credit
+normalization; the normalized persisted value can legitimately be below 1.
+Native Conceal/CryptoNote proofs after rejected 0.5, 0.1 and 1/256 assignments verify
+the difficulty-1 target and accepted credit, production persistence mapping and actual
+PROP/PPLNS reward calculations with repository fixtures. Zano's multiplier-credit path
+has managed reward-calculation coverage, not a claimed live Zano daemon proof. PPS is
+restricted by this repository to audited Bitcoin-family pools; it is not enabled here.
+Four direct/guarded generic broadcast cases, a direct two-miner BLAKE2b case and a real
+BLAKE2b job-pipeline case verify rejection, diagnostics and the differing isolation
+policies. Nine actual-family request cases reject sub-unit static requests before
+publishing work, then successfully publish difficulty-1 jobs.
 Ready jobs and daemon address replies are fixtures; gate,
 request mutation, publication and connection behavior are production code. Conceal,
 Cryptonote and Zano use Linux native address/blob validation. BLAKE2b has two equivalent
@@ -164,8 +183,9 @@ Ethereum, Conceal, Cryptonote and Zano, and a blocking HTTP fixture verifies Nic
 request cancellation. Required reflection members and network enums are explicit per
 family; a renamed member fails setup rather than silently skipping it. These complement
 the worker-context matrix rather than replacing it. CI validates the full suite's TRX
-with `scripts/release/test-native-family-evidence.py`; all six native contention and three
-native cancellation cases must be present exactly once and pass. Negative fixtures
+with `scripts/release/test-native-family-evidence.py`; all six native contention, three
+native cancellation, nine sub-unit request and six accepted-proof credit cases must
+be present exactly once and pass. Negative fixtures
 verify the guard rejects skipped, failed, absent, duplicated and unrecognized cases.
 
 The daemon-backed `BitcoinBlake2bRegtestTests` use real header-v2 proofs from the pinned
@@ -217,7 +237,9 @@ developer machine or local checkout path.
 
 ## Upgrade impact
 
-No configuration or database migration is introduced by #185. VarDiff's runtime
+No database migration is introduced by #185. Operators of Conceal, Cryptonote and
+Zano must correct endpoint and explicit VarDiff bounds outside the assigned range
+above before restarting. Stored share credit is not rewritten. VarDiff's runtime
 timestamps are not persisted and are recreated when connections reconnect. Operators
 may see more accurate adaptation for submillisecond shares and during UTC corrections.
 Custom code using the old runtime timing fields must use the renamed integer counter

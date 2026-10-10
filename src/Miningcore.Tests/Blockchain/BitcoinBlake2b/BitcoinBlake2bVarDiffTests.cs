@@ -16,6 +16,52 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 public partial class BitcoinBlake2bDifficultyBudgetTests
 {
     [Fact]
+    public async Task NestedBlake2bBroadcast_ThroughProductionPipelineFaultsOnlyItsPoolAndReportsOnce()
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var owner = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
+        await using var peer = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, owner);
+        await Subscribe(owner);
+        await Subscribe(peer);
+        using var logs = new NLog.LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${level}|${message}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(NLog.LogLevel.Error, NLog.LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        owner.SetLogger(logs.GetLogger("nested-pipeline"));
+        using var jobsSource = new System.Reactive.Subjects.Subject<object>();
+        using var subscription = owner.SubscribeJobs(jobsSource);
+        var jobs = owner.JobsCreated;
+        var ownerJobs = owner.Connection.ContextAs<BitcoinWorkerContext>().validJobs.ToArray();
+        var peerJobs = peer.Connection.ContextAs<BitcoinWorkerContext>().validJobs.ToArray();
+        var responses = owner.Connection.ResponseSequence + peer.Connection.ResponseSequence;
+        await owner.AssignOperationAsync(async () =>
+        {
+            jobsSource.OnNext(new object[] { "nested", false });
+            for(var attempt = 0; !owner.MiningFaulted && attempt < 1000; attempt++)
+                await Task.Delay(1);
+            Assert.True(owner.MiningFaulted);
+        }).WaitAsync(BarrierTimeout);
+        Assert.Single(target.Logs.Where(x => x.Contains("BitcoinBlake2bPool.FaultPool")));
+        jobsSource.OnNext(new object[] { "later", false });
+        await owner.AnnounceJobAsync(new object[] { "later-direct", false });
+        Assert.Equal(jobs, owner.JobsCreated);
+        Assert.Equal(responses, owner.Connection.ResponseSequence + peer.Connection.ResponseSequence);
+        Assert.Equal(ownerJobs, owner.Connection.ContextAs<BitcoinWorkerContext>().validJobs.ToArray());
+        Assert.Equal(peerJobs, peer.Connection.ContextAs<BitcoinWorkerContext>().validJobs.ToArray());
+        foreach(var wire in new[] { owner, peer })
+        {
+            Assert.False(wire.Connection.IsDisconnectRequested);
+            Assert.Equal(1, wire.Connection.Context.AssignmentGate.CurrentCount);
+        }
+        Assert.Single(target.Logs.Where(x => x.Contains("BitcoinBlake2bPool.FaultPool")));
+        await using var other = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
+        await Subscribe(other);
+        Assert.False(other.MiningFaulted);
+        Assert.True(other.Connection.IsAlive);
+    }
+
+    [Fact]
     public async Task NestedBlake2bBroadcast_FailsBeforeIterationAndPreservesBothMinersWork()
     {
         var (config, manager, clock, bus) = Fixture();

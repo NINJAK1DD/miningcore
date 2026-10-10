@@ -16,6 +16,11 @@ public class WorkerContextBase
     private double? pendingDifficulty;
     private string userAgent;
     private VarDiffContext varDiff;
+    private double difficulty;
+    private double? previousDifficulty;
+    internal virtual double MinimumDifficulty => 0;
+    internal virtual double MaximumDifficulty => double.MaxValue;
+    protected virtual double ValidateDifficulty(double value) => value;
     // One gate for the worker lifetime, including replacement/disabled contexts.
     // Never dispose while asynchronous assignment producers may still be waiting.
     internal SemaphoreSlim AssignmentGate { get; } = new(1, 1);
@@ -39,12 +44,16 @@ public class WorkerContextBase
     /// <summary>
     /// Difficulty assigned to this worker, either static or updated through VarDiffManager
     /// </summary>
-    public double Difficulty { get; set; }
+    public double Difficulty { get => difficulty; set => difficulty = ValidateDifficulty(value); }
 
     /// <summary>
     /// Previous difficulty assigned to this worker
     /// </summary>
-    public double? PreviousDifficulty { get; set; }
+    public double? PreviousDifficulty
+    {
+        get => previousDifficulty;
+        set => previousDifficulty = value.HasValue ? ValidateDifficulty(value.Value) : null;
+    }
 
     /// <summary>
     /// Usually a wallet address
@@ -74,6 +83,7 @@ public class WorkerContextBase
 
     public void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock, TimeProvider timeProvider = null)
     {
+        difficulty = ValidateDifficulty(difficulty);
         pendingDifficulty = null;
         Difficulty = difficulty;
         LastActivity = clock.Now;
@@ -88,7 +98,7 @@ public class WorkerContextBase
 
     public void EnqueueNewDifficulty(double difficulty)
     {
-        pendingDifficulty = difficulty;
+        pendingDifficulty = ValidateDifficulty(difficulty);
     }
 
     public bool HasPendingDifficulty => pendingDifficulty.HasValue;
@@ -108,9 +118,10 @@ public class WorkerContextBase
 
     public void SetDifficulty(double difficulty)
     {
+        difficulty = ValidateDifficulty(difficulty);
         // An explicit assignment supersedes any deferred dynamic assignment.
         pendingDifficulty = null;
-        PreviousDifficulty = Difficulty;
+        previousDifficulty = Difficulty;
         Difficulty = difficulty;
     }
 

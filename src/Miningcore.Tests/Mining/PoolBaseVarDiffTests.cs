@@ -328,9 +328,11 @@ public class PoolBaseVarDiffTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task NestedAssignmentBroadcast_FailsBeforeIterationWithoutDisconnectingMiners(bool populated)
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task NestedAssignmentBroadcast_FailsBeforeIterationWithoutDisconnectingMiners(bool populated, bool guarded)
     {
         await using var owner = new Fixture();
         await using var peer = new Fixture();
@@ -348,10 +350,15 @@ public class PoolBaseVarDiffTests
 
         await owner.Pool.AssignOperation(owner.Connection, async () =>
         {
-            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => owner.Pool.Broadcast(Publish));
-            Assert.Contains("cannot nest", error.Message);
+            if(guarded)
+                await owner.Pool.BroadcastGuarded(Publish);
+            else
+            {
+                var error = await Assert.ThrowsAsync<InvalidOperationException>(() => owner.Pool.Broadcast(Publish));
+                Assert.Contains("cannot nest", error.Message);
+            }
             Assert.Equal(0, publications);
-            Assert.Empty(target.Logs);
+            Assert.Contains("PoolBase.NestedAssignmentBroadcast", Assert.Single(target.Logs));
             Assert.Equal(0, owner.Connection.Context.AssignmentGate.CurrentCount);
             Assert.Equal(1, peer.Connection.Context.AssignmentGate.CurrentCount);
             Assert.False(owner.Connection.IsDisconnectRequested);
@@ -364,7 +371,7 @@ public class PoolBaseVarDiffTests
         Assert.True(peer.Connection.IsAlive);
         Assert.Equal(1, owner.Connection.Context.AssignmentGate.CurrentCount);
         Assert.Equal(1, peer.Connection.Context.AssignmentGate.CurrentCount);
-        Assert.Empty(target.Logs);
+        Assert.Single(target.Logs);
     }
 
     [Theory]
@@ -508,6 +515,7 @@ public class PoolBaseVarDiffTests
         internal void AddConnection(StratumConnection connection) => RegisterConnection(connection);
         internal Task Sweep(Func<Task> operation, CancellationToken ct) => ForEachMinerAsync((_, _) => operation(), ct);
         internal Task Broadcast(Func<Task> operation) => ForEachMinerAssignmentAsync((_, _) => operation());
+        internal Task BroadcastGuarded(Func<Task> operation) => Miningcore.Util.ActionUtils.Guard(() => Broadcast(operation));
         internal Task Retarget(StratumConnection connection, bool idle, CancellationToken ct = default) =>
             UpdateVarDiffAsync(connection, idle, ct);
         internal Task AssignOperation(StratumConnection connection, Func<Task> operation) =>

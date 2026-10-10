@@ -59,6 +59,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         .HandleBlake2bPipelineFailure(new InvalidOperationException("test pipeline failure"));
     internal bool MiningFaulted => ((TestPool) pool).MiningFaulted;
     internal Task AssignOperationAsync(Func<Task> operation) => ((TestPool) pool).AssignOperation(Connection, operation);
+    internal IDisposable SubscribeJobs(IObservable<object> jobs) => ((TestPool) pool).SubscribeJobNotifications(jobs);
     internal Action BeforeConfigure { set => ((TestPool) pool).BeforeConfigure = value; }
     internal Func<Task> AfterConfigure { set => ((TestPool) pool).AfterConfigure = value; }
     internal Action BeforeCreateJob { set => ((TestPool) pool).BeforeCreateJob = value; }

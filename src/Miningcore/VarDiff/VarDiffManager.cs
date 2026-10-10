@@ -32,8 +32,13 @@ public static class VarDiffManager
             {
                 if(RebaseInvalidTiming(ctx, ts, ctx.LastShareTimestamp.Value))
                     return null;
-                var minDiff = options.MinDiff;
+                var minDiff = Math.Max(options.MinDiff, context.MinimumDifficulty);
                 var maxDiff = Math.Min(options.MaxDiff ?? protocolMaximum, protocolMaximum);
+                if(!double.IsFinite(maxDiff) || maxDiff <= 0)
+                    return null;
+                maxDiff = Math.Min(maxDiff, context.MaximumDifficulty);
+                if(minDiff > maxDiff)
+                    return null;
                 var timeDelta = ElapsedSeconds(ctx, ctx.LastShareTimestamp.Value, ts);
 
                 // make sure buffer exists as this point
@@ -106,8 +111,13 @@ public static class VarDiffManager
                ElapsedSeconds(ctx, ctx.LastRetargetTimestamp, ts) < options.RetargetTime)
                 return null;
 
-            var minDiff = options.MinDiff;
+            var minDiff = Math.Max(options.MinDiff, context.MinimumDifficulty);
             var maxDiff = Math.Min(options.MaxDiff ?? protocolMaximum, protocolMaximum);
+            if(!double.IsFinite(maxDiff) || maxDiff <= 0)
+                return null;
+            maxDiff = Math.Min(maxDiff, context.MaximumDifficulty);
+            if(minDiff > maxDiff)
+                return null;
 
             // Always calculate the time until now even there is no share submitted.
             var timeTotal = (ctx.TimeBuffer?.Sum() ?? 0) + timeDelta;

@@ -170,6 +170,39 @@ public class PoolFamilyAssignmentTests : TestBase
         Assert.Equal(expected, Families.OrderBy(x => x));
     }
 
+    [LinuxNativeTheory]
+    [InlineData("Conceal", 0.5)]
+    [InlineData("Conceal", 0.1)]
+    [InlineData("Conceal", 0.00390625)]
+    [InlineData("Cryptonote", 0.5)]
+    [InlineData("Cryptonote", 0.1)]
+    [InlineData("Cryptonote", 0.00390625)]
+    [InlineData("Zano", 0.5)]
+    [InlineData("Zano", 0.1)]
+    [InlineData("Zano", 0.00390625)]
+    public async Task NativePool_SubUnitRequestCannotPublishUnderweightedWork(string family, double invalid)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        var worker = fixture.Connection.Context;
+        var original = worker.VarDiff;
+        await Assert.ThrowsAsync<StratumException>(() => fixture.Authorize(difficulty: invalid));
+        Assert.Equal(10, worker.Difficulty);
+        Assert.Same(original, worker.VarDiff);
+        Assert.False(worker.HasPendingDifficulty);
+        await fixture.Authorize(difficulty: 1);
+        await fixture.Flush();
+        Assert.Equal(1, worker.Difficulty);
+        Assert.Null(worker.VarDiff);
+        if(worker is ConcealWorkerContext conceal) Assert.Equal(1, Assert.Single(conceal.validJobs).Difficulty);
+        if(worker is CryptonoteWorkerContext cryptonote) Assert.Equal(1, Assert.Single(cryptonote.validJobs).Difficulty);
+        if(worker is ZanoWorkerContext zano) Assert.Equal(1, Assert.Single(zano.validJobs).Difficulty);
+        var targets = fixture.Messages.Select(m => m["method"]?.Value<string>() == "job" ? m["params"] : m["result"]?["job"])
+            .OfType<JObject>().Where(j => j["target"] != null).ToArray();
+        if(family != "Zano") Assert.Equal("ffffffff", targets.Last()["target"].Value<string>());
+        Assert.Empty(fixture.Errors.Logs);
+        Assert.True(fixture.Connection.IsAlive);
+    }
+
     private sealed class LinuxNativeTheoryAttribute : TheoryAttribute
     {
         public LinuxNativeTheoryAttribute()
@@ -345,7 +378,7 @@ public class PoolFamilyAssignmentTests : TestBase
         }
 
         internal Task Idle() => (Task) Invoke(Pool, "UpdateVarDiffAsync", Connection, true, stop.Token);
-        internal Task Authorize(CancellationToken? ct = null)
+        internal Task Authorize(CancellationToken? ct = null, double difficulty = 55)
         {
             var address = family switch
             {
@@ -355,8 +388,9 @@ public class PoolFamilyAssignmentTests : TestBase
                 _ => "fixture",
             };
             var login = family is "Conceal" or "Cryptonote";
+            var password = "d=" + difficulty.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
             var request = new JsonRpcRequest(login ? "login" : family == "Beam" ? "login" : "mining.authorize",
-                login ? JObject.FromObject(new { login = address, pass = "d=55", agent = "fixture" }) : (object) new[] { address + ".worker", "d=55" }, 1);
+                login ? JObject.FromObject(new { login = address, pass = password, agent = "fixture" }) : (object) new[] { address + ".worker", password }, 1);
             if(family == "Beam")
                 request = JsonConvert.DeserializeObject<JsonRpcRequest>("{\"id\":1,\"method\":\"login\",\"api_key\":\"fixture.worker\",\"pass\":\"d=55\"}");
             if(family == "Xelis")

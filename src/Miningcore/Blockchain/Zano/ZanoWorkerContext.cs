@@ -7,6 +7,9 @@ namespace Miningcore.Blockchain.Zano;
 
 public class ZanoWorkerContext : WorkerContextBase
 {
+    internal override double MinimumDifficulty => Cryptonote.CryptonoteDifficulty.Minimum;
+    internal override double MaximumDifficulty => Cryptonote.CryptonoteDifficulty.Maximum;
+    protected override double ValidateDifficulty(double value) => Cryptonote.CryptonoteDifficulty.Validate(value);
     /// <summary>
     /// Usually a wallet address
     /// NOTE: May include paymentid (seperated by a dot .)

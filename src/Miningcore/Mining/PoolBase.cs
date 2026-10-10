@@ -237,7 +237,12 @@ public abstract class PoolBase : StratumServer,
     {
         // Reject at the producer, before per-miner exception handling can turn
         // inherited ownership into a pool-wide series of disconnects.
-        WorkerAssignmentLease.ThrowIfNestedAssignment(null);
+        try { WorkerAssignmentLease.ThrowIfNestedAssignment(null); }
+        catch(InvalidOperationException ex)
+        {
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.NestedAssignmentBroadcast", failure: ex);
+            throw;
+        }
         return ForEachMinerAsync((connection, ct) => RunAssignmentAsync(connection, () => func(connection, ct), ct));
     }
 

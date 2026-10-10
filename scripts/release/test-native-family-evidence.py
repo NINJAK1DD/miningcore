@@ -8,11 +8,17 @@ import xml.etree.ElementTree as ET
 NAMESPACE = "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"
 CONTENTION = "NativeConcretePool_AuthorizationIdleAndBroadcastCompleteUnderContention"
 CANCELLATION = "NativePool_AuthorizationCancellationDoesNotCommitQueuedDifficulty"
+REQUEST = "NativePool_SubUnitRequestCannotPublishUnderweightedWork"
+PROOF = "NativeProof_AfterRejectedSubUnitAssignmentRetainsRepresentableCredit"
 EXPECTED = {
     (method, family, ordering)
     for family in ("Conceal", "Cryptonote", "Zano")
     for method, ordering in ((CONTENTION, "False"), (CONTENTION, "True"), (CANCELLATION, None))
 }
+EXPECTED |= {(REQUEST, family, invalid) for family in ("Conceal", "Cryptonote", "Zano")
+             for invalid in ("0.5", "0.1", "0.00390625")}
+EXPECTED |= {(PROOF, family, invalid) for family in ("Conceal", "Cryptonote")
+             for invalid in ("0.5", "0.1", "0.00390625")}
 
 
 def validate(root):
@@ -20,10 +26,11 @@ def validate(root):
     for result in root.iter(f"{{{NAMESPACE}}}UnitTestResult"):
         name = result.get("testName", "")
         method = name.split("(", 1)[0]
-        if method not in (CONTENTION, CANCELLATION):
+        if method not in (CONTENTION, CANCELLATION, REQUEST, PROOF):
             continue
         family = re.search(r'\bfamily:\s*"([^"\r\n]+)"', name)
-        ordering = re.search(r"\bidleOwnsGate:\s*(True|False)\b", name)
+        ordering = re.search(r"\binvalid:\s*([0-9.]+)\b", name) if method in (REQUEST, PROOF) else \
+            re.search(r"\bidleOwnsGate:\s*(True|False)\b", name)
         key = (method, family.group(1) if family else None, ordering.group(1) if ordering else None)
         if key not in EXPECTED:
             raise ValueError(f"Unrecognized native-family case: {name}")
@@ -38,7 +45,7 @@ def fixture():
     for method, family, ordering in sorted(EXPECTED, key=str):
         name = f'{method}(family: "{family}"'
         if ordering is not None:
-            name += f", idleOwnsGate: {ordering}"
+            name += f", {'invalid' if method in (REQUEST, PROOF) else 'idleOwnsGate'}: {ordering}"
         ET.SubElement(root, f"{{{NAMESPACE}}}UnitTestResult", testName=name + ")", outcome="Passed")
     return root
 
@@ -81,7 +88,7 @@ def main():
             validate(ET.parse(args.trx).getroot())
         except (OSError, ET.ParseError, ValueError) as error:
             parser.exit(1, f"{error}\n")
-        print("All nine required Linux-native family cases executed and passed")
+        print("All 24 required Linux-native family/credit cases executed and passed")
     elif not args.self_test:
         parser.error("provide a TRX file or --self-test")
 

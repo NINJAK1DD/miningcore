@@ -30,11 +30,19 @@ Notification failure closes the connection; reconnect to obtain a fresh assignme
 
 Conceal, Cryptonote and Zano now copy full-width targets and discard only the signed
 integer prefix, with explicit zero padding for shorter values. Low-difficulty ports
-previously advertised zero or incompletely padded targets. Positive difficulty below
-one now advertises the easiest representable target (`ffffffff` for the CryptoNote
-short target; all 32 bytes `ff` for Zano), including below the old 1/255 division limit.
-Configured worker difficulty and accepted-share credit are retained. No configuration
-or database migration is required. See the [assignment and target validation](vardiff-monotonic.md).
+previously advertised zero or incompletely padded targets. These three families now
+reject assigned difficulty below **1** instead of saturating only the wire target and
+underweighting accepted work. Startup checks cover endpoint difficulty and explicit
+VarDiff minimum/maximum; static/NiceHash requests, direct/queued assignments and job
+preparation share the same bounds. The upper limit is the largest safe double below
+`2^63 / 255` (approximately `3.617008641903833e16`); larger finite values are rejected
+before the signed divisor conversion. Dynamic retargeting respects these bounds too.
+
+**Upgrade action:** raise any sub-unit endpoint/VarDiff bounds on Conceal, Cryptonote
+or Zano to at least 1 and remove oversized bounds before restarting. Zano's protocol
+assignment uses this floor before its existing share-multiplier normalization for
+persisted credit. Existing stored shares are unchanged. No database migration is
+required. See the [assignment and target validation](vardiff-monotonic.md).
 
 ## Unreleased: Stratum ban attribution and address normalization
 

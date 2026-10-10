@@ -66,12 +66,8 @@ public class ZanoJob
 
     protected virtual string EncodeTarget(double difficulty, int size = 32)
     {
-        if(!double.IsFinite(difficulty) || difficulty <= 0)
-            throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty must be finite and positive");
-        // A sub-unit difficulty requires more than 256 target bits. Saturate at
-        // the easiest representable target before quantization/division; this
-        // also prevents a zero divisor below 1/255. Keep worker credit unchanged.
-        var diff = BigInteger.ValueOf((long) (Math.Max(1d, difficulty) * 255d));
+        Cryptonote.CryptonoteDifficulty.Validate(difficulty);
+        var diff = BigInteger.ValueOf(checked((long) (difficulty * 255d)));
         var quotient = ZanoConstants.Diff1.Divide(diff).Multiply(BigInteger.ValueOf(255));
         var bytes = quotient.ToByteArray().AsSpan();
         Span<byte> padded = stackalloc byte[ZanoConstants.TargetPaddingLength];
@@ -97,6 +93,7 @@ public class ZanoJob
 
     public virtual ZanoWorkerJob PrepareWorkerJob(double difficulty)
     {
+        Cryptonote.CryptonoteDifficulty.Validate(difficulty);
         var workerExtraNonce = (uint) Interlocked.Increment(ref extraNonce);
 
         if(extraNonce < 0)
@@ -163,7 +160,7 @@ public class ZanoJob
         var result = new Share
         {
             BlockHeight = BlockTemplate.Height,
-            Difficulty = stratumDifficulty / shareMultiplier,
+            Difficulty = Cryptonote.CryptonoteDifficulty.NormalizeShareCredit(stratumDifficulty, shareMultiplier),
         };
 
         if(isBlockCandidate)

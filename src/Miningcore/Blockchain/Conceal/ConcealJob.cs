@@ -64,12 +64,8 @@ public class ConcealJob
 
     private string EncodeTarget(double difficulty, int size = 4)
     {
-        if(!double.IsFinite(difficulty) || difficulty <= 0)
-            throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty must be finite and positive");
-        // A sub-unit difficulty requires more than 256 target bits. Saturate at
-        // the easiest representable target before quantization/division; this
-        // also prevents a zero divisor below 1/255. Keep worker credit unchanged.
-        var diff = BigInteger.ValueOf((long) (Math.Max(1d, difficulty) * 255d));
+        Cryptonote.CryptonoteDifficulty.Validate(difficulty);
+        var diff = BigInteger.ValueOf(checked((long) (difficulty * 255d)));
         var quotient = ConcealConstants.Diff1.Divide(diff).Multiply(BigInteger.ValueOf(255));
         var bytes = quotient.ToByteArray().AsSpan();
         Span<byte> padded = stackalloc byte[32];
@@ -105,6 +101,7 @@ public class ConcealJob
 
     public void PrepareWorkerJob(ConcealWorkerJob workerJob, out string blob, out string target)
     {
+        Cryptonote.CryptonoteDifficulty.Validate(workerJob.Difficulty);
         workerJob.Height = BlockTemplate.Height;
         workerJob.ExtraNonce = (uint) Interlocked.Increment(ref extraNonce);
 
@@ -181,7 +178,7 @@ public class ConcealJob
         var result = new Share
         {
             BlockHeight = BlockTemplate.Height,
-            Difficulty = stratumDifficulty,
+            Difficulty = Cryptonote.CryptonoteDifficulty.Validate(stratumDifficulty),
         };
 
         if(isBlockCandidate)

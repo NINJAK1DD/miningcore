@@ -223,15 +223,17 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
 
         if(poolConfig.EnableInternalStratum == true)
         {
-            disposables.Add(manager.Jobs
-                .Select(job => Observable.FromAsync(() => OnNewJobAsync(job)))
-                .Concat()
-                .Subscribe(_ => { }, HandleBlake2bPipelineFailure));
+            disposables.Add(SubscribeJobNotifications(manager.Jobs));
             await manager.Jobs.Take(1).ToTask(ct);
         }
         else
             disposables.Add(manager.Jobs.Subscribe(_ => { }, HandleBlake2bPipelineFailure));
     }
+
+    internal IDisposable SubscribeJobNotifications(IObservable<object> jobs) => jobs
+        .Select(job => Observable.FromAsync(() => OnNewJobAsync(job)))
+        .Concat()
+        .Subscribe(_ => { }, HandleBlake2bPipelineFailure);
 
     internal void HandleBlake2bPipelineFailure(Exception ex)
     {
