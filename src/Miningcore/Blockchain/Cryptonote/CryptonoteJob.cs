@@ -108,6 +108,9 @@ public class CryptonoteJob
         if(padded[..size].IndexOfAnyExcept((byte) 0) < 0)
             throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty produces a zero target");
 
+        if(size == 4 && System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(padded[..4]) < CryptonoteDifficulty.ShortTargetMinimum)
+            throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty exceeds the short-target precision limit");
+
         padded = padded[..size];
         padded.Reverse();
 

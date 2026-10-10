@@ -157,19 +157,32 @@ exposed Handshake's missing static-authorize difficulty notification, now sent u
 assignment gate. The native wire assertions also exposed missing full-width target copies
 in Conceal/Cryptonote, with the same padding gap in Zano. All three encoders now initialize
 padding and copy full-width/signed-prefix values. Thirteen independent fixed vectors cover
-the 33-, 32- and 31-byte representations and each protocol's largest safe assignment. Fifty-three
+the 33-, 32- and 31-byte representations and each protocol's largest safe assignment. Sixty-five
 invalid-input cases reject sub-unit, non-positive, non-finite and oversized difficulty,
 including the old 1/255 division edge and the signed-long conversion boundary.
-Conceal/Cryptonote require assigned difficulty in **[1, BitDecrement(2^32)]**; Zano uses
-**[1, BitDecrement(2^63 / 255)]**. The short-target ceiling prevents a zero four-byte target:
+Conceal/Cryptonote require assigned difficulty in **[1, BitDecrement(2^32 / 101)]**
+(maximum approximately **42.5 million**); Zano uses **[1, BitDecrement(2^63 / 255)]**.
+The short-target ceiling retains at least **101 target units**:
 [XMRig's target parser](https://github.com/xmrig/xmrig/blob/master/src/base/net/stratum/Job.cpp)
-divides by the decoded uint32. The boundary `01000000` is checked using that parser's
-integer arithmetic, and all encoders reject zero output defensively.
+divides by the decoded uint32 using integer arithmetic. A nonzero target alone does not
+bound the loss of credited work: near the former `2^32` ceiling, truncation to one unit
+could require almost twice the nominally credited work per submitted share. For a target
+of at least 101 units, losing less than one unit bounds this ratio below `1 + 1/101`,
+which is below **1% excess work**. This is an explicit precision tolerance, not exact
+equality between continuous nominal difficulty and the miner's integer target.
+The boundary `65000000` is checked using both divisions in the miner parser. Two precision
+regressions check ordinary assignments, the ceiling and both neighboring doubles at all
+9,900 target-bin transitions from 101 through 10,000 units. Values `1e8`, `1e9`, `2.2e9`,
+`3e9` and the former ceiling are rejected before assignment or encoding. Encoders also
+reject zero or insufficient-precision short output defensively. The four-byte format and
+nominal credit remain unchanged; no miner capability negotiation or credit rewrite is needed.
 Startup configuration, direct/queued worker assignments, dynamic
 retargeting and job preparation enforce the appropriate range. Invalid assignments preserve current,
 previous and pending credit state. There is no target-only saturation policy. Zano
 validates the assigned unit before its existing `difficulty / shareMultiplier` credit
-normalization; the normalized persisted value can legitimately be below 1.
+normalization; the normalized persisted value can legitimately be below 1. Operators must
+reduce endpoint/explicit VarDiff bounds above the new precision ceiling before upgrading;
+an unspecified VarDiff maximum is capped automatically. See the [release notes](releases.md).
 Native Conceal/CryptoNote proofs after rejected 0.5, 0.1 and 1/256 assignments verify
 the difficulty-1 target and accepted credit, production persistence mapping and actual
 PROP/PPLNS reward calculations with repository fixtures. Zano's multiplier-credit path

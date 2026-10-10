@@ -10,8 +10,11 @@ namespace Miningcore.Blockchain.Cryptonote;
 internal static class CryptonoteDifficulty
 {
     internal const double Minimum = 1d;
-    // A four-byte target must remain nonzero on the wire (e.g. XMRig's parser).
-    internal static readonly double ShortTargetMaximum = Math.BitDecrement(4294967296d);
+    // floor(2^32 / D) loses one target unit. Retaining at least 101 units
+    // bounds miner work / nominal credit below 1 + 1/101, hence below 1%.
+    // Keep the legacy four-byte wire format and nominal accounting units.
+    internal const uint ShortTargetMinimum = 101;
+    internal static readonly double ShortTargetMaximum = Math.BitDecrement(4294967296d / ShortTargetMinimum);
     // Full-width targets also need headroom for the signed *255 conversion.
     internal static readonly double FullTargetMaximum = Math.BitDecrement(9223372036854775808d / 255d);
 

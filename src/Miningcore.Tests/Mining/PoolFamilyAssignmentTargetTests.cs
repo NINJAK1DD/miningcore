@@ -24,7 +24,7 @@ public class PoolFamilyAssignmentTargetTests
                 (1d, "ffffffff", new string('F', 64)),
                 (55d, "4a90a704", "04A7904A7904A7904A7904A7904A7904A7904A7904A7904A7904A7904A7903FC"),
                 (1000d, "37894100", "004189374BC6A7EF9DB22D0E5604189374BC6A7EF9DB22D0E5604189374BC685"),
-                (CryptonoteDifficulty.ShortTargetMaximum, "01000000", "000000010000000001010101010203040506080B0F141A222D3C506A8CB9F612"),
+                (CryptonoteDifficulty.ShortTargetMaximum, "65000000", "000000650000001B5454545BB9742EEBA4A0F1971A79DAF8B2D5ADB2BAEE8590"),
             };
             foreach(var type in new[] { typeof(ConcealJob), typeof(CryptonoteJob), typeof(ZanoJob) })
             foreach(var (difficulty, shortTarget, fullTarget) in vectors)
@@ -45,7 +45,9 @@ public class PoolFamilyAssignmentTargetTests
                 Math.BitIncrement(CryptonoteDifficulty.FullTargetMaximum), Math.BitIncrement(9223372036854775808d / 255d), 1e20d, double.MaxValue })
                 yield return new object[] { type, difficulty, type == typeof(ZanoJob) ? 32 : 4 };
             foreach(var type in new[] { typeof(ConcealJob), typeof(CryptonoteJob) })
-            foreach(var difficulty in new[] { 4294967296d, Math.BitIncrement(4294967296d), 5e9d, CryptonoteDifficulty.FullTargetMaximum })
+            foreach(var difficulty in new[] { Math.BitIncrement(CryptonoteDifficulty.ShortTargetMaximum),
+                1e8d, 1e9d, 2.2e9d, 3e9d, Math.BitDecrement(4294967296d),
+                4294967296d, Math.BitIncrement(4294967296d), 5e9d, CryptonoteDifficulty.FullTargetMaximum })
                 yield return new object[] { type, difficulty, 4 };
         }
     }
@@ -83,9 +85,40 @@ public class PoolFamilyAssignmentTargetTests
         var encode = type.GetMethod("EncodeTarget", BindingFlags.Instance | BindingFlags.NonPublic);
         var target = (string) encode.Invoke(job, new object[] { CryptonoteDifficulty.ShortTargetMaximum, 4 });
         var raw = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(Convert.FromHexString(target));
-        Assert.Equal(1u, raw);
+        Assert.Equal(101u, raw);
         // XMRig Job.cpp's four-byte parser, verified against upstream source.
         var minerTarget = ulong.MaxValue / (uint.MaxValue / (ulong) raw);
         Assert.True(minerTarget > 0);
+    }
+
+    [Theory]
+    [InlineData(typeof(ConcealJob))]
+    [InlineData(typeof(CryptonoteJob))]
+    public void ShortTarget_IntegerMinerWorkStaysWithinOnePercentOfNominalCredit(Type type)
+    {
+        var job = RuntimeHelpers.GetUninitializedObject(type);
+        var encode = type.GetMethod("EncodeTarget", BindingFlags.Instance | BindingFlags.NonPublic);
+        void Check(double difficulty)
+        {
+            var target = (string) encode.Invoke(job, new object[] { difficulty, 4 });
+            var raw = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(Convert.FromHexString(target));
+            Assert.True(raw >= 101, $"Short target lost precision: {difficulty:R}, {raw}");
+            // Reproduce both integer divisions, not the approximate 2^32 / t.
+            var minerTarget = ulong.MaxValue / (uint.MaxValue / (ulong) raw);
+            var impliedDifficulty = (double) ulong.MaxValue / minerTarget;
+            Assert.True(impliedDifficulty / difficulty < 1.01,
+                $"Work/credit exceeded the budget: {difficulty:R}, {raw}, {impliedDifficulty:R}");
+        }
+        foreach(var difficulty in new[] { 1d, 55d, 1000d, 1e5d, 1e6d, 3e7d, CryptonoteDifficulty.ShortTargetMaximum })
+            Check(difficulty);
+        // Check both sides of every coarse bin where truncation is material.
+        // Above 10,000 target units the theoretical error is below 0.01%.
+        for(uint raw = 101; raw <= 10_000; raw++)
+        {
+            var transition = 4294967296d / (raw + 1d);
+            Check(Math.BitDecrement(transition));
+            Check(transition);
+            Check(Math.BitIncrement(transition));
+        }
     }
 }

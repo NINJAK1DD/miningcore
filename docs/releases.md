@@ -34,11 +34,15 @@ previously advertised zero or incompletely padded targets. These three families 
 reject assigned difficulty below **1** instead of saturating only the wire target and
 underweighting accepted work. Startup checks cover endpoint difficulty and explicit
 VarDiff minimum/maximum, direct/queued assignments and job preparation share the same
-protocol bounds. Conceal/Cryptonote's four-byte targets require difficulty below `2^32`
-(maximum `Math.BitDecrement(4294967296d)`, approximately `4.294967296e9`), keeping the
-wire target nonzero and consumable by CryptoNote miners. Zano's full-width target retains
+protocol bounds. Conceal/Cryptonote's four-byte targets now retain at least **101 target
+units**, limiting excess miner work per nominally credited share to **less than 1%**.
+The maximum is `Math.BitDecrement(4294967296d / 101d)` (approximately `42,524,428.67326732`).
+Nonzero targets alone were insufficient: at difficulty `2.2e9`, rounding to one target
+unit made an XMRig miner perform approximately 1.95 times its credited work. The lower
+ceiling bounds that truncation while retaining the four-byte protocol and nominal credit.
+Ordinary assignments around `1e5`–`1e6` remain supported. Zano's full-width target retains
 the largest safe double below `2^63 / 255` (approximately `3.617008641903833e16`).
-Encoders also reject zero target output defensively. Dynamic retargeting respects the
+Encoders also reject zero or insufficient-precision short target output defensively. Dynamic retargeting respects the
 appropriate protocol ceiling.
 
 Static/NiceHash values remain hints: values below the existing minimum/application
@@ -50,7 +54,11 @@ This avoids duplicate success/error responses and preserves previously successfu
 with sub-unit hints. Direct invalid assignments and invalid startup bounds still fail.
 
 **Upgrade action:** raise any sub-unit endpoint/VarDiff bounds on Conceal, Cryptonote
-or Zano to at least 1 and remove oversized bounds before restarting. Zano's protocol
+or Zano to at least 1 and remove oversized bounds before restarting. Conceal/Cryptonote
+endpoint difficulty and explicit VarDiff bounds above approximately **42.5 million** must
+be reduced, including configurations previously allowed below `2^32`. With no explicit
+VarDiff maximum, the protocol ceiling applies automatically. Oversized miner/NiceHash
+hints continue to be warned and ignored; they do not disable VarDiff or fail login. Zano's protocol
 assignment uses this floor before its existing share-multiplier normalization for
 persisted credit. Existing stored shares are unchanged. No database migration is
 required. See the [assignment and target validation](vardiff-monotonic.md).

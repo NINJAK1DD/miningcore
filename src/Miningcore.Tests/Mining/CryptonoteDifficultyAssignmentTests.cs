@@ -22,7 +22,9 @@ public class CryptonoteDifficultyAssignmentTests
                 Math.BitIncrement(CryptonoteDifficulty.FullTargetMaximum), double.MaxValue })
                 yield return new object[] { type, value };
             foreach(var type in new[] { typeof(ConcealWorkerContext), typeof(CryptonoteWorkerContext) })
-            foreach(var value in new[] { 4294967296d, Math.BitIncrement(4294967296d), 5e9d, CryptonoteDifficulty.FullTargetMaximum })
+            foreach(var value in new[] { Math.BitIncrement(CryptonoteDifficulty.ShortTargetMaximum),
+                1e8d, 1e9d, 2.2e9d, 3e9d, Math.BitDecrement(4294967296d),
+                4294967296d, Math.BitIncrement(4294967296d), 5e9d, CryptonoteDifficulty.FullTargetMaximum })
                 yield return new object[] { type, value };
         }
     }
