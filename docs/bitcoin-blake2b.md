@@ -12,11 +12,19 @@ later hard fork is implemented by the pinned Knots sources listed below.
 ## Compatibility boundary
 
 - A Miningcore build containing this feature is required; v0.3.0 does not contain it.
-- The reviewed node is **Bitcoin Knots v29.4.1.knots20260508**, commit
-  `8c85b1585dac23f964e2dd32045624de7f02aa58`. Startup requires its version and Knots identifier,
+- **Upgrade both Knots and Miningcore before mainnet height 973440.** From that
+  height, 29.4.1 templates can include premature coinbase spends rejected by
+  enforcing 29.4.2 nodes. If the height has already been reached, keep mining and
+  payouts stopped until the reviewed daemon has revalidated/synchronized its chain
+  and pending rewards have been reconciled using the upgrade runbook.
+- The reviewed node is **Bitcoin Knots v29.4.2.knots20260508**, commit
+  `58398baf33e588779685ead478e6397bb28ed3d6`. Startup requires its version and Knots identifier,
   an active deployment with the expected activation height, and mandatory GBT rule `!blake2b`.
   Version strings are compatibility checks, not proof of binary authenticity: independently
   verify the upstream release checksums and signatures.
+  The reviewed Satoshi/Knots prefix accepts printable `-uacomment` comments and
+  `-uaappend` suffixes, bounded by Knots' 256-byte user-agent limit. Spoofed or
+  contradictory prefixes and release-candidate identifiers remain unsupported.
   Runtime work re-attests version, chain and deployment on the first successful template
   poll after a 30-second cache expires, and before new work after a GBT/activation-parent RPC outage.
   Failed attestation RPCs withhold fresh work and retry with bounded exponential backoff
@@ -39,7 +47,7 @@ later hard fork is implemented by the pinned Knots sources listed below.
   The parent-only comparison is restricted to mainnet carry-forward heights. At a retarget
   boundary or on min-difficulty regtest, the daemon owns difficulty selection; Miningcore
   still validates GBT target/bits and rejects malformed parent metadata. See the pinned
-  [Knots difficulty selection](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/pow.cpp#L32-L89).
+  [Knots difficulty selection](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/pow.cpp#L32-L89).
 - Only mainnet and isolated regtest are configured. Testnet4 and signet are not advertised.
   The regtest fixture uses activation 20 and shift 20; its headline is
   `Miningcore BLAKE2b regtest`. These are a test contract, not mainnet settings.
@@ -49,6 +57,245 @@ later hard fork is implemented by the pinned Knots sources listed below.
 - The node release is stable. The project's compatible DATUM gateway/miner ecosystem is
   still described as public beta. A stable node does not prove compatibility with every
   ASIC, firmware, proxy, rental service or public network deployment.
+
+## Reward maturity and RPC units
+
+The current baseline is `knots-29.4.2-header-v2`; 29.4.1 is retired from the accepted
+current daemon matrix. Knots 29.4.2 removes `getdifficulty`. The typed BLAKE2b manager
+skips that startup call and remains PoW even if legacy stake-shaped data is supplied.
+Other Bitcoin-family/PoS pools retain their legacy RPC behavior.
+
+Mainnet consensus requires 6480 blocks of depth for coinbases created from 973440
+when the **spending block** is between 973440 and 979919 inclusive. Before that
+coinbase height, or at spending height 979920 onward, ordinary 100-block consensus
+maturity applies. This release's wallet and mempool independently require **6480
+blocks for all coinbases**, including earlier ones, without expiring at 979920.
+Wallet category `generate` requires **6481 RPC confirmations**: remaining wallet
+depth is `max(0, 6481 - confirmations)`. These heights are the released block rules;
+45 days is an estimate at 600 seconds per block.
+
+`getdeploymentinfo.deployments.long_coinbase_maturity` must report the reviewed
+`flagday`, enforcement height, inclusive `height_end: 979919`, covered coinbase
+height, maturity and `active` value. `active` describes the next block. Miningcore
+validates its field contract and next-height semantics at startup and runtime;
+each GBT must advertise unprefixed `long_coinbase_maturity` exactly while that
+schedule enforces, alongside `!blake2b`. Unknown mandatory rules and proposed
+MTP/phased-release RPC contracts fail closed. A missing mainnet deployment never
+selects ordinary maturity. Unscheduled regtest alone has an explicitly reviewed
+absent deployment and 100-block wallet policy.
+
+Custodial reward progress uses the larger of wallet-required confirmations and the
+operator's `minimumConfirmations`. The `immature` category stays pending even if
+the numerical progress would reach one. Classification logs the wallet category,
+RPC confirmations, remaining depth and resulting status. The block API's
+`confirmationProgress` is progress toward that threshold, not a payment receipt
+or an independent spendability guarantee. `generate` still needs the operator
+threshold, an active matching block and the expected generated wallet transaction.
+Classification and wallet payment both revalidate daemon identity, chain and maturity.
+Outage/reindexing or missing wallet entries keep active or unverified blocks pending;
+a proven inactive block is orphaned. Alongside pending rows, each payout cycle
+reloads up to 64 custodial orphan rows within 12960 blocks of the observed tip
+(two mainnet wallet-maturity intervals). An ID cursor advances and wraps so one
+permanently unavailable row cannot starve later rows. Restart resets that cursor;
+the persisted statuses/evidence remain authoritative. Matching active header and
+wallet evidence can restore an orphan to Pending or Confirmed. The row-lock commit
+checks unchanged pool, height, hash, coinbase txid, miner and candidate metadata;
+already-confirmed custodial rows remain excluded from repeat settlement. This
+bounded recovery does not reverse booked liabilities or re-credit confirmed rows.
+For PROP/PPLNS, automatic confirmation is withheld if an ordinary custodial row
+with a later or equal creation timestamp is already Confirmed. A later allocation
+may have consumed the older reward's shares; equal timestamps have ambiguous order.
+This locked-transaction guard also covers reopened Pending rows after restart.
+The row becomes durably **Quarantined** in that transaction. Stored reward and effort
+are retained, fresh verified confirmation progress is persisted, and no balance credit
+is applied. One warning and allocation-history alert follow the committed transition.
+Pending/orphan scans skip it, including after restart, so the same hold cannot generate
+repeated warnings or credit attempts. The existing blocks API includes quarantined rows.
+If the notification fails, the durable row remains visible for operator audit.
+SOLO and booked PPS liabilities retain their existing settlement behavior.
+These changes introduce no ledger migration, share rescaling or PPS liability reversal.
+The wallet remains the final authority for funding and accepting a payout; wallet
+rejection does not book a successful payment.
+
+RPC `difficulty_blake2b` reports expected hash work, including mining information's
+`next` object and header-v2 block/blockchain records. Production Miningcore does
+not consume these optional fields; it ignores them rather than treating them as
+accounting difficulty. Separate test-fixture types decode the reviewed shapes and
+reject malformed values to verify their distinct units. Historical SHA256d records
+retain `difficulty`. Expected hash work is never used as assigned-share difficulty,
+job/network accounting difficulty, PPS price or PPLNS work-window score. Those retain
+the exact GBT target-derived reference-target scale and existing hashrate conversion.
+The API's `networkDifficulty` remains in that accounting scale. No stored shares,
+balances, pool IDs, coin key (`bitcoin-blake2b`) or ledger symbol (`BTCB2B`) are renamed.
+
+Payout attestation records fixed diagnostic reason codes: `701 RpcUnavailable`,
+`702 Syncing`, `703 ContractDrift`, and `704 BindingMismatch`. RPC/synchronization
+failures alert after 30 minutes; successful contract contradictions and changed
+process bindings alert immediately. Notifications are bounded to one per continuous
+reason episode across handler recreation; a changed reason or complete recovery
+starts a new episode. Cancellation is not an outage alert.
+RPC conversion diagnostics never inspect exception text: valid JSON with a wrong result
+or envelope shape and missing mandatory methods (-32601) produce ContractDrift.
+Malformed/truncated JSON framing produces RpcUnavailable, including errors wrapped
+by the production RpcClient. Both paths withhold financial operations. Single and batch
+HTTP responses share framing/envelope decoding and retain the parsed result token
+without a second tree copy; typed DTO consumers still convert once. Empty HTTP responses
+and non-JSON HTTP failures retain a transport cause (including empty authentication 401);
+valid daemon error envelopes retain their numeric codes, even on HTTP 500. Shared
+merged-mining diagnostics report categories/codes without forwarding daemon/error text.
+Neither alerts nor startup identity errors include received user-agent/RPC payloads. Inspect
+`getnetworkinfo` privately to diagnose an incompatible customized agent.
+
+### Resolving missing block or wallet evidence
+
+An unknown header (`getblockheader` error -5), missing wallet transaction or unavailable
+RPC leaves the reward unresolved. Repeated misses alone do not prove orphaning or
+authorize a financial write-off. The delayed alert is emitted once per continuous
+episode; absence of repeated alerts does not mean the problem recovered.
+Already-stored orphans with unavailable headers are opportunistic scan misses:
+they remain Orphaned without delayed alerts or unchanged-row writes. An active
+header with missing/contradictory wallet proof still triggers the bounded alert.
+
+1. Pause the affected pool's new payment admission, preserve the ledger/wallet/node
+   backups and record the exact pool/block ID, height, hash, coinbase txid, miner,
+   reward, share/credit evidence and existing payment-batch outcomes.
+2. Inspect synchronization/reindex status and compare the header on independently
+   validated reviewed Knots nodes. A different active hash at that height alone does
+   not recover the missing header or prove the stored coinbase was accepted/inactive.
+   Body pruning normally preserves headers; missing headers indicate a different
+   failure requiring investigation. Check the dedicated wallet owns/indexes the txid.
+3. Restore/reindex the affected node from verified chain data and restore/rescan its
+   dedicated wallet as needed. A historical wallet rescan on a pruned node can require
+   archival block data. Keep the reviewed build/chain/schedule and allow complete
+   revalidation/indexing; do not reduce confirmations or replace immutable candidate IDs.
+4. Resume reconciliation against repaired evidence: matching active header/wallet
+   evidence restores the reward, and a matching inactive header proves orphaning.
+   If evidence cannot be recovered, retain the unresolved row and an operator case
+   with its backups; do not delete it, force Confirmed/paid, reset a credited row to
+   Pending, reverse PPS liabilities or blindly resend a known payment. Custodial
+   orphans outside the automatic scan horizon need an audited recovery plan checking
+   original share/credit/payment history before any manual requeue; this handler does
+   not promise recovery of historical allocation data already removed by retention.
+
+Development builds before this fix could mark active BLAKE2b rewards Orphaned on
+transient wallet -5 errors after ordinary maturity. PROP/PPLNS may then have paid
+later blocks, deleted earlier shares and swept recovered surplus. On upgrading
+such a build, investigate allocation-history alerts before attempting recovery.
+Preserve the original share and balance-change backups; reconstruct the original
+PROP round/PPLNS window and reconcile prior credits, all payment outcomes and
+dedicated-wallet spendable backing. Audit and fund any outstanding entitlement
+before an operator-approved recovery. Do not bypass the hold by deleting later
+Confirmed rows, rewriting creation times, switching schemes or forcing Confirmed.
+Wallet spendability alone cannot reconstruct allocation history. This conservative
+guard does not certify completeness of retained shares when no later row exists.
+Historical orphans outside the scan window need the same audit.
+
+### Accounting clocks and allocation ordering
+
+All Stratum senders, relay receivers, recorders and payout owners sharing the
+accounting database must maintain synchronized UTC clocks and monitor clock offset
+and backward/forward steps. See [share relay requirements](share-relays.md).
+PROP/PPLNS share windows and the recovery guard use persisted `Created` timestamps,
+not block height. Height establishes chain order but cannot establish which share
+window a prior allocation consumed. A confirmed reward with a later or equal
+`Created` therefore quarantines an ambiguous recovery even if its block height is
+lower. Clock skew between nodes can trigger this during ordinary distributed
+operation; equal timestamps are also ambiguous. Preserve the records and use the
+audited closure below rather than rewriting timestamps or force-confirming the row.
+
+Synchronize and verify host clocks before admission, including after suspend,
+restore or failover. The relay's five-minute future-evidence rejection is an abuse
+bound, not a safe allocation clock-skew budget. Time synchronization cannot repair
+previously skewed allocations. A future CoreDRP multi-node accounting design needs
+a persisted shared allocation order and share-window identities before replacing
+this conservative guard; node-local sequence numbers and height are insufficient.
+
+### Closing an audited allocation quarantine
+
+Quarantined is the final automatic state for ambiguous historical PROP/PPLNS allocation.
+Keep the block in that state after recovery; changing it to Pending or Confirmed would
+misrepresent automatic settlement or allow reconstruction from the wrong share window.
+The audit case records the financial resolution separately:
+
+1. Stop every financial writer using the database, including share/PPS admission and
+   payout processes. Preserve database/wallet backups and immutable candidate evidence.
+   Verify the pool is the reviewed BLAKE2b custodial pool, then reconstruct its original
+   PROP round/PPLNS window from backups. Reconcile each miner's existing credits,
+   payments, fees, journal outcomes and spendable backing. Record a case UUID, approving
+   operator and the independently reviewed remaining entitlement in the external audit.
+2. Apply any approved additional credit through the audited manual ledger procedure:
+   balances and balance_changes must agree in one transaction, with available backing
+   and no repeat payment or reversal of existing liabilities. Use the exact usage memo
+   `Audited Bitcoin BLAKE2b recovery block <database-block-id> case <case-uuid>` on all
+   case receipts. Record their IDs and their aggregate additional credit; it can differ
+   from the stored block reward. This runbook does not infer entitlement from that reward.
+   If the reviewed entitlement is zero, record a zero-amount audit receipt for an actual
+   affected account already in balances with that memo, leaving its balance unchanged.
+3. Use [resolve_blake2b_allocation_hold.sql](../scripts/ops/resolve_blake2b_allocation_hold.sql)
+   to validate identity, receipt/account/pool bindings, exact nonnegative total and case
+   uniqueness. It only appends a resolution tag to those existing receipts. It does not
+   create credits, pay, modify amounts or change the block. Default execution is a dry run
+   ending in ROLLBACK. Inspect the displayed receipts before repeating with `-v apply=true`.
+   Supply the exact original identities and every case receipt ID as a JSON integer array:
+
+   Choose the tool from the immutable release directory under audit (the packaged
+   file and link above use `scripts/ops/`, separate from schema `migrations/`).
+   `MININGCORE_CANDIDATE_DIR` is the absolute extracted release directory whose
+   BUILD-INFO and checksums you verified:
+
+   ```bash
+   RESOLUTION_SQL="$MININGCORE_CANDIDATE_DIR/scripts/ops/resolve_blake2b_allocation_hold.sql"
+   # Installed release alternative, after verifying the active release identity:
+   # RESOLUTION_SQL="/opt/miningcore/scripts/ops/resolve_blake2b_allocation_hold.sql"
+   # Source checkout alternative, from its verified repository root:
+   # RESOLUTION_SQL="$PWD/scripts/ops/resolve_blake2b_allocation_hold.sql"
+   psql -X --no-password "$AUDITED_DATABASE" \
+     -v pool_id="$POOL_ID" -v block_id="$BLOCK_ID" -v block_height="$BLOCK_HEIGHT" \
+     -v block_hash="$BLOCK_HASH" -v coinbase_txid="$COINBASE_TXID" -v case_id="$CASE_UUID" \
+     -v credit_change_ids="$CREDIT_CHANGE_IDS_JSON" -v approved_additional_credit="$APPROVED_TOTAL" \
+     -f "$RESOLUTION_SQL"
+   ```
+
+   Use protected libpq credentials/service configuration rather than a password in the
+   command. The script quotes psql values as SQL literals; it does not interpolate them
+   into SQL identifiers or executable fragments. An invalid case aborts atomically.
+4. Repeating the same complete case is idempotent. A different case for an already-resolved
+   block is rejected; corrections require a separate reviewed ledger/audit amendment.
+   Keep the block Quarantined and retain the case tag
+   `bitcoin-blake2b:allocation-resolved:block=<id>:case=<uuid>` as its durable closure record.
+   Compare balances, payment journals and backing again before resuming admission/payouts.
+
+Real psql/PostgreSQL regressions verify dry run, application, replay, zero receipts,
+quoted pool IDs, wrong identities/status/type/pool, duplicate/missing/fractional receipt
+IDs, conflicting cases and invalid totals. The financial values remain unchanged by
+the closure script. It cannot certify the external entitlement or funding audit.
+
+Before upgrading, drain and confirm broadcasts while still on 29.4.1, within the
+973440 upgrade deadline. The new wallet/mempool policy re-locks existing coinbases
+at depths 101–6480 and can evict their unconfirmed payouts or make change unavailable;
+already-credited balances retain their liability while losing liquid backing. After
+upgrade, compare `getbalances`, payout confirmations/conflicts, usable change and
+outstanding balances before resuming. See the [upgrade runbook](bitcoin-blake2b-knots-29.4.2-review.md#stop-upgrade-reconcile-restart)
+for unresolved broadcasts that cannot confirm safely before the deadline.
+
+For PPS, use mature, spendable reserves sufficient for the longer immature period;
+future or immature rewards cannot fund already-booked liabilities. See [PPS reserve
+planning](pps.md). Deployment inactivity alone is not a reason to release reserves.
+
+Isolated tests may explicitly match the node's
+`-testcoinbasematuritylong=start:enforce:release` using `blake2bMaturityStart`,
+`blake2bMaturityEnforce`, and `blake2bMaturityRelease` in the **regtest coin-template
+network**. All three are required, below `INT_MAX`: start must be nonnegative,
+enforce must be at least 2, release must exceed both, and release minus start must
+exceed 100. Enforcement may precede the first covered coinbase, as Knots permits.
+Every mainnet override is refused.
+Omitting these fields uses the reviewed unscheduled regtest contract and refuses a
+node with an unexpected scheduled deployment. These are fixture settings, not pool
+confirmation controls. The CI fixtures use distinct boundaries; do not add the
+regtest switch to a mainnet daemon.
+
+[Upgrade/release verification and live test evidence](bitcoin-blake2b-knots-29.4.2-review.md)
+cover the reviewed transition and remaining DATUM work in #163.
 
 ## Node and wallet isolation
 
@@ -269,16 +516,16 @@ existing parser. The exact parsed value is reused for execution.
 Server-driven BLAKE2b VarDiff has an effective maximum of `65535 * 2^208`, the highest
 representable difficulty (target 1), when `maxDiff` is omitted. A configured lower maximum
 is honored. This runtime ceiling applies to both share-triggered and idle retargeting
-without rewriting the operator's configuration. A genuine zero-length interval window
-uses the Unix-millisecond timestamp resolution: a conservative mean of
+without rewriting the operator's configuration. Zero and tiny positive interval windows
+use a conservative minimum policy mean of
 **0.001 / min(interval count, 10) seconds**, including the current
 interval, then applies normal proportional retargeting, `maxDelta` and difficulty bounds.
 A full window uses 0.0001 seconds; two intervals use 0.0005 seconds. For example, difficulty 10
 with a ten-second target and a full zero window becomes 1,000,000 without a delta limit, or 12
 with `maxDelta: 2`; two zero intervals produce 200,000 without a delta limit. It does not
 automatically jump to the protocol maximum. For target intervals at or below the estimate,
-an unresolved zero window holds the current difficulty, subject to configured bounds,
-instead of lowering it. Positive measured intervals retain their proportional calculation.
+a burst window below that mean holds the current difficulty, subject to configured bounds,
+instead of lowering it. Positive measured intervals above the floor retain their proportional calculation.
 Extreme positive ratios avoid
 intermediate overflow/underflow, and delta limiting uses the previous difficulty plus
 or minus the limit, avoiding cancellation. The shared VarDiff arithmetic fixes also apply
@@ -314,20 +561,18 @@ success for an unfinished assignment. Host shutdown clears jobs and closes the s
 without a publication-failure diagnostic or metric. Cancellation before the request's
 early validation gate remains a no-op on assignment state.
 
-Both share and idle updates read the wall clock while holding the VarDiff state lock.
-A no-op idle sweep leaves the share timestamp, interval buffer and assignment markers
-unchanged, so a real share in the same millisecond still measures from the previous share or
-actual retarget. An idle update advances the baseline only when difficulty really changes.
-A backward timestamp, future retarget timestamp or invalid interval history resets the
-measurement window and timing baseline without changing difficulty, jobs or the last
-actual assignment marker. Later valid samples resume normal retargeting. Negative elapsed
-time is never treated as a fast-miner observation. Invalid/non-finite arithmetic inputs
-produce no retarget. These shared changes are tracked in
-[#184](https://github.com/NINJAK1DD/miningcore/issues/184); interval measurement still uses
-the wall clock, with explicit rollback recovery rather than a new monotonic timer.
-Forward clock steps can still resemble an idle interval and lower difficulty within
-configured bounds; [#185](https://github.com/NINJAK1DD/miningcore/issues/185) tracks a
-cross-family migration to monotonic elapsed time. Shared startup validation rejects non-finite or non-positive minimum
+Both share and idle updates measure intervals and retarget cooldowns with the context's
+monotonic `TimeProvider`, sampled under the VarDiff state lock. Forward and backward UTC
+corrections cannot alter an identical monotonic sample sequence. `LastUpdate` remains
+UTC assignment metadata. No-op idle sweeps preserve the real-share baseline, while actual
+retargets clear the buffer and restart the cooldown. A broken monotonic provider or invalid
+history is defensively rebased without changing the last assignment marker. Positive
+submillisecond intervals remain measurable; zero and tiny positive means use the sample-count-aware
+burst floor above. The shared worker gate also serializes generic-family fixed/NiceHash assignments,
+VarDiff publication and deferred-difficulty application. See the [cross-family audit and validation](vardiff-monotonic.md)
+for [#185](https://github.com/NINJAK1DD/miningcore/issues/185), following the arithmetic and
+no-op-sweep fixes in [#184](https://github.com/NINJAK1DD/miningcore/issues/184).
+Shared startup validation rejects non-finite or non-positive minimum
 and configured maximum difficulties; omitting `maxDiff` remains supported.
 
 **Before upgrading:** set an explicit finite, positive `minDiff` appropriate for the coin
@@ -371,8 +616,8 @@ Missing or null request IDs take precedence: they receive error -1 without consu
 the duplicate warning or difficulty allowance, even after subscription or a warning. The
 one-warning allowance is per connection and is not reset by other requests or refill.
 This protocol does not support in-session resubscription. Buffered requests cannot reopen
-a terminal connection. Canonical Bitcoin's existing resubscription behavior is separately
-tracked in [#181](https://github.com/NINJAK1DD/miningcore/issues/181).
+a terminal connection. Canonical Bitcoin and inherited Bitcoin-family pools use the same
+[duplicate-subscription compatibility policy](bitcoin-subscription-policy.md).
 
 A per-connection async gate covers assignment mutation, pending VarDiff application,
 `mining.set_difficulty` and the immutable job/target snapshot plus `mining.notify`.
@@ -400,8 +645,9 @@ live connection with a partial assignment. The same terminal latch covers unexpe
 post-acknowledgment unrepresentable targets, including external autodiff values, and clears
 active jobs. An accepted share remains accepted if its subsequent VarDiff publication
 fails: accounting is preserved, with no extra invalid-share count or ban consideration.
-Canonical Bitcoin's response policy is unchanged and tracked in
-[#183](https://github.com/NINJAK1DD/miningcore/issues/183). The shared transport tracks
+Canonical Bitcoin and merged mining now use the same post-response terminal
+decision; see the [Bitcoin-family publication policy](bitcoin-response-publication.md)
+for the audited paths and compatibility boundaries. The shared transport tracks
 response attempts with one interlocked increment per response; notification writes do
 not change that counter. All response payloads must use `RespondAsync`.
 
@@ -426,7 +672,7 @@ Enforcement emits one Info-level structured `DifficultyBudgetDisconnect`,
 `DuplicateSubscription` or `AssignmentPublicationFailure` event per closed connection,
 with the server-generated connection ID and no request/password/address payload. Ordinary refusals produce no dedicated logs.
 `miningcore_stratum_admission_total{pool,outcome}` counts `difficulty-refused`,
-`difficulty-disconnect`, `duplicate-subscribe` and `publication-failure`; outcomes are allowlisted and there are
+`difficulty-disconnect`, `duplicate-subscribe-warning`, `duplicate-subscribe` and `publication-failure`; outcomes are allowlisted and there are
 no per-miner, connection-ID or IP labels. Use these counters to distinguish renegotiation
 refusals from duplicate-subscription and work-publication disconnects. Each terminal
 publication failure is counted once, including failures following an accepted share.
@@ -504,9 +750,12 @@ intervals, both with and without `maxDelta`: accepted accounting survives, the c
 remains usable, and the next difficulty/notify pair has an exactly representable target.
 Wire tests also cover idle retargeting, explicit lower maxima, retained jobs, unchanged
 configuration and untouched negotiation allowance. Shared VarDiff unit tests cover ordinary
-retargeting, extreme ratios and generic-family default bounds. Backward-clock tests cover
-both producers and protocol bounds, preserved assignments, discarded invalid samples and
-subsequent recovery. A lock-checking clock guards against reading time before the monitor.
+retargeting, extreme ratios and generic-family default bounds. Monotonic tests cover every
+concrete worker context, both UTC correction directions,
+preserved assignments, invalid-provider recovery and clock sampling under the monitor.
+Injected wall-correction cases preserve the same retarget and original accepted credit
+through real proofs and all four payout schemes with PostgreSQL settlement. Clock
+independence itself is established by the deterministic counter/UTC tests.
 Run the focused suite with:
 
 ```sh
@@ -665,7 +914,7 @@ operator commissioning beyond isolated regtest.
 
 ## Immutable source provenance
 
-Protocol baseline rechecked against upstream on 2026-09-04 and 2026-09-05:
+Daemon/RPC/maturity baseline rechecked on 2026-10-05. Historical header vector provenance remains 29.4.1 because the header primitives, PoW and vectors did not change in 29.4.2:
 
 Loader constants enforce this reviewed compatibility boundary; they are not independent
 proof of upstream consensus. That evidence is the pinned source audit, official vectors
@@ -673,16 +922,17 @@ and accepted-block integration tests. Changes to these constants require renewed
 
 | Contract | Reviewed source |
 | --- | --- |
-| Stable node and release | [Knots v29.4.1.knots20260508](https://github.com/bitcoinknots/bitcoin/tree/8c85b1585dac23f964e2dd32045624de7f02aa58) |
-| Header layout | [src/primitives/block.h](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/primitives/block.h) |
-| H1/H2, ASIC profiles, PoW, XOR | [src/primitives/block.cpp](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/primitives/block.cpp) |
-| Official vectors | [block_header_v2.json](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/test/data/block_header_v2.json) |
-| GBT rules and version | [src/rpc/mining.cpp](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/rpc/mining.cpp) |
-| Activation parameters and target shift | [chainparams.cpp](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/kernel/chainparams.cpp), [pow.cpp](https://github.com/bitcoinknots/bitcoin/blob/8c85b1585dac23f964e2dd32045624de7f02aa58/src/pow.cpp) |
+| Stable node and release | [Knots v29.4.2.knots20260508](https://github.com/bitcoinknots/bitcoin/tree/58398baf33e588779685ead478e6397bb28ed3d6) |
+| Header layout | [src/primitives/block.h](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/primitives/block.h) |
+| H1/H2, ASIC profiles, PoW, XOR | [src/primitives/block.cpp](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/primitives/block.cpp) |
+| Official vectors | [block_header_v2.json](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/test/data/block_header_v2.json) |
+| GBT rules and version | [src/rpc/mining.cpp](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/rpc/mining.cpp) |
+| Activation parameters and target shift | [chainparams.cpp](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/kernel/chainparams.cpp), [pow.cpp](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/pow.cpp) |
 | Miner work and target accounting | [CONVOY datum_pow.c](https://github.com/CONVOYMining/datum_gateway/blob/b9ea7dc3eb91352565ab487ec55ed6ee5964a440/src/datum_pow.c) |
 | Miner notify, submit and payout coinbase selection | [CONVOY datum_stratum.c](https://github.com/CONVOYMining/datum_gateway/blob/b9ea7dc3eb91352565ab487ec55ed6ee5964a440/src/datum_stratum.c) |
 
-The Knots and CONVOY default heads were unchanged from these pins at the recheck. New,
-unmerged gateway proposals addressed strict parsing, duplicate replies, diagnostics and C
-memory safety; they do not redefine this consensus baseline. Re-audit upstream before merge
-and before accepting a new daemon revision rather than automatically tracking a moving branch.
+The Knots default head remained the 29.4.2 pin at this recheck. CONVOY now has revision
+`ac9b70c8b361f14e90e2c963b429a9bbb414aecb`; the old CONVOY links above preserve the
+original miner-layout/accounting review. See the [29.4.2 review and DATUM handoff](bitcoin-blake2b-knots-29.4.2-review.md)
+for the updated gateway references, license boundary and required interoperability tests.
+Re-audit upstream before merge and before accepting another daemon revision.

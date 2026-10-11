@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -33,6 +34,48 @@ public class StratumConnectionTests : TestBase
     private static readonly RecyclableMemoryStreamManager rmsm = ModuleInitializer.Container.Resolve<RecyclableMemoryStreamManager>();
     private static readonly IMasterClock clock = ModuleInitializer.Container.Resolve<IMasterClock>();
     private static readonly ILogger logger = new NullLogger(LogManager.LogFactory);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BufferedRequests_StopAtEachLineAfterDisconnectOrCancellation(bool cancel)
+    {
+        var connection = new StratumConnection(logger, rmsm, clock, ConnectionId, false);
+        var wrapper = new PrivateObject(connection);
+        var pipe = (Pipe) wrapper.GetField("receivePipe");
+        // Fill a single ReadResult deterministically. TCP tests separately drive
+        // the real transport; they cannot guarantee OS packet coalescing.
+        await pipe.Writer.WriteAsync(Encoding.UTF8.GetBytes(string.Concat(
+            "{\"id\":42,\"method\":\"mining.subscribe\"}\n",
+            "{\"id\":42,\"method\":\"mining.authorize\"}\n",
+            "{\"id\":42,\"method\":\"mining.submit\"}\n")));
+        await pipe.Writer.CompleteAsync();
+        using var stop = new CancellationTokenSource();
+        var dispatched = 0;
+        Func<StratumConnection, JsonRpcRequest, CancellationToken, Task> handler = (worker, _, _) =>
+        {
+            dispatched++;
+            if(cancel)
+                stop.Cancel();
+            else
+                worker.Disconnect();
+            return Task.CompletedTask;
+        };
+        var processing = (Task) wrapper.Invoke("ProcessReceivePipeAsync", stop.Token,
+            new StratumProxyPolicy(null), handler);
+        if(cancel)
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => processing.WaitAsync(TestTimeout));
+        else
+            await processing.WaitAsync(TestTimeout);
+        Assert.Equal(1, dispatched);
+        // A fresh read must be legal even when the loop exits mid-buffer.
+        // It must also expose only the two undispatched lines.
+        var remaining = await pipe.Reader.ReadAsync().AsTask().WaitAsync(TestTimeout);
+        Assert.Equal(2, Encoding.UTF8.GetString(remaining.Buffer.ToArray()).Split('\n',
+            StringSplitOptions.RemoveEmptyEntries).Length);
+        pipe.Reader.AdvanceTo(remaining.Buffer.End);
+        await pipe.Reader.CompleteAsync();
+    }
 
     [Fact]
     public void RespondAsync_FailStopTokenRejectsAcknowledgement()
@@ -204,22 +247,28 @@ public class StratumConnectionTests : TestBase
         var connection = new StratumConnection(logger, rmsm, clock, ConnectionId, false);
         var wrapper = new PrivateObject(connection);
         var callCount = 0;
+        using var cts = new CancellationTokenSource();
 
-        async Task handler(StratumConnection con, JsonRpcRequest request, CancellationToken ct)
+        Task handler(StratumConnection con, JsonRpcRequest request, CancellationToken ct)
         {
             callCount++;
-
-            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            Assert.Equal(cts.Token, ct);
+            Assert.False(ct.IsCancellationRequested);
+            // Cancel only after the handler owns the request. No competing
+            // timers or runner continuations decide whether cancellation wins.
+            cts.Cancel();
+            return Task.Delay(Timeout.InfiniteTimeSpan, ct);
         }
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(20));
-
-        await Assert.ThrowsAnyAsync<TaskCanceledException>(()=> (Task) wrapper.Invoke(ProcessRequestAsyncMethod,
+        var processing = (Task) wrapper.Invoke(ProcessRequestAsyncMethod,
             cts.Token,
             handler,
-            new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(requestString))));
+            new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(requestString)));
+        var error = await Assert.ThrowsAnyAsync<TaskCanceledException>(() => processing);
 
-        Assert.Equal(callCount, 1);
+        Assert.True(processing.IsCanceled);
+        Assert.Equal(1, callCount);
+        Assert.Equal(cts.Token, error.CancellationToken);
     }
 
     // [Fact]

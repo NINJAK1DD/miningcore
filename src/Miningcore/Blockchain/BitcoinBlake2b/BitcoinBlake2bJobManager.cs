@@ -25,6 +25,7 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
     }
 
     private BitcoinBlake2bTemplate blake2bCoin;
+    private BitcoinBlake2bMaturity maturity;
     // Startup completes before polling; the inherited Jobs observable's
     // Concat serializes runtime updates, including backoff/attestation state.
     private int activationRpcFailures;
@@ -54,6 +55,8 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
         ValidateDeployment(deployment.Error == null ? deployment.Response : null,
             blake2bCoin.Networks[chainName].Blake2bActivationHeight!.Value,
             poolConfig.Id);
+        maturity = BitcoinBlake2bMaturity.ForNetwork(blake2bCoin, chainName, poolConfig.Id);
+        maturity.ValidateDeployment(deployment.Response, poolConfig.Id);
         attestedChain = chainName;
         // Re-attest the first runtime template after chain-specific setup.
         daemonAttestationExpires = DateTime.MinValue;
@@ -74,12 +77,17 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
         // Operators must verify the downloaded binary independently.
         var version = info?["version"];
         var subversion = info?["subversion"];
-        if(version?.Type != JTokenType.Integer || !long.TryParse(version.ToString(), out var number) || number != 290401 ||
+        if(version?.Type != JTokenType.Integer || !long.TryParse(version.ToString(), out var number) || number != 290402 ||
            subversion?.Type != JTokenType.String ||
-           !subversion.Value<string>().Contains("/Knots:20260508/", StringComparison.Ordinal))
+           !IsReviewedUserAgent(subversion.Value<string>()))
             throw new PoolStartupException(
-                $"Pool '{poolId}' requires reviewed Bitcoin Knots 29.4.1.knots20260508; daemon protocol upgrades require an explicit compatibility review", poolId);
+                $"Pool '{poolId}' requires reviewed Bitcoin Knots 29.4.2.knots20260508 with its recognized version/user-agent prefix; incompatible received subversion is withheld. Inspect getnetworkinfo privately. Daemon upgrades or agent spoofing require an explicit compatibility review", poolId);
     }
+
+    private static bool IsReviewedUserAgent(string agent) => agent is { Length: <= 256 } &&
+        System.Text.RegularExpressions.Regex.IsMatch(agent,
+            @"\A/Satoshi:29\.4\.2(?:\([\x20-\x27\x2a-\x7e]*\))?/Knots:20260508/[\x20-\x7e]*\z",
+            System.Text.RegularExpressions.RegexOptions.NonBacktracking);
 
     protected override async Task<RpcResponse<BlockTemplate>> GetBlockTemplateAsync(CancellationToken ct)
     {
@@ -149,6 +157,8 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
         if(deployment.Error != null) return deployment.Error;
         ValidateDeployment(deployment.Response,
             blake2bCoin.Networks[expectedChain].Blake2bActivationHeight!.Value, poolConfig.Id);
+        maturity = BitcoinBlake2bMaturity.ForNetwork(blake2bCoin, expectedChain, poolConfig.Id);
+        maturity.ValidateDeployment(deployment.Response, poolConfig.Id);
         attestedChain = expectedChain;
         attestationRpcFailures = 0;
         attestationRpcError = null;
@@ -262,7 +272,7 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
         {
             // Reserve the largest uint32 height and signed timestamp pushes,
             // OP_0, fixed extranonce bytes and the 128-bit job discriminator.
-            // Pinned Knots 29.4.1 emits an empty coinbaseaux object. The exact
+            // Pinned Knots 29.4.2 emits an empty coinbaseaux object. The exact
             // runtime contract rejects unexpected nonempty daemon-supplied flags.
             var maximum = new Script(Op.GetPushOp((long) uint.MaxValue), Op.GetPushOp(long.MaxValue),
                 Op.GetPushOp(0)).Length + BitcoinConstants.ExtranoncePlaceHolderLength +
@@ -473,6 +483,10 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
             throw new PoolStartupException(
                 $"Pool '{poolConfig.Id}' activation metadata does not match the reviewed mainnet consensus values",
                 poolConfig.Id);
+
+        (maturity ?? BitcoinBlake2bMaturity.ForNetwork(blake2bCoin,
+            network == Network.Main ? "main" : "regtest", poolConfig.Id))
+            .ValidateRules(template.Rules, template.Height, poolConfig.Id);
 
         if(!string.IsNullOrEmpty(template.CoinbaseAux?.Flags))
             throw new PoolStartupException(

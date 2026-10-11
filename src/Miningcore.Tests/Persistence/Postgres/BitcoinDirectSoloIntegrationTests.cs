@@ -16,6 +16,7 @@ using Miningcore.Persistence.Postgres.Repositories;
 using Miningcore.Persistence.Repositories;
 using Npgsql;
 using NSubstitute;
+using Miningcore.Tests.Util.Postgres;
 using Xunit;
 using Miningcore.Tests.Blockchain.Bitcoin;
 
@@ -26,13 +27,8 @@ public class BitcoinDirectSoloIntegrationTests
     [Fact]
     public async Task FreshAndMigrationDirectConstraintsRemainIdentical()
     {
-        var scripts = Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory,
-            "../../../../Miningcore/Persistence/Postgres/Scripts"));
-        var createdb = await File.ReadAllTextAsync(Path.Combine(scripts,
-            "createdb.sql"));
-        var migration = await File.ReadAllTextAsync(Path.Combine(scripts,
-            "add_bitcoin_direct_solo.sql"));
+        var createdb = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("createdb.sql"));
+        var migration = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_bitcoin_direct_solo.sql"));
 
         var freshContract = ExtractConstraint(createdb,
             "CONSTRAINT CHK_BLOCKS_BITCOIN_DIRECT_SETTLEMENT CHECK (");
@@ -51,9 +47,7 @@ public class BitcoinDirectSoloIntegrationTests
         var schema = $"miningcore_bitcoin_direct_fresh_{Guid.NewGuid():N}";
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync();
-        var scriptPath = Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory,
-            "../../../../Miningcore/Persistence/Postgres/Scripts/createdb.sql"));
+        var scriptPath = PostgresTestScripts.PathFor("createdb.sql");
         var script = await File.ReadAllTextAsync(scriptPath);
 
         try
@@ -106,9 +100,7 @@ public class BitcoinDirectSoloIntegrationTests
                 CREATE UNIQUE INDEX idx_blocks_bitcoin_direct_candidate
                     ON blocks(poolid, hash)
                     WHERE type = 'bitcoin-direct';");
-            var migrationPath = Path.GetFullPath(Path.Combine(
-                AppContext.BaseDirectory,
-                "../../../../Miningcore/Persistence/Postgres/Scripts/add_bitcoin_direct_solo.sql"));
+            var migrationPath = PostgresTestScripts.PathFor("add_bitcoin_direct_solo.sql");
             var migration = (await File.ReadAllTextAsync(migrationPath))
                 .Replace("\\set ON_ERROR_STOP on", string.Empty,
                     StringComparison.Ordinal);
@@ -211,9 +203,7 @@ public class BitcoinDirectSoloIntegrationTests
                 CREATE UNIQUE INDEX idx_blocks_bitcoin_direct_candidate
                     ON blocks(poolid, hash)
                     WHERE type = 'bitcoin-direct';");
-            var migrationPath = Path.GetFullPath(Path.Combine(
-                AppContext.BaseDirectory,
-                "../../../../Miningcore/Persistence/Postgres/Scripts/add_bitcoin_direct_solo.sql"));
+            var migrationPath = PostgresTestScripts.PathFor("add_bitcoin_direct_solo.sql");
             var migration = (await File.ReadAllTextAsync(migrationPath))
                 .Replace("\\set ON_ERROR_STOP on", string.Empty,
                     StringComparison.Ordinal);

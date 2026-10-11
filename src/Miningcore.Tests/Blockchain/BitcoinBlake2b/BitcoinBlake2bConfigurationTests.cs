@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Configuration;
@@ -21,6 +22,51 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public class BitcoinBlake2bConfigurationTests : TestBase
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SharedStartupBatch_UsesLegacyDifficultyAndAddressInfoFromTheirOwnPositions(bool stake)
+    {
+        var manager = new StartupBatchManager(container, stake);
+        manager.Configure(new PoolConfig
+        {
+            Id = "legacy-startup", Coin = "bitcoin", Template = ModuleInitializer.CoinTemplates["bitcoin"],
+            Address = manager.PublicKey.GetAddress(ScriptPubKeyType.Legacy, Network.RegTest).ToString(),
+            Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 1 } },
+        }, new ClusterConfig());
+        await manager.Initialize();
+        Assert.Equal(new[] { "validateaddress", "submitblock", "getblockchaininfo", "getaddressinfo", "getdifficulty" }, manager.Methods);
+        Assert.Equal(stake ? "POS" : "POW", manager.BlockchainStats.RewardType);
+        if(stake) Assert.Equal(manager.PublicKey.ScriptPubKey, manager.Destination.ScriptPubKey);
+    }
+
+    private sealed class StartupBatchManager : BitcoinJobManager
+    {
+        private readonly bool stake;
+        internal PubKey PublicKey = new Key().PubKey;
+        internal string[] Methods;
+        internal IDestination Destination => poolAddressDestination;
+        internal StartupBatchManager(IComponentContext context, bool stake)
+            : base(context, new Miningcore.Time.StandardClock(), Substitute.For<IMessageBus>(), Substitute.For<IExtraNonceProvider>()) => this.stake = stake;
+        internal Task Initialize() => PostStartInitAsync(CancellationToken.None);
+        protected override Task UpdateNetworkStatsAsync(CancellationToken ct) => Task.CompletedTask;
+        protected override void SetupJobUpdates(CancellationToken ct) { }
+        protected override void PostChainIdentifyConfigure() { }
+        protected override Task<Miningcore.Rpc.RpcResponse<JToken>[]> ExecuteStartupBatchAsync(CancellationToken ct, Miningcore.Rpc.RpcRequest[] requests)
+        {
+            Methods = requests.Select(x => x.Method).ToArray();
+            return Task.FromResult(requests.Select(x => x.Method switch
+            {
+                "validateaddress" => new Miningcore.Rpc.RpcResponse<JToken>(new JObject { ["isvalid"] = true, ["ismine"] = true, ["pubkey"] = PublicKey.ToHex() }),
+                "submitblock" => new Miningcore.Rpc.RpcResponse<JToken>(null, new Miningcore.JsonRpc.JsonRpcError(-1, "Invalid parameters", null)),
+                "getblockchaininfo" => new Miningcore.Rpc.RpcResponse<JToken>(new JObject { ["chain"] = "regtest" }),
+                "getaddressinfo" => new Miningcore.Rpc.RpcResponse<JToken>(new JObject { ["ismine"] = true, ["proof-of-work"] = 999 }),
+                "getdifficulty" => new Miningcore.Rpc.RpcResponse<JToken>(stake ? new JObject { ["proof-of-stake"] = 2 } : new JValue(3)),
+                _ => throw new InvalidOperationException(x.Method),
+            }).ToArray());
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -153,6 +199,8 @@ public class BitcoinBlake2bConfigurationTests : TestBase
     {
         var coin = Assert.IsType<BitcoinBlake2bTemplate>(ModuleInitializer.CoinTemplates["bitcoin-blake2b"]);
         Assert.Equal(CoinFamily.BitcoinBlake2b, coin.Family);
+        Assert.Equal("knots-29.4.2-header-v2", coin.Blake2bProtocol);
+        Assert.Equal("https://github.com/bitcoinknots/bitcoin/tree/58398baf33e588779685ead478e6397bb28ed3d6", coin.Github);
         Assert.Equal("BLAKE2b header-v2", coin.GetAlgorithmName());
         Assert.Equal(1d, coin.ShareMultiplier);
         Assert.True(coin.DisableVersionRolling);
@@ -229,7 +277,7 @@ public class BitcoinBlake2bConfigurationTests : TestBase
     [Theory]
     [InlineData("blake2bProtocol", "null")]
     [InlineData("blake2bProtocol", "\"unreviewed-revision\"")]
-    [InlineData("Blake2bProtocol", "\"knots-29.4.1-header-v2\"")]
+    [InlineData("Blake2bProtocol", "\"knots-29.4.2-header-v2\"")]
     [InlineData("hasMWEB", "true")]
     [InlineData("shareMultiplier", "65536")]
     [InlineData("headerHasher", "{\"hash\":\"blake2b\"}")]
@@ -272,10 +320,17 @@ public class BitcoinBlake2bConfigurationTests : TestBase
     }
 
     [Theory]
-    [InlineData(290401, "/Satoshi:29.4.1/Knots:20260508/", true)]
+    [InlineData(290402, "/Satoshi:29.4.2/Knots:20260508/", true)]
+    [InlineData(290402, "/Satoshi:29.4.2(pool operator; London)/Knots:20260508/", true)]
+    [InlineData(290402, "/Satoshi:29.4.2/Knots:20260508/Miningcore:1/", true)]
+    [InlineData(290402, "/Satoshi:29.4.2(pool)/Knots:20260508/Miningcore:1/", true)]
+    [InlineData(290402, "/Satoshi:29.4.2(pool/Knots:20260508/", false)]
+    [InlineData(290402, "/Satoshi:29.4.2/Knots:20260508/\nspoof", false)]
+    [InlineData(290402, "prefix/Satoshi:29.4.2/Knots:20260508/", false)]
+    [InlineData(290401, "/Satoshi:29.4.1/Knots:20260508/", false)]
     [InlineData(290400, "/Satoshi:29.4.0/Knots:20260508/", false)]
-    [InlineData(290401, "/Satoshi:29.4.1/Knots:20260508rc4/", false)]
-    [InlineData(290401, "/Satoshi:29.4.1/", false)]
+    [InlineData(290402, "/Satoshi:29.4.2/Knots:20260508rc4/", false)]
+    [InlineData(290402, "/Satoshi:29.4.2/", false)]
     [InlineData(300000, "/Satoshi:30.0.0/Knots:20260508/", false)]
     public void DaemonIdentity_RequiresReviewedStableRevision(int version, string agent, bool accepted)
     {
@@ -284,6 +339,21 @@ public class BitcoinBlake2bConfigurationTests : TestBase
             BitcoinBlake2bJobManager.ValidateDaemonIdentity(info, "test");
         else
             Assert.Throws<PoolStartupException>(() => BitcoinBlake2bJobManager.ValidateDaemonIdentity(info, "test"));
+    }
+
+    [Fact]
+    public void DaemonIdentity_RejectsUntrustedAgentWithoutExposingItsPayload()
+    {
+        var payload = "private-credential\n/Satoshi:29.4.2/Knots:20260508/";
+        var error = Assert.Throws<PoolStartupException>(() => BitcoinBlake2bJobManager.ValidateDaemonIdentity(
+            new JObject { ["version"] = 290402, ["subversion"] = payload }, "test"));
+        Assert.DoesNotContain(payload, error.Message);
+        Assert.DoesNotContain("private-credential", error.Message);
+        Assert.Contains("subversion is withheld", error.Message);
+        using var logs = new Miningcore.Tests.Rpc.RpcDiagnosticTests.CapturedLogs();
+        Miningcore.Rpc.RpcConsumerDiagnostics.Write(logs.Logger, NLog.LogLevel.Error,
+            "BitcoinJobManagerBase.PostStartInitAsync", failure: error);
+        Assert.All(logs.Messages, message => Assert.DoesNotContain("private-credential", message));
     }
 
     [Fact]
@@ -319,6 +389,29 @@ public class BitcoinBlake2bConfigurationTests : TestBase
     public void Deployment_RejectsInactiveOrMismatchedSchedule(string json) =>
         Assert.Throws<PoolStartupException>(() =>
             BitcoinBlake2bJobManager.ValidateDeployment(JObject.Parse(json), 20, "test"));
+
+    [Theory]
+    [InlineData("main", 2, 104, 106, false)]
+    [InlineData("regtest", 2, 104, 106, true)]
+    [InlineData("regtest", 30, 2, 140, true)]
+    [InlineData("regtest", 0, 2, 102, true)]
+    [InlineData("regtest", 2, 0, 106, false)]
+    [InlineData("regtest", 2, 1, 106, false)]
+    [InlineData("regtest", 2, 104, 104, false)]
+    [InlineData("regtest", 2, 102, 102, false)]
+    [InlineData("regtest", -1, 104, 106, false)]
+    public void Loader_LongMaturityOverrideIsExplicitRegtestOnly(string chain, int start, int enforce, int release, bool accepted)
+    {
+        var template = ReadTemplate();
+        var network = template["networks"][chain];
+        network["blake2bMaturityStart"] = start;
+        network["blake2bMaturityEnforce"] = enforce;
+        network["blake2bMaturityRelease"] = release;
+        if(accepted) Assert.IsType<BitcoinBlake2bTemplate>(Load(template));
+        else Assert.Throws<PoolStartupException>(() => Load(template));
+        network["blake2bMaturityRelease"].Parent.Remove();
+        Assert.Throws<PoolStartupException>(() => Load(template));
+    }
 
     private static JObject ReadTemplate() => (JObject) JObject.Parse(
         File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "coins.json")))["bitcoin-blake2b"].DeepClone();

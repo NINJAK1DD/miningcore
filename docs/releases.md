@@ -22,6 +22,97 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased: Handshake difficulty notification and CryptoNote-family targets
+
+Handshake static-difficulty authorization now sends `mining.set_difficulty` under
+the worker assignment gate, so miners receive the difficulty the server enforces.
+Notification failure closes the connection; reconnect to obtain a fresh assignment.
+
+Conceal, Cryptonote and Zano now copy full-width targets and discard only the signed
+integer prefix, with explicit zero padding for shorter values. Low-difficulty ports
+previously advertised zero or incompletely padded targets. These three families now
+reject assigned difficulty below **1** instead of saturating only the wire target and
+underweighting accepted work. Startup checks cover endpoint difficulty and explicit
+VarDiff minimum/maximum, direct/queued assignments and job preparation share the same
+protocol bounds. Conceal/Cryptonote's four-byte targets now retain at least **101 target
+units**, limiting excess miner work per nominally credited share to **less than 1%**.
+The maximum whole-number assignment is **42,524,428** (`Math.Floor(Math.BitDecrement(4294967296d / 101d))`).
+Nonzero targets alone were insufficient: at difficulty `2.2e9`, rounding to one target
+unit made an XMRig miner perform approximately 1.95 times its credited work. The lower
+ceiling bounds that truncation while retaining the four-byte protocol and nominal credit.
+Ordinary assignments around `1e5`–`1e6` remain supported. Zano's full-width target retains
+the largest safe double below `2^63 / 255` (approximately `3.617008641903833e16`).
+Encoders also reject zero or insufficient-precision short target output defensively. Dynamic retargeting respects the
+appropriate protocol ceiling.
+
+Conceal/Cryptonote now round valid assigned difficulty **down to a whole number** before
+storing current/previous/pending work. For example, `1.5` and `1.99` assign and credit
+difficulty 1; `2.5` assigns 2. This prevents XMRig's integer conversion from advertising
+easier work than the pool's `0.99` validation threshold. Endpoint/static/NiceHash assignments
+and VarDiff use the same policy. Effective VarDiff minimums round up and maximums round
+down; ranges containing no whole-number assignment fail startup. The rounded starting
+endpoint must lie within the resulting integer range. Positive `maxDelta` below 1 is
+rejected at startup for these two families; omitted or zero retains the unlimited policy.
+Final integer retargets satisfy both the effective range and `MaxDelta` simultaneously.
+If their intersection contains no integer, the update preserves retarget metadata and
+timing samples without assigning new work. Encoders and
+job preparation reject fractional short assignments that bypass normalization. Zano's
+full-width assignments keep their fractional values.
+
+Static/NiceHash values remain hints: values below the existing minimum/application
+threshold are ignored. A hint that would otherwise apply but lies outside the protocol
+range is logged once at Warn and ignored, retaining the current assignment and VarDiff.
+Login preparation completes before authorization state or success is committed. Zano v2
+sends one authorization response followed by difficulty/job notifications under its gate.
+This avoids duplicate success/error responses and preserves previously successful logins
+with sub-unit hints. Direct invalid assignments and invalid startup bounds still fail.
+
+**Upgrade action:** raise any sub-unit endpoint/VarDiff bounds on Conceal, Cryptonote
+or Zano to at least 1 and remove oversized bounds before restarting. Conceal/Cryptonote
+endpoint difficulty and explicit VarDiff bounds above approximately **42.5 million** must
+be reduced, including configurations previously allowed below `2^32`. With no explicit
+VarDiff maximum, the protocol ceiling applies automatically. Fractional endpoint/hint
+values round down; use whole-number settings to express an exact short-target assignment.
+Explicit VarDiff bounds must contain at least one integer, and the rounded endpoint must
+lie within them. For example, minimum `1.5` and maximum `2.5` require starting difficulty
+2; starting `1.5` rounds to 1 and is rejected. Set a positive `maxDelta` to at least 1,
+or omit it/set it to zero for unlimited steps. Oversized miner/NiceHash
+hints continue to be warned and ignored; they do not disable VarDiff or fail login. Zano's protocol
+assignment uses this floor before its existing share-multiplier normalization for
+persisted credit. Existing stored shares are unchanged. No database migration is
+required. See the [assignment and target validation](vardiff-monotonic.md).
+
+Large proxy/NiceHash connections can exceed the configured target share rate at this
+ceiling. Compatible higher-precision targets are tracked in [Issue #213](https://github.com/NINJAK1DD/miningcore/issues/213).
+
+## Unreleased: Stratum ban attribution and address normalization
+
+Stratum bans now reject a normalized forwarded client on its validated trusted
+PROXY header alone, before request parsing or address admission. Automatic
+junk/TLS, login, invalid-share and effort bans no longer target a trusted shared
+transport without a distinct validated client identity. Automatic bans also
+exclude every trusted proxy address across enabled cluster listeners, including
+forwarded claims and direct connections on other pools. Positive ban logs now
+require a completed manager invocation; suppression has an Info diagnostic and
+a counter with fixed outcome labels. Explicit transport bans inserted by extensions
+through `IBanManager` remain effective, including on the next request of an established
+forwarded session. The shipped integrated manager has no operator ban API or config;
+use the firewall for intentional proxy blocks. Existing ban flags and durations are retained; see
+[Stratum ban attribution](stratum-ban-attribution.md) for headerless/`UNKNOWN`,
+TLS setup, recovery and deployment requirements.
+
+Dual-stack listeners now normalize `::ffff:a.b.c.d` to `a.b.c.d` throughout
+Stratum, including persisted `shares.ipaddress`, `WorkerSessionTracker` keys,
+`GetRecentyUsedIpAddressesAsync` results and address logs. Historical database
+rows are unchanged; dashboards grouping by textual IP can split historical and
+new activity until they normalize both representations. Ban lookups also accept
+legacy `::ffff:a.b.c.d` entries from custom ban managers, while new bans use the
+plain IPv4 form. The integrated manager now applies its existing `127.0.0.1` and
+`::1` ban exemption after normalization, so `::ffff:127.0.0.1` is also exempt.
+Request-time rejection logs changed from `Disconnecting banned client @` to
+`Disconnecting banned address @`
+because the selected address may be the transport. Update external log parsers.
+
 ## Unreleased: portable native builds and inherited overrides
 
 Linux source and release builds now use a fixed CPU baseline, guard optional ISA
@@ -64,6 +155,25 @@ Use this guide by task:
 
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
+
+## Unreleased: Bitcoin-family duplicate subscription policy
+
+Pools served by `BitcoinPool`, including Bitcoin, Litecoin, Dogecoin, Bitcoin Cash
+and inherited merged-mining Stratum, now preserve the original extranonce and work
+after a duplicate `mining.subscribe`. The first identified duplicate receives error
+`20` with `result: false`; another closes the connection without a reply. BLAKE2b
+keeps the same wire policy. Best-effort `miningcore_stratum_admission_total` counters
+with outcomes `duplicate-subscribe-warning` and `duplicate-subscribe` distinguish
+single retries from repeated attempts when telemetry publication succeeds. Terminal
+BLAKE2b difficulty-budget disconnects also permanently close the worker job registry.
+
+**Upgrade action:** test firmware/proxies on an isolated endpoint before upgrading.
+Subscribe once per upstream connection; reconnect to obtain a new assignment.
+Clients that treat the first error as fatal may reconnect, and deliberate repeat
+loops will disconnect. A terminal close can discard queued acknowledgements;
+already admitted shares retain their accounting ownership. Independent pool
+dispatchers are outside this fix. See the [protocol scope, telemetry and proxy
+guidance](bitcoin-subscription-policy.md).
 
 ## Unreleased: bounded Stratum connection admission
 
@@ -143,6 +253,48 @@ BLAKE2b templates must disable version rolling. Cross-connection churn defenses 
 tracked separately in [#180](https://github.com/NINJAK1DD/miningcore/issues/180).
 See the [policy and validation evidence](bitcoin-blake2b.md#miner-requested-difficulty-budget).
 
+## Unreleased: Bitcoin-family response publication failures
+
+[#183](https://github.com/NINJAK1DD/miningcore/issues/183) closes a Bitcoin-family
+connection when work publication fails after its response has started. It does
+not send a second response, including when the first attempt failed to enqueue.
+Buffered requests cannot restart the session. Valid accepted shares retain their
+accounting and do not acquire invalid-share or ban penalties from later publication
+failures. Successful canonical Bitcoin/direct-SOLO ordering and immutable credit
+binding are preserved. See the [handler audit and reconnect policy](bitcoin-response-publication.md).
+
+Managers now witness proof acceptance before merged statistical accounting or
+candidate work can throw. Admitted shares keep their valid-share and block-time
+bookkeeping even when acknowledgement fails. Terminal job insertion is permanently
+closed, including broadcasts already constructing work. Cleanup preserves the
+original error and its report flag is independent of earlier disconnects.
+Ordinary invalid-share bans and recovery-response shutdown cancellation do not
+consume that report flag. A faulty accepted-share telemetry or logging observer
+cannot prevent acknowledgement. Accounting or work-publication failures after proof
+acceptance still close the session without a rejection response: operators may see
+miner resets with only a bounded diagnostic category, and should investigate the
+accounting/publication path rather than treat those resets as invalid proofs.
+
+Shared transport hardening applies to **all pool families**: balanced pipe reads,
+buffered-line disconnect checks, synchronous queue admission, and explicit
+teardown cancellation for peer EOF/host stop. Unexpected queue closure still fails;
+normal teardown does not create a new connection/publication error. Independent
+handler failures remain visible. Family-specific policies outside Bitcoin are
+tracked in [#192](https://github.com/NINJAK1DD/miningcore/issues/192).
+
+An invalid share that triggers a ban closes the session without attempting its
+JSON-RPC rejection response; non-banning rejections retain their normal response.
+Downstream pool overrides must add and forward the new `CancellationToken` argument
+to `OnRequestErrorAsync`. The new `CloseRequestPublicationFailure` hook owns terminal
+cleanup, and `ClearJobs()` remains non-terminal. See the
+[pool extension migration notes](bitcoin-response-publication.md#downstream-pool-extension-compatibility).
+
+Test maintenance accompanying #183 also corrects a calendar-sensitive paired-share
+recovery fixture: both shares now use one captured current UTC timestamp so valid
+evidence stays within the real-clock replay horizon. Production replay protection
+and transactional assertions are unchanged; see the
+[repair and validation evidence](integration-deadline-tests.md#october-recovery-fixture-repair-and-validation).
+
 ## Unreleased: BLAKE2b assignment ordering
 
 [#182](https://github.com/NINJAK1DD/miningcore/issues/182) serializes worker difficulty
@@ -168,8 +320,8 @@ Unexpected unrepresentable post-acknowledgment assignments use the same terminal
 and invalidate jobs. The `publication-failure` admission-counter outcome counts each
 terminal publication failure once. Accepted shares remain credited and do not acquire
 an invalid-share count or ban penalty when subsequent VarDiff publication fails.
-Canonical Bitcoin's post-response policy is tracked separately in
-[#183](https://github.com/NINJAK1DD/miningcore/issues/183).
+Canonical Bitcoin's post-response policy is documented in the
+[Bitcoin-family publication policy](bitcoin-response-publication.md).
 BLAKE2b continues to reject canonical direct-coinbase SOLO options at startup.
 
 Omitted BLAKE2b VarDiff maxima now use the highest representable difficulty as an effective
@@ -207,8 +359,22 @@ delta limits avoid cancellation, and invalid/non-finite inputs produce no retarg
 BLAKE2b supplies its representable runtime ceiling; other families retain their maximum
 policy. Shared startup validation now rejects non-finite or non-positive `minDiff` and
 configured `maxDiff` values; omitted maxima remain supported. No operator configuration
-is rewritten. Forward wall-clock steps still resemble idle intervals; monotonic elapsed
-measurement is tracked separately in [#185](https://github.com/NINJAK1DD/miningcore/issues/185).
+is rewritten.
+
+[#185](https://github.com/NINJAK1DD/miningcore/issues/185) now moves elapsed share intervals,
+context creation and retarget cooldowns to each context's monotonic `TimeProvider` across
+all pool families. Forward/backward UTC corrections cannot alter identical monotonic
+sample sequences. `LastUpdate` retains its UTC assignment meaning. Positive submillisecond
+samples remain measurable; zero and tiny positive means use #184's sample-count-aware
+estimate as a burst-rate floor. Ordinary positive arithmetic above the floor is retained.
+Idle updates require both full inactivity and retarget intervals; the old one-second
+inactivity allowance is removed. Canceled or replaced contexts are checked under the
+timing lock. Every family now shares a worker assignment gate across calculation,
+publication, fixed/NiceHash changes and pending-difficulty broadcasts. Explicit assignments
+clear deferred difficulty. Expected shutdown cancellation is not logged as a sweep error.
+Representability bounds and immutable accepted-proof credit remain intact.
+No additional configuration or database migration is required. See the
+[consumer audit, migration and validation](vardiff-monotonic.md).
 
 BLAKE2b now makes VarDiff publication failures terminal inside the assignment gate for
 both idle and share updates. Missing work, a full send queue or another exception cannot
@@ -496,8 +662,56 @@ methods. Method labels are separately allowlisted from source-controlled protoco
 
 ## Unreleased: Bitcoin BLAKE2b header-v2
 
+The current compatibility update removes the BLAKE2b startup dependency on the removed
+`getdifficulty` RPC and keeps expected BLAKE2b hash work separate from accounting units. Startup/runtime
+and payout checks enforce the reviewed long-maturity deployment and GBT transition
+contract. Wallet-aware progress and active-chain verification keep immature or
+unverified rewards pending without rescaling shares or reversing PPS liabilities.
+See the [29.4.2 review, upgrade and DATUM handoff](bitcoin-blake2b-knots-29.4.2-review.md).
+Upgrade both the daemon and Miningcore **before mainnet height 973440**. Old templates
+can include premature coinbase spends rejected by enforcing nodes after that boundary;
+keep admission stopped if revalidation/synchronization and reconciliation are incomplete.
+The dedicated payout handler verifies retained block headers on pruned nodes, preserves
+immature wallet credit, alerts on prolonged contradictory evidence and quarantines
+unsupported direct-settlement rows without blocking valid custodial reconciliation.
+Custodial orphans are revisited in bounded rotating batches; matching active wallet/header
+evidence can restore them under an immutable row-lock check without re-crediting already
+confirmed rows.
+PROP/PPLNS confirmation is held when a later (or ambiguously same-time) custodial
+reward is already Confirmed, including reopened Pending rows after restart. Earlier
+development builds could orphan active rewards on wallet -5 errors; subsequent
+allocations may have deleted their shares or swept recovered funds. Preserve and
+audit original allocation/payment history and spendable backing before recovery;
+do not force-confirm held rewards. Such holds now persist as Quarantined under the
+row lock, retain stored reward/effort and advance verified progress without crediting.
+One warning/alert follows the committed transition; subsequent scans and restarts skip
+the row. The [audited closure procedure](bitcoin-blake2b.md#closing-an-audited-allocation-quarantine)
+links existing case receipts with a metadata-only, dry-run-by-default psql script.
+Stored orphans with unavailable headers remain
+quiet during opportunistic scans, and unchanged orphan rows are not rewritten.
+Production RPC failures distinguish malformed/truncated JSON framing (701) from
+valid JSON with wrong contract shapes or missing required methods (703).
+Incomplete RPC errors (missing/non-integer/out-of-range code or non-string message)
+and success replies without a result member now fail as structural contract errors;
+explicit null results remain supported. The shared HTTP client for every coin also
+rejects trailing non-whitespace content after the complete JSON response. Proxies
+must return exactly one JSON value; whitespace and final newlines remain supported.
+The audit tool is packaged in `scripts/ops/`, outside schema migrations, with release,
+installed and source paths documented. Distributed PROP/PPLNS accounting requires
+synchronized host clocks; the Created-based recovery guard conservatively holds
+ambiguous history even when chain-height order differs.
+Single and batch responses use one decoder and reuse parsed result tokens, avoiding
+duplicate large template trees. Empty HTTP authentication failures retain transport
+classification for merged mining; its diagnostics expose fixed categories and numeric
+codes instead of daemon or exception text.
+Fixed payout-attestation reason codes distinguish outages, synchronization,
+contract drift and process-binding changes. Before upgrading, pause broadcasts and drain
+confirmed payout outcomes within the deadline: previously spendable 101–6480-confirmation
+coinbases and their unconfirmed spends/change can become unavailable. Reconcile dedicated
+wallet `getbalances`, existing payout outcomes and already-credited liabilities before resuming.
+
 The separate `bitcoin-blake2b` template and runtime target the reviewed Bitcoin Knots
-29.4.1.knots20260508 hard-fork chain. They do not replace SHA-256d `bitcoin`, enable BTC
+29.4.2.knots20260508 hard-fork chain. They do not replace SHA-256d `bitcoin`, enable BTC
 direct-coinbase settlement on another chain, or implement the DATUM pool protocol.
 The [operator guide](bitcoin-blake2b.md) describes the pinned consensus and miner contract,
 isolated wallet/node setup, accounting, startup refusal conditions and validation limitations.
@@ -1337,6 +1551,9 @@ else
   echo "STOP: no verified release archive is available to upgrade" >&2
 fi
 ```
+
+The cumulative `add_share_accounting.sql` above includes `add_pps_arithmetic_version.sql`;
+follow the [PPS arithmetic rollout](pps-arithmetic-migration.md) before opting in to version 1.
 
 Start the service only when the block prints `READY` and exports
 `MININGCORE_UPGRADE_READY=1`. The old symlink remains intact after a staging, backup or migration
