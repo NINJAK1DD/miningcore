@@ -54,10 +54,16 @@ public class KaspaXoShiRo256PlusPlus
 
 public class KaspaJob
 {
-    internal KaspaJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Share, Kaspad.RpcBlock> candidateBlocks = new();
+    internal Kaspad.RpcBlock GetBlockCandidate(Share share) => candidateBlocks.TryGetValue(share, out var block) ? block :
+        throw new InvalidOperationException("No validated block candidate");
+    private KaspaJob sourceTemplate;
+    internal KaspaJob SourceTemplate => sourceTemplate ?? this;
+    internal KaspaJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
             var result = (KaspaJob) MemberwiseClone();
+            result.sourceTemplate = SourceTemplate;
             result.JobId = id;
             if(result.jobParams != null)
             {
@@ -65,7 +71,7 @@ public class KaspaJob
                 result.jobParams[0] = id;
             }
             return result;
-        }, JobId);
+        }, JobId, nextJobId);
 
     protected IMasterClock clock;
     protected double shareMultiplier;
@@ -100,6 +106,15 @@ public class KaspaJob
             .ToString();
 
         return submissions.TryAdd(key, true);
+    }
+
+    protected bool IsDuplicateSubmit(string nonce)
+    {
+        var key = new StringBuilder()
+            .Append(nonce)
+            .ToString();
+
+        return submissions.ContainsKey(key);
     }
     
     protected virtual ushort[][] GenerateMatrix(ReadOnlySpan<byte> prePowHash)
@@ -279,10 +294,11 @@ public class KaspaJob
     {
         var context = worker.ContextAs<KaspaWorkerContext>();
 
-        BlockTemplate.Header.Nonce = Convert.ToUInt64(nonce, 16);
+        var header = BlockTemplate.Header.Clone();
+        header.Nonce = Convert.ToUInt64(nonce, 16);
 
         Span<byte> coinbaseBytes = stackalloc byte[32];
-        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, BlockTemplate.Header.Nonce, coinbaseBytes);
+        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, header.Nonce, coinbaseBytes);
 
         Span<byte> matrixBytes = stackalloc byte[32];
         ComputeCoinbase(prePowHashBytes, coinbaseBytes, matrixBytes);
@@ -315,7 +331,7 @@ public class KaspaJob
         if(isBlockCandidate)
         {
             Span<byte> hashBytes = stackalloc byte[32];
-            SerializeHeader(BlockTemplate.Header, hashBytes, false);
+            SerializeHeader(header, hashBytes, false);
 
             result.IsBlockCandidate = true;
             result.BlockHash = hashBytes.ToHexString();
@@ -346,10 +362,19 @@ public class KaspaJob
         }
         
         // dupe check
+        if(IsDuplicateSubmit(nonce))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, nonce);
         if(!RegisterSubmit(nonce))
             throw new StratumException(StratumError.DuplicateShare, $"duplicate share");
 
-        return ProcessShareInternal(worker, nonce);
+        if(result.IsBlockCandidate)
+        {
+            var block = BlockTemplate.Clone();
+            block.Header.Nonce = Convert.ToUInt64(nonce, 16);
+            candidateBlocks.Add(result, block);
+        }
+        return result;
     }
 
     public virtual void Init(Kaspad.RpcBlock blockTemplate, string jobId, double shareMultiplier)

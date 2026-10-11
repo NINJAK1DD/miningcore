@@ -197,13 +197,14 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
         string.Format(CultureInfo.InvariantCulture, format, difficulty.ToString("0.000000000", CultureInfo.InvariantCulture));
 
     [Fact]
-    public async Task CanonicalBitcoin_DifficultyAndAuthorizationRemainUnbudgeted()
+    public async Task CanonicalBitcoin_SharesBudgetAcrossDifficultyConfigureAndAuthorization()
     {
         var (config, manager, clock, bus) = Fixture();
         config.Template = ModuleInitializer.CoinTemplates["bitcoin"];
-        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: true);
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: true, varDiffTimeProvider: new ManualTimeProvider());
         await Subscribe(wire);
-        for(var i = 0; i < 20; i++)
+        for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
         {
             var difficulty = (i + 2) / 1e9;
             if(i % 3 == 0)
@@ -217,20 +218,28 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
             Assert.Equal("mining.notify", (await wire.ReadAsync())["method"].Value<string>());
             Assert.Equal(difficulty, wire.Connection.Context.Difficulty);
         }
-        // Every changed assignment delivers replacement work; these requests
-        // remain independent of BLAKE2b's family-specific request budget.
-        Assert.Equal(21, wire.JobsCreated);
-        Assert.Equal(7, manager.AddressValidations);
-        // Duplicate subscription is now rejected independently of the BLAKE2b
-        // difficulty budget. Canonical difficulty and authorization remain unbudgeted.
-        var extraNonce = wire.Connection.ContextAs<BitcoinWorkerContext>().ExtraNonce1;
-        await wire.SendRequestAsync("mining.subscribe", "duplicate");
-        Assert.Equal((int) StratumError.Other, (await wire.ReadAsync())["error"]["code"].Value<int>());
-        Assert.Equal(extraNonce, wire.Connection.ContextAs<BitcoinWorkerContext>().ExtraNonce1);
-        Assert.Equal(21, wire.JobsCreated);
-        bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
-            x.Category == TelemetryCategory.StratumAdmission &&
-            (x.Info == "difficulty-refused" || x.Info == "difficulty-disconnect")), Arg.Any<string>());
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var jobs = context.validJobs.ToArray();
+        for(var i = 0; i < DifficultyRequestBudget.DisconnectAfterRefusals - 1; i++)
+        {
+            if(i % 3 == 0) await wire.SendRequestAsync("mining.authorize", "test.worker", "d=10");
+            else await Send(wire, i % 3 == 1, 10);
+            var refused = await wire.ReadAsync();
+            Assert.False(refused["result"].Value<bool>());
+            Assert.Equal((int) StratumError.Other, refused["error"]["code"].Value<int>());
+        }
+        await wire.SendRequestAsync("mining.extranonce.subscribe");
+        Assert.True((await wire.ReadAsync())["result"].Value<bool>());
+        Assert.Equal(jobs, context.validJobs.ToArray());
+        Assert.Equal(9e-9, context.Difficulty);
+        Assert.Equal(DifficultyRequestBudget.Capacity + 1, wire.JobsCreated);
+        Assert.Equal(3, manager.AddressValidations);
+        await wire.SendDisconnectingBatchAsync("{\"id\":100,\"method\":\"mining.suggest_difficulty\",\"params\":[10]}");
+        await wire.AssertNoMoreMessagesAsync();
+        Assert.Equal(DifficultyRequestBudget.Capacity + 1, wire.JobsCreated);
+        Assert.False(context.IsAuthorized);
+        bus.Received(7).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "difficulty-refused"), Arg.Any<string>());
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "difficulty-disconnect"), Arg.Any<string>());
     }
 
     [Theory]

@@ -639,7 +639,7 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
         {
             logger.Info(() => $"Submitting block {share.BlockHeight} [{share.BlockHash}]");
 
-            var acceptResponse = await SubmitBlockAsync(ct, job.BlockTemplate);
+            var acceptResponse = await SubmitBlockAsync(ct, job.GetBlockCandidate(share));
 
             // is it still a block candidate?
             share.IsBlockCandidate = acceptResponse;
@@ -669,11 +669,12 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
         if(!long.TryParse(submittedId, NumberStyles.None, CultureInfo.InvariantCulture, out var requested))
             return null;
 
-        // These devices do not identify the issued assignment. Use the latest
-        // eligible template/epoch, never an older easier target. Assignment
-        // suffixes are opaque for normal job-ID submissions.
-        return jobs.LastOrDefault(job => long.TryParse(job.JobId?.Split('-')[0],
-            NumberStyles.None, CultureInfo.InvariantCulture, out var id) && id < requested);
+        var snapshots = jobs.ToArray();
+        // Preserve the legacy oldest-template selection, then resolve that
+        // template to its latest assignment. Inclusive IDs cover numeric echoes.
+        var template = snapshots.FirstOrDefault(job => long.TryParse(job.SourceTemplate.JobId,
+            NumberStyles.None, CultureInfo.InvariantCulture, out var id) && id <= requested)?.SourceTemplate;
+        return template == null ? null : snapshots.LastOrDefault(job => ReferenceEquals(job.SourceTemplate, template));
     }
     
     public bool ValidateIsLargeJob(string userAgent)

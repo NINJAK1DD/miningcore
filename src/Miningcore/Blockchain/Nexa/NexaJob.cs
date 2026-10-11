@@ -17,7 +17,7 @@ namespace Miningcore.Blockchain.Nexa;
 
 public class NexaJob
 {
-    internal NexaJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+    internal NexaJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
             var result = (NexaJob) MemberwiseClone();
@@ -28,7 +28,7 @@ public class NexaJob
                 result.jobParams[0] = id;
             }
             return result;
-        }, JobId);
+        }, JobId, nextJobId);
 
     private IMasterClock clock;
     private IHashAlgorithm headerHasher;
@@ -154,6 +154,17 @@ public class NexaJob
         return submissions.TryAdd(key, true);
     }
 
+    private bool IsDuplicateSubmit(string headerCommitment, string extraNonce1, string nonce)
+    {
+        var key = new StringBuilder()
+            .Append(headerCommitment)
+            .Append(extraNonce1)
+            .Append(nonce)
+            .ToString();
+
+        return submissions.ContainsKey(key);
+    }
+
     public (Share Share, object param) ProcessShare(StratumConnection worker, string nonce, string extraNonce1)
     {
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(nonce));
@@ -164,9 +175,12 @@ public class NexaJob
             throw new StratumException(StratumError.Other, "incorrect size of nonce");
 
         // dupe check
+        if(IsDuplicateSubmit(this.MiningCandidate.HeaderCommitment, extraNonce1, nonce))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, nonce, extraNonce1);
         if(!RegisterSubmit(this.MiningCandidate.HeaderCommitment, extraNonce1, nonce))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
 
-        return ProcessShareInternal(worker, nonce, extraNonce1);
+        return result;
     }
 }

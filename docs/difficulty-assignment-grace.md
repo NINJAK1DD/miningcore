@@ -11,7 +11,8 @@ static, NiceHash or minimum-difficulty assignments disabled VarDiff.
 Each connection owns a sequence of immutable difficulty assignments. Jobs record
 the assignment under which they were issued. An actual assignment change retires
 the previous assignment once. Its ordinary proofs remain eligible for **less than
-30 seconds** after retirement; at exactly 30 seconds they are rejected. Each
+30 seconds** after retirement by default; at exactly 30 seconds the retired
+target stops authorizing ordinary work. Each
 older assignment keeps its own deadline. Returning to an earlier difficulty,
 repeating an assignment, broadcasting more work or replacing/disabling VarDiff
 cannot extend that deadline. A no-op cancels superseded pending work without
@@ -21,7 +22,7 @@ retiring the assignment or allocating another job ID.
 | --- | --- |
 | Current assignment | Its issued difficulty, including the existing 0.99 tolerance |
 | Retired assignment within grace | Its original issued difficulty, even if the proof also exceeds the new target |
-| Retired ordinary work at/after expiry | Rejected, including a proof exceeding the new ordinary-share target |
+| Retired ordinary work at/after expiry | Accepted only if it satisfies the current target, credited at the current assignment |
 | Valid parent or auxiliary block candidate | Existing candidate exception; credit remains the original assignment, subject to normal job lookup/age and proof validation |
 | BLAKE2b header-v2 job | Existing exact immutable assigned target and credit; this separate contract does not acquire generic 30-second expiry |
 | Custom/direct validator without issued metadata | Current target only; `PreviousDifficulty` cannot authorize fallback |
@@ -29,15 +30,23 @@ retiring the assignment or allocating another job ID.
 This policy bounds the period during which a miner can deliberately keep computing
 an easier retired target. The server cannot determine when hashing began; grace
 is eligibility for the retained issued work, not proof of its computation time.
-Thirty seconds is a fixed protocol allowance, independent of a miner's requested
-difficulty or VarDiff timing settings. Long-running proofs can expire; operators
-should validate miners/proxies with their normal submission latency before rollout.
+Each Stratum port can set `difficultyGraceSeconds` to an integer from **0 through
+300**, default **30**. Zero disables retired-target grace. This operator setting
+is independent of miner requests and VarDiff timing. Increasing it prolongs the
+period in which retained easier work can earn its original credit. Measure normal
+submission latency before choosing a longer allowance.
 
 The deadline uses the `TimeProvider` fixed at worker initialization and its
 integer counter samples, via
 [GetElapsedTime](https://learn.microsoft.com/en-us/dotnet/api/system.timeprovider.getelapsedtime?view=net-10.0).
-UTC and `VarDiff.LastUpdate` are not acceptance inputs. Negative elapsed time is
-rejected. New connections receive independent state; reinitialization rejects
+The transport captures receipt time on the network read containing the request's
+terminating LF. Coalesced requests retain that read's timestamp even when an
+earlier handler is queued or slow; a split request receives the timestamp of its
+final read. JSON timestamps are ignored. Validation uses that server-owned receipt
+counter for grace, so processing backlog cannot expire a timely complete request.
+The stamp must use the assignment's provider and cannot be in the future or before
+issuance. UTC and `VarDiff.LastUpdate` are not acceptance inputs. Backward counter
+movement is rejected. New connections receive independent state; reinitialization rejects
 previously recorded job snapshots even for candidate validation. Invalid or
 nonfinite assigned difficulties are rejected before mutation. Mutable legacy
 `PreviousDifficulty` is compatibility metadata and cannot authorize or inflate
@@ -47,12 +56,19 @@ credit, whether finite, absent or malformed.
 
 Canonical/merged Bitcoin, Equihash and Verus, Handshake, Nexa, Satoshicash,
 Kaspa and its custom jobs, Ethereum/Cortex, Ergo, Beam, Alephium, Xelis and
-Warthog issue a worker snapshot. Reissuing a template after a difficulty change
-adds `-d<assignment-generation-in-hex>` to its opaque job ID. Repeating the same
-template under an unchanged assignment reuses that snapshot and ID. Notification
-arrays are copied. The template's duplicate-proof registry is shared across
+Warthog record each issued assignment. Initial issuance retains the immutable
+template without allocating a worker copy. Reissuing a template after a difficulty
+change allocates a snapshot and an ID from the job manager's native counter:
+decimal Kaspa IDs, eight-digit hexadecimal Ethereum IDs, uppercase hexadecimal
+Alephium IDs and existing family formats elsewhere. Fresh templates keep their
+original native IDs. The counter allocates atomically and fails before overflow
+can reuse an ID. Repeating the same template under an unchanged assignment reuses
+that snapshot and ID. Notification arrays are copied. The template's duplicate-proof registry is shared across
 snapshots, so submitting the same proof under an older and newer ID cannot create
-two accepted shares. Progpow's unique worker-job IDs already separate issuance;
+two accepted shares. Rejected proofs never enter the accepted-proof registry:
+proof/target/expiry validation precedes the atomic duplicate commit, and concurrent
+aliases have exactly one winner. Already accepted proofs retain a cheap duplicate
+precheck. Progpow's unique worker-job IDs already separate issuance;
 its backing job now records the assignment and shares proof deduplication across
 those IDs.
 
@@ -62,6 +78,10 @@ template can restart its extranonce counter. Registry eviction removes those
 entries. Generic snapshot metadata uses weak keys; active job count and eviction
 still come from each existing worker registry. Difficulty changes do not renew
 job age, clean-job, authorization or reconnect eligibility.
+
+Kaspa-family validators hash a private nonce-bearing header. A validated block
+candidate retains its own cloned block for daemon submission; concurrent shares
+cannot mutate the source header or change another candidate's nonce.
 
 Pending difficulty is applied before taking the worker snapshot. Static
 authorization changes in Bitcoin, Handshake, Nexa, Progpow and Satoshicash
@@ -73,16 +93,41 @@ requests obtain their work during subscription; direct SOLO retains its
 authorization-aware publication boundary, and BLAKE2b retains its existing
 isolated publication and failure handling.
 
+An assignment or publication failure closes the worker's assignment session and
+requests disconnect **before releasing the gate**. Buffered submissions, candidate
+exceptions and later producers cannot reuse partially published work. Malformed
+suggestions are rejected before mutation and remain recoverable. Canonical Bitcoin,
+Nexa and Satoshicash no-op suggestions do not republish unchanged work.
+
+Generic miner-driven authorization, suggestions and minimum-difficulty configuration
+share one connection-local monotonic token bucket: a burst of eight requests,
+one token per ten seconds, and terminal disconnect after eight consecutive
+refusals. Refusal leaves target, jobs and daemon validation untouched. There is no
+IP-wide state or background timer. Ordinary share submissions do not spend tokens.
+BLAKE2b retains its separate existing admission and immutable-target contract.
+
 Legacy Ethereum V1 submits only a header, Alephium's IceRiver compatibility
 path can submit only group identity with an incorrect job ID, and Kaspa's
 IceRiver/GodMiner compatibility path can submit an incorrect numeric ID. Identical work
 reissued at a different target cannot identify its original assignment on those
-paths. They enforce the **most recently issued matching work**. In-flight proofs
+paths. Kaspa/Alephium retain their original **oldest eligible template** selection,
+then select the latest issued assignment of that exact template. They do not switch
+to a newer template merely because the target changed. Ethereum V1 enforces the
+latest matching header. In-flight proofs
 below that new target are rejected; using a guessed old difficulty would also
 admit new work below its announced target. Explicit job-ID protocols retain the
 bounded grace described above.
-Kaspa's numeric compatibility lookup safely handles assignment suffixes and
-rejects malformed or overflowing submitted IDs without parsing exceptions.
+Kaspa's numeric compatibility lookup uses inclusive comparison of native source
+IDs and rejects malformed or overflowing submitted IDs without parsing exceptions.
+
+Beam same-input retargets retain the original numeric job ID and resolve that ID
+to the latest assignment. Beam's
+[reference OpenCL miner](https://github.com/BeamMW/beam/blob/master/pow/opencl_pow.cpp)
+parses numeric IDs and ignores repeated inputs; minting a different ID for the
+same input can prevent its stored solutions from being submitted. The stable-ID
+path therefore enforces the latest target and credit, like a header-only protocol.
+Fresh Beam inputs retain their native template ID. Beam candidate submission uses
+the original daemon `BlockTemplate.JobId`.
 
 Accounting receives the original assignment credit with the existing family
 normalization/multiplier. No database schema, recovery format or relay format
@@ -115,6 +160,12 @@ an old job after reconnect. Native CryptoNight cases cover fixed increases and
 original PROP/PPLNS reward weights. Concrete Kaspa, Astrix, Karlsen, Spectre and
 Waglayla validators verify original credit with the family share multiplier,
 including proofs exceeding the new target, expiry and shared duplicate rejection.
+`DifficultyReviewHardeningTests` adds configurable grace, receipt-clock isolation,
+counter concurrency/overflow, same-height blob identity and oldest-template/latest-
+assignment compatibility. Concrete pool fault cases require terminal invalidation
+before gate release. Transport cases cover coalesced and split request receipt
+time across a blocked handler; Kaspa cases retry previously rejected proofs and
+race duplicate aliases.
 Their final hashes are controlled accounting vectors, not consensus evidence.
 The documented BLAKE2b Knots tests continue
 to exercise immutable targets and SOLO/PPS/PROP/PPLNS settlement.
@@ -146,12 +197,41 @@ do not change host time, production wallets or existing database tables. The lab
 establishes daemon, native proof and accounting behavior; physical miner firmware
 and long-running mainnet operation require deployment-specific commissioning.
 
+For physical Beam GPU commissioning, the test process host provides an explicitly
+invoked three-minute probe. It sends synthetic immutable inputs, validates real
+BeamHash III GPU solutions through production `BeamJob` and the native verifier,
+requires three accepted ordinary proofs at each of difficulties **8, 32 and 16**,
+and rejects a duplicate of each accepted proof. Stage two retargets the same input
+and numeric ID; stage three issues a fresh input and ID. It does not submit to a
+daemon or establish durable accounting/consensus evidence.
+GPU arrivals trigger the production monotonic `VarDiffManager` calculation, with
+bounded lab maximums of 32 then 16, followed by the pending-assignment application.
+The saved JSON identifies that retarget path. The nine captured ordinary proof
+vectors are also replayed against the native verifier in `BeamGpuProofTests`.
+
+```sh
+export LD_LIBRARY_PATH="$PWD/src/Miningcore/bin/Debug/net10.0"
+dotnet src/Miningcore.Tests.ProcessHost/bin/Debug/net10.0/Miningcore.Tests.ProcessHost.dll \
+  beam-gpu 19810 build/test-lab/beam-gpu.json
+```
+
+Connect a verified BeamHash III miner to `127.0.0.1:19810` with a disposable lab
+username, one GPU, stock clocks, API disabled and a bounded process lifetime.
+When Windows-to-WSL localhost forwarding is unavailable, the probe also accepts
+`<port> <evidence-file> <WSL-private-172.x-address> <Windows-private-gateway>`.
+Only loopback or private `172.16.0.0/12` addresses are allowed, and the single
+accepted peer must exactly match the configured gateway. Do not bind a wildcard
+or forward the probe onto the LAN. The documented verified lolMiner 1.98a kit on
+an RTX 3080 Ti passed all nine native proofs and duplicate checks on 2026-10-11.
+IceRiver/Bitmain physical ASIC compatibility remains a separate commissioning
+requirement; synthetic numeric-ID tests do not establish firmware behavior.
+
 ## Upgrade and custom integrations
 
 Reconnect miners during rollout so each connection obtains fresh assignment
-state. Miners/proxies must echo job IDs as opaque strings; IDs after difficulty
-changes now contain an assignment suffix. Earlier indefinitely eligible generic
-previous-difficulty work expires, and eligible retired proofs retain original
+state. Miners/proxies must preserve their family's native job IDs. Earlier
+indefinitely eligible generic previous-difficulty work expires; retained work can
+still meet the current target at current credit, and eligible retired proofs retain original
 credit even when they exceed a later target. Legacy header/group-only submissions
 have the conservative behavior documented above. BLAKE2b target and credit
 semantics are unchanged.
@@ -160,6 +240,10 @@ Downstream family implementations must issue the worker snapshot under the
 existing assignment gate and validate the matching issued work. Do not recreate
 grace from public `PreviousDifficulty`, UTC or a new VarDiff context. Blob families
 must preserve template identity, register after target preparation, and remove
-metadata when evicting worker jobs. Duplicate sets must remain shared when a
-template is reissued with a different ID. The public `Difficulty` setter now
+metadata when evicting worker jobs. Require the recorded template object to still
+be current; matching height alone cannot identify a same-height reorganization.
+Duplicate sets must remain shared when a template is reissued with a different ID.
+Custom snapshot callers must supply the manager's native ID allocator; the optional
+fallback suffix is only for direct/custom callers without a wire-format allocator.
+The public `Difficulty` setter now
 uses the same validation and retirement boundary as `SetDifficulty`.

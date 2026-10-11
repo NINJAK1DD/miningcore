@@ -39,10 +39,11 @@ public class SpectreJob : KaspaJob
     {
         var context = worker.ContextAs<KaspaWorkerContext>();
 
-        BlockTemplate.Header.Nonce = Convert.ToUInt64(nonce, 16);
+        var header = BlockTemplate.Header.Clone();
+        header.Nonce = Convert.ToUInt64(nonce, 16);
 
         Span<byte> coinbaseRawBytes = stackalloc byte[SpectreConstants.CoinbaseSize];
-        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, BlockTemplate.Header.Nonce, coinbaseRawBytes);
+        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, header.Nonce, coinbaseRawBytes);
 
         Span<byte> coinbaseBytes = stackalloc byte[32];
         coinbaseHasher.Digest(coinbaseRawBytes, coinbaseBytes);
@@ -81,7 +82,7 @@ public class SpectreJob : KaspaJob
         if(isBlockCandidate)
         {
             Span<byte> hashBytes = stackalloc byte[32];
-            SerializeHeader(BlockTemplate.Header, hashBytes, false);
+            SerializeHeader(header, hashBytes, false);
 
             result.IsBlockCandidate = true;
             result.BlockHash = hashBytes.ToHexString();

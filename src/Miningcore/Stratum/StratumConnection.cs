@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Security;
@@ -91,6 +92,7 @@ public class StratumConnection
     private Stream networkStream;
     private Socket socket;
     private readonly Pipe receivePipe;
+    private readonly ConcurrentQueue<(long End, ShareReceipt Receipt)> receiveStamps = new();
     private readonly BufferBlock<object> sendQueue;
     private WorkerContextBase context;
     private long responseSequence;
@@ -491,6 +493,7 @@ public class StratumConnection
 
     private async Task FillReceivePipeAsync(CancellationToken ct)
     {
+        long receivedBytes = 0;
         while(!ct.IsCancellationRequested)
         {
             StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.ReceiveWait, ConnectionId);
@@ -506,6 +509,11 @@ public class StratumConnection
 
             LastReceive = clock.Now;
 
+            receivedBytes += cb;
+            if(memory.Span[..cb].IndexOf((byte) '\n') >= 0)
+                receiveStamps.Enqueue((receivedBytes, context?.CaptureShareReceipt() ??
+                    new ShareReceipt(TimeProvider.System, TimeProvider.System.GetTimestamp())));
+
             // hand off to pipe
             receivePipe.Writer.Advance(cb);
 
@@ -519,6 +527,7 @@ public class StratumConnection
         StratumProxyPolicy proxyProtocol,
         Func<StratumConnection, JsonRpcRequest, CancellationToken, Task> onRequestAsync)
     {
+        long consumedBytes = 0;
         while(!ct.IsCancellationRequested)
         {
             StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.BufferWait, ConnectionId);
@@ -549,6 +558,11 @@ public class StratumConnection
                     if(position != null)
                     {
                         var slice = buffer.Slice(0, position.Value);
+                        var lineEnd = consumedBytes + slice.Length + 1;
+                        while(receiveStamps.TryPeek(out var stamp) && stamp.End < lineEnd)
+                            receiveStamps.TryDequeue(out _);
+                        var receipt = receiveStamps.TryPeek(out var received) ? received.Receipt :
+                            context?.CaptureShareReceipt() ?? new ShareReceipt(TimeProvider.System, TimeProvider.System.GetTimestamp());
 
                         var proxyHeader = expectingProxyHeader && ProcessProxyHeader(slice, proxyProtocol);
                         // ProcessProxyHeader has validated trust and framing before changing
@@ -563,10 +577,11 @@ public class StratumConnection
                             AdmitProxyIdentity = null;
                         }
                         if(!proxyHeader)
-                            await ProcessRequestAsync(ct, onRequestAsync, slice);
+                            await ProcessRequestAsync(ct, onRequestAsync, slice, receipt);
 
                         // Commit the consumed line before a cancellation exits this read.
                         buffer = buffer.Slice(buffer.GetPosition(1, position.Value));
+                        consumedBytes = lineEnd;
                         ct.ThrowIfCancellationRequested();
                     }
                 } while(position != null);
@@ -659,10 +674,16 @@ public class StratumConnection
         await networkStream.FlushAsync(cts.Token);
     }
 
+    // Synthetic callers without a network read use the current server clock.
+    private Task ProcessRequestAsync(CancellationToken ct,
+        Func<StratumConnection, JsonRpcRequest, CancellationToken, Task> onRequestAsync,
+        ReadOnlySequence<byte> lineBuffer) => ProcessRequestAsync(ct, onRequestAsync, lineBuffer,
+            context?.CaptureShareReceipt() ?? new ShareReceipt(TimeProvider.System, TimeProvider.System.GetTimestamp()));
+
     private async Task ProcessRequestAsync(
         CancellationToken ct,
         Func<StratumConnection, JsonRpcRequest, CancellationToken, Task> onRequestAsync,
-        ReadOnlySequence<byte> lineBuffer)
+        ReadOnlySequence<byte> lineBuffer, ShareReceipt receipt)
     {
         await using var stream = rmsm.GetStream(nameof(StratumConnection), lineBuffer.ToSpan()) as RecyclableMemoryStream;
         using var reader = new JsonTextReader(new StreamReader(stream!, Encoding));
@@ -679,7 +700,8 @@ public class StratumConnection
             finishStartup = null;
         }
 
-        await onRequestAsync(this, request, ct);
+        using(context?.UseShareReceipt(receipt))
+            await onRequestAsync(this, request, ct);
     }
 
     /// <summary>

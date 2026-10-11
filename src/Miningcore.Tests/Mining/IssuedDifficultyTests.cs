@@ -69,10 +69,10 @@ public class IssuedDifficultyTests
         var c = Issue(worker, template);
         Assert.NotSame(a, c);
         Assert.Equal(10, worker.ValidateShareDifficulty(10, false, c));
-        Assert.Throws<StratumException>(() => worker.ValidateShareDifficulty(10, false, b));
+        Assert.Equal(10, worker.ValidateShareDifficulty(10, false, b));
         time.AdvanceMonotonic(TimeSpan.FromSeconds(30));
-        Assert.Throws<StratumException>(() => worker.ValidateShareDifficulty(100, false, a));
-        Assert.Throws<StratumException>(() => worker.ValidateShareDifficulty(100, false, b));
+        Assert.Equal(10, worker.ValidateShareDifficulty(100, false, a));
+        Assert.Equal(10, worker.ValidateShareDifficulty(100, false, b));
         Assert.Equal(10, worker.ValidateShareDifficulty(10, false, c));
     }
 

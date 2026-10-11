@@ -114,6 +114,11 @@ public class ProgpowPool : PoolBase
             await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
             await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, minerJobParams);
         }
+        catch(Exception ex)
+        {
+            FailAssignmentPublication(connection, ex, ct);
+            throw;
+        }
         finally { assignmentGate.Release(); }
     }
 
@@ -182,6 +187,11 @@ public class ProgpowPool : PoolBase
                         await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
                 }
             }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
             finally { assignmentGate.Release(); }
         }
 
@@ -206,7 +216,7 @@ public class ProgpowPool : PoolBase
         var job = new ProgpowWorkerJob(NextJobId(), context.ExtraNonce1);
 
         manager.PrepareWorkerJob(job, out var headerHash);
-        job.Job = (ProgpowJob) job.Job.ForWorker(context);
+        job.Job = (ProgpowJob) job.Job.ForWorker(context, () => manager.NextWorkerJobId());
 
         var result = new object[]
         {
@@ -413,6 +423,9 @@ public class ProgpowPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
 
         try

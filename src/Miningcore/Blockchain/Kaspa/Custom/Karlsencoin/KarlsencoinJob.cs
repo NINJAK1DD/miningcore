@@ -37,10 +37,11 @@ public class KarlsencoinJob : KaspaJob
     {
         var context = worker.ContextAs<KaspaWorkerContext>();
 
-        BlockTemplate.Header.Nonce = Convert.ToUInt64(nonce, 16);
+        var header = BlockTemplate.Header.Clone();
+        header.Nonce = Convert.ToUInt64(nonce, 16);
 
         Span<byte> coinbaseBytes = stackalloc byte[(shareHasher is not FishHashKarlsen) ? 32 : KarlsencoinConstants.CoinbaseSize];
-        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, BlockTemplate.Header.Nonce, coinbaseBytes);
+        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, header.Nonce, coinbaseBytes);
 
         Span<byte> hashCoinbaseBytes = stackalloc byte[32];
 
@@ -79,7 +80,7 @@ public class KarlsencoinJob : KaspaJob
         if(isBlockCandidate)
         {
             Span<byte> hashBytes = stackalloc byte[32];
-            SerializeHeader(BlockTemplate.Header, hashBytes, false);
+            SerializeHeader(header, hashBytes, false);
 
             result.IsBlockCandidate = true;
             result.BlockHash = hashBytes.ToHexString();

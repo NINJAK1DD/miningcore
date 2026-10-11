@@ -131,6 +131,7 @@
         "ports": {
           "3032": {
             "difficulty": 1024.0,
+            "difficultyGraceSeconds": 30,
             "listenAddressCategory": "any",
             "name": "[set]",
             "tcpProxyProtocol": {
@@ -153,6 +154,7 @@
           },
           "3033": {
             "difficulty": 65536.0,
+            "difficultyGraceSeconds": 30,
             "listenAddressCategory": "any",
             "name": "[set]",
             "tcpProxyProtocol": null,
@@ -221,6 +223,7 @@
         "ports": {
           "3042": {
             "difficulty": 1024.0,
+            "difficultyGraceSeconds": 30,
             "listenAddressCategory": "loopback",
             "name": "[set]",
             "tcpProxyProtocol": null,
@@ -282,6 +285,7 @@
         "ports": {
           "3052": {
             "difficulty": 8192.0,
+            "difficultyGraceSeconds": 30,
             "listenAddressCategory": "loopback",
             "name": "[set]",
             "tcpProxyProtocol": null,
@@ -300,6 +304,7 @@
           },
           "3053": {
             "difficulty": 1048576.0,
+            "difficultyGraceSeconds": 30,
             "listenAddressCategory": "loopback",
             "name": "[set]",
             "tcpProxyProtocol": null,

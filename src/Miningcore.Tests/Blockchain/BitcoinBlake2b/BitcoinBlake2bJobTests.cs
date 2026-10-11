@@ -173,10 +173,25 @@ public class BitcoinBlake2bJobTests : TestBase
         var issued = job.ForDifficulty(1e-9);
         Assert.Throws<StratumException>(() => issued.ProcessShare(worker,
             "0000000000000000", "0000000000000000", "0000000000000000", "00000000"));
-        try { issued.ProcessShare(worker, "abcdefabcdefabcd", "0000000000000000", "0000000000000000"); }
-        catch(StratumException ex) when(ex.Code == StratumError.LowDifficultyShare) { }
+        // Only accepted proofs consume duplicate identity. The job discriminator
+        // is random, so search for an accepted proof instead of assuming nonce 0
+        // is eligible and reserving it even when rejected for low difficulty.
+        var nonceBytes = new byte[8];
+        string acceptedNonce = null;
+        for(ulong value = 0; value < 100000 && acceptedNonce == null; value++)
+        {
+            BinaryPrimitives.WriteUInt64LittleEndian(nonceBytes, value);
+            var nonce = nonceBytes.ToHexString();
+            try
+            {
+                issued.ProcessShare(worker, "abcdefabcdefabcd", "0000000000000000", nonce);
+                acceptedNonce = nonce;
+            }
+            catch(StratumException ex) when(ex.Code == StratumError.LowDifficultyShare) { }
+        }
+        Assert.NotNull(acceptedNonce);
         var duplicate = Assert.Throws<StratumException>(() => job.ForDifficulty(2e-9).ProcessShare(worker,
-            "ABCDEFABCDEFABCD", "0000000000000000", "0000000000000000"));
+            "ABCDEFABCDEFABCD", "0000000000000000", acceptedNonce));
         Assert.Equal(StratumError.DuplicateShare, duplicate.Code);
     }
 

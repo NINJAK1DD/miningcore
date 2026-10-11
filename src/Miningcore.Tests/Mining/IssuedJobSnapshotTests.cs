@@ -10,6 +10,7 @@ using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Blockchain.Progpow;
 using Miningcore.Blockchain.Kaspa;
+using Miningcore.Blockchain.Beam;
 using Miningcore.Mining;
 using Miningcore.Stratum;
 using Miningcore.Tests.Util;
@@ -70,12 +71,17 @@ public class IssuedJobSnapshotTests
         if(duplicates != null && duplicates.GetValue(template) == null)
             duplicates.SetValue(template, Activator.CreateInstance(duplicates.FieldType));
         var method = Copier(type);
-        var old = method.Invoke(template, new object[] { worker });
+        object Copy() => method.Invoke(template, method.GetParameters().Length == 1 ?
+            new object[] { worker } : new object[] { worker, Type.Missing });
+        var old = Copy();
         Assert.Equal(type, old.GetType());
-        Assert.Same(old, method.Invoke(template, new object[] { worker }));
+        Assert.Same(old, Copy());
         worker.SetDifficulty(40);
-        var current = method.Invoke(template, new object[] { worker });
-        Assert.NotEqual(idProperty.GetValue(old), idProperty.GetValue(current));
+        var current = Copy();
+        if(typeof(BeamJob).IsAssignableFrom(type))
+            Assert.Equal(idProperty.GetValue(old), idProperty.GetValue(current));
+        else
+            Assert.NotEqual(idProperty.GetValue(old), idProperty.GetValue(current));
         Assert.Equal("source", idProperty.GetValue(template));
         Assert.Equal(10, worker.ValidateShareDifficulty(50, false, old));
         Assert.Throws<StratumException>(() => worker.ValidateShareDifficulty(20, false, current));
@@ -92,7 +98,7 @@ public class IssuedJobSnapshotTests
             Assert.Same(duplicates.GetValue(old), duplicates.GetValue(current));
         }
         time.AdvanceMonotonic(TimeSpan.FromSeconds(30));
-        Assert.Throws<StratumException>(() => worker.ValidateShareDifficulty(50, false, old));
+        Assert.Equal(40, worker.ValidateShareDifficulty(50, false, old));
         Assert.Equal(10, worker.ValidateShareDifficulty(50, true, old));
         worker.Init(40, null, new MockMasterClock(), new ManualTimeProvider());
         Assert.Throws<StratumException>(() => worker.ValidateShareDifficulty(50, true, old));
@@ -108,14 +114,14 @@ public class IssuedJobSnapshotTests
         typeof(KaspaJob).GetProperty("JobId", Members).SetValue(template, "1");
         var old = template.ForWorker(context);
         context.SetDifficulty(40);
-        var current = template.ForWorker(context);
+        var current = template.ForWorker(context, () => "2");
         var jobs = new[] { old, current };
         Assert.Same(current, KaspaJobManager.FindCompatibleJob(jobs, "2"));
         Assert.Throws<StratumException>(() => context.ValidateShareDifficulty(20, false,
             KaspaJobManager.FindCompatibleJob(jobs, "2")));
         foreach(var invalid in new[] { "invalid", "2-d1", "-1", "999999999999999999999999" })
             Assert.Null(KaspaJobManager.FindCompatibleJob(jobs, invalid));
-        Assert.Null(KaspaJobManager.FindCompatibleJob(jobs, "1"));
+        Assert.Same(current, KaspaJobManager.FindCompatibleJob(jobs, "1"));
         Assert.Equal(10, context.ValidateShareDifficulty(20, false, old));
     }
 
@@ -144,6 +150,12 @@ public class IssuedJobSnapshotTests
         var failure = Assert.Throws<AlephiumStratumException>(() =>
             job.ProcessShare(connection, new string('0', AlephiumConstants.NonceLength * 2)));
         Assert.Equal(AlephiumStratumError.LowDifficultyShare, failure.Code);
+        context.SetDifficulty(1e-10);
+        var current = template.ForWorker(context, () => "B");
+        var nonce = new string('0', AlephiumConstants.NonceLength * 2);
+        Assert.Equal(1e-10, current.ProcessShare(connection, nonce).Difficulty);
+        Assert.Equal(AlephiumStratumError.DuplicatedShare,
+            Assert.Throws<AlephiumStratumException>(() => job.ProcessShare(connection, nonce)).Code);
     }
 
     [Fact]

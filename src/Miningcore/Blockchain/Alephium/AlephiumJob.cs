@@ -25,10 +25,13 @@ public class AlephiumJobParams
 
 public class AlephiumJob
 {
-    internal AlephiumJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+    private AlephiumJob sourceTemplate;
+    internal AlephiumJob SourceTemplate => sourceTemplate ?? this;
+    internal AlephiumJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
             var result = (AlephiumJob) MemberwiseClone();
+            result.sourceTemplate = SourceTemplate;
             result.JobId = id;
             result.jobParams = jobParams == null ? null : new AlephiumJobParams
             {
@@ -36,7 +39,7 @@ public class AlephiumJob
                 HeaderBlob = jobParams.HeaderBlob, TxsBlob = jobParams.TxsBlob, TargetBlob = jobParams.TargetBlob
             };
             return result;
-        }, JobId);
+        }, JobId, nextJobId);
 
     protected IMasterClock clock;
     public AlephiumBlockTemplate BlockTemplate { get; private set; }
@@ -67,6 +70,15 @@ public class AlephiumJob
             .ToString();
 
         return submissions.TryAdd(key, true);
+    }
+
+    protected bool IsDuplicateSubmit(string nonce)
+    {
+        var key = new StringBuilder()
+            .Append(nonce)
+            .ToString();
+
+        return submissions.ContainsKey(key);
     }
     
     public virtual byte[] SerializeCoinbase(string nonce, int socketMiningProtocol = 0)
@@ -167,11 +179,13 @@ public class AlephiumJob
 
         var context = worker.ContextAs<AlephiumWorkerContext>();
         
-        // dupe check
+        if(IsDuplicateSubmit(nonce))
+            throw new AlephiumStratumException(AlephiumStratumError.DuplicatedShare, "duplicate share");
+        var result = ProcessShareInternal(worker, nonce);
         if(!RegisterSubmit(nonce))
             throw new AlephiumStratumException(AlephiumStratumError.DuplicatedShare, $"duplicate share");
 
-        return ProcessShareInternal(worker, nonce);
+        return result;
     }
 
     public void Init(AlephiumBlockTemplate blockTemplate)

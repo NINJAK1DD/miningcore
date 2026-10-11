@@ -216,6 +216,60 @@ public class PoolFamilyAssignmentTests : TestBase
         Assert.Equal(expected, Families.OrderBy(x => x));
     }
 
+    [Theory]
+    [InlineData("Bitcoin", false)]
+    [InlineData("Nexa", false)]
+    [InlineData("Satoshicash", false)]
+    [InlineData("Bitcoin", true)]
+    [InlineData("Nexa", true)]
+    [InlineData("Satoshicash", true)]
+    [InlineData("Handshake", false)]
+    [InlineData("Progpow", false)]
+    [InlineData("Ethereum", false)]
+    [InlineData("Kaspa", false)]
+    [InlineData("Beam", false)]
+    public async Task ReplacementConstructionFailureInvalidatesSessionBeforeGateRelease(string family, bool suggest)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        var worker = fixture.Connection.Context;
+        fixture.RemoveTemplateForFault();
+        await Assert.ThrowsAnyAsync<Exception>(() => suggest ? fixture.SuggestDifficulty() : fixture.Authorize());
+        Assert.True(fixture.Connection.IsDisconnectRequested);
+        Assert.False(worker.IsAuthorized);
+        Assert.Equal(1, worker.AssignmentGate.CurrentCount);
+        Assert.False(worker.TryValidateShareDifficulty(double.PositiveInfinity, true, new object(), out _));
+        Assert.False(worker.TryValidateShareDifficulty(double.PositiveInfinity, false, new object(), out _));
+        Assert.NotEmpty(fixture.Errors.Logs);
+    }
+
+    [Theory]
+    [InlineData("Bitcoin")]
+    [InlineData("Nexa")]
+    [InlineData("Satoshicash")]
+    [InlineData("Handshake")]
+    [InlineData("Progpow")]
+    [InlineData("Ethereum")]
+    [InlineData("Kaspa")]
+    [InlineData("Beam")]
+    public async Task VarDiffReplacementFailureClosesSessionBeforeGateRelease(string family)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        fixture.Time.Timestamp = 30 * TimeSpan.TicksPerSecond;
+        fixture.RemoveTemplateForFault();
+        await Assert.ThrowsAnyAsync<Exception>(() => fixture.Idle());
+        var worker = fixture.Connection.Context;
+        Assert.True(fixture.Connection.IsDisconnectRequested);
+        Assert.False(worker.IsAuthorized);
+        Assert.Equal(1, worker.AssignmentGate.CurrentCount);
+        Assert.False(worker.TryValidateShareDifficulty(double.PositiveInfinity, true, new object(), out _));
+        if(family != "Bitcoin") // Bitcoin retains its existing once-only Info diagnostic.
+            Assert.NotEmpty(fixture.Errors.Logs);
+    }
+
     [LinuxNativeTheory]
     [InlineData("Conceal", 0.5)]
     [InlineData("Conceal", 0.1)]
@@ -399,6 +453,7 @@ public class PoolFamilyAssignmentTests : TestBase
         private string family;
         private ClusterConfig cluster;
         private object job;
+        private object manager;
         private TaskCompletionSource flushed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private TaskCompletionSource requestHandled;
         internal TaskCompletionSource RequestEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -442,7 +497,7 @@ public class PoolFamilyAssignmentTests : TestBase
             extraNonce.ByteSize.Returns(4);
             var managerType = typeof(PoolBase).Assembly.GetType($"Miningcore.Blockchain.{family}.{family}JobManager", true);
             var constructor = managerType.GetConstructors().Single();
-            var manager = constructor.Invoke(constructor.GetParameters().Select(p =>
+            manager = constructor.Invoke(constructor.GetParameters().Select(p =>
                 p.ParameterType == typeof(IComponentContext) ? (object) scope :
                 p.ParameterType == typeof(IMasterClock) ? clock :
                 p.ParameterType == typeof(IExtraNonceProvider) ? extraNonce :
@@ -546,6 +601,7 @@ public class PoolFamilyAssignmentTests : TestBase
         }
 
         internal Task Idle() => (Task) Invoke(Pool, "UpdateVarDiffAsync", Connection, true, stop.Token);
+        internal void RemoveTemplateForFault() => SetField(manager, "currentJob", null);
         internal Task SuggestDifficulty() => DispatchRequest(new JsonRpcRequest("mining.suggest_difficulty",
             family == "Nexa" ? (object) 55d : new object[] { 55d }, 2));
         internal Task Authorize(CancellationToken? ct = null, double difficulty = 55)

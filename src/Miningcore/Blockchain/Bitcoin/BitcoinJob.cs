@@ -20,7 +20,7 @@ namespace Miningcore.Blockchain.Bitcoin;
 
 public class BitcoinJob
 {
-    internal BitcoinJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+    internal BitcoinJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
             var result = (BitcoinJob) MemberwiseClone();
@@ -31,7 +31,7 @@ public class BitcoinJob
                 result.jobParams[0] = id;
             }
             return result;
-        }, JobId);
+        }, JobId, nextJobId);
 
     internal const long BitcoinConsensusMaxBlockWeight = 4_000_000;
     protected IHashAlgorithm blockHasher;
@@ -359,6 +359,24 @@ public class BitcoinJob
             .ToString();
 
         return submissions.TryAdd(key, true);
+    }
+
+    protected bool IsDuplicateSubmit(string extraNonce1, string extraNonce2, string nTime,
+        string nonce, uint? versionBits)
+    {
+        var key = new StringBuilder()
+            .Append(extraNonce1)
+            .Append(':')
+            .Append(extraNonce2.ToLowerInvariant())
+            .Append(':')
+            .Append(nTime.ToLowerInvariant())
+            .Append(':')
+            .Append(nonce.ToLowerInvariant())
+            .Append(':')
+            .Append(versionBits?.ToString("x8", CultureInfo.InvariantCulture) ?? "-")
+            .ToString();
+
+        return submissions.ContainsKey(key);
     }
 
     protected static uint? ParseVersionBits(uint? versionMask, string versionBits)
@@ -1247,11 +1265,15 @@ public class BitcoinJob
         var versionBitsInt = ParseVersionBits(context.VersionRollingMask, versionBits);
 
         // dupe check
+        if(IsDuplicateSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce,
+               versionBitsInt))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt, versionBitsInt);
         if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce,
                versionBitsInt))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
 
-        return ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt, versionBitsInt);
+        return result;
     }
 
     #endregion // API-Surface

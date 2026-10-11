@@ -142,6 +142,11 @@ public class BeamPool : PoolBase
                 // respond
                 await connection.NotifyAsync(jobResponse);
             }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
             finally { assignmentGate.Release(); }
         }
 
@@ -443,6 +448,9 @@ public class BeamPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
 
         try

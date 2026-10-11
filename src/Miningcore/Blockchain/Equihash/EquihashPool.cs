@@ -232,6 +232,11 @@ public class EquihashPool : PoolBase
                 await connection.NotifyAsync(EquihashStratumMethods.SetTarget, new object[] { EncodeTarget(context.Difficulty) });
                 await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
             }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
             finally { assignmentGate.Release(); }
         }
 
@@ -253,7 +258,7 @@ public class EquihashPool : PoolBase
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
         var context = connection.ContextAs<EquihashWorkerContext>();
-        var job = (EquihashJob) manager.GetJobForStratum().ForWorker(context);
+        var job = (EquihashJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
 
         // update context
         lock(context)
@@ -384,12 +389,20 @@ public class EquihashPool : PoolBase
             else
                 await connection.RespondErrorAsync(StratumError.Other, "invalid target", request.Id);
         }
+        catch(Exception ex)
+        {
+            FailAssignmentPublication(connection, ex, ct);
+            throw;
+        }
         finally { assignmentGate.Release(); }
     }
 
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
 
         try

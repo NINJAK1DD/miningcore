@@ -12,7 +12,7 @@ namespace Miningcore.Blockchain.Ergo;
 
 public class ErgoJob
 {
-    internal ErgoJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+    internal ErgoJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
             var result = (ErgoJob) MemberwiseClone();
@@ -23,7 +23,7 @@ public class ErgoJob
                 result.jobParams[0] = id;
             }
             return result;
-        }, JobId);
+        }, JobId, nextJobId);
 
     public WorkMessage BlockTemplate { get; private set; }
     public double Difficulty { get; private set; }
@@ -70,6 +70,16 @@ public class ErgoJob
             .ToString();
 
         return submissions.TryAdd(key, true);
+    }
+
+    protected bool IsDuplicateSubmit(string nTime, string nonce)
+    {
+        var key = new StringBuilder()
+            .Append(nTime)
+            .Append(nonce)
+            .ToString();
+
+        return submissions.ContainsKey(key);
     }
 
     protected virtual byte[] SerializeCoinbase(string msg, string nonce)
@@ -202,10 +212,13 @@ public class ErgoJob
             nTime = string.Empty;
 
         // dupe check
+        if(IsDuplicateSubmit(nTime, nonce))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, nonce);
         if(!RegisterSubmit(nTime, nonce))
             throw new StratumException(StratumError.DuplicateShare, $"duplicate share");
 
-        return ProcessShareInternal(worker, nonce);
+        return result;
     }
 
     public void Init(WorkMessage blockTemplate, int blockVersion, int extraNonceSize, string jobId)

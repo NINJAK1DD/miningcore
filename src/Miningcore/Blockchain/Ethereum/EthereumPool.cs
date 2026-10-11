@@ -170,6 +170,11 @@ public class EthereumPool : PoolBase
 
                 logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
             }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
             finally { assignmentGate.Release(); }
         }
 
@@ -188,7 +193,7 @@ public class EthereumPool : PoolBase
     private EthereumJob CreateWorkerJob(StratumConnection connection)
     {
         var context = connection.ContextAs<EthereumWorkerContext>();
-        var job = (EthereumJob) manager.GetJobForStratum().ForWorker(context);
+        var job = (EthereumJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId("x8"));
 
         // update context
         lock(context)
@@ -388,6 +393,11 @@ public class EthereumPool : PoolBase
                 // setup worker context
                 context.IsSubscribed = true;
             }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
             finally { assignmentGate.Release(); }
         }
 
@@ -414,6 +424,11 @@ public class EthereumPool : PoolBase
             var context = connection.ContextAs<EthereumWorkerContext>();
 
             await SendWork(context, connection, request.Id);
+        }
+        catch(Exception ex)
+        {
+            FailAssignmentPublication(connection, ex, ct);
+            throw;
         }
         finally { assignmentGate.Release(); }
     }
@@ -534,6 +549,9 @@ public class EthereumPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
         var context = connection.ContextAs<EthereumWorkerContext>();
 

@@ -104,6 +104,11 @@ public class WarthogPool : PoolBase
                 context.SetDifficulty(nicehashDiff.Value);
             }
         }
+        catch(Exception ex)
+        {
+            FailAssignmentPublication(connection, ex, ct);
+            throw;
+        }
         finally { assignmentGate.Release(); }
     }
     
@@ -181,6 +186,11 @@ public class WarthogPool : PoolBase
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
                 await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
             }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
             finally { assignmentGate.Release(); }
         }
 
@@ -203,7 +213,7 @@ public class WarthogPool : PoolBase
     {
         var context = connection.ContextAs<WarthogWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 4;
-        var job = (WarthogJob) manager.GetJobForStratum().ForWorker(context);
+        var job = (WarthogJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
 
         // update context
         lock(context)
@@ -390,6 +400,9 @@ public class WarthogPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
 
         try

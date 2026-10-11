@@ -320,6 +320,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     }
 
     protected override double MaximumVarDiff => BitcoinBlake2bDifficulty.Maximum;
+    protected override bool UsesSharedDifficultyRequestBudget => false;
 
     protected override async Task UpdateVarDiffAsync(StratumConnection connection, bool idle, CancellationToken ct)
     {

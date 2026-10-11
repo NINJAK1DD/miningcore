@@ -19,7 +19,7 @@ namespace Miningcore.Blockchain.Xelis;
 
 public class XelisJob
 {
-    internal XelisJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+    internal XelisJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
             var result = (XelisJob) MemberwiseClone();
@@ -30,7 +30,7 @@ public class XelisJob
                 result.jobParams[0] = id;
             }
             return result;
-        }, JobId);
+        }, JobId, nextJobId);
 
     protected IMasterClock clock;
     protected double shareMultiplier;
@@ -236,6 +236,16 @@ public class XelisJob
         return submissions.TryAdd(key, true);
     }
 
+    protected virtual bool IsDuplicateSubmit(string extraNonce1, string nonce)
+    {
+        var key = new StringBuilder()
+            .Append(extraNonce1)
+            .Append(nonce)
+            .ToString();
+
+        return submissions.ContainsKey(key);
+    }
+
     public virtual Share ProcessShare(StratumConnection worker,
         string nonce)
     {
@@ -248,10 +258,13 @@ public class XelisJob
             throw new StratumException(StratumError.Other, "incorrect size of nonce");
 
         // dupe check
+        if(IsDuplicateSubmit(context.ExtraNonce1, nonce))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, nonce);
         if(!RegisterSubmit(context.ExtraNonce1, nonce))
             throw new StratumException(StratumError.DuplicateShare, "duplicate");
 
-        return ProcessShareInternal(worker, nonce);
+        return result;
     }
 
     #endregion // API-Surface

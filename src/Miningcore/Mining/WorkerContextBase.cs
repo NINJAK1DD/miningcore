@@ -24,6 +24,11 @@ public class WorkerContextBase
     private IssuedDifficulty assignment;
     private object assignmentSession = new();
     private long assignmentGeneration;
+    private readonly object assignmentSync = new();
+    private readonly AsyncLocal<ShareReceipt?> shareReceipt = new();
+    private TimeSpan difficultyGrace = IssuedDifficulty.Grace;
+    private bool assignmentsClosed;
+    internal Miningcore.Blockchain.BitcoinBlake2b.DifficultyRequestBudget DifficultyRequests { get; private set; }
     private readonly ConditionalWeakTable<object, IssuedDifficulty> issuedDifficulties = new();
     private ConditionalWeakTable<object, JobSnapshot> jobSnapshots = new();
     private readonly Dictionary<(object Template, uint ExtraNonce), IssuedDifficulty> blobDifficulties = new();
@@ -65,7 +70,7 @@ public class WorkerContextBase
     }
 
     /// <summary>
-    /// Previous difficulty assigned to this worker
+    /// Legacy diagnostic metadata. Never used to authorize or credit a share.
     /// </summary>
     public double? PreviousDifficulty
     {
@@ -99,12 +104,18 @@ public class WorkerContextBase
 
     public bool IsNicehash { get; private set; }
 
-    public void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock, TimeProvider timeProvider = null)
+    public void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock, TimeProvider timeProvider = null,
+        int difficultyGraceSeconds = 30)
     {
+        if(difficultyGraceSeconds is < 0 or > 300)
+            throw new ArgumentOutOfRangeException(nameof(difficultyGraceSeconds));
         difficulty = ValidateAssignment(difficulty);
         assignmentTimeProvider = timeProvider ?? TimeProvider.System;
+        difficultyGrace = TimeSpan.FromSeconds(difficultyGraceSeconds);
+        assignmentsClosed = false;
+        DifficultyRequests = new(assignmentTimeProvider);
         assignmentSession = new();
-        assignment = new IssuedDifficulty(difficulty, assignmentTimeProvider, assignmentSession);
+        assignment = new IssuedDifficulty(difficulty, assignmentTimeProvider, assignmentSession, difficultyGrace);
         assignmentGeneration = 0;
         previousDifficulty = null;
         jobSnapshots = new();
@@ -144,7 +155,7 @@ public class WorkerContextBase
     public void SetDifficulty(double difficulty)
     {
         difficulty = ValidateAssignment(difficulty);
-        lock(this)
+        lock(assignmentSync)
         {
             // An explicit assignment supersedes any deferred dynamic assignment.
             pendingDifficulty = null;
@@ -152,7 +163,7 @@ public class WorkerContextBase
                 return;
             var nextGeneration = checked(assignmentGeneration + 1);
             assignment?.Retire();
-            assignment = new IssuedDifficulty(difficulty, assignmentTimeProvider, assignmentSession);
+            assignment = new IssuedDifficulty(difficulty, assignmentTimeProvider, assignmentSession, difficultyGrace);
             assignmentGeneration = nextGeneration;
             previousDifficulty = Difficulty;
             this.difficulty = difficulty;
@@ -161,16 +172,20 @@ public class WorkerContextBase
 
     // Call under the worker assignment gate, before registry insertion/publication.
     // Shallow job copies deliberately retain the template's duplicate-proof set.
-    internal T JobForDifficulty<T>(T template, Func<T, string, T> copy, string jobId) where T : class
+    internal T JobForDifficulty<T>(T template, Func<T, string, T> copy, string jobId,
+        Func<string> nextJobId = null, bool preserveId = false) where T : class
     {
         ArgumentNullException.ThrowIfNull(template);
-        lock(this)
+        lock(assignmentSync)
         {
-            assignment ??= new IssuedDifficulty(ValidateAssignment(Difficulty), assignmentTimeProvider, assignmentSession);
+            assignment ??= new IssuedDifficulty(ValidateAssignment(Difficulty), assignmentTimeProvider, assignmentSession, difficultyGrace);
             if(jobSnapshots.TryGetValue(template, out var cached) && ReferenceEquals(cached.Assignment, assignment))
                 return (T) cached.Job;
-            var id = assignmentGeneration == 0 ? jobId : $"{jobId}-d{assignmentGeneration:x}";
-            var job = copy(template, id);
+            // Fresh templates retain their native ID. Only reissues need another
+            // ID, allocated from the same manager counter as template IDs.
+            var id = cached == null || preserveId ? jobId :
+                (nextJobId?.Invoke() ?? $"{jobId}-d{assignmentGeneration:x}");
+            var job = cached == null && !issuedDifficulties.TryGetValue(template, out _) ? template : copy(template, id);
             issuedDifficulties.Add(job, assignment);
             jobSnapshots.Remove(template);
             jobSnapshots.Add(template, new JobSnapshot(assignment, job));
@@ -180,36 +195,66 @@ public class WorkerContextBase
 
     internal void RegisterBlobDifficulty(object template, uint extraNonce)
     {
-        lock(this)
+        lock(assignmentSync)
         {
-            assignment ??= new IssuedDifficulty(ValidateAssignment(Difficulty), assignmentTimeProvider, assignmentSession);
+            assignment ??= new IssuedDifficulty(ValidateAssignment(Difficulty), assignmentTimeProvider, assignmentSession, difficultyGrace);
             blobDifficulties.TryAdd((template, extraNonce), assignment);
         }
     }
 
     internal void ForgetBlobDifficulty(object template, uint extraNonce)
     {
-        lock(this)
+        lock(assignmentSync)
             blobDifficulties.Remove((template, extraNonce));
     }
 
     internal bool TryValidateShareDifficulty(double proofDifficulty, bool blockCandidate, object job, out double credit)
     {
         IssuedDifficulty issued;
-        lock(this)
+        lock(assignmentSync)
         {
+            credit = Difficulty;
+            if(assignmentsClosed)
+                return false;
             if(job is ValueTuple<object, uint> blob)
                 blobDifficulties.TryGetValue(blob, out issued);
             else
                 issuedDifficulties.TryGetValue(job, out issued);
+            if(shareReceipt.Value is { } receipt && (!ReferenceEquals(receipt.Clock, assignmentTimeProvider) ||
+                receipt.Timestamp > assignmentTimeProvider.GetTimestamp()))
+                return false;
+            // Compatibility for direct job validators/custom callers without issuance
+            // metadata: current target only. PreviousDifficulty/UTC never authorize work.
+            if(issued != null && !ReferenceEquals(issued.Session, assignmentSession))
+                return false;
+            issued ??= assignment ?? new IssuedDifficulty(Difficulty, assignmentTimeProvider, assignmentSession, difficultyGrace);
+            if(issued.TryValidate(proofDifficulty, blockCandidate, out credit, shareReceipt.Value))
+                return true;
+            // Retired work may still satisfy the currently issued target. This never
+            // grants old easier credit after expiry, or revives another session.
+            return assignment != null && assignment.TryValidate(proofDifficulty, blockCandidate, out credit);
         }
-        // Compatibility for direct job validators/custom callers without issuance
-        // metadata: current target only. PreviousDifficulty/UTC never authorize work.
-        credit = Difficulty;
-        if(issued != null && !ReferenceEquals(issued.Session, assignmentSession))
-            return false;
-        issued ??= new IssuedDifficulty(Difficulty, assignmentTimeProvider, assignmentSession);
-        return issued.TryValidate(proofDifficulty, blockCandidate, out credit);
+    }
+
+    internal ShareReceipt CaptureShareReceipt() => new(assignmentTimeProvider, assignmentTimeProvider.GetTimestamp());
+
+    internal IDisposable UseShareReceipt(ShareReceipt receipt)
+    {
+        var previous = shareReceipt.Value;
+        shareReceipt.Value = receipt;
+        return System.Reactive.Disposables.Disposable.Create(() => shareReceipt.Value = previous);
+    }
+
+    internal void CloseDifficultyAssignments()
+    {
+        lock(assignmentSync)
+        {
+            assignmentsClosed = true;
+            IsAuthorized = false;
+            pendingDifficulty = null;
+            jobSnapshots = new();
+            blobDifficulties.Clear();
+        }
     }
 
     internal double ValidateShareDifficulty(double proofDifficulty, bool blockCandidate, object job)

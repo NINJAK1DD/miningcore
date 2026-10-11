@@ -90,11 +90,14 @@ public class MergedMiningBitcoinJob : BitcoinJob
         var nonceInt = uint.Parse(nonce, NumberStyles.HexNumber);
         var versionBitsInt = ParseVersionBits(context.VersionRollingMask, versionBits);
 
+        if(IsDuplicateSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce, versionBitsInt))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareMergedInternal(worker, extraNonce2, nTimeInt, nonceInt, versionBitsInt);
         if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce,
                versionBitsInt))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
 
-        return ProcessShareMergedInternal(worker, extraNonce2, nTimeInt, nonceInt, versionBitsInt);
+        return result;
     }
 
     private MergedMiningShareResult ProcessShareMergedInternal(StratumConnection worker, string extraNonce2,

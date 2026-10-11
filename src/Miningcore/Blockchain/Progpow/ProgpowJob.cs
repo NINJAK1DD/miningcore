@@ -31,6 +31,8 @@ public class ProgpowJob : BitcoinJob
 
     internal bool RegisterWorkerProof(string extraNonce1, string nonce, string headerHash, string mixHash) =>
         submissions.TryAdd($"progpow:{extraNonce1}:{nonce}:{headerHash}:{mixHash}", true);
+    internal bool IsDuplicateWorkerProof(string extraNonce1, string nonce, string headerHash, string mixHash) =>
+        submissions.ContainsKey($"progpow:{extraNonce1}:{nonce}:{headerHash}:{mixHash}");
 
     protected virtual byte[] SerializeHeader(Span<byte> coinbaseHash)
     {

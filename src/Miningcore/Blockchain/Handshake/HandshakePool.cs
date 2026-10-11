@@ -111,6 +111,11 @@ public class HandshakePool : PoolBase
                         await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
                 }
             }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
             finally { assignmentGate.Release(); }
         }
 
@@ -196,13 +201,18 @@ public class HandshakePool : PoolBase
             await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
         }
+        catch(Exception ex)
+        {
+            FailAssignmentPublication(connection, ex, ct);
+            throw;
+        }
         finally { assignmentGate.Release(); }
     }
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
         var context = connection.ContextAs<HandshakeWorkerContext>();
-        var job = (HandshakeJob) manager.GetJobForStratum().ForWorker(context);
+        var job = (HandshakeJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
 
         // update context
         lock(context)
@@ -424,6 +434,9 @@ public class HandshakePool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
 
         try

@@ -371,7 +371,7 @@ public class BitcoinPool : PoolBase
                         "Direct SOLO worker has no payout authorization");
                 var directJob = manager.GetDirectJobForStratum(
                     authorization.Address, authorization.Destination,
-                    authorization.Generation).ForWorker(context);
+                    authorization.Generation).ForWorker(context, () => manager.NextWorkerJobId());
 
                 if(context.TryAddDirectJob(directJob,
                        manager.maxActiveJobs))
@@ -382,7 +382,7 @@ public class BitcoinPool : PoolBase
                 "Direct SOLO payout authorization changed while assigning work");
         }
 
-        var job = (BitcoinJob) manager.GetJobForStratum().ForWorker(context);
+        var job = (BitcoinJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
         context.AddJob(job, manager.maxActiveJobs);
         return job.GetJobParams(cleanJob);
     }
@@ -961,6 +961,9 @@ public class BitcoinPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         if(connection.IsDisconnectRequested)
         {
             Guard(() => Disconnect(connection));

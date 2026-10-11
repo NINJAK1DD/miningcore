@@ -114,7 +114,7 @@ public abstract class PoolBase : StratumServer,
         var poolEndpoint = poolConfig.Ports[ipEndPoint.Port];
         var varDiff = poolConfig.EnableInternalStratum == true ? poolEndpoint.VarDiff : null;
 
-        context.Init(poolEndpoint.Difficulty, varDiff, clock, VarDiffTimeProvider);
+        context.Init(poolEndpoint.Difficulty, varDiff, clock, VarDiffTimeProvider, poolEndpoint.DifficultyGraceSeconds);
         connection.SetContext(context);
 
         // StratumConnection bounds TLS, PROXY framing and the first complete request with
@@ -191,7 +191,7 @@ public abstract class PoolBase : StratumServer,
     internal Task UpdateIdleVarDiffAsync(StratumConnection connection, CancellationToken ct) =>
         Guard(() => UpdateVarDiffAsync(connection, true, ct), ex =>
         {
-            if(ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            if(!connection.IsDisconnectRequested && (ex is not OperationCanceledException || !ct.IsCancellationRequested))
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.RunVardiffIdleUpdaterAsync", failure: ex);
         });
 
@@ -230,7 +230,58 @@ public abstract class PoolBase : StratumServer,
             if(!connection.IsDisconnectRequested)
                 await assignment();
         }
+        catch(Exception ex)
+        {
+            FailAssignmentPublication(connection, ex, ct);
+            throw;
+        }
         finally { gate.Release(); }
+    }
+
+    // Invoked while still owning the assignment gate. No later producer or
+    // buffered submission may reuse a partially published assignment.
+    protected void FailAssignmentPublication(StratumConnection connection, Exception failure, CancellationToken ct = default)
+    {
+        var first = connection.TryBeginDisconnect();
+        // Cleanup must never replace the original publication failure, including
+        // callbacks that already removed the context or closed the transport.
+        Guard(() => connection.Context?.CloseDifficultyAssignments());
+        if(first && !(failure is OperationCanceledException && ct.IsCancellationRequested))
+            Guard(() => RpcConsumerDiagnostics.Write(logger, LogLevel.Error, "PoolBase.AssignmentPublication", failure: failure,
+                connectionId: connection.ConnectionId));
+        Guard(() => Disconnect(connection));
+    }
+
+    protected virtual bool UsesSharedDifficultyRequestBudget => true;
+
+    protected async Task<bool> AdmitDifficultyRequestAsync(StratumConnection connection, Miningcore.JsonRpc.JsonRpcRequest request)
+    {
+        if(!UsesSharedDifficultyRequestBudget)
+            return true;
+        if(connection.IsDisconnectRequested)
+            return false;
+        var controlled = request.Method is "mining.suggest_difficulty" or "mining.authorize" or "login" or "eth_submitLogin";
+        if(request.Method == "mining.configure")
+            controlled = Newtonsoft.Json.Linq.JToken.FromObject(request.Params ?? new object())
+                .ToString(Newtonsoft.Json.Formatting.None).Contains("minimum-difficulty", StringComparison.Ordinal);
+        if(!controlled)
+            return true;
+        var budget = connection.Context.DifficultyRequests;
+        var admission = budget.TryAcquire();
+        if(admission == Miningcore.Blockchain.BitcoinBlake2b.DifficultyRequestBudget.Admission.Allowed)
+            return true;
+        if(admission == Miningcore.Blockchain.BitcoinBlake2b.DifficultyRequestBudget.Admission.Disconnect)
+        {
+            PublishTelemetry(TelemetryCategory.StratumAdmission, "difficulty-disconnect", TimeSpan.Zero);
+            budget.TryClose();
+            connection.Context.CloseDifficultyAssignments();
+            connection.TryBeginDisconnect();
+            Disconnect(connection);
+            return false;
+        }
+        PublishTelemetry(TelemetryCategory.StratumAdmission, "difficulty-refused", TimeSpan.Zero);
+        await connection.RespondErrorAsync(StratumError.Other, "Too many difficulty requests; retry later", request.Id, false);
+        return false;
     }
 
     protected Task ForEachMinerAssignmentAsync(Func<StratumConnection, CancellationToken, Task> func)
@@ -274,7 +325,8 @@ public abstract class PoolBase : StratumServer,
             }
             catch(Exception ex)
             {
-                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.ForEachMinerAsync", failure: ex);
+                if(!connection.IsDisconnectRequested)
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.ForEachMinerAsync", failure: ex);
 
                 Disconnect(connection);
             }

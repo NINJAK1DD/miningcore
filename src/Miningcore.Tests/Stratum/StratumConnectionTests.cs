@@ -11,6 +11,7 @@ using Microsoft.IO;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
+using Miningcore.Mining;
 using Miningcore.Stratum;
 using Miningcore.Time;
 using Newtonsoft.Json;
@@ -25,6 +26,90 @@ namespace Miningcore.Tests.Stratum;
 
 public class StratumConnectionTests : TestBase
 {
+    private sealed class ReceiptStream : System.IO.Stream
+    {
+        internal readonly System.Threading.Channels.Channel<byte[]> Chunks = System.Threading.Channels.Channel.CreateUnbounded<byte[]>();
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            if(!await Chunks.Reader.WaitToReadAsync(ct)) return 0;
+            var bytes = await Chunks.Reader.ReadAsync(ct);
+            bytes.CopyTo(buffer);
+            return bytes.Length;
+        }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, System.IO.SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long length) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GraceUsesReadContainingTerminatorAcrossHandlerBacklog(bool lateTerminator)
+    {
+        var time = new ManualTimeProvider();
+        var worker = new WorkerContextBase();
+        worker.Init(10, null, clock, time);
+        var old = worker.JobForDifficulty(new object(), (_, _) => new object(), "1");
+        worker.SetDifficulty(40);
+        var connection = new StratumConnection(logger, rmsm, clock, "receipt-test", false);
+        connection.SetContext(worker);
+        var wrapper = new PrivateObject(connection);
+        var input = new ReceiptStream();
+        wrapper.SetField("networkStream", input);
+        var pipe = (Pipe) wrapper.GetField("receivePipe");
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var result = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Func<StratumConnection, JsonRpcRequest, CancellationToken, Task> handler = async (_, request, _) =>
+        {
+            if(Convert.ToInt32(request.Id) == 1)
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(TestTimeout);
+            }
+            else
+            {
+                var accepted = worker.TryValidateShareDifficulty(20, false, old, out var credit);
+                if(accepted) Assert.Equal(10, credit);
+                result.TrySetResult(accepted);
+            }
+        };
+        using var stop = new CancellationTokenSource(TestTimeout);
+        var fill = (Task) wrapper.Invoke("FillReceivePipeAsync", stop.Token);
+        var process = (Task) wrapper.Invoke("ProcessReceivePipeAsync", stop.Token,
+            new StratumProxyPolicy(null), handler);
+        try
+        {
+            time.AdvanceMonotonic(TimeSpan.FromSeconds(29));
+            await input.Chunks.Writer.WriteAsync(Encoding.UTF8.GetBytes(
+                "{\"id\":1,\"method\":\"test\"}\n{\"id\":2,\"method\":\"test\",\"receivedAt\":0}" + (lateTerminator ? "" : "\n")));
+            await entered.Task.WaitAsync(TestTimeout);
+            time.AdvanceMonotonic(TimeSpan.FromSeconds(31));
+            if(lateTerminator) await input.Chunks.Writer.WriteAsync(new byte[] { (byte) '\n' });
+            input.Chunks.Writer.Complete();
+            await fill.WaitAsync(TestTimeout);
+            await pipe.Writer.CompleteAsync();
+            release.TrySetResult();
+            Assert.Equal(!lateTerminator, await result.Task.WaitAsync(TestTimeout));
+            await process.WaitAsync(TestTimeout);
+            Assert.False(worker.TryValidateShareDifficulty(20, false, old, out _)); // Ambient receipt restored.
+        }
+        finally
+        {
+            release.TrySetResult();
+            input.Chunks.Writer.TryComplete();
+            stop.Cancel();
+            await pipe.Reader.CompleteAsync();
+        }
+    }
+
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
     private const string JsonRpcVersion = "2.0";
     private const string ConnectionId = "foo";

@@ -509,6 +509,14 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
         return responseData;
     }
 
+    internal static AlephiumJob FindCompatibleJob(IEnumerable<AlephiumJob> jobs, int fromGroup, int toGroup)
+    {
+        var snapshots = jobs.ToArray();
+        var template = snapshots.FirstOrDefault(x => x.BlockTemplate.FromGroup == fromGroup &&
+            x.BlockTemplate.ToGroup == toGroup)?.SourceTemplate;
+        return template == null ? null : snapshots.LastOrDefault(x => ReferenceEquals(x.SourceTemplate, template));
+    }
+
     public async ValueTask<Share> SubmitShareAsync(StratumConnection worker, AlephiumWorkerSubmitParams submitParams, CancellationToken ct)
     {
         Contract.RequiresNonNull(worker);
@@ -530,7 +538,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
                 // stupid hack for busted ass IceRiver ASICs. Need to loop
                 // through job using blockTemplate "FromGroup" & "ToGroup" because they submit jobs with incorrect IDs
                 if(ValidateIsIceRiverMiner(context.UserAgent))
-                    job = context.validJobs.ToArray().LastOrDefault(x => x.BlockTemplate.FromGroup == submitParams.FromGroup && x.BlockTemplate.ToGroup == submitParams.ToGroup);
+                    job = FindCompatibleJob(context.validJobs, submitParams.FromGroup, submitParams.ToGroup);
             }
 
             if(job == null)

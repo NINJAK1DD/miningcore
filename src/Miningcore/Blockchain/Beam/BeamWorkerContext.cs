@@ -38,6 +38,6 @@ public class BeamWorkerContext : WorkerContextBase
 
     public BeamJob GetJob(string jobId)
     {
-        return validJobs.ToArray().FirstOrDefault(x => x.JobId == jobId);
+        return validJobs.ToArray().LastOrDefault(x => x.JobId == jobId);
     }
 }

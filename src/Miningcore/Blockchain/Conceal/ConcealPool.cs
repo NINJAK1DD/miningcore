@@ -143,6 +143,11 @@ public class ConcealPool : PoolBase
                 // log association
                 logger.Info(() => $"[{connection.ConnectionId}] Authorized worker (identity withheld)");
             }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
             finally { assignmentGate.Release(); }
         }
 
@@ -195,6 +200,11 @@ public class ConcealPool : PoolBase
 
             // respond
             await connection.RespondAsync(response);
+        }
+        catch(Exception ex)
+        {
+            FailAssignmentPublication(connection, ex, ct);
+            throw;
         }
         finally { assignmentGate.Release(); }
     }
@@ -272,10 +282,6 @@ public class ConcealPool : PoolBase
                 if((job = context.GetJob(jobId)) == null)
                     throw new StratumException(StratumError.MinusOne, "invalid jobid");
             }
-
-            // dupe check
-            if(!job.Submissions.TryAdd(submitRequest.Nonce, true))
-                throw new StratumException(StratumError.MinusOne, "duplicate share");
 
             // submit
             var share = await manager.SubmitShareAsync(connection, submitRequest, job, ct);
@@ -405,6 +411,9 @@ public class ConcealPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
         var context = connection.ContextAs<ConcealWorkerContext>();
 

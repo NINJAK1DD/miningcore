@@ -10,13 +10,13 @@ namespace Miningcore.Blockchain.Ethereum;
 
 public class EthereumJob
 {
-    internal EthereumJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+    internal EthereumJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
             var result = (EthereumJob) MemberwiseClone();
             result.Id = id;
             return result;
-        }, Id);
+        }, Id, nextJobId);
 
     public EthereumJob(string id, EthereumBlockTemplate blockTemplate, ILogger logger, IEthashLight ethash)
     {
@@ -64,12 +64,9 @@ public class EthereumJob
     public virtual async Task<SubmitResult> ProcessShareAsync(StratumConnection worker,
         string workerName, string fullNonceHex, string solution, CancellationToken ct)
     {
-        // dupe check
         lock(workerNonces)
-        {
-            RegisterNonce(worker, fullNonceHex);
-        }
-
+            if(workerNonces.TryGetValue(worker.ConnectionId, out var nonces) && nonces.Contains(fullNonceHex.ToLowerInvariant()))
+                throw new StratumException(StratumError.MinusOne, "duplicate share");
         var context = worker.ContextAs<EthereumWorkerContext>();
 
         if(!ulong.TryParse(fullNonceHex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var fullNonce))
@@ -101,6 +98,10 @@ public class EthereumJob
             IsBlockCandidate = isBlockCandidate,
             Difficulty = stratumDifficulty * EthereumConstants.Pow2x32
         };
+
+        // Commit only validated proofs, before returning to candidate RPC/accounting.
+        lock(workerNonces)
+            RegisterNonce(worker, fullNonceHex);
 
         if(share.IsBlockCandidate)
         {

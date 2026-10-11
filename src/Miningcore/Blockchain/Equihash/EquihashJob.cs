@@ -20,7 +20,7 @@ namespace Miningcore.Blockchain.Equihash;
 
 public class EquihashJob
 {
-    internal EquihashJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+    internal EquihashJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
             var result = (EquihashJob) MemberwiseClone();
@@ -31,7 +31,7 @@ public class EquihashJob
                 result.jobParams[0] = id;
             }
             return result;
-        }, JobId);
+        }, JobId, nextJobId);
 
     protected IMasterClock clock;
     protected static IHashAlgorithm headerHasher = new Sha256D();
@@ -427,6 +427,13 @@ public class EquihashJob
         return submissions.TryAdd(key, true);
     }
 
+    private bool IsDuplicateSubmit(string nonce, string solution)
+    {
+        var key = nonce + solution;
+
+        return submissions.ContainsKey(key);
+    }
+
     #region API-Surface
 
     public virtual void Init(EquihashBlockTemplate blockTemplate, string jobId,
@@ -582,10 +589,13 @@ public class EquihashJob
             throw new StratumException(StratumError.Other, "incorrect size of solution");
 
         // dupe check
+        if(IsDuplicateSubmit(nonce, solution))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, nonce, nTimeInt, solution);
         if(!RegisterSubmit(nonce, solution))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
 
-        return ProcessShareInternal(worker, nonce, nTimeInt, solution);
+        return result;
     }
 
     public virtual object GetJobParams(bool isNew)

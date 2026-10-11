@@ -29,7 +29,7 @@ public class BeamJob
             var result = (BeamJob) MemberwiseClone();
             result.JobId = id;
             return result;
-        }, JobId);
+        }, JobId, preserveId: true);
 
     protected IMasterClock clock;
     protected BeamCoinTemplate coin;
@@ -92,6 +92,13 @@ public class BeamJob
         return submissions.TryAdd(key, true);
     }
 
+    private bool IsDuplicateSubmit(string nonce, string solution)
+    {
+        var key = nonce + solution;
+
+        return submissions.ContainsKey(key);
+    }
+
     #region API-Surface
 
     public void Init(BeamBlockTemplate blockTemplate, string jobId,
@@ -137,11 +144,15 @@ public class BeamJob
         if(solution.Length != BeamConstants.SolutionSize)
             return (new Share {}, null, BeamConstants.BeamRpcShareBadSolution);
 
-        // dupe check
+        if(IsDuplicateSubmit(nonce, solution))
+            return (new Share {}, null, BeamConstants.BeamRpcDuplicateShare);
+        var result = ProcessShareInternal(worker, nonce, solution);
+        if(result.stratumError != BeamConstants.BeamRpcShareAccepted)
+            return result;
         if(!RegisterSubmit(nonce, solution))
             return (new Share {}, null, BeamConstants.BeamRpcDuplicateShare);
 
-        return ProcessShareInternal(worker, nonce, solution);
+        return result;
     }
     
     public object[] GetJobParamsForStratum()

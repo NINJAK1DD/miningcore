@@ -17,7 +17,7 @@ namespace Miningcore.Blockchain.Warthog;
 
 public class WarthogJob
 {
-    internal WarthogJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+    internal WarthogJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
             var result = (WarthogJob) MemberwiseClone();
@@ -28,7 +28,7 @@ public class WarthogJob
                 result.jobParams[0] = id;
             }
             return result;
-        }, JobId);
+        }, JobId, nextJobId);
 
     protected IMasterClock clock;
     protected readonly IHashAlgorithm sha256S = new Sha256S();
@@ -301,6 +301,18 @@ public class WarthogJob
         return submissions.TryAdd(key, true);
     }
 
+    protected virtual bool IsDuplicateSubmit(string extraNonce1, string extraNonce2, string nTime, string nonce)
+    {
+        var key = new StringBuilder()
+            .Append(extraNonce1)
+            .Append(extraNonce2) // lowercase as we don't want to accept case-sensitive values as valid.
+            .Append(nTime)
+            .Append(nonce) // lowercase as we don't want to accept case-sensitive values as valid.
+            .ToString();
+
+        return submissions.ContainsKey(key);
+    }
+
     public virtual (Share Share, string HeaderHex) ProcessShare(StratumConnection worker,
         string extraNonce2, string nTime, string nonce)
     {
@@ -325,10 +337,13 @@ public class WarthogJob
         var nonceInt = uint.Parse(nonce, NumberStyles.HexNumber);
 
         // dupe check
+        if(IsDuplicateSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt);
         if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce))
             throw new StratumException(StratumError.DuplicateShare, "duplicate");
 
-        return ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt);
+        return result;
     }
 
     #endregion // API-Surface

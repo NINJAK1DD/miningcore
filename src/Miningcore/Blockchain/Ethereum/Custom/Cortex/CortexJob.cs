@@ -78,12 +78,9 @@ public class CortexJob : EthereumJob
     public override async Task<SubmitResult> ProcessShareAsync(StratumConnection worker,
         string workerName, string fullNonceHex, string solution, CancellationToken ct)
     {
-        // dupe check
         lock(workerNonces)
-        {
-            RegisterNonce(worker, fullNonceHex);
-        }
-
+            if(workerNonces.TryGetValue(worker.ConnectionId, out var nonces) && nonces.Contains(fullNonceHex.ToLowerInvariant()))
+                throw new StratumException(StratumError.MinusOne, "duplicate share");
         var context = worker.ContextAs<EthereumWorkerContext>();
 
         if(!ulong.TryParse(fullNonceHex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var fullNonce))
@@ -120,6 +117,10 @@ public class CortexJob : EthereumJob
             IsBlockCandidate = isBlockCandidate,
             Difficulty = stratumDifficulty * EthereumConstants.Pow2x32
         };
+
+        // Commit only validated proofs, before returning to candidate RPC/accounting.
+        lock(workerNonces)
+            RegisterNonce(worker, fullNonceHex);
 
         if(share.IsBlockCandidate)
         {

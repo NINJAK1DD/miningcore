@@ -1,6 +1,4 @@
-using System.Collections.Concurrent;
 using System.Globalization;
-using System.Text;
 using Miningcore.Stratum;
 using NLog;
 using Contract = Miningcore.Contracts.Contract;
@@ -22,19 +20,6 @@ public class ProgpowWorkerJob
     public string Bits { get; set; }
     public string SeedHash { get; set; }
 
-    private readonly ConcurrentDictionary<string, bool> submissions = new(StringComparer.OrdinalIgnoreCase);
-
-    private bool RegisterSubmit(string nonce, string headerHash, string mixHash)
-    {
-        var key = new StringBuilder()
-            .Append(nonce) // lowercase as we don't want to accept case-sensitive values as valid.
-            .Append(headerHash)
-            .Append(mixHash)
-            .ToString();
-
-        return submissions.TryAdd(key, true);
-    }
-
     public (Share Share, string BlockHex) ProcessShare(ILogger logger, StratumConnection worker, string nonce, string headerHash, string mixHash)
     {
         Contract.RequiresNonNull(worker);
@@ -54,13 +39,13 @@ public class ProgpowWorkerJob
         if(nonce.IndexOf(context.ExtraNonce1[0..4], StringComparison.OrdinalIgnoreCase) != 0)
             throw new StratumException(StratumError.Other, $"nonce out of range: {nonce}");
 
-        // dupe check
-        if(!RegisterSubmit(nonce, headerHash, mixHash) ||
-           !Job.RegisterWorkerProof(context.ExtraNonce1, nonce, headerHash, mixHash))
+        if(Job.IsDuplicateWorkerProof(context.ExtraNonce1, nonce, headerHash, mixHash))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
-
         var nonceLong = ulong.Parse(nonce, NumberStyles.HexNumber);
 
-        return Job.ProcessShareInternal(logger, worker, nonceLong, headerHash, mixHash);
+        var result = Job.ProcessShareInternal(logger, worker, nonceLong, headerHash, mixHash);
+        if(!Job.RegisterWorkerProof(context.ExtraNonce1, nonce, headerHash, mixHash))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        return result;
     }
 }

@@ -31,7 +31,7 @@ public class HandshakeTransactionOutput
 
 public class HandshakeJob
 {
-    internal HandshakeJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+    internal HandshakeJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
             var result = (HandshakeJob) MemberwiseClone();
@@ -42,7 +42,7 @@ public class HandshakeJob
                 result.jobParams[0] = id;
             }
             return result;
-        }, JobId);
+        }, JobId, nextJobId);
 
     protected IHashAlgorithm blockHasher;
     protected IMasterClock clock;
@@ -756,6 +756,18 @@ public class HandshakeJob
         return submissions.TryAdd(key, true);
     }
 
+    protected virtual bool IsDuplicateSubmit(string extraNonce1, string extraNonce2, string nTime, string nonce)
+    {
+        var key = new StringBuilder()
+            .Append(extraNonce1)
+            .Append(extraNonce2) // lowercase as we don't want to accept case-sensitive values as valid.
+            .Append(nTime)
+            .Append(nonce) // lowercase as we don't want to accept case-sensitive values as valid.
+            .ToString();
+
+        return submissions.ContainsKey(key);
+    }
+
     public virtual (Share Share, string BlockHex) ProcessShare(StratumConnection worker,
         string extraNonce2, string nTime, string nonce)
     {
@@ -780,10 +792,13 @@ public class HandshakeJob
         var nonceInt = uint.Parse(nonce, NumberStyles.HexNumber);
 
         // dupe check
+        if(IsDuplicateSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt);
         if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce))
             throw new StratumException(StratumError.DuplicateShare, "duplicate");
 
-        return ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt);
+        return result;
     }
 
     #endregion // API-Surface
