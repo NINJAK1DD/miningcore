@@ -63,13 +63,15 @@ entries. Generic snapshot metadata uses weak keys; active job count and eviction
 still come from each existing worker registry. Difficulty changes do not renew
 job age, clean-job, authorization or reconnect eligibility.
 
-Pending difficulty is applied before taking the worker snapshot. Canonical
-Bitcoin tracks the successfully enqueued difficulty and sends an outstanding
-minimum-difficulty change before its next job broadcast. This supports repeated
-[BIP 310 minimum-difficulty requests](https://bips.dev/310/) without issuing
-new work at a target the miner has not received. The broader immediate
-configure-notification behavior remains tracked in
-[#211](https://github.com/NINJAK1DD/miningcore/issues/211).
+Pending difficulty is applied before taking the worker snapshot. Static
+authorization changes in Bitcoin, Handshake, Nexa, Progpow and Satoshicash
+publish replacement work immediately after the new target, under the assignment
+gate. Bitcoin, Nexa and Satoshicash suggested changes and Bitcoin
+[BIP 310 minimum-difficulty requests](https://bips.dev/310/) also publish
+replacement work without waiting for a template broadcast. Pre-subscription
+requests obtain their work during subscription; direct SOLO retains its
+authorization-aware publication boundary, and BLAKE2b retains its existing
+isolated publication and failure handling.
 
 Legacy Ethereum V1 submits only a header, Alephium's IceRiver compatibility
 path can submit only group identity with an incorrect job ID, and Kaspa's
@@ -104,11 +106,17 @@ candidates. The hash injection is a validator test, not daemon consensus evidenc
 The canonical Bitcoin TCP tests use real Bitcoin Core templates and SHA256d
 non-block proofs. Static authorization, a NiceHash TCP client with a controlled
 API lookup, and minimum configuration follow an
-issued dynamic assignment. They verify original credit through the production
+issued dynamic assignment. They require immediate replacement work without a
+template broadcast and an ordinary current proof after retired work expires.
+They verify original credit through the production
 PPS recorder and PostgreSQL, reject below-target current work, reject duplicate
 aliases and expired proofs, replay the accepted accounting envelope and reject
 an old job after reconnect. Native CryptoNight cases cover fixed increases and
-original PROP/PPLNS reward weights. The documented BLAKE2b Knots tests continue
+original PROP/PPLNS reward weights. Concrete Kaspa, Astrix, Karlsen, Spectre and
+Waglayla validators verify original credit with the family share multiplier,
+including proofs exceeding the new target, expiry and shared duplicate rejection.
+Their final hashes are controlled accounting vectors, not consensus evidence.
+The documented BLAKE2b Knots tests continue
 to exercise immutable targets and SOLO/PPS/PROP/PPLNS settlement.
 
 Use the documented persistent Ubuntu lab on the development machine, or CI's
@@ -129,9 +137,10 @@ dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --no-restore
 python3 scripts/release/test-native-family-evidence.py --self-test build/test-lab/difficulty-grace.trx
 ```
 
-The TRX guard requires all 80 native/daemon/credit cases exactly once and passed,
+The TRX guard requires all 90 native/daemon/credit cases exactly once and passed,
 including the fixed-increase proofs, three canonical grace proofs and six BLAKE2b
-settlement cases. It rejects missing, duplicate, skipped or failed results.
+settlement cases and ten concrete Kaspa-family credit vectors. It rejects
+missing, duplicate, skipped or failed results.
 Skipped live tests are not evidence of accepted proofs or durable credit. Tests
 do not change host time, production wallets or existing database tables. The lab
 establishes daemon, native proof and accounting behavior; physical miner firmware

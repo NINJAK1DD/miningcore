@@ -107,6 +107,8 @@ public class HandshakePool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
                     await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                    if(context.IsSubscribed)
+                        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
                 }
             }
             finally { assignmentGate.Release(); }

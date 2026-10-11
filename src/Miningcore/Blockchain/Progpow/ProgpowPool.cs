@@ -178,6 +178,8 @@ public class ProgpowPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
                     await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
+                    if(context.IsSubscribed)
+                        await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
                 }
             }
             finally { assignmentGate.Release(); }

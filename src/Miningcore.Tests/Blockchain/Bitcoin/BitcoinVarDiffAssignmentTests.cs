@@ -57,12 +57,10 @@ public partial class BitcoinPublicationFailureTests
         Assert.Equal("mining.notify", (await wire.ReadAsync())["method"].Value<string>());
         if(!authorize)
             Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
-        if(authorize)
-        {
-            var fixedMessage = await wire.ReadAsync();
-            Assert.Equal("mining.set_difficulty", fixedMessage["method"].Value<string>());
-            Assert.Equal(3, fixedMessage["params"][0].Value<double>());
-        }
+        var fixedMessage = await wire.ReadAsync();
+        Assert.Equal("mining.set_difficulty", fixedMessage["method"].Value<string>());
+        Assert.Equal(3, fixedMessage["params"][0].Value<double>());
+        Assert.Equal("mining.notify", (await wire.ReadAsync())["method"].Value<string>());
         await wire.SendRequestAsync("mining.extranonce.subscribe"); // FIFO fence against stale publication.
         Assert.True((await wire.ReadAsync())["result"].Value<bool>());
         Assert.Null(wire.Connection.Context.VarDiff);

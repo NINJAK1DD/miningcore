@@ -53,7 +53,8 @@ public partial class BitcoinPublicationRegtestTests
         manager.SetTemplate(template, destination);
         await using var ledger = await PpsLedger.CreateAsync(config, bus);
         var time = new ManualTimeProvider();
-        var options = new VarDiffConfig { MinDiff = 1e-10, MaxDiff = 1e-8, TargetTime = 10, RetargetTime = 5, VariancePercent = 1 };
+        const double fixedDifficulty = 3e-10; // Below regtest's block target, allowing ordinary current proofs.
+        var options = new VarDiffConfig { MinDiff = 1e-10, MaxDiff = fixedDifficulty, TargetTime = 10, RetargetTime = 5, VariancePercent = 1 };
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
             canonical: true, difficulty: 1e-10, varDiff: options, varDiffTimeProvider: time);
         // Control the external API result; the TCP subscription still commits
@@ -73,36 +74,37 @@ public partial class BitcoinPublicationRegtestTests
         var ntime = template.CurTime.ToStringHex8();
         const string extranonce2 = "00000000000000";
         var nonces = new List<string>();
-        for(uint i = 0; i < 10000 && nonces.Count < 4; i++)
+        string currentNonce = null;
+        for(uint i = 0; i < 10000 && (nonces.Count < 4 || currentNonce == null); i++)
         {
             try
             {
                 var candidate = i.ToStringHex8();
                 var share = probe.ProcessShare(wire.Connection, extranonce2, ntime, candidate, "00000000").Share;
-                if(!share.IsBlockCandidate && share.ShareDifficulty < 1e-8 * 0.99)
+                if(!share.IsBlockCandidate && share.ShareDifficulty < fixedDifficulty * 0.99 && nonces.Count < 4)
                     nonces.Add(candidate);
+                else if(!share.IsBlockCandidate && share.ShareDifficulty >= fixedDifficulty)
+                    currentNonce ??= candidate;
             }
             catch(StratumException ex) when(ex.Code == StratumError.LowDifficultyShare) { }
         }
         Assert.Equal(4, nonces.Count);
+        Assert.NotNull(currentNonce);
         if(minimum)
         {
             await wire.SendRequestAsync("mining.configure", new[] { "minimum-difficulty" },
-                new Dictionary<string, object> { ["minimum-difficulty.value"] = 1e-8 });
+                new Dictionary<string, object> { ["minimum-difficulty.value"] = fixedDifficulty });
             Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
         }
         else
         {
-            await wire.SendRequestAsync("mining.authorize", destination + ".worker", "d=0.00000001");
+            await wire.SendRequestAsync("mining.authorize", destination + ".worker", "d=0.0000000003");
             Assert.True((await wire.ReadAsync())["result"].Value<bool>());
-            Assert.Equal(1e-8, (await wire.ReadAsync())["params"][0].Value<double>());
         }
-        Assert.Null(context.VarDiff);
-        // Normal broadcast reissues the same template with the fixed target.
-        await wire.Canonical.Announce(manager.ProbeJob().GetJobParams(false));
-        if(minimum)
-            Assert.Equal(1e-8, (await wire.ReadAsync())["params"][0].Value<double>());
+        // No template broadcast: the assignment itself must supply replacement work.
+        Assert.Equal(fixedDifficulty, (await wire.ReadAsync())["params"][0].Value<double>());
         var currentNotice = await wire.ReadAsync();
+        Assert.Null(context.VarDiff);
         Assert.Equal("mining.notify", currentNotice["method"].Value<string>());
         var currentId = currentNotice["params"][0].Value<string>();
         Assert.NotEqual(oldId, currentId);
@@ -120,13 +122,20 @@ public partial class BitcoinPublicationRegtestTests
         await ledger.Recorder.PersistSharesAsync(new[] { ledger.Accepted });
         await ledger.AssertSingleCreditAsync();
         Assert.Equal(1, context.Stats.ValidShares);
+        Assert.True((await Submit(currentId, currentNonce))["result"].Value<bool>());
+        Assert.False(ledger.Accepted.IsBlockCandidate);
+        Assert.Equal(fixedDifficulty / coin.ShareMultiplier, ledger.Accepted.Difficulty);
+        await ledger.AssertSingleCreditAsync(2);
+        await ledger.Recorder.PersistSharesAsync(new[] { ledger.Accepted });
+        await ledger.AssertSingleCreditAsync(2);
+        Assert.Equal(2, context.Stats.ValidShares);
         Assert.False(wire.Connection.IsDisconnectRequested);
         await using var replacement = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
-            sharedPool: wire, canonical: true, difficulty: 1e-8);
+            sharedPool: wire, canonical: true, difficulty: fixedDifficulty);
         await HandshakeAsync(replacement, destination.ToString(), false);
         var rejected = await replacement.RequestAsync("mining.submit", destination + ".worker", oldId,
             extranonce2, ntime, nonces[3], "00000000");
         Assert.NotNull(rejected["error"]);
-        await ledger.AssertSingleCreditAsync();
+        await ledger.AssertSingleCreditAsync(2);
     }
 }

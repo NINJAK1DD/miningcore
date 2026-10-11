@@ -160,6 +160,52 @@ public class PoolFamilyAssignmentTests : TestBase
         Assert.Equal(55, worker.Difficulty);
     }
 
+    [Theory]
+    [InlineData("Bitcoin")]
+    [InlineData("Handshake")]
+    [InlineData("Nexa")]
+    [InlineData("Progpow")]
+    [InlineData("Satoshicash")]
+    public async Task StaticAuthorization_PublishesReplacementWithoutTemplateBroadcast(string family)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        // Issue subscription-era work, then authorize at a different assignment.
+        await fixture.Broadcast();
+        await fixture.Flush();
+        var oldNotice = fixture.Messages.Last(m => m["method"]?.Value<string>() == "mining.notify");
+        fixture.Connection.Context.IsAuthorized = false;
+        fixture.Messages.Clear();
+        await fixture.Authorize();
+        await fixture.Flush();
+        fixture.AssertFinalWireAssignment();
+        var replacement = Assert.Single(fixture.Messages.Where(m => m["method"]?.Value<string>() == "mining.notify"));
+        Assert.NotEqual(oldNotice["params"][0].Value<string>(), replacement["params"][0].Value<string>());
+        var targetIndex = fixture.Messages.FindLastIndex(m => m["method"]?.Value<string>() is "mining.set_difficulty" or "mining.set_target");
+        Assert.True(fixture.Messages.IndexOf(replacement) > targetIndex);
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
+    [Theory]
+    [InlineData("Bitcoin")]
+    [InlineData("Nexa")]
+    [InlineData("Satoshicash")]
+    public async Task SuggestedDifficulty_PublishesReplacementWithoutTemplateBroadcast(string family)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        var oldNotice = fixture.Messages.Last(m => m["method"]?.Value<string>() == "mining.notify");
+        fixture.Messages.Clear();
+        await fixture.SuggestDifficulty();
+        fixture.AssertOneSuccess(2);
+        fixture.AssertFinalWireAssignment();
+        var replacement = Assert.Single(fixture.Messages.Where(m => m["method"]?.Value<string>() == "mining.notify"));
+        Assert.NotEqual(oldNotice["params"][0].Value<string>(), replacement["params"][0].Value<string>());
+        var targetIndex = fixture.Messages.FindLastIndex(m => m["method"]?.Value<string>() == "mining.set_difficulty");
+        Assert.True(fixture.Messages.IndexOf(replacement) > targetIndex);
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
     [Fact]
     public void ConcreteFamilyMatrix_CoversEveryGenericCoinFamilyPool()
     {
@@ -500,6 +546,8 @@ public class PoolFamilyAssignmentTests : TestBase
         }
 
         internal Task Idle() => (Task) Invoke(Pool, "UpdateVarDiffAsync", Connection, true, stop.Token);
+        internal Task SuggestDifficulty() => DispatchRequest(new JsonRpcRequest("mining.suggest_difficulty",
+            family == "Nexa" ? (object) 55d : new object[] { 55d }, 2));
         internal Task Authorize(CancellationToken? ct = null, double difficulty = 55)
         {
             var address = family switch

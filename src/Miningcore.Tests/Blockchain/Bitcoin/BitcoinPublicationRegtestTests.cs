@@ -215,14 +215,15 @@ public partial class BitcoinPublicationRegtestTests : TestBase
             }
         }
 
-        internal async Task AssertSingleCreditAsync()
+        internal async Task AssertSingleCreditAsync(int expectedCount = 1)
         {
-            Assert.Equal(1, await database.ExecuteScalarAsync<int>("SELECT count(*) FROM shares"));
-            Assert.Equal(1, await database.ExecuteScalarAsync<int>("SELECT count(*) FROM share_accounting_groups"));
-            Assert.Equal(1, await database.ExecuteScalarAsync<int>("SELECT count(*) FROM balance_changes"));
-            Assert.Equal(1, await database.ExecuteScalarAsync<int>("SELECT count(*) FROM pps_share_credits WHERE arithmeticversion=1"));
-            Assert.Equal(Accepted.PpsCalculatedAmount.Value, await database.ExecuteScalarAsync<decimal>(
-                "SELECT calculatedamount FROM pps_share_credits"));
+            Assert.Equal(expectedCount, await database.ExecuteScalarAsync<int>("SELECT count(*) FROM shares"));
+            Assert.Equal(expectedCount, await database.ExecuteScalarAsync<int>("SELECT count(*) FROM share_accounting_groups"));
+            Assert.Equal(expectedCount, await database.ExecuteScalarAsync<int>("SELECT count(*) FROM balance_changes"));
+            Assert.Equal(expectedCount, await database.ExecuteScalarAsync<int>("SELECT count(*) FROM pps_share_credits WHERE arithmeticversion=1"));
+            if(expectedCount == 1)
+                Assert.Equal(Accepted.PpsCalculatedAmount.Value, await database.ExecuteScalarAsync<decimal>(
+                    "SELECT calculatedamount FROM pps_share_credits"));
             Assert.True(await database.ExecuteScalarAsync<bool>(@"SELECT
                 (SELECT sum(calculatedamount) FROM pps_share_credits) =
                 (SELECT sum(creditedamount) FROM pps_share_credits) +

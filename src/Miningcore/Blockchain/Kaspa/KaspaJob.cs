@@ -309,7 +309,7 @@ public class KaspaJob
         {
             BlockHeight = (long) BlockTemplate.Header.DaaScore,
             NetworkDifficulty = Difficulty,
-            Difficulty = context.Difficulty / shareMultiplier
+            Difficulty = stratumDifficulty / shareMultiplier
         };
 
         if(isBlockCandidate)

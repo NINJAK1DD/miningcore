@@ -165,6 +165,8 @@ public class NexaPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
                     await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                    if(context.IsSubscribed)
+                        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
                 }
             }
             finally { assignmentGate.Release(); }
@@ -312,6 +314,8 @@ public class NexaPool : PoolBase
                 {
                     context.SetDifficulty(requestedDiff);
                     await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                    if(context.IsSubscribed)
+                        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
 
                     logger.Info(() => $"[{connection.ConnectionId}] Difficulty set to {requestedDiff} as requested by miner");
                 }

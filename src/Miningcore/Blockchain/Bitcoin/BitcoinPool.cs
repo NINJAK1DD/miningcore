@@ -308,7 +308,17 @@ public class BitcoinPool : PoolBase
             logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
             await NotifyAssignedDifficultyAsync(connection);
+            // Direct SOLO publishes after the payout authorization is committed.
+            if(!manager.DirectCoinbasePayoutEnabled)
+                await PublishReplacementAssignmentAsync(connection);
         }
+    }
+
+    protected virtual async Task PublishReplacementAssignmentAsync(StratumConnection connection)
+    {
+        var context = connection.ContextAs<BitcoinWorkerContext>();
+        if(context.IsSubscribed && (!manager.DirectCoinbasePayoutEnabled || context.IsAuthorized))
+            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
     }
 
     protected virtual Task<bool> ValidateWorkerAsync(BitcoinWorkerContext context,
@@ -564,6 +574,7 @@ public class BitcoinPool : PoolBase
         {
             context.SetDifficulty(requestedDiff.Value);
             await NotifyAssignedDifficultyAsync(connection);
+            await PublishReplacementAssignmentAsync(connection);
 
             logger.Info(() => $"[{connection.ConnectionId}] Difficulty set to {requestedDiff} as requested by miner");
         }
@@ -576,6 +587,7 @@ public class BitcoinPool : PoolBase
         var context = connection.ContextAs<BitcoinWorkerContext>();
 
         var requestParams = request.ParamsAs<JToken[]>();
+        var previousDifficulty = context.Difficulty;
         var extensions = requestParams[0].ToObject<string[]>();
         var extensionParams = requestParams[1].ToObject<Dictionary<string, JToken>>();
         var result = new Dictionary<string, object>();
@@ -609,6 +621,16 @@ public class BitcoinPool : PoolBase
         }
 
         await connection.RespondAsync(response);
+        if(context.Difficulty != previousDifficulty)
+            await NotifyConfiguredAssignmentAsync(connection);
+    }
+
+    protected virtual async Task NotifyConfiguredAssignmentAsync(StratumConnection connection)
+    {
+        if(!connection.Context.IsSubscribed)
+            return;
+        await NotifyAssignedDifficultyAsync(connection);
+        await PublishReplacementAssignmentAsync(connection);
     }
 
     private void ConfigureVersionRolling(StratumConnection connection, BitcoinWorkerContext context,

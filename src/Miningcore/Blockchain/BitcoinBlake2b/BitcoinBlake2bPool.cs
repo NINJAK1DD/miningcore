@@ -661,6 +661,10 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         finally { gate.Release(); }
     }
 
+    // CompleteAssignmentAsync owns publication and terminal cleanup for this family.
+    protected override Task PublishReplacementAssignmentAsync(StratumConnection connection) => Task.CompletedTask;
+    protected override Task NotifyConfiguredAssignmentAsync(StratumConnection connection) => Task.CompletedTask;
+
     // An omitted/null parameter list is an empty subscription, just like [].
     // Reject nested containers before the inherited string-array conversion.
     private static bool IsValidSubscribe(object parameters) =>
