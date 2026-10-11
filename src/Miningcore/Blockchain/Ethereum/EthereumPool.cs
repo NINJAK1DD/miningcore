@@ -188,7 +188,7 @@ public class EthereumPool : PoolBase
     private EthereumJob CreateWorkerJob(StratumConnection connection)
     {
         var context = connection.ContextAs<EthereumWorkerContext>();
-        var job = manager.GetJobForStratum();
+        var job = (EthereumJob) manager.GetJobForStratum().ForWorker(context);
 
         // update context
         lock(context)

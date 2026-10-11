@@ -23,6 +23,14 @@ namespace Miningcore.Blockchain.Beam;
 
 public class BeamJob
 {
+    internal BeamJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (BeamJob) MemberwiseClone();
+            result.JobId = id;
+            return result;
+        }, JobId);
+
     protected IMasterClock clock;
     protected BeamCoinTemplate coin;
     
@@ -51,32 +59,14 @@ public class BeamJob
         
         // calc share-diff
         var shareDiff = (double) new BigRational(BeamConstants.BigMaxValue, solutionHashValue);
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
         
         //throw new StratumException(StratumError.Other, $"Job difficulty: {BlockTemplate.Difficulty}, Job packed difficulty: {BlockTemplate.PackedDifficulty}, stratum difficulty: {stratumDifficulty}, shareDiff: {shareDiff}, BigMaxValue: {BeamConstants.BigMaxValue}, solutionHashValue: {solutionHashValue}");
         
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = shareDiff >= BlockTemplate.Difficulty;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    return (new Share { Difficulty = shareDiff }, null, BeamConstants.BeamRpcLowDifficultyShare);
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                return (new Share { Difficulty = shareDiff }, null, BeamConstants.BeamRpcLowDifficultyShare);
-        }
+        if(!context.TryValidateShareDifficulty(shareDiff, isBlockCandidate, this, out var stratumDifficulty))
+            return (new Share { Difficulty = shareDiff }, null, BeamConstants.BeamRpcLowDifficultyShare);
 
         var result = new Share
         {

@@ -22,6 +22,17 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased: in-flight difficulty assignments
+
+Static/NiceHash and minimum-difficulty assignments preserve original credit for
+retained generic jobs for less than 30 monotonic seconds. Newly issued work has
+its own target and job ID; duplicate proofs remain shared across IDs. BLAKE2b
+keeps its exact immutable assigned-target contract. Canonical Bitcoin publishes
+an outstanding minimum target before its next job. See the
+[issued-difficulty policy](difficulty-assignment-grace.md) for expiry, legacy
+header/group-only protocol limits, live tests and custom integration changes.
+No database or relay migration is required. Reconnect workers during rollout.
+
 ## Unreleased: Handshake difficulty notification and CryptoNote-family targets
 
 Handshake static-difficulty authorization now sends `mining.set_difficulty` under

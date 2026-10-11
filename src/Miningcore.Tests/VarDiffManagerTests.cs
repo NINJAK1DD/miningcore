@@ -251,7 +251,18 @@ public class VarDiffManagerTests
     [InlineData(10d, 10d, double.PositiveInfinity)]
     public void InvalidArithmeticInputs_ProduceNoRetarget(double difficulty, double target, double maximum)
     {
-        var (context, options, clock, time) = Fixture(difficulty);
+        var (context, options, clock, time) = Fixture();
+        if(double.IsFinite(difficulty))
+            context.SetDifficulty(difficulty);
+        else
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => context.SetDifficulty(difficulty));
+            // Simulate corrupted legacy state past the new assignment guard so
+            // the manager's independent arithmetic defense remains covered.
+            typeof(WorkerContextBase).GetField("difficulty",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                .SetValue(context, difficulty);
+        }
         options.TargetTime = target;
         Assert.Null(VarDiffManager.Update(context, options, clock, maximum));
         Assert.Null(context.VarDiff.LastUpdate);

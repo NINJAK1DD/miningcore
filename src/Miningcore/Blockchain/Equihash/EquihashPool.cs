@@ -253,7 +253,7 @@ public class EquihashPool : PoolBase
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
         var context = connection.ContextAs<EquihashWorkerContext>();
-        var job = manager.GetJobForStratum();
+        var job = (EquihashJob) manager.GetJobForStratum().ForWorker(context);
 
         // update context
         lock(context)
@@ -450,11 +450,11 @@ public class EquihashPool : PoolBase
         await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<EquihashWorkerContext>();
-            var minerJobParams = CreateWorkerJob(connection, cleanJob);
-
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(EquihashStratumMethods.SetTarget, new object[] { EncodeTarget(context.Difficulty) });
+
+            var minerJobParams = CreateWorkerJob(connection, cleanJob);
 
             // send job
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);

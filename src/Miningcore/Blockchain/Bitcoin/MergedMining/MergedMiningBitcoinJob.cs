@@ -112,25 +112,11 @@ public class MergedMiningBitcoinJob : BitcoinJob
 
         var headerValue = new uint256(headerHash);
         var shareDiff = (double) new BigRational(BitcoinConstants.Diff1, headerHash.ToBigInteger()) * shareMultiplier;
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
         var isParentBlockCandidate = headerValue <= blockTargetValue;
         var isAuxiliaryBlockCandidate = headerValue <= auxiliaryTargetValue;
 
-        if(!isParentBlockCandidate && !isAuxiliaryBlockCandidate && ratio < 0.99)
-        {
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isParentBlockCandidate || isAuxiliaryBlockCandidate, this);
 
         var share = new Share
         {

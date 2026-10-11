@@ -12,6 +12,19 @@ namespace Miningcore.Blockchain.Ergo;
 
 public class ErgoJob
 {
+    internal ErgoJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (ErgoJob) MemberwiseClone();
+            result.JobId = id;
+            if(result.jobParams != null)
+            {
+                result.jobParams = (object[]) result.jobParams.Clone();
+                result.jobParams[0] = id;
+            }
+            return result;
+        }, JobId);
+
     public WorkMessage BlockTemplate { get; private set; }
     public double Difficulty { get; private set; }
     public uint Height => BlockTemplate.Height;
@@ -138,30 +151,11 @@ public class ErgoJob
         var fhTarget = new Target(fh);
 
         // diff check
-        var stratumDifficulty = context.Difficulty;
-        var ratio = fhTarget.Difficulty / stratumDifficulty;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = fh < BlockTemplate.B;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = fhTarget.Difficulty / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({fhTarget.Difficulty})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({fhTarget.Difficulty})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(fhTarget.Difficulty, isBlockCandidate, this);
 
         var result = new Share
         {

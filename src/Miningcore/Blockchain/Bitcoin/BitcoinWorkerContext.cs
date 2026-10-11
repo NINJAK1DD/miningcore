@@ -19,6 +19,7 @@ public class BitcoinWorkerContext : WorkerContextBase
     private long acceptedProofSequence;
     private bool jobsClosed;
     private int duplicateSubscribeWarning;
+    internal double? AnnouncedDifficulty { get; set; }
 
     // One recoverable duplicate per TCP session. Authorization, shares and
     // difficulty changes must never reset this allowance.

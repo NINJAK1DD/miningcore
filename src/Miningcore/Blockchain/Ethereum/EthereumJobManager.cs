@@ -398,7 +398,9 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
         // stale?
         lock(context)
         {
-            job = context.validJobs.ToArray().FirstOrDefault(x => x.BlockTemplate.Header.Equals(header));
+            // Header-only V1 submissions cannot distinguish difficulty epochs of
+            // the same header. Enforce the most recently announced target.
+            job = context.validJobs.ToArray().LastOrDefault(x => x.BlockTemplate.Header.Equals(header));
 
             if(job == null)
                 throw new StratumException(StratumError.MinusOne, "stale share");

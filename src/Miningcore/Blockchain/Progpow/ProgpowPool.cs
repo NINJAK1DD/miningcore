@@ -204,6 +204,7 @@ public class ProgpowPool : PoolBase
         var job = new ProgpowWorkerJob(NextJobId(), context.ExtraNonce1);
 
         manager.PrepareWorkerJob(job, out var headerHash);
+        job.Job = (ProgpowJob) job.Job.ForWorker(context);
 
         var result = new object[]
         {
@@ -320,10 +321,10 @@ public class ProgpowPool : PoolBase
         {
             var context = connection.ContextAs<ProgpowWorkerContext>();
 
-            var minerJobParams = CreateWorkerJob(connection, cleanJobs);
-
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
+
+            var minerJobParams = CreateWorkerJob(connection, cleanJobs);
 
             // send job
             await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, minerJobParams);

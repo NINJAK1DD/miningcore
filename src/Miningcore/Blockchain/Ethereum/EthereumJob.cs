@@ -10,6 +10,14 @@ namespace Miningcore.Blockchain.Ethereum;
 
 public class EthereumJob
 {
+    internal EthereumJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (EthereumJob) MemberwiseClone();
+            result.Id = id;
+            return result;
+        }, Id);
+
     public EthereumJob(string id, EthereumBlockTemplate blockTemplate, ILogger logger, IEthashLight ethash)
     {
         Id = id;
@@ -26,7 +34,7 @@ public class EthereumJob
 
     protected Dictionary<string, HashSet<string>> workerNonces = new();
 
-    public string Id { get; }
+    public string Id { get; private set; }
     public EthereumBlockTemplate BlockTemplate { get; }
     protected uint256 blockTarget;
     protected ILogger logger;
@@ -79,27 +87,9 @@ public class EthereumJob
         var resultValue = new uint256(resultBytes);
         var resultValueBig = resultBytes.AsSpan().ToBigInteger();
         var shareDiff = (double) BigInteger.Divide(EthereumConstants.BigMaxValue, resultValueBig) / EthereumConstants.Pow2x32;
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
         var isBlockCandidate = resultValue <= blockTarget;
 
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var share = new Share
         {

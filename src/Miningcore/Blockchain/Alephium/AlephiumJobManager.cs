@@ -530,7 +530,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
                 // stupid hack for busted ass IceRiver ASICs. Need to loop
                 // through job using blockTemplate "FromGroup" & "ToGroup" because they submit jobs with incorrect IDs
                 if(ValidateIsIceRiverMiner(context.UserAgent))
-                    job = context.validJobs.ToArray().FirstOrDefault(x => x.BlockTemplate.FromGroup == submitParams.FromGroup && x.BlockTemplate.ToGroup == submitParams.ToGroup);
+                    job = context.validJobs.ToArray().LastOrDefault(x => x.BlockTemplate.FromGroup == submitParams.FromGroup && x.BlockTemplate.ToGroup == submitParams.ToGroup);
             }
 
             if(job == null)

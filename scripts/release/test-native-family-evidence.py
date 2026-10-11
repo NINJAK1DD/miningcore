@@ -14,6 +14,18 @@ HINT = "NativePool_DispatchedHintsKeepOneResponseAndValidWork"
 WAIT = "NativePool_DispatchedLoginWaitsBeforeAuthorizing"
 FRACTIONAL = "NativePool_DispatchedFractionalHintPublishesIntegerCredit"
 FRACTIONAL_PROOF = "NativeProof_FractionalAssignmentUsesRoundedCredit"
+FIXED_PROOF = "NativeProof_FixedIncreaseAfterDynamicAssignmentKeepsOriginalCredit"
+LIVE_FACTS = (
+    "StaticDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit",
+    "MinimumDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit",
+    "NiceHashDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit",
+    "HeaderV2_RealStratumPpsProof_CommitsExactlyOnceToPostgres",
+    "HeaderV2_AcceptedProofSurvivesTerminalVarDiffPublicationFailure",
+    "HeaderV2_ZeroIntervalVarDiffPreservesAcceptedProofAndConnection",
+    "HeaderV2_ZeroIntervalVarDiffHonorsMaxDeltaAfterAcceptedProof",
+    "HeaderV2_ForwardWallCorrectionPreservesMonotonicVarDiffAndAcceptedCredit",
+    "HeaderV2_BackwardWallCorrectionPreservesMonotonicVarDiffAndAcceptedCredit",
+)
 PATHS = (("Conceal", "login"), ("Cryptonote", "login"), ("Zano", "login"),
          ("Zano", "eth_submitLogin"), ("Zano", "mining.authorize"))
 EXPECTED = {
@@ -32,6 +44,8 @@ EXPECTED |= {(FRACTIONAL, family, (nicehash, hint)) for family in ("Conceal", "C
              for nicehash in ("False", "True") for hint in ("1.5", "1.99", "2.5")}
 EXPECTED |= {(FRACTIONAL_PROOF, family, hint) for family in ("Conceal", "Cryptonote")
              for hint in ("1.5", "1.99", "2.5")}
+EXPECTED |= {(FIXED_PROOF, family, nicehash) for family in ("Conceal", "Cryptonote") for nicehash in ("False", "True")}
+EXPECTED |= {(method, None, None) for method in LIVE_FACTS}
 
 
 def validate(root):
@@ -39,12 +53,15 @@ def validate(root):
     for result in root.iter(f"{{{NAMESPACE}}}UnitTestResult"):
         name = result.get("testName", "")
         method = name.split("(", 1)[0]
-        if method not in (CONTENTION, CANCELLATION, REQUEST, PROOF, HINT, WAIT, FRACTIONAL, FRACTIONAL_PROOF):
+        if method not in (CONTENTION, CANCELLATION, REQUEST, PROOF, HINT, WAIT, FRACTIONAL, FRACTIONAL_PROOF, FIXED_PROOF, *LIVE_FACTS):
             continue
         family = re.search(r'\bfamily:\s*"([^"\r\n]+)"', name)
         ordering = re.search(r"\binvalid:\s*([0-9.]+)\b", name) if method in (REQUEST, PROOF) else \
             re.search(r"\bidleOwnsGate:\s*(True|False)\b", name)
         value = ordering.group(1) if ordering else None
+        if method == FIXED_PROOF:
+            nicehash = re.search(r"\bnicehash:\s*(True|False)\b", name)
+            value = nicehash.group(1) if nicehash else None
         # xUnit can print 0.1 as the round-trip spelling 0.10000000000000001.
         # Compare the represented double, while still rejecting other values.
         if method in (REQUEST, PROOF) and value is not None:
@@ -74,6 +91,9 @@ def validate(root):
 def fixture():
     root = ET.Element(f"{{{NAMESPACE}}}TestRun")
     for method, family, ordering in sorted(EXPECTED, key=str):
+        if method in LIVE_FACTS:
+            ET.SubElement(root, f"{{{NAMESPACE}}}UnitTestResult", testName=method, outcome="Passed")
+            continue
         name = f'{method}(family: "{family}"'
         if method == HINT:
             protocol, nicehash, oversized = ordering
@@ -83,6 +103,8 @@ def fixture():
             name += f", nicehash: {nicehash}, hint: {hint}"
         elif method == FRACTIONAL_PROOF:
             name += f", hint: {ordering}"
+        elif method == FIXED_PROOF:
+            name += f", nicehash: {ordering}"
         elif method == WAIT:
             name += f', protocol: "{ordering}"'
         elif ordering is not None:
@@ -109,7 +131,8 @@ def self_test():
     ET.SubElement(root, root[0].tag, **root[0].attrib)
     invalid.append(root)
     root = fixture()
-    root[0].set("testName", root[0].get("testName").replace("Conceal", "RenamedFamily"))
+    renamed = next(result for result in root if "Conceal" in result.get("testName"))
+    renamed.set("testName", renamed.get("testName").replace("Conceal", "RenamedFamily"))
     invalid.append(root)
     invalid.append(ET.Element("TestRun"))
     for root in invalid:
@@ -133,7 +156,7 @@ def main():
             validate(ET.parse(args.trx).getroot())
         except (OSError, ET.ParseError, ValueError) as error:
             parser.exit(1, f"{error}\n")
-        print(f"All {len(EXPECTED)} required Linux-native family/credit cases executed and passed")
+        print(f"All {len(EXPECTED)} required native and live daemon/credit cases executed and passed")
     elif not args.self_test:
         parser.error("provide a TRX file or --self-test")
 

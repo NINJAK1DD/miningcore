@@ -137,6 +137,7 @@ public class CryptonoteJob
     public void PrepareWorkerJob(CryptonoteWorkerJob workerJob, out string blob, out string target)
     {
         CryptonoteDifficulty.ValidateShortAssignment(workerJob.Difficulty);
+        workerJob.DifficultyTemplate = this;
         workerJob.Height = BlockTemplate.Height;
         workerJob.ExtraNonce = (uint) Interlocked.Increment(ref extraNonce);
         workerJob.SeedHash = BlockTemplate.SeedHash;
@@ -188,28 +189,9 @@ public class CryptonoteJob
         // check difficulty
         var headerValue = headerHash.ToBigInteger();
         var shareDiff = (double) new BigRational(CryptonoteConstants.Diff1b, headerValue);
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
         var isBlockCandidate = shareDiff >= BlockTemplate.Difficulty;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, ((object) this, workerExtraNonce));
 
         var result = new Share
         {

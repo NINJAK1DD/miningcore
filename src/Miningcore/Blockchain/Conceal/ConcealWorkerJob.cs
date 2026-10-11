@@ -10,6 +10,7 @@ public class ConcealWorkerJob
         Difficulty = difficulty;
     }
 
+    internal object DifficultyTemplate { get; set; }
     public string Id { get; }
     public uint Height { get; set; }
     public uint ExtraNonce { get; set; }

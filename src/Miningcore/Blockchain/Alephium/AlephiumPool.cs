@@ -233,7 +233,7 @@ public class AlephiumPool : PoolBase
     {
         var context = connection.ContextAs<AlephiumWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
-        var job = manager.GetJobForStratum();
+        var job = (AlephiumJob) manager.GetJobForStratum().ForWorker(context);
 
         // update context
         lock(context)

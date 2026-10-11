@@ -32,7 +32,7 @@ using Xunit;
 namespace Miningcore.Tests.Blockchain.Bitcoin;
 
 [Collection(BitcoinCorePayoutIntegrationCollection.Name)]
-public class BitcoinPublicationRegtestTests : TestBase
+public partial class BitcoinPublicationRegtestTests : TestBase
 {
     [BitcoinCoreIntegrationFact]
     public Task CanonicalProof_RemainsAcceptedAfterPublicationFailureAndReconnect() => ExerciseAsync(false);
@@ -148,12 +148,13 @@ public class BitcoinPublicationRegtestTests : TestBase
         Assert.Single(replacement.Connection.ContextAs<BitcoinWorkerContext>().validJobs);
     }
 
-    private static async Task HandshakeAsync(BitcoinBlake2bWireSession wire, string miner, bool direct)
+    private static async Task HandshakeAsync(BitcoinBlake2bWireSession wire, string miner, bool direct,
+        string userAgent = "regtest-publication")
     {
         await wire.SendRequestAsync("mining.configure", new[] { "version-rolling" },
             new Dictionary<string, object> { ["version-rolling.mask"] = "1fffe000" });
         Assert.True((await wire.ReadAsync())["result"]["version-rolling"].Value<bool>());
-        await wire.SendRequestAsync("mining.subscribe", "regtest-publication");
+        await wire.SendRequestAsync("mining.subscribe", userAgent);
         Assert.NotNull((await wire.ReadAsync())["result"]);
         Assert.Equal("mining.set_difficulty", (await wire.ReadAsync())["method"].Value<string>());
         if(!direct)

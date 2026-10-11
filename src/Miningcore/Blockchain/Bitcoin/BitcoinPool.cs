@@ -42,6 +42,12 @@ public class BitcoinPool : PoolBase
     }
 
     protected BitcoinJobManager manager;
+    private async Task NotifyAssignedDifficultyAsync(StratumConnection connection)
+    {
+        var context = connection.ContextAs<BitcoinWorkerContext>();
+        await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+        context.AnnouncedDifficulty = context.Difficulty;
+    }
     private BitcoinTemplate coin;
     private int directJobPipelineFailed;
     private readonly ConditionalWeakTable<StratumConnection, PublicationFailureState> publicationFailures = new();
@@ -177,7 +183,7 @@ public class BitcoinPool : PoolBase
 
         // send initial update. Direct-SOLO work is withheld until the username
         // address has passed network-aware authorization.
-        await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+        await NotifyAssignedDifficultyAsync(connection);
         if(!manager.DirectCoinbasePayoutEnabled || context.IsAuthorized)
         {
             var minerJobParams = CreateWorkerJob(connection,
@@ -301,7 +307,7 @@ public class BitcoinPool : PoolBase
 
             logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
-            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+            await NotifyAssignedDifficultyAsync(connection);
         }
     }
 
@@ -355,7 +361,7 @@ public class BitcoinPool : PoolBase
                         "Direct SOLO worker has no payout authorization");
                 var directJob = manager.GetDirectJobForStratum(
                     authorization.Address, authorization.Destination,
-                    authorization.Generation);
+                    authorization.Generation).ForWorker(context);
 
                 if(context.TryAddDirectJob(directJob,
                        manager.maxActiveJobs))
@@ -366,7 +372,7 @@ public class BitcoinPool : PoolBase
                 "Direct SOLO payout authorization changed while assigning work");
         }
 
-        var job = manager.GetJobForStratum();
+        var job = (BitcoinJob) manager.GetJobForStratum().ForWorker(context);
         context.AddJob(job, manager.maxActiveJobs);
         return job.GetJobParams(cleanJob);
     }
@@ -557,7 +563,7 @@ public class BitcoinPool : PoolBase
         if(requestedDiff > poolEndpoint.Difficulty)
         {
             context.SetDifficulty(requestedDiff.Value);
-            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+            await NotifyAssignedDifficultyAsync(connection);
 
             logger.Info(() => $"[{connection.ConnectionId}] Difficulty set to {requestedDiff} as requested by miner");
         }
@@ -775,11 +781,12 @@ public class BitcoinPool : PoolBase
                 return;
             try
             {
-                var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
-
                 // varDiff: if the client has a pending difficulty change, apply it now
-                if(context.ApplyPendingDifficulty())
-                    await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                if(context.ApplyPendingDifficulty() ||
+                    context.AnnouncedDifficulty is { } announcedDifficulty && announcedDifficulty != context.Difficulty)
+                    await NotifyAssignedDifficultyAsync(connection);
+
+                var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
 
                 await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
             }
@@ -1099,7 +1106,7 @@ public class BitcoinPool : PoolBase
                 // A difficulty change preserves work from the current block.
                 var minerJobParams = CreateWorkerJob(connection, false);
 
-                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
+                await NotifyAssignedDifficultyAsync(connection);
                 await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
             }
             catch(OperationCanceledException ex) when(ex is StratumConnectionClosedException or BitcoinJobRegistryClosedException)

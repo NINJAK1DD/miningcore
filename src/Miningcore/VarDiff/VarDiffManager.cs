@@ -167,7 +167,7 @@ public static class VarDiffManager
 
         // A broken provider or poisoned history is not evidence of a faster miner.
         // Start a fresh measurement window; retain LastUpdate because no actual
-        // assignment changed (other families use it for previous-difficulty work).
+        // assignment changed; it is diagnostic metadata, not proof eligibility.
         ctx.LastShareTimestamp = ts;
         ctx.LastRetargetTimestamp = ts;
         ctx.TimeBuffer = null;

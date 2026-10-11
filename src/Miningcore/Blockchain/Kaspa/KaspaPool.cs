@@ -235,7 +235,7 @@ public class KaspaPool : PoolBase
     {
         var context = connection.ContextAs<KaspaWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
-        var job = manager.GetJobForStratum();
+        var job = (KaspaJob) manager.GetJobForStratum().ForWorker(context);
 
         // update context
         lock(context)
@@ -332,11 +332,11 @@ public class KaspaPool : PoolBase
         {
             var context = connection.ContextAs<KaspaWorkerContext>();
 
-            var minerJobParams = CreateWorkerJob(connection);
-
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(KaspaStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+
+            var minerJobParams = CreateWorkerJob(connection);
 
             await SendJob(connection, context, minerJobParams);
         }));
