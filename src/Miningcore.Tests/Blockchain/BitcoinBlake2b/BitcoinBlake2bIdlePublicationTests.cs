@@ -42,8 +42,8 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
         var options = new VarDiffConfig { MinDiff = 1e-9, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
         config.Ports[wire.Connection.LocalEndpoint.Port].VarDiff = options;
-        context.VarDiff = new VarDiffContext { Config = options, LastTs = clock.Now.ToUnixSeconds() - 5,
-            LastRetarget = clock.Now.ToUnixSeconds() - 100 };
+        context.VarDiff = new VarDiffContext(new ManualTimeProvider()) { Config = options, LastShareTimestamp = -5 * System.TimeSpan.TicksPerSecond,
+            LastRetargetTimestamp = -100 * System.TimeSpan.TicksPerSecond };
         var job = Assert.IsType<BitcoinBlake2bJob>(manager.GetJobForStratum());
         var responses = wire.Connection.ResponseSequence;
         var jobs = wire.JobsCreated;

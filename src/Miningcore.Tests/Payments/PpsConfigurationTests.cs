@@ -12,6 +12,45 @@ namespace Miningcore.Tests.Payments;
 public class PpsConfigurationTests
 {
     [Fact]
+    public void VersionOneChecksRetainedPrecisionWithoutChangingLegacyDomain()
+    {
+        var config = CreateConfig(CoinFamily.Bitcoin);
+        config.Pools[0].RewardRecipients = new[] { new RewardRecipient { Percentage = 0.0000000000000000000000001m } };
+        Program.ValidatePpsDeployment(config);
+        config.Pools[0].PaymentProcessing.PpsBinary64Activation = new DateTime(2026, 9, 21, 0, 0, 0, DateTimeKind.Utc);
+        Assert.Contains("24 fractional digits", Assert.Throws<PoolStartupException>(() => Program.ValidatePpsDeployment(config)).Message);
+        config.Pools[0].RewardRecipients[0].Percentage = 0.000000000000000000000001m;
+        Program.ValidatePpsDeployment(config);
+    }
+
+    [Theory]
+    [InlineData("2026-09-21T00:00:00Z", true)]
+    [InlineData("2026-09-21T00:00:00.123456Z", true)]
+    [InlineData("2026-09-21T00:00:00+01:00", false)]
+    [InlineData("2026-09-21T00:00:00", false)]
+    [InlineData("2026-09-21T00:00:00.0000001Z", false)]
+    public void RealConfigReaderEnforcesUtcMicrosecondCutoff(string timestamp, bool valid)
+    {
+        var file = System.IO.Path.GetTempFileName();
+        try
+        {
+            var document = Newtonsoft.Json.Linq.JObject.Parse(System.IO.File.ReadAllText(
+                System.IO.Path.Combine(AppContext.BaseDirectory, "config.example.json")));
+            document["pools"][0]["paymentProcessing"]["ppsBinary64Activation"] = timestamp;
+            System.IO.File.WriteAllText(file, document.ToString());
+            if(!valid)
+            {
+                Assert.Throws<PoolStartupException>(() => Program.ReadConfig(file));
+                return;
+            }
+            var actual = Program.ReadConfig(file).Pools[0].PaymentProcessing.PpsBinary64Activation.Value;
+            Assert.Equal(DateTimeKind.Utc, actual.Kind);
+            Assert.Equal(0, actual.Ticks % 10);
+        }
+        finally { System.IO.File.Delete(file); }
+    }
+
+    [Fact]
     public void Pps_IsRegisteredAsAProductionPayoutScheme()
     {
         var builder = new ContainerBuilder();

@@ -91,15 +91,26 @@ public class CryptonoteJob
 
     private string EncodeTarget(double difficulty, int size = 4)
     {
-        var diff = BigInteger.ValueOf((long) (difficulty * 255d));
+        if(size == 4) CryptonoteDifficulty.ValidateShortAssignment(difficulty);
+        else CryptonoteDifficulty.Validate(difficulty, CryptonoteDifficulty.FullTargetMaximum);
+        var diff = BigInteger.ValueOf(checked((long) (difficulty * 255d)));
         var quotient = CryptonoteConstants.Diff1.Divide(diff).Multiply(BigInteger.ValueOf(255));
         var bytes = quotient.ToByteArray().AsSpan();
         Span<byte> padded = stackalloc byte[32];
+        padded.Clear();
 
         var padLength = padded.Length - bytes.Length;
 
         if(padLength > 0)
             bytes.CopyTo(padded.Slice(padLength, bytes.Length));
+        else
+            bytes.Slice(bytes.Length - padded.Length, padded.Length).CopyTo(padded);
+
+        if(padded[..size].IndexOfAnyExcept((byte) 0) < 0)
+            throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty produces a zero target");
+
+        if(size == 4 && System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(padded[..4]) < CryptonoteDifficulty.ShortTargetMinimum)
+            throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty exceeds the short-target precision limit");
 
         padded = padded[..size];
         padded.Reverse();
@@ -125,6 +136,7 @@ public class CryptonoteJob
 
     public void PrepareWorkerJob(CryptonoteWorkerJob workerJob, out string blob, out string target)
     {
+        CryptonoteDifficulty.ValidateShortAssignment(workerJob.Difficulty);
         workerJob.Height = BlockTemplate.Height;
         workerJob.ExtraNonce = (uint) Interlocked.Increment(ref extraNonce);
         workerJob.SeedHash = BlockTemplate.SeedHash;
@@ -202,7 +214,7 @@ public class CryptonoteJob
         var result = new Share
         {
             BlockHeight = BlockTemplate.Height,
-            Difficulty = stratumDifficulty,
+            Difficulty = CryptonoteDifficulty.ValidateShortAssignment(stratumDifficulty),
         };
 
         if(isBlockCandidate)

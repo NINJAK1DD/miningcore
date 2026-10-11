@@ -64,6 +64,12 @@ An active process alone does not prove mining or payouts are healthy.
 - **BIP310 version rolling is declined or a custom mask stops startup.** Do not widen the mask to
   satisfy a miner. Check the per-chain audit and diagnostics in
   [Bitcoin-family version rolling](version-rolling.md).
+- **A Bitcoin-family proxy gets subscribe error `20` or disconnects after subscribing again.**
+  Subscribe once on each upstream TCP connection. The first duplicate preserves outstanding
+  work; another closes the connection. Check `miningcore_stratum_admission_total` outcomes
+  `duplicate-subscribe-warning` and `duplicate-subscribe` to distinguish single retries from
+  retry loops. Test affected firmware on an isolated endpoint and reconnect for a fresh
+  assignment. See [subscription compatibility](bitcoin-subscription-policy.md).
 - **A miner shows nearly 100% rejected shares immediately after BIP310 configuration.** Check the
   pool log for a declined version-rolling negotiation and update incompatible miner firmware. Do
   not widen the template mask; consensus-owned version bits must remain daemon-controlled.

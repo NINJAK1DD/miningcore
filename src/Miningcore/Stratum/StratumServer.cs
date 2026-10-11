@@ -22,6 +22,7 @@ using Miningcore.Time;
 using Miningcore.Util;
 using Newtonsoft.Json;
 using NLog;
+using Prometheus;
 using Contract = Miningcore.Contracts.Contract;
 using static Miningcore.Util.ActionUtils;
 
@@ -29,6 +30,9 @@ namespace Miningcore.Stratum;
 
 public abstract class StratumServer
 {
+    private static readonly Counter automaticBans = Metrics.CreateCounter(
+        "miningcore_stratum_automatic_bans_total", "Automatic Stratum ban decisions",
+        new CounterConfiguration { LabelNames = new[] { "pool", "outcome", "reason" } });
     protected StratumServer(
         IComponentContext ctx,
         IMessageBus messageBus,
@@ -125,8 +129,9 @@ public abstract class StratumServer
                 throw new InvalidOperationException("A Stratum server instance can only run once; restart with a new instance to change admission policy");
 
             // Accept, cancellation, and final cleanup all use our copied reservation array.
+            var proxyPolicy = StratumClusterProxyPolicy.For(clusterConfig);
             var ports = cleanupListeners.Select(listener => (Listener: listener,
-                Proxy: new StratumProxyPolicy(listener.Endpoint.PoolEndpoint.TcpProxyProtocol))).ToArray();
+                Proxy: proxyPolicy.ForListener(listener.Endpoint.PoolEndpoint))).ToArray();
             var admissionConfig = (poolConfig.ConnectionAdmission ?? new StratumAdmissionConfig()).Snapshot();
             startupTimeout = TimeSpan.FromSeconds(admissionConfig.StartupTimeoutSeconds);
             ConnectionAdmission = new StratumConnectionAdmission(admissionConfig,
@@ -451,6 +456,8 @@ public abstract class StratumServer
                 return;
             }
 
+            remoteEndpoint = new IPEndPoint(StratumConnectionAdmission.Normalize(remoteEndpoint.Address), remoteEndpoint.Port);
+
             // dispose of banned clients as early as possible
             if(DisconnectIfBanned(socket, remoteEndpoint))
                 return;
@@ -469,6 +476,7 @@ public abstract class StratumServer
             {
                 StartupTimeout = startupTimeout,
                 ProxyPolicy = proxyPolicy,
+                IsBanned = address => FindBannedAddress(address, remoteEndpoint.Address) != null,
             };
             if(proxy)
                 connection.AdmitProxyIdentity = admission.TrySetIdentity;
@@ -664,9 +672,11 @@ public abstract class StratumServer
                 failStop.Token);
 
         // boot pre-connected clients
-        if(banManager?.IsBanned(connection.RemoteEndpoint.Address) == true)
+        var bannedAddress = FindBannedAddress(connection.RemoteEndpoint?.Address,
+            connection.TransportEndpoint?.Address);
+        if(bannedAddress != null)
         {
-            logger.Info(() => $"[{connection.ConnectionId}] Disconnecting banned client @ {connection.RemoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}");
+            logger.Info(() => $"[{connection.ConnectionId}] Disconnecting banned address @ {bannedAddress.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}");
             Disconnect(connection);
             return;
         }
@@ -683,12 +693,16 @@ public abstract class StratumServer
 
     /// <summary>
     /// Admits an accepted share to the accounting pipeline before its positive Stratum response.
-    /// Both steps take concurrent healthy admissions against the exclusive mining fail-stop
-    /// transition. A gate closure between them leaves the share published but deliberately
-    /// unacknowledged; response queue admission itself is synchronous.
+    /// New share publication and response enqueue each enter the healthy-admission gate
+    /// independently; no admission lock is held across the persistence await or callback.
+    /// An already-published share keeps its existing persistence ownership and requires a
+    /// new healthy admission only for its response. A gate closure leaves the owned share
+    /// deliberately unacknowledged; response queue admission itself is synchronous.
+    /// onAdmitted runs once after persistence admission and before acknowledgement admission,
+    /// including for an already-published merged share whose later response is rejected.
     /// </summary>
     protected async Task PublishShareAndAcknowledgeAsync(Share share,
-        Func<Task> acknowledge, bool publishShare = true)
+        Func<Task> acknowledge, bool publishShare = true, Action onAdmitted = null)
     {
         ArgumentNullException.ThrowIfNull(share);
         ArgumentNullException.ThrowIfNull(acknowledge);
@@ -701,11 +715,14 @@ public abstract class StratumServer
                 messageBus.SendMessage(share);
 
             await share.PersistenceAdmission;
+            onAdmitted?.Invoke();
             await acknowledge();
             return;
         }
 
-        using var acceptance = failStop.AcquireSubmissionAcceptance();
+        // A prepublished merged share already has a persistence owner. A later
+        // fail-stop may reject its response, but must not suppress admission bookkeeping.
+        using var acceptance = publishShare ? failStop.AcquireSubmissionAcceptance() : null;
 
         if(publishShare)
         {
@@ -721,9 +738,16 @@ public abstract class StratumServer
         // that clone's completion here. Deliberately wait outside the admission lock so storage
         // latency cannot delay an exclusive fail-stop transition.
         await share.PersistenceAdmission;
+        onAdmitted?.Invoke();
 
         Task response = null;
-        acceptance.QueueResponse(() => response = acknowledge());
+        if(acceptance != null)
+            acceptance.QueueResponse(() => response = acknowledge());
+        else
+        {
+            using var responseAcceptance = failStop.AcquireSubmissionAcceptance();
+            responseAcceptance.QueueResponse(() => response = acknowledge());
+        }
         await response;
     }
 
@@ -737,6 +761,10 @@ public abstract class StratumServer
 
         switch(ex)
         {
+            case StratumBannedIdentityException:
+                StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.BannedIdentity,
+                    connection.ConnectionId);
+                break;
             case StratumAdmissionException:
                 // The admission controller already counted and rate-limited its diagnostic.
                 break;
@@ -755,8 +783,8 @@ public abstract class StratumServer
 
                 if(clusterConfig.Banning?.BanOnJunkReceive.HasValue == false || clusterConfig.Banning?.BanOnJunkReceive == true)
                 {
-                    logger.Info(() => $"[{connection.ConnectionId}] Banning client for sending junk");
-                    banManager?.Ban(connection.RemoteEndpoint.Address, TimeSpan.FromMinutes(3));
+                    if(BanClient(connection, TimeSpan.FromMinutes(3)))
+                        logger.Info(() => $"[{connection.ConnectionId}] Banning client for sending junk");
                 }
                 break;
 
@@ -766,8 +794,8 @@ public abstract class StratumServer
 
                 if(clusterConfig.Banning?.BanOnJunkReceive.HasValue == false || clusterConfig.Banning?.BanOnJunkReceive == true)
                 {
-                    logger.Info(() => $"[{connection.ConnectionId}] Banning client for failing SSL handshake");
-                    banManager?.Ban(connection.RemoteEndpoint.Address, TimeSpan.FromMinutes(3));
+                    if(BanClient(connection, TimeSpan.FromMinutes(3)))
+                        logger.Info(() => $"[{connection.ConnectionId}] Banning client for failing SSL handshake");
                 }
                 break;
 
@@ -779,8 +807,8 @@ public abstract class StratumServer
                 {
                     if(clusterConfig.Banning?.BanOnJunkReceive.HasValue == false || clusterConfig.Banning?.BanOnJunkReceive == true)
                     {
-                        logger.Info(() => $"[{connection.ConnectionId}] Banning client for failing SSL handshake");
-                        banManager?.Ban(connection.RemoteEndpoint.Address, TimeSpan.FromMinutes(3));
+                        if(BanClient(connection, TimeSpan.FromMinutes(3)))
+                            logger.Info(() => $"[{connection.ConnectionId}] Banning client for failing SSL handshake");
                     }
                 }
                 break;
@@ -804,6 +832,55 @@ public abstract class StratumServer
         }
 
         UnregisterConnection(connection);
+    }
+
+    private IPAddress FindBannedAddress(IPAddress client, IPAddress transport)
+    {
+        if(IsAddressBanned(client))
+            return client;
+        return transport != null && !transport.Equals(client) && IsAddressBanned(transport)
+            ? transport : null;
+    }
+
+    private bool IsAddressBanned(IPAddress address)
+    {
+        if(address == null || banManager == null)
+            return false;
+
+        // New bans use normalized addresses. Check the legacy mapped form too
+        // so custom managers with existing ::ffff:a.b.c.d keys still enforce them.
+        var normalized = StratumConnectionAdmission.Normalize(address);
+        return banManager.IsBanned(normalized) ||
+            (banManager is not IntegratedBanManager &&
+                normalized.AddressFamily == AddressFamily.InterNetwork &&
+                banManager.IsBanned(normalized.MapToIPv6()));
+    }
+
+    // True only after a manager invocation. Callers log positive ban outcomes only
+    // on true; disconnect policy remains independent of address attribution.
+    protected bool BanClient(StratumConnection connection, TimeSpan duration)
+    {
+        var address = connection.AutomaticBanAddress;
+        var reason = address == null ? "unattributed" :
+            StratumClusterProxyPolicy.For(clusterConfig).IsTrustedProxy(address) ? "trusted-proxy" :
+            banManager is IntegratedBanManager &&
+                (address.Equals(IPAddress.Loopback) || address.Equals(IPAddress.IPv6Loopback)) ? "loopback" : null;
+        if(reason != null)
+        {
+            automaticBans.WithLabels(poolConfig.Id, "suppressed", reason).Inc();
+            StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.AutomaticBanSuppressed,
+                connection.ConnectionId);
+            logger.Info(() => $"[{connection.ConnectionId}] Automatic client ban suppressed (reason: {reason}) by address attribution policy");
+            return false;
+        }
+        if(banManager == null)
+        {
+            automaticBans.WithLabels(poolConfig.Id, "unavailable", "none").Inc();
+            return false;
+        }
+        banManager.Ban(address, duration);
+        automaticBans.WithLabels(poolConfig.Id, "applied", "none").Inc();
+        return true;
     }
 
     protected void OnConnectionComplete(StratumConnection connection)
@@ -866,7 +943,7 @@ public abstract class StratumServer
         if(remoteEndpoint == null || banManager == null)
             return false;
 
-        if(banManager.IsBanned(remoteEndpoint.Address))
+        if(IsAddressBanned(remoteEndpoint.Address))
         {
             logger.Debug(() => $"Disconnecting banned ip {remoteEndpoint.Address.CensorOrReturn(clusterConfig.Logging?.GPDRCompliant == true)}");
             StratumSocketCleanup.CloseAbortively(socket);

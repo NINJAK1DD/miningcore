@@ -28,6 +28,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Npgsql;
 using NSubstitute;
+using Miningcore.Tests.Util.Postgres;
 using Xunit;
 using PersistedShare = Miningcore.Persistence.Model.Share;
 using Miningcore.Tests.Blockchain.Bitcoin;
@@ -189,8 +190,7 @@ public class MergedMiningPayoutRegtestTests
                     address text NOT NULL, amount decimal(28,12) NOT NULL,
                     usage text NULL, tags text[] NULL, created timestamptz NOT NULL);
             ");
-            var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-                "../../../../Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql"));
+            var migrationPath = PostgresTestScripts.PathFor("add_share_accounting.sql");
             var migration = (await File.ReadAllTextAsync(migrationPath))
                 .Replace("\\set ON_ERROR_STOP on", string.Empty,
                     StringComparison.Ordinal);

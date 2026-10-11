@@ -675,18 +675,24 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         } while(await timer.WaitForNextTickAsync(ct));
     }
 
+    protected virtual Task<RpcResponse<JToken>[]> ExecuteStartupBatchAsync(CancellationToken ct, RpcRequest[] requests) =>
+        rpc.ExecuteBatchAsync(logger, ct, requests);
+
     protected override async Task PostStartInitAsync(CancellationToken ct)
     {
-        var requests = new[]
+        var requests = new List<RpcRequest>
         {
             new RpcRequest(BitcoinCommands.ValidateAddress, new[] { poolConfig.Address }),
             new RpcRequest(BitcoinCommands.SubmitBlock),
             new RpcRequest(!hasLegacyDaemon ? BitcoinCommands.GetBlockchainInfo : BitcoinCommands.GetInfo),
-            new RpcRequest(BitcoinCommands.GetDifficulty),
             new RpcRequest(BitcoinCommands.GetAddressInfo, new[] { poolConfig.Address }),
         };
 
-        var responses = await rpc.ExecuteBatchAsync(logger, ct, requests);
+        // Header-v2 is an explicitly typed PoW contract. Legacy families keep
+        // the RPC used to discover PoS/pseudo-PoS behavior.
+        if(poolConfig.Template is not BitcoinBlake2bTemplate)
+            requests.Add(new RpcRequest(BitcoinCommands.GetDifficulty));
+        var responses = await ExecuteStartupBatchAsync(ct, requests.ToArray());
 
         if(responses.Any(x => x.Error != null))
         {
@@ -706,8 +712,8 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         var submitBlockResponse = responses[1];
         var blockchainInfoResponse = !hasLegacyDaemon ? responses[2].Response.ToObject<BlockchainInfo>() : null;
         var daemonInfoResponse = hasLegacyDaemon ? responses[2].Response.ToObject<DaemonInfo>() : null;
-        var difficultyResponse = responses[3].Response.ToObject<JToken>();
-        var addressInfoResponse = responses[4].Error == null ? responses[4].Response.ToObject<AddressInfo>() : null;
+        var difficultyResponse = poolConfig.Template is BitcoinBlake2bTemplate ? null : responses[4].Response;
+        var addressInfoResponse = responses[3].Error == null ? responses[3].Response.ToObject<AddressInfo>() : null;
 
         // chain detection
         if(!hasLegacyDaemon)
@@ -890,6 +896,8 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
     internal static bool ResolveProofOfStakeMode(CoinTemplate coin,
         JToken difficultyResponse)
     {
+        if(coin is BitcoinBlake2bTemplate) return false;
+
         if(coin is BitcoinTemplate {IsPseudoPoS: true})
             return true;
 

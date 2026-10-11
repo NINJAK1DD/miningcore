@@ -9,6 +9,7 @@ using Miningcore.Persistence.Postgres;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
 using Npgsql;
+using Miningcore.Tests.Util.Postgres;
 using Xunit;
 
 namespace Miningcore.Tests.Persistence.Postgres;
@@ -19,8 +20,7 @@ public class MergedMiningIndexIntegrationTests
     [Fact]
     public async Task PayoutOwnershipMigration_AssignsRelationsToDatabaseOwner()
     {
-        var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-            "../../../../Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql"));
+        var migrationPath = PostgresTestScripts.PathFor("add_payout_manager_ownership.sql");
         var migration = await File.ReadAllTextAsync(migrationPath);
 
         Assert.Contains("pg_get_userbyid(datdba)", migration,
@@ -38,8 +38,7 @@ public class MergedMiningIndexIntegrationTests
     [Fact]
     public async Task PayoutOwnershipMigration_DoesNotPublishUnguardedLeaseRelease()
     {
-        var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-            "../../../../Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql"));
+        var migrationPath = PostgresTestScripts.PathFor("add_payout_manager_ownership.sql");
         var migration = await File.ReadAllTextAsync(migrationPath);
 
         Assert.DoesNotContain("SET owner_id = NULL", migration,
@@ -134,8 +133,7 @@ public class MergedMiningIndexIntegrationTests
                         DEFERRABLE INITIALLY IMMEDIATE);
             ");
 
-            var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-                "../../../../Miningcore/Persistence/Postgres/Scripts/add_payout_manager_ownership.sql"));
+            var migrationPath = PostgresTestScripts.PathFor("add_payout_manager_ownership.sql");
             var migration = await File.ReadAllTextAsync(migrationPath);
             await Assert.ThrowsAsync<PostgresException>(() =>
                 connection.ExecuteAsync(migration));
@@ -225,8 +223,7 @@ public class MergedMiningIndexIntegrationTests
                 SET search_path TO {shadowSchema}, {targetSchema}, public;
             ");
 
-            var migrationPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-                "../../../../Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql"));
+            var migrationPath = PostgresTestScripts.PathFor("add_auxpow_block_idempotency.sql");
             await connection.ExecuteAsync(await File.ReadAllTextAsync(migrationPath));
 
             var mapper = AutoMapperFactory.CreateMapper();

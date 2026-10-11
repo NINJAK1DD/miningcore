@@ -46,6 +46,22 @@ public partial class BitcoinBlake2bStartupTests : TestBase
     });
 
     [Fact]
+    public void ProductionContainer_SelectsDedicatedPayoutHandlerAndSharesContractBindingAcrossCycles()
+    {
+        using var dependencies = Scope();
+        using var scope = dependencies.BeginLifetimeScope(builder =>
+        {
+            builder.RegisterInstance(Substitute.For<IBalanceRepository>());
+            builder.RegisterInstance(Substitute.For<IPaymentRepository>());
+        });
+        var supported = scope.Resolve<IEnumerable<Meta<Lazy<Miningcore.Payments.IPayoutHandler, CoinFamilyAttribute>>>>()
+            .Where(x => x.Value.Metadata.SupportedFamilies.Contains(CoinFamily.BitcoinBlake2b)).ToArray();
+        Assert.IsType<BitcoinBlake2bPayoutHandler>(Assert.Single(supported).Value.Value);
+        using var nextCycle = dependencies.BeginLifetimeScope();
+        Assert.Same(scope.Resolve<BitcoinBlake2bPayoutContractTracker>(), nextCycle.Resolve<BitcoinBlake2bPayoutContractTracker>());
+    }
+
+    [Fact]
     public void ProductionContainer_ResolvesIsolatedPoolAndManager()
     {
         using var scope = Scope();
@@ -67,7 +83,10 @@ public partial class BitcoinBlake2bStartupTests : TestBase
         ZcashNetworks.Instance.EnsureRegistered();
         await using var node = await BitcoinPayoutHandlerRegtestTests.BitcoinCoreRegtestNode.StartAsync(
             true, Environment.GetEnvironmentVariable(BitcoinBlake2bIntegrationFactAttribute.BinaryEnvironmentVariable),
-            new[] { "-testactivationheight=blake2b@20", "-blake2b_headline=Miningcore BLAKE2b regtest" }, 19);
+            new[] { "-testactivationheight=blake2b@20", "-blake2b_headline=Miningcore BLAKE2b regtest",
+                "-uacomment=Miningcore production startup test", "-uaappend=MiningcoreTest:1" }, 19);
+        var removedRpc = await node.TryWalletRpcAsync("getdifficulty");
+        Assert.Equal(-32601, removedRpc.Error?["code"]?.Value<int>());
         using var scope = Scope();
         var pool = ResolvePool(scope);
         pool.Configure(new PoolConfig
@@ -87,7 +106,18 @@ public partial class BitcoinBlake2bStartupTests : TestBase
                 BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(pool, new object[] { stop.Token })!);
             var manager = Assert.IsType<BitcoinBlake2bJobManager>(typeof(BitcoinPool)
                 .GetField("manager", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(pool));
-            Assert.IsType<BitcoinBlake2bJob>(manager.GetJobForStratum());
+            var job = Assert.IsType<BitcoinBlake2bJob>(manager.GetJobForStratum());
+            var rpcShape = (JObject) await node.RootRpcAsync("getmininginfo");
+            var mining = rpcShape.ToObject<BitcoinBlake2bMiningInfo>();
+            Assert.Equal(20u, mining.Next.Height);
+            Assert.NotNull(mining.Next.Blake2bExpectedHashWork);
+            Assert.Null(rpcShape["next"]["difficulty"]);
+            Assert.Equal(BitcoinBlake2bHeader.DifficultyForHash(BitcoinBlake2bHeader.ParseDisplayTarget(mining.Next.Target)), job.Difficulty);
+            Assert.NotEqual(mining.Next.Blake2bExpectedHashWork.ExpectedHashes, job.Difficulty);
+            var historicalHash = (await node.RootRpcAsync("getblockhash", 19)).Value<string>();
+            var historical = (JObject) await node.RootRpcAsync("getblockheader", historicalHash);
+            Assert.NotNull(historical["difficulty"]);
+            Assert.Null(historical["difficulty_blake2b"]);
         }
         finally
         {

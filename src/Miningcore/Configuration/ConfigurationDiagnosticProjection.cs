@@ -100,7 +100,8 @@ internal static class ConfigurationDiagnosticProjection
                 nameof(DaemonEndpointConfig.Port), nameof(DaemonEndpointConfig.Ssl), nameof(DaemonEndpointConfig.Http2)),
             [typeof(PoolPaymentProcessingConfig)] = Fields<PoolPaymentProcessingConfig>(
                 nameof(PoolPaymentProcessingConfig.Enabled), nameof(PoolPaymentProcessingConfig.MinimumPayment),
-                nameof(PoolPaymentProcessingConfig.PayoutScheme), nameof(PoolPaymentProcessingConfig.PpsShareRetentionDays)),
+                nameof(PoolPaymentProcessingConfig.PayoutScheme), nameof(PoolPaymentProcessingConfig.PpsShareRetentionDays),
+                nameof(PoolPaymentProcessingConfig.PpsBinary64Activation)),
             [typeof(PoolShareBasedBanningConfig)] = Fields<PoolShareBasedBanningConfig>(
                 nameof(PoolShareBasedBanningConfig.Enabled), nameof(PoolShareBasedBanningConfig.CheckThreshold),
                 nameof(PoolShareBasedBanningConfig.InvalidPercent), nameof(PoolShareBasedBanningConfig.Time),
@@ -296,6 +297,8 @@ internal static class ConfigurationDiagnosticProjection
             int item => new JValue(item),
             double item when double.IsFinite(item) => new JValue(item),
             decimal item => new JValue(item),
+            DateTime item when item.Kind == DateTimeKind.Utc && item.Ticks % 10 == 0 =>
+                new JValue(item.ToString("yyyy-MM-dd'T'HH:mm:ss.FFFFFF'Z'", CultureInfo.InvariantCulture)),
             _ => new JValue(Omitted),
         };
     }
