@@ -213,12 +213,13 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
             var response = await wire.ReadAsync();
             Assert.Null(response["method"]);
             Assert.True((i % 3 == 1 ? response["result"]["minimum-difficulty"] : response["result"]).Value<bool>());
-            if(i % 3 != 1)
-                Assert.Equal(difficulty, (await wire.ReadAsync())["params"][0].Value<double>());
+            Assert.Equal(difficulty, (await wire.ReadAsync())["params"][0].Value<double>());
+            Assert.Equal("mining.notify", (await wire.ReadAsync())["method"].Value<string>());
             Assert.Equal(difficulty, wire.Connection.Context.Difficulty);
         }
-        // Canonical Bitcoin still issues work only at subscribe here.
-        Assert.Equal(1, wire.JobsCreated);
+        // Every changed assignment delivers replacement work; these requests
+        // remain independent of BLAKE2b's family-specific request budget.
+        Assert.Equal(21, wire.JobsCreated);
         Assert.Equal(7, manager.AddressValidations);
         // Duplicate subscription is now rejected independently of the BLAKE2b
         // difficulty budget. Canonical difficulty and authorization remain unbudgeted.
@@ -226,7 +227,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
         await wire.SendRequestAsync("mining.subscribe", "duplicate");
         Assert.Equal((int) StratumError.Other, (await wire.ReadAsync())["error"]["code"].Value<int>());
         Assert.Equal(extraNonce, wire.Connection.ContextAs<BitcoinWorkerContext>().ExtraNonce1);
-        Assert.Equal(1, wire.JobsCreated);
+        Assert.Equal(21, wire.JobsCreated);
         bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
             x.Category == TelemetryCategory.StratumAdmission &&
             (x.Info == "difficulty-refused" || x.Info == "difficulty-disconnect")), Arg.Any<string>());
