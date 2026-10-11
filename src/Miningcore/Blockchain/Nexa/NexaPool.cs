@@ -188,7 +188,7 @@ public class NexaPool : PoolBase
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
         var context = connection.ContextAs<NexaWorkerContext>();
-        var job = manager.GetJobForStratum();
+        var job = (NexaJob) manager.GetJobForStratum().ForWorker(context);
 
         // update context
         lock(context)
@@ -332,11 +332,11 @@ public class NexaPool : PoolBase
         await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<NexaWorkerContext>();
-            var minerJobParams = CreateWorkerJob(connection, true);
-
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+
+            var minerJobParams = CreateWorkerJob(connection, true);
 
             // send job
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);

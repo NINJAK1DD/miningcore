@@ -53,30 +53,11 @@ public class RealichainJob : ProgpowJob
         var resultValueBig = resultBytes.AsSpan().ToBigInteger();
         // calc share-diff
         var shareDiff = (double) new BigRational(FiroConstants.Diff1, resultValueBig) * shareMultiplier;
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = resultValue <= blockTargetValue;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var result = new Share
         {

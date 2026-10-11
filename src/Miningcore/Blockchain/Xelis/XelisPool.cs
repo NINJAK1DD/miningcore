@@ -206,7 +206,7 @@ public class XelisPool : PoolBase
     {
         var context = connection.ContextAs<XelisWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
-        var job = manager.GetJobForStratum();
+        var job = (XelisJob) manager.GetJobForStratum().ForWorker(context);
 
         // update context
         lock(context)
@@ -302,11 +302,11 @@ public class XelisPool : PoolBase
         await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<XelisWorkerContext>();
-            var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
-
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(XelisStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+
+            var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
 
             // send job
             await connection.NotifyAsync(XelisStratumMethods.MiningNotify, minerJobParams);

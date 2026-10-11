@@ -228,8 +228,10 @@ family; a renamed member fails setup rather than silently skipping it. These com
 the worker-context matrix rather than replacing it. CI validates the full suite's TRX
 with `scripts/release/test-native-family-evidence.py`; all six native contention, three
 native cancellation, nine sub-unit request, six accepted-proof credit, twenty TCP hint,
-five blocked-gate, twelve fractional-hint and six fractional-proof cases (67 total) must
-be present exactly once and pass. Negative fixtures
+five blocked-gate, twelve fractional-hint and six fractional-proof cases (67 timing cases) must
+be present exactly once and pass. The [issued-difficulty policy](difficulty-assignment-grace.md)
+adds four fixed-increase native proofs and nine daemon/credit cases to that guard (80 total).
+Negative fixtures
 verify the guard rejects skipped, failed, absent, duplicated and unrecognized cases.
 
 The short-target ceiling can increase share rates for large proxy/NiceHash connections.

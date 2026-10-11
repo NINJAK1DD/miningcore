@@ -2,6 +2,8 @@ using Miningcore.Configuration;
 using Miningcore.Nicehash.API;
 using Miningcore.Time;
 using Miningcore.VarDiff;
+using System.Runtime.CompilerServices;
+using Miningcore.Stratum;
 
 namespace Miningcore.Mining;
 
@@ -18,6 +20,14 @@ public class WorkerContextBase
     private VarDiffContext varDiff;
     private double difficulty;
     private double? previousDifficulty;
+    private TimeProvider assignmentTimeProvider = TimeProvider.System;
+    private IssuedDifficulty assignment;
+    private object assignmentSession = new();
+    private long assignmentGeneration;
+    private readonly ConditionalWeakTable<object, IssuedDifficulty> issuedDifficulties = new();
+    private ConditionalWeakTable<object, JobSnapshot> jobSnapshots = new();
+    private readonly Dictionary<(object Template, uint ExtraNonce), IssuedDifficulty> blobDifficulties = new();
+    private sealed record JobSnapshot(IssuedDifficulty Assignment, object Job);
     internal virtual double MinimumDifficulty => 0;
     internal virtual double MaximumDifficulty => double.MaxValue;
     internal virtual bool RequiresIntegerDifficulty => false;
@@ -45,7 +55,14 @@ public class WorkerContextBase
     /// <summary>
     /// Difficulty assigned to this worker, either static or updated through VarDiffManager
     /// </summary>
-    public double Difficulty { get => difficulty; set => difficulty = ValidateDifficulty(value); }
+    public double Difficulty { get => difficulty; set => SetDifficulty(value); }
+
+    private double ValidateAssignment(double value)
+    {
+        if(!double.IsFinite(value) || value <= 0)
+            throw new ArgumentOutOfRangeException(nameof(value), "Difficulty must be finite and positive");
+        return ValidateDifficulty(value);
+    }
 
     /// <summary>
     /// Previous difficulty assigned to this worker
@@ -84,9 +101,16 @@ public class WorkerContextBase
 
     public void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock, TimeProvider timeProvider = null)
     {
-        difficulty = ValidateDifficulty(difficulty);
+        difficulty = ValidateAssignment(difficulty);
+        assignmentTimeProvider = timeProvider ?? TimeProvider.System;
+        assignmentSession = new();
+        assignment = new IssuedDifficulty(difficulty, assignmentTimeProvider, assignmentSession);
+        assignmentGeneration = 0;
+        previousDifficulty = null;
+        jobSnapshots = new();
+        blobDifficulties.Clear();
         pendingDifficulty = null;
-        Difficulty = difficulty;
+        this.difficulty = difficulty;
         LastActivity = clock.Now;
         Created = clock.Now;
         Stats = new ShareStats();
@@ -99,7 +123,7 @@ public class WorkerContextBase
 
     public void EnqueueNewDifficulty(double difficulty)
     {
-        pendingDifficulty = ValidateDifficulty(difficulty);
+        pendingDifficulty = ValidateAssignment(difficulty);
     }
 
     public bool HasPendingDifficulty => pendingDifficulty.HasValue;
@@ -119,11 +143,80 @@ public class WorkerContextBase
 
     public void SetDifficulty(double difficulty)
     {
-        difficulty = ValidateDifficulty(difficulty);
-        // An explicit assignment supersedes any deferred dynamic assignment.
-        pendingDifficulty = null;
-        previousDifficulty = Difficulty;
-        Difficulty = difficulty;
+        difficulty = ValidateAssignment(difficulty);
+        lock(this)
+        {
+            // An explicit assignment supersedes any deferred dynamic assignment.
+            pendingDifficulty = null;
+            if(difficulty == Difficulty)
+                return;
+            var nextGeneration = checked(assignmentGeneration + 1);
+            assignment?.Retire();
+            assignment = new IssuedDifficulty(difficulty, assignmentTimeProvider, assignmentSession);
+            assignmentGeneration = nextGeneration;
+            previousDifficulty = Difficulty;
+            this.difficulty = difficulty;
+        }
+    }
+
+    // Call under the worker assignment gate, before registry insertion/publication.
+    // Shallow job copies deliberately retain the template's duplicate-proof set.
+    internal T JobForDifficulty<T>(T template, Func<T, string, T> copy, string jobId) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(template);
+        lock(this)
+        {
+            assignment ??= new IssuedDifficulty(ValidateAssignment(Difficulty), assignmentTimeProvider, assignmentSession);
+            if(jobSnapshots.TryGetValue(template, out var cached) && ReferenceEquals(cached.Assignment, assignment))
+                return (T) cached.Job;
+            var id = assignmentGeneration == 0 ? jobId : $"{jobId}-d{assignmentGeneration:x}";
+            var job = copy(template, id);
+            issuedDifficulties.Add(job, assignment);
+            jobSnapshots.Remove(template);
+            jobSnapshots.Add(template, new JobSnapshot(assignment, job));
+            return job;
+        }
+    }
+
+    internal void RegisterBlobDifficulty(object template, uint extraNonce)
+    {
+        lock(this)
+        {
+            assignment ??= new IssuedDifficulty(ValidateAssignment(Difficulty), assignmentTimeProvider, assignmentSession);
+            blobDifficulties.TryAdd((template, extraNonce), assignment);
+        }
+    }
+
+    internal void ForgetBlobDifficulty(object template, uint extraNonce)
+    {
+        lock(this)
+            blobDifficulties.Remove((template, extraNonce));
+    }
+
+    internal bool TryValidateShareDifficulty(double proofDifficulty, bool blockCandidate, object job, out double credit)
+    {
+        IssuedDifficulty issued;
+        lock(this)
+        {
+            if(job is ValueTuple<object, uint> blob)
+                blobDifficulties.TryGetValue(blob, out issued);
+            else
+                issuedDifficulties.TryGetValue(job, out issued);
+        }
+        // Compatibility for direct job validators/custom callers without issuance
+        // metadata: current target only. PreviousDifficulty/UTC never authorize work.
+        credit = Difficulty;
+        if(issued != null && !ReferenceEquals(issued.Session, assignmentSession))
+            return false;
+        issued ??= new IssuedDifficulty(Difficulty, assignmentTimeProvider, assignmentSession);
+        return issued.TryValidate(proofDifficulty, blockCandidate, out credit);
+    }
+
+    internal double ValidateShareDifficulty(double proofDifficulty, bool blockCandidate, object job)
+    {
+        if(!TryValidateShareDifficulty(proofDifficulty, blockCandidate, job, out var credit))
+            throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty or expired assignment ({proofDifficulty})");
+        return credit;
     }
 
 }

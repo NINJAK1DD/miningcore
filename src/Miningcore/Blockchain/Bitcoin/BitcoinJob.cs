@@ -20,6 +20,19 @@ namespace Miningcore.Blockchain.Bitcoin;
 
 public class BitcoinJob
 {
+    internal BitcoinJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (BitcoinJob) MemberwiseClone();
+            result.JobId = id;
+            if(result.jobParams != null)
+            {
+                result.jobParams = (object[]) result.jobParams.Clone();
+                result.jobParams[0] = id;
+            }
+            return result;
+        }, JobId);
+
     internal const long BitcoinConsensusMaxBlockWeight = 4_000_000;
     protected IHashAlgorithm blockHasher;
     protected IMasterClock clock;
@@ -425,30 +438,11 @@ public class BitcoinJob
 
         // calc share-diff
         var shareDiff = (double) new BigRational(BitcoinConstants.Diff1, headerHash.ToBigInteger()) * shareMultiplier;
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = headerValue <= blockTargetValue;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var actualShareDifficulty = shareDiff / shareMultiplier;
 

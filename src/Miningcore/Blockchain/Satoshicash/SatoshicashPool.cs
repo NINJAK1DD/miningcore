@@ -189,7 +189,7 @@ public class SatoshicashPool : PoolBase
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
         var context = connection.ContextAs<SatoshicashWorkerContext>();
-        var job = manager.GetJobForStratum();
+        var job = (SatoshicashJob) manager.GetJobForStratum().ForWorker(context);
 
         // update context
         lock(context)
@@ -334,11 +334,11 @@ public class SatoshicashPool : PoolBase
         await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<SatoshicashWorkerContext>();
-            var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
-
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+
+            var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
 
             // send job
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);

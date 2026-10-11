@@ -171,7 +171,7 @@ public class BeamPool : PoolBase
     {
         var context = connection.ContextAs<BeamWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 4;
-        var job = manager.GetJobForStratum();
+        var job = (BeamJob) manager.GetJobForStratum().ForWorker(context);
 
         // update context
         lock(context)

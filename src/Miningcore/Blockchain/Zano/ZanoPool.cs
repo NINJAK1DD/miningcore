@@ -706,6 +706,7 @@ public class ZanoPool : PoolBase
         {
             var context = connection.ContextAs<ZanoWorkerContext>();
 
+            var changedDifficulty = context.ApplyPendingDifficulty();
             var job = CreateWorkerJob(connection);
 
             switch(context.ProtocolVersion)
@@ -728,7 +729,7 @@ public class ZanoPool : PoolBase
 
                 case 2:
                     // varDiff: if the client has a pending difficulty change, apply it now
-                    if(context.ApplyPendingDifficulty())
+                    if(changedDifficulty)
                         await connection.NotifyAsync(ZanoStratumMethods.SetDifficulty, new object[] { context.Difficulty });
 
                     // notify

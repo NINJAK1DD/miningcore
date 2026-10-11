@@ -19,6 +19,19 @@ namespace Miningcore.Blockchain.Xelis;
 
 public class XelisJob
 {
+    internal XelisJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (XelisJob) MemberwiseClone();
+            result.JobId = id;
+            if(result.jobParams != null)
+            {
+                result.jobParams = (object[]) result.jobParams.Clone();
+                result.jobParams[0] = id;
+            }
+            return result;
+        }, JobId);
+
     protected IMasterClock clock;
     protected double shareMultiplier;
     protected readonly IHashAlgorithm blake3Hasher = new Blake3IHash();
@@ -117,31 +130,12 @@ public class XelisJob
         var shareDiff = (double) new BigRational(XelisConstants.Diff1Target, targetHashCoinbaseBytes.ToBigInteger()) * shareMultiplier;
 
         // diff check
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = hashCoinbaseBytesValue <= blockTargetValue;
         //var isBlockCandidate = XelisUtils.CheckDiff(hashCoinbaseBytes, blockTargetBytes);
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share [{shareDiff}]");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share [{shareDiff}]");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var result = new Share
         {

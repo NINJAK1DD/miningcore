@@ -55,7 +55,8 @@ public class ProgpowWorkerJob
             throw new StratumException(StratumError.Other, $"nonce out of range: {nonce}");
 
         // dupe check
-        if(!RegisterSubmit(nonce, headerHash, mixHash))
+        if(!RegisterSubmit(nonce, headerHash, mixHash) ||
+           !Job.RegisterWorkerProof(context.ExtraNonce1, nonce, headerHash, mixHash))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
 
         var nonceLong = ulong.Parse(nonce, NumberStyles.HexNumber);

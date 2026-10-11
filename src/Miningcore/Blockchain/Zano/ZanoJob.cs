@@ -107,6 +107,7 @@ public class ZanoJob
             extraNonce = 0;
 
         var workerJob = new ZanoWorkerJob(EncodeBlob(workerExtraNonce).ToHexString(true), difficulty);
+        workerJob.DifficultyTemplate = this;
         workerJob.Height = Height;
         workerJob.ExtraNonce = workerExtraNonce;
         workerJob.SeedHash = BlockTemplate.SeedHash.HexToByteArray().ToHexString(true);
@@ -141,28 +142,9 @@ public class ZanoJob
         // check difficulty
         var headerValue = resultBytes.AsSpan().ToBigInteger();
         var shareDiff = (double) new BigRational(ZanoConstants.Diff1b, headerValue) * shareMultiplier;
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
         var isBlockCandidate = shareDiff >= BlockTemplate.Difficulty;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, ((object) this, workerExtraNonce));
 
         var result = new Share
         {

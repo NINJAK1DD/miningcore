@@ -203,7 +203,7 @@ public class WarthogPool : PoolBase
     {
         var context = connection.ContextAs<WarthogWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 4;
-        var job = manager.GetJobForStratum();
+        var job = (WarthogJob) manager.GetJobForStratum().ForWorker(context);
 
         // update context
         lock(context)
@@ -311,11 +311,11 @@ public class WarthogPool : PoolBase
         await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<WarthogWorkerContext>();
-            var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
-
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+
+            var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
 
             // send job
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);

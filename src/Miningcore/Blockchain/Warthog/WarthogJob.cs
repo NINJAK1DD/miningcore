@@ -17,6 +17,19 @@ namespace Miningcore.Blockchain.Warthog;
 
 public class WarthogJob
 {
+    internal WarthogJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (WarthogJob) MemberwiseClone();
+            result.JobId = id;
+            if(result.jobParams != null)
+            {
+                result.jobParams = (object[]) result.jobParams.Clone();
+                result.jobParams[0] = id;
+            }
+            return result;
+        }, JobId);
+
     protected IMasterClock clock;
     protected readonly IHashAlgorithm sha256S = new Sha256S();
     protected readonly IHashAlgorithm sha256D = new Sha256D();
@@ -183,27 +196,8 @@ public class WarthogJob
 
         //throw new StratumException(StratumError.LowDifficultyShare, $"nonce: {nonce} - headerSolutionBytes: {headerSolutionBytes.ToHexString()} - headerSolutionVerusHash: {headerSolutionVerusHash.ToHexString()} - proofOfBalancedWorkC: {(double)WarthogConstants.ProofOfBalancedWorkC} - ProofOfBalancedWorkExponent: {(double)WarthogConstants.ProofOfBalancedWorkExponent} - sha256TFloat: {(double)sha256TFloat} - verusFloat: {(double)verusFloat} - CalculateHashrate: {WarthogUtils.CalculateHashrate(sha256TFloat, verusFloat)} ||| headerSolutionValue: {(double)headerSolutionValue} - exponent => (wcf: [{headerSolutionValue._exponent}, {(uint)(headerSolutionValue._exponent < 0 ? -headerSolutionValue._exponent : headerSolutionValue._exponent)}]), mantissa => (wcf: {headerSolutionValue._mantissa}) [stratum: {new WarthogTarget(context.Difficulty, IsJanusHash).data} - exponent => (wt: {new WarthogTarget(context.Difficulty, IsJanusHash).Zeros10()}), mantissa => (wt: {(new WarthogTarget(context.Difficulty, IsJanusHash).Bits22() << 10)}) - validShare: {(headerSolutionValue < new WarthogTarget(context.Difficulty, IsJanusHash))} - blockTemplate: {blockTargetValue.data} - exponent => (wt: {blockTargetValue.Zeros10()}), mantissa => (wt: {(blockTargetValue.Bits22() << 10)}) - blockCandidate: {isBlockCandidate}] ||| shareDiff: {shareDiff} [stratum: {context.Difficulty} - blockTemplate: {Difficulty}]");
 
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var result = new Share
         {

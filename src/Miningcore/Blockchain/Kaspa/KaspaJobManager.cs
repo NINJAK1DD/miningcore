@@ -612,7 +612,7 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
                 // through job history because they submit jobs with incorrect IDs
                 // https://github.com/rdugan/kaspa-stratum-bridge/blob/main/src/kaspastratum/share_handler.go#L216
                 if(ValidateIsGodMiner(context.UserAgent) || ValidateIsIceRiverMiner(context.UserAgent))
-                    job = context.validJobs.ToArray().FirstOrDefault(x => Int64.Parse(x.JobId) < Int64.Parse(jobId));
+                    job = FindCompatibleJob(context.validJobs, jobId);
             }
 
             if(job == null)
@@ -662,6 +662,18 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
         }
 
         return share;
+    }
+
+    internal static KaspaJob FindCompatibleJob(IEnumerable<KaspaJob> jobs, string submittedId)
+    {
+        if(!long.TryParse(submittedId, NumberStyles.None, CultureInfo.InvariantCulture, out var requested))
+            return null;
+
+        // These devices do not identify the issued assignment. Use the latest
+        // eligible template/epoch, never an older easier target. Assignment
+        // suffixes are opaque for normal job-ID submissions.
+        return jobs.LastOrDefault(job => long.TryParse(job.JobId?.Split('-')[0],
+            NumberStyles.None, CultureInfo.InvariantCulture, out var id) && id < requested);
     }
     
     public bool ValidateIsLargeJob(string userAgent)

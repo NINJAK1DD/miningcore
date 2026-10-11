@@ -188,7 +188,7 @@ public class ErgoPool : PoolBase
     {
         var context = connection.ContextAs<ErgoWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 4;
-        var job = manager.GetJobForStratum();
+        var job = (ErgoJob) manager.GetJobForStratum().ForWorker(context);
 
         // update context
         lock(context)
