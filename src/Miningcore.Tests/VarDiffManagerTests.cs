@@ -1,9 +1,10 @@
 using System;
 using System.Threading;
+using System.Collections.Generic;
+using System.Linq;
 using CircularBuffer;
 using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Configuration;
-using Miningcore.Extensions;
 using Miningcore.Mining;
 using Miningcore.Tests.Util;
 using Miningcore.Time;
@@ -15,18 +16,76 @@ namespace Miningcore.Tests;
 
 public class VarDiffManagerTests
 {
-    private static (WorkerContextBase, VarDiffConfig, MockMasterClock) Fixture(double difficulty = 10)
+    public static IEnumerable<object[]> BurstWindows =>
+        from stored in new[] { 0, 1, 4, 9, 10 }
+        from ticks in new[] { 0, 1, 200 } // zero, 100 ns, 20 us
+        from idle in new[] { false, true }
+        select new object[] { stored, ticks, idle };
+
+    [Theory]
+    [MemberData(nameof(BurstWindows))]
+    public void CoalescedBurst_FloorsZeroAndTinyPositiveMeansByAvailableSampleCount(int stored, int ticks, bool idle)
+    {
+        var (context, options, clock, time) = Fixture();
+        options.RetargetTime = 1e-7;
+        var currentTicks = idle ? Math.Max(1, ticks) : ticks;
+        context.VarDiff.LastShareTimestamp = time.GetTimestamp() - currentTicks;
+        context.VarDiff.TimeBuffer = new CircularBuffer<double>(10);
+        for(var i = 0; i < stored; i++)
+            context.VarDiff.TimeBuffer.PushBack(ticks / (double) TimeSpan.TicksPerSecond);
+        var expected = 10 * 10 / (0.001 / Math.Min(stored + 1, 10));
+        Assert.Equal(expected, idle ? VarDiffManager.IdleUpdate(context, options, clock) :
+            VarDiffManager.Update(context, options, clock));
+    }
+
+    [Theory]
+    [MemberData(nameof(BurstWindows))]
+    public void BurstFloor_CannotInventADownwardRetargetForTinyTargets(int stored, int ticks, bool idle)
+    {
+        var (context, options, clock, time) = Fixture();
+        options.RetargetTime = 1e-7;
+        options.TargetTime = 0.00001;
+        context.VarDiff.LastShareTimestamp = time.GetTimestamp() - (idle ? Math.Max(1, ticks) : ticks);
+        context.VarDiff.TimeBuffer = new CircularBuffer<double>(10);
+        for(var i = 0; i < stored; i++)
+            context.VarDiff.TimeBuffer.PushBack(ticks / (double) TimeSpan.TicksPerSecond);
+        Assert.Null(idle ? VarDiffManager.IdleUpdate(context, options, clock) :
+            VarDiffManager.Update(context, options, clock));
+        Assert.Null(context.VarDiff.LastUpdate);
+        // Measuring a burst must not replace its positive observations with the floor.
+        Assert.All(context.VarDiff.TimeBuffer, x => Assert.InRange(x, 0, 0.00002));
+    }
+
+    [Fact]
+    public void IdleSweep_RequiresFullInactivityEvenAfterTheRetargetCooldownExpired()
+    {
+        var (context, options, clock, time) = Fixture();
+        options.RetargetTime = 90;
+        context.VarDiff.TimeBuffer = null;
+        context.VarDiff.LastShareTimestamp = time.GetTimestamp();
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(89.6));
+        Assert.Null(VarDiffManager.IdleUpdate(context, options, clock));
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(0.4));
+        Assert.Equal(10 * 10 / 90d, VarDiffManager.IdleUpdate(context, options, clock));
+    }
+    private static (WorkerContextBase, VarDiffConfig, MockMasterClock, ManualTimeProvider) Fixture(double difficulty = 10,
+        bool idleBurst = false)
     {
         var clock = new MockMasterClock { CurrentTime = DateTime.UnixEpoch.AddSeconds(1000) };
         var options = new VarDiffConfig { MinDiff = 1, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
         var context = new WorkerContextBase();
-        context.Init(difficulty, options, clock);
-        context.VarDiff.LastTs = clock.Now.ToUnixSeconds();
-        context.VarDiff.LastRetarget = clock.Now.ToUnixSeconds() - 100;
+        var time = new ManualTimeProvider();
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(1000));
+        context.Init(difficulty, options, clock, time);
+        // A real idle retarget must have an elapsed interval, even for a burst.
+        if(idleBurst)
+            options.RetargetTime = 1e-7;
+        context.VarDiff.LastShareTimestamp = time.GetTimestamp() - (idleBurst ? 1 : 0);
+        context.VarDiff.LastRetargetTimestamp = time.GetTimestamp() - 100 * TimeSpan.TicksPerSecond;
         context.VarDiff.TimeBuffer = new CircularBuffer<double>(10);
         for(var i = 0; i < 10; i++)
             context.VarDiff.TimeBuffer.PushBack(0);
-        return (context, options, clock);
+        return (context, options, clock, time);
     }
 
     [Theory]
@@ -40,7 +99,7 @@ public class VarDiffManagerTests
     [InlineData(true, true, true)]
     public void ZeroAverage_HonorsEffectiveMaximumAndMaxDelta(bool idle, bool limitDelta, bool explicitMaximum)
     {
-        var (context, options, clock) = Fixture();
+        var (context, options, clock, time) = Fixture(idleBurst: idle);
         options.MaxDelta = limitDelta ? 2 : null;
         options.MaxDiff = explicitMaximum ? 100 : null;
         var result = idle ? VarDiffManager.IdleUpdate(context, options, clock, 200) :
@@ -56,21 +115,20 @@ public class VarDiffManagerTests
     [InlineData(true)]
     public void ZeroAverage_UsesProportionalEstimateInsteadOfGenericMaximum(bool limitDelta)
     {
-        var (context, options, clock) = Fixture();
+        var (context, options, clock, time) = Fixture();
         options.MaxDelta = limitDelta ? 2 : null;
         Assert.Equal(limitDelta ? 12d : 1000000d, VarDiffManager.Update(context, options, clock));
     }
 
     [Theory]
     [InlineData(1e300, 1e10, 1e20, 1e290)]
-    [InlineData(1e-300, 1e-10, 1e-20, 1e-290)]
-    [InlineData(1e-300, 1e-30, 1e-40, 1e-290)]
-    [InlineData(1e-300, 1e-23, 1e-24, 1e-299)]
-    [InlineData(1e100, 10, 1e-300, double.MaxValue)]
+    [InlineData(1e-300, 1e-10, 0.001, 1e-307)]
+    [InlineData(1e-300, 1e-30, 1, double.Epsilon)]
+    [InlineData(1e306, 10, 0.001, double.MaxValue)]
     public void ExtremeRatios_AvoidIntermediateOverflowAndUnderflow(double difficulty, double target,
         double average, double expected)
     {
-        var (context, options, clock) = Fixture(difficulty);
+        var (context, options, clock, time) = Fixture(difficulty);
         options.MinDiff = double.Epsilon;
         options.TargetTime = target;
         // The most recent interval is zero; ten stored intervals plus that
@@ -92,10 +150,10 @@ public class VarDiffManagerTests
     [InlineData(1000, null, 1)]
     public void OrdinaryIntervals_PreserveProportionalRetargetAndBounds(double interval, double? maxDelta, double expected)
     {
-        var (context, options, clock) = Fixture();
+        var (context, options, clock, time) = Fixture();
         options.MaxDelta = maxDelta;
         context.VarDiff.TimeBuffer = null;
-        context.VarDiff.LastTs = clock.Now.ToUnixSeconds() - interval;
+        context.VarDiff.LastShareTimestamp = time.GetTimestamp() - (long) (interval * TimeSpan.TicksPerSecond);
         Assert.Equal(expected, VarDiffManager.Update(context, options, clock));
     }
 
@@ -108,21 +166,23 @@ public class VarDiffManagerTests
     [InlineData(true, false, true)]
     [InlineData(true, true, false)]
     [InlineData(true, true, true)]
-    public void BackwardClock_RebasesWithoutRetargetAndRecovers(bool idle, bool limitDelta, bool blake2b)
+    public void BrokenMonotonicProvider_RebasesWithoutRetargetAndRecovers(bool idle, bool limitDelta, bool blake2b)
     {
-        var (context, options, clock) = Fixture();
+        var (context, options, clock, time) = Fixture();
         options.MaxDelta = limitDelta ? 2 : null;
         var maximum = blake2b ? BitcoinBlake2bDifficulty.Maximum : double.MaxValue;
         var lastAssignment = context.VarDiff.LastUpdate = clock.Now.AddSeconds(-100);
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(-1));
         clock.CurrentTime = clock.Now.AddSeconds(-1);
         var result = idle ? VarDiffManager.IdleUpdate(context, options, clock, maximum) :
             VarDiffManager.Update(context, options, clock, maximum);
         Assert.Null(result);
         Assert.Equal(10, context.Difficulty);
-        Assert.Equal(clock.Now.ToUnixSeconds(), context.VarDiff.LastTs);
-        Assert.Equal(clock.Now.ToUnixSeconds(), context.VarDiff.LastRetarget);
+        Assert.Equal(time.GetTimestamp(), context.VarDiff.LastShareTimestamp);
+        Assert.Equal(time.GetTimestamp(), context.VarDiff.LastRetargetTimestamp);
         Assert.Null(context.VarDiff.TimeBuffer);
         Assert.Equal(lastAssignment, context.VarDiff.LastUpdate);
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(5));
         clock.CurrentTime = clock.Now.AddSeconds(5);
         result = idle ? VarDiffManager.IdleUpdate(context, options, clock, maximum) :
             VarDiffManager.Update(context, options, clock, maximum);
@@ -131,25 +191,27 @@ public class VarDiffManagerTests
     }
 
     [Fact]
-    public void ShareAndIdleUpdates_ReadClockUnderTheSameStateLock()
+    public void AssignmentWallMarker_IsReadUnderTheStateLock()
     {
-        var (context, options, mutableClock) = Fixture();
+        var (context, options, mutableClock, time) = Fixture();
         context.VarDiff.TimeBuffer = null;
         var clock = Substitute.For<IMasterClock>();
         clock.Now.Returns(_ =>
         {
-            // A pre-lock read would allow this sample to become stale while
-            // the idle producer advances LastTs. Check the invariant directly.
+            // Wall time is sampled only for a changed assignment, under the
+            // same state lock as its monotonic retarget marker.
             Assert.True(Monitor.IsEntered(context.VarDiff));
             return mutableClock.Now;
         });
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(10));
         mutableClock.CurrentTime = mutableClock.Now.AddSeconds(10);
         Assert.Null(VarDiffManager.IdleUpdate(context, options, clock));
-        Assert.Equal(1000, context.VarDiff.LastTs);
-        Assert.Equal(900, context.VarDiff.LastRetarget);
+        Assert.Equal(1000 * TimeSpan.TicksPerSecond, context.VarDiff.LastShareTimestamp);
+        Assert.Equal(900 * TimeSpan.TicksPerSecond, context.VarDiff.LastRetargetTimestamp);
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(1));
         mutableClock.CurrentTime = mutableClock.Now.AddSeconds(1);
         Assert.Equal(100d / 11d, VarDiffManager.Update(context, options, clock));
-        Assert.Equal(1011, context.VarDiff.LastTs);
+        Assert.Equal(1011 * TimeSpan.TicksPerSecond, context.VarDiff.LastShareTimestamp);
     }
 
     [Theory]
@@ -159,11 +221,12 @@ public class VarDiffManagerTests
     [InlineData(double.NegativeInfinity)]
     public void InvalidHistory_IsDiscardedBeforeItCanContaminateAnotherAverage(double sample)
     {
-        var (context, options, clock) = Fixture();
+        var (context, options, clock, time) = Fixture();
         context.VarDiff.TimeBuffer.PushBack(sample);
         Assert.Null(VarDiffManager.Update(context, options, clock));
         Assert.Null(context.VarDiff.TimeBuffer);
-        Assert.Equal(clock.Now.ToUnixSeconds(), context.VarDiff.LastRetarget);
+        Assert.Equal(time.GetTimestamp(), context.VarDiff.LastRetargetTimestamp);
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(5));
         clock.CurrentTime = clock.Now.AddSeconds(5);
         Assert.Equal(20, VarDiffManager.Update(context, options, clock));
     }
@@ -171,10 +234,10 @@ public class VarDiffManagerTests
     [Fact]
     public void FutureRetargetTimestamp_IsRebasedEvenWhenLastSampleIsNotInTheFuture()
     {
-        var (context, options, clock) = Fixture();
-        context.VarDiff.LastRetarget = clock.Now.ToUnixSeconds() + 10;
+        var (context, options, clock, time) = Fixture();
+        context.VarDiff.LastRetargetTimestamp = time.GetTimestamp() + 10 * TimeSpan.TicksPerSecond;
         Assert.Null(VarDiffManager.IdleUpdate(context, options, clock));
-        Assert.Equal(clock.Now.ToUnixSeconds(), context.VarDiff.LastRetarget);
+        Assert.Equal(time.GetTimestamp(), context.VarDiff.LastRetargetTimestamp);
         Assert.Null(context.VarDiff.TimeBuffer);
     }
 
@@ -188,7 +251,7 @@ public class VarDiffManagerTests
     [InlineData(10d, 10d, double.PositiveInfinity)]
     public void InvalidArithmeticInputs_ProduceNoRetarget(double difficulty, double target, double maximum)
     {
-        var (context, options, clock) = Fixture(difficulty);
+        var (context, options, clock, time) = Fixture(difficulty);
         options.TargetTime = target;
         Assert.Null(VarDiffManager.Update(context, options, clock, maximum));
         Assert.Null(context.VarDiff.LastUpdate);
@@ -197,11 +260,42 @@ public class VarDiffManagerTests
     }
 
     [Theory]
+    [InlineData("inverted")]
+    [InlineData("infinite")]
+    [InlineData("nan")]
+    [InlineData("zero")]
+    public void InvalidBounds_StillRecordRealSharesAndRecoverWithoutAFrozenInterval(string invalid)
+    {
+        var time = new ManualTimeProvider();
+        var clock = new MockMasterClock();
+        var options = new VarDiffConfig { MinDiff = 1, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
+        var worker = new WorkerContextBase();
+        worker.Init(10, options, clock, time);
+        Assert.Null(VarDiffManager.Update(worker, options, clock));
+        var baseline = worker.VarDiff.LastRetargetTimestamp;
+        options.MaxDiff = invalid switch { "infinite" => double.PositiveInfinity, "nan" => double.NaN,
+            "zero" => 0, _ => 0.5 };
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(3));
+        Assert.Null(VarDiffManager.Update(worker, options, clock,
+            protocolMaximum: invalid == "infinite" ? double.PositiveInfinity : double.MaxValue));
+        Assert.Equal(time.GetTimestamp(), worker.VarDiff.LastShareTimestamp);
+        Assert.Equal(new[] { 3d }, worker.VarDiff.TimeBuffer.ToArray());
+        Assert.Equal(baseline, worker.VarDiff.LastRetargetTimestamp);
+        Assert.Null(worker.VarDiff.LastUpdate);
+        Assert.Null(VarDiffManager.IdleUpdate(worker, options, clock));
+        Assert.Equal(new[] { 3d }, worker.VarDiff.TimeBuffer.ToArray());
+        options.MaxDiff = null;
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(2));
+        Assert.Equal(40, VarDiffManager.Update(worker, options, clock));
+        Assert.Empty(worker.VarDiff.TimeBuffer); // A changed assignment starts a new window.
+    }
+
+    [Theory]
     [InlineData(0.0001)]
     [InlineData(0.000001)]
     public void ZeroAverage_DoesNotLowerDifficultyForSubsecondTargets(double target)
     {
-        var (context, options, clock) = Fixture();
+        var (context, options, clock, time) = Fixture();
         options.TargetTime = target;
         Assert.Null(VarDiffManager.Update(context, options, clock));
         Assert.Null(VarDiffManager.IdleUpdate(context, options, clock));
@@ -213,7 +307,7 @@ public class VarDiffManagerTests
     [InlineData(true)]
     public void DisabledVarDiff_IsANoOp(bool idle)
     {
-        var (context, options, clock) = Fixture();
+        var (context, options, clock, time) = Fixture();
         context.VarDiff = null;
         Assert.Null(idle ? VarDiffManager.IdleUpdate(context, options, clock) :
             VarDiffManager.Update(context, options, clock));
@@ -227,17 +321,18 @@ public class VarDiffManagerTests
     [InlineData(true, true)]
     public void NoOpIdleSweep_PreservesRealShareIntervalAndSubsequentRetarget(bool atMinimum, bool limitDelta)
     {
-        var (context, options, clock) = Fixture();
+        var (context, options, clock, time) = Fixture();
         options.MinDiff = atMinimum ? 10 : 1;
         options.MaxDelta = limitDelta ? 2 : null;
         context.VarDiff.TimeBuffer = null;
-        var previousTs = context.VarDiff.LastTs;
+        var previousTs = context.VarDiff.LastShareTimestamp;
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(atMinimum ? 30 : 10));
         clock.CurrentTime = clock.Now.AddSeconds(atMinimum ? 30 : 10);
         // Repeated scheduler evaluations are not extra share observations.
         Assert.Null(VarDiffManager.IdleUpdate(context, options, clock));
         Assert.Null(VarDiffManager.IdleUpdate(context, options, clock));
-        Assert.Equal(previousTs, context.VarDiff.LastTs);
-        Assert.Equal(900, context.VarDiff.LastRetarget);
+        Assert.Equal(previousTs, context.VarDiff.LastShareTimestamp);
+        Assert.Equal(900 * TimeSpan.TicksPerSecond, context.VarDiff.LastRetargetTimestamp);
         Assert.Null(context.VarDiff.LastUpdate);
         Assert.Null(context.VarDiff.TimeBuffer);
         Assert.Null(VarDiffManager.Update(context, options, clock));
@@ -246,6 +341,7 @@ public class VarDiffManagerTests
         double? result = null;
         for(var i = 0; i < 11 && result == null; i++)
         {
+            time.AdvanceMonotonic(TimeSpan.FromSeconds(1));
             clock.CurrentTime = clock.Now.AddSeconds(1);
             result = VarDiffManager.Update(context, options, clock);
         }
@@ -266,7 +362,7 @@ public class VarDiffManagerTests
     [InlineData(10, true, 1000000d)]
     public void ZeroAverage_EstimateUsesAvailableIntervals(int storedSamples, bool idle, double expected)
     {
-        var (context, options, clock) = Fixture();
+        var (context, options, clock, time) = Fixture(idleBurst: idle);
         context.VarDiff.TimeBuffer = new CircularBuffer<double>(10);
         for(var i = 0; i < storedSamples; i++)
             context.VarDiff.TimeBuffer.PushBack(0);
@@ -279,7 +375,7 @@ public class VarDiffManagerTests
     [InlineData(true)]
     public void SparseZeroWindow_DoesNotLowerDifficultyBelowItsEstimate(bool idle)
     {
-        var (context, options, clock) = Fixture();
+        var (context, options, clock, time) = Fixture();
         context.VarDiff.TimeBuffer = null;
         options.TargetTime = 0.0005;
         Assert.Null(idle ? VarDiffManager.IdleUpdate(context, options, clock) :
@@ -289,32 +385,31 @@ public class VarDiffManagerTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void SubmillisecondSamples_UseTimestampQuantizationAndRecoverWithMeasuredIntervals(bool idle)
+    public void SubmillisecondSamples_AreMeasuredInsteadOfUnixQuantized(bool idle)
     {
-        var (context, options, clock) = Fixture();
+        var (context, options, clock, time) = Fixture();
         context.VarDiff.TimeBuffer = null;
-        context.VarDiff.LastRetarget = clock.Now.ToUnixSeconds();
-        var start = clock.Now;
-        for(var i = 1; i <= 9; i++)
+        context.VarDiff.LastRetargetTimestamp = time.GetTimestamp();
+        for(var i = 0; i < 9; i++)
         {
-            clock.CurrentTime = start.AddTicks(i * 1000); // 0.1 ms steps in one bucket.
-            Assert.Equal(start.ToUnixSeconds(), clock.Now.ToUnixSeconds());
-            Assert.Equal(start.ToUnixSeconds(), new DateTimeOffset(clock.Now).ToUnixSeconds());
+            time.AdvanceMonotonic(TimeSpan.FromTicks(1000)); // 0.1 ms, wall clock frozen.
             Assert.Null(VarDiffManager.Update(context, options, clock));
         }
         Assert.Equal(9, context.VarDiff.TimeBuffer.Size);
-        context.VarDiff.LastRetarget -= 100; // Make the collected window eligible.
+        Assert.All(context.VarDiff.TimeBuffer, x => Assert.Equal(0.0001, x));
+        options.RetargetTime = 1e-7;
+        if(idle)
+            time.AdvanceMonotonic(TimeSpan.FromTicks(1));
+        context.VarDiff.LastRetargetTimestamp -= 100 * TimeSpan.TicksPerSecond;
         var difficulty = idle ? VarDiffManager.IdleUpdate(context, options, clock) :
             VarDiffManager.Update(context, options, clock);
-        Assert.Equal(1000000d, difficulty);
+        Assert.Equal(1000000, difficulty.Value); // Measured intervals remain, inferred rate is floored.
         context.SetDifficulty(difficulty.Value);
-        clock.CurrentTime = start.AddMilliseconds(5);
-        Assert.Equal(DateExtensions.UnixSecondsResolution * 5,
-            clock.Now.ToUnixSeconds() - start.ToUnixSeconds(), 10);
-        context.VarDiff.LastRetarget -= 100;
+        time.AdvanceMonotonic(TimeSpan.FromMilliseconds(5));
+        context.VarDiff.LastRetargetTimestamp -= 100 * TimeSpan.TicksPerSecond;
         var measured = idle ? VarDiffManager.IdleUpdate(context, options, clock) :
             VarDiffManager.Update(context, options, clock);
-        Assert.InRange(measured.Value, 1999999999d, 2000000001d);
+        Assert.InRange(measured.Value / (difficulty.Value * 10 / 0.005), 0.999999999, 1.000000001);
     }
 
     [Theory]
@@ -325,7 +420,7 @@ public class VarDiffManagerTests
     [InlineData(0d)]
     public void TimingConfiguration_RejectsNonfiniteAndNonpositiveValues(double value)
     {
-        var (_, options, _) = Fixture();
+        var (_, options, _, _) = Fixture();
         var validator = new VarDiffConfigValidator();
         options.TargetTime = value;
         Assert.Contains(validator.Validate(options).Errors, x => x.PropertyName == nameof(options.TargetTime));
@@ -345,7 +440,7 @@ public class VarDiffManagerTests
     [InlineData(double.NegativeInfinity, false)]
     public void DeltaConfiguration_PreservesDisabledLimitAndRejectsInvalidValues(double? value, bool valid)
     {
-        var (_, options, _) = Fixture();
+        var (_, options, _, _) = Fixture();
         options.MaxDelta = value;
         Assert.Equal(valid, new VarDiffConfigValidator().Validate(options).IsValid);
     }

@@ -32,16 +32,23 @@ wallet balances or recovery files.
 | Use REST, WebSocket events, metrics or administration | [API and monitoring](api.md) |
 | Provision and rotate administrative credentials | [Administrative API security](admin-api-security.md) |
 | Interpret safe daemon error logs and payout alerts | [RPC consumer diagnostics](rpc-consumer-diagnostics.md) |
+| Review shared HTTP daemon error formats and preserved error codes | [Daemon error compatibility](rpc-daemon-error-compatibility.md) |
 | Interpret safe miner transport and rejection logs | [Stratum diagnostics](stratum-diagnostics.md) |
 | Bound reconnect churn and size shared-address/proxy startup allowances | [Stratum connection admission](stratum-connection-admission.md) |
+| Review VarDiff clock corrections, lifecycle and validation | [Monotonic VarDiff timing](vardiff-monotonic.md) |
+| Enforce client bans without automatically banning shared proxies | [Stratum ban attribution](stratum-ban-attribution.md) |
 | Deploy distributed Stratum/recorder roles | [Share relays](share-relays.md) |
 | Pay canonical Bitcoin SOLO miners directly in the coinbase | [Bitcoin direct-coinbase SOLO](bitcoin-direct-solo.md) |
 | Configure and operate Bitcoin-family PPS | [PPS](pps.md) |
+| Activate exact PPS arithmetic while preserving legacy liabilities | [PPS arithmetic migration](pps-arithmetic-migration.md) |
 | Configure Litecoin–Dogecoin merged mining | [Merged mining](merged-mining-litecoin-dogecoin.md) |
 | Configure and commission DigiByte direct mining | [DigiByte](digibyte.md) |
 | Configure the separate Bitcoin BLAKE2b header-v2 chain | [Bitcoin BLAKE2b](bitcoin-blake2b.md) |
+| Review the Knots 29.4.2 maturity/RPC upgrade and DATUM handoff | [Knots 29.4.2 compatibility review](bitcoin-blake2b-knots-29.4.2-review.md) |
 | Review Scrypt daemon/template provenance | [Scrypt coin definitions](scrypt-coin-definitions.md) |
 | Review Bitcoin-family BIP310 mask safety | [Version rolling](version-rolling.md) |
+| Preserve outstanding work when miners or proxies repeat subscribe | [Bitcoin subscription policy](bitcoin-subscription-policy.md) |
+| Review duplicate-subscription baseline, lab evidence and review dispositions | [Subscription validation record](bitcoin-subscription-validation.md) |
 | Review the daemon-backed merged-mining evidence | [Regtest validation record](merged-mining-regtest-validation.md) |
 | Review dated production evidence and outstanding gates | [Mainnet validation record](mainnet-validation.md) |
 
@@ -61,6 +68,7 @@ wallet balances or recovery files.
 | Maintain deadline-sensitive test isolation | [Integration deadline scheduling](integration-deadline-tests.md) |
 | Maintain payout retry-contention coverage | [Payout persistence tests](payout-persistence-tests.md) |
 | Review Bitcoin-family notification ownership and regression coverage | [Job notification snapshots](bitcoin-job-notifications.md) |
+| Review Bitcoin-family response failures and reconnect behavior | [Response publication policy](bitcoin-response-publication.md) |
 
 The machine-readable configuration reference is
 [`src/Miningcore/config.schema.json`](../src/Miningcore/config.schema.json), and the maintained

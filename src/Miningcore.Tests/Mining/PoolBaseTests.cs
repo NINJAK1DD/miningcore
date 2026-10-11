@@ -24,6 +24,7 @@ using Miningcore.Stratum;
 using Miningcore.Time;
 using Newtonsoft.Json;
 using NSubstitute;
+using NLog;
 using Xunit;
 
 namespace Miningcore.Tests.Mining;
@@ -31,6 +32,83 @@ namespace Miningcore.Tests.Mining;
 public class PoolBaseTests
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
+
+    [Fact]
+    public async Task NicehashLookup_ForwardsRequestCancellationToHttp()
+    {
+        using var container = BuildContainer();
+        using var handler = new CancelableNicehashHandler();
+        using var http = new HttpClient(handler);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        using var logs = new LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${level}|${message}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(LogLevel.Error, LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        var pool = new TestPool(container, Substitute.For<IMessageBus>(), new NicehashService(factory, cache, logs.GetLogger("cancel")));
+        pool.Configure(new PoolConfig { Id = "nicehash-cancel", Template = new BitcoinTemplate { Symbol = "BTC" } },
+            new ClusterConfig { Nicehash = new NicehashClusterConfig { EnableAutoDiff = true } });
+        using var cancel = new CancellationTokenSource();
+        var lookup = pool.LookupNicehash(new WorkerContextBase { UserAgent = "NiceHash" }, cancel.Token);
+        await handler.Entered.Task.WaitAsync(TestTimeout);
+        cancel.Cancel();
+        await handler.Canceled.Task.WaitAsync(TestTimeout);
+        // Expected disconnect/shutdown cancellation returns no override quietly.
+        // The caller's subsequent gate acquisition observes the canceled request.
+        Assert.Null(await lookup.WaitAsync(TestTimeout));
+        Assert.Empty(target.Logs);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task NicehashLookup_IndependentTimeoutAndHttpFailuresRemainVisible(bool timeout)
+    {
+        using var cancel = new CancellationTokenSource();
+        using var handler = new FailingNicehashHandler(timeout);
+        using var http = new HttpClient(handler);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        using var logs = new LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${level}|${message}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(LogLevel.Error, LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        var service = new NicehashService(factory, cache, logs.GetLogger("independent"));
+        Assert.Null(await service.GetStaticDiff("Bitcoin", "SHA256", cancel.Token).WaitAsync(TestTimeout));
+        Assert.False(cancel.IsCancellationRequested);
+        Assert.Single(target.Logs);
+        Assert.Contains(timeout ? "independent timeout" : "independent HTTP failure", target.Logs[0]);
+    }
+
+    private sealed class FailingNicehashHandler(bool timeout) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            return Task.FromException<HttpResponseMessage>(timeout ? new OperationCanceledException("independent timeout") :
+                new HttpRequestException("independent HTTP failure"));
+        }
+    }
+
+    private sealed class CancelableNicehashHandler : HttpMessageHandler
+    {
+        internal readonly TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal readonly TaskCompletionSource Canceled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Entered.TrySetResult();
+            try { await Task.Delay(Timeout.InfiniteTimeSpan, ct); }
+            catch(OperationCanceledException) when(ct.IsCancellationRequested)
+            {
+                Canceled.TrySetResult();
+                throw;
+            }
+            throw new InvalidOperationException("Expected cancellation");
+        }
+    }
 
     [Fact]
     public async Task RunAsync_InternalStratumWithoutReservation_FailsBeforeOnline()
@@ -247,6 +325,9 @@ public class PoolBaseTests
 
     private sealed class TestPool : PoolBase
     {
+        internal Task<double?> LookupNicehash(WorkerContextBase worker, CancellationToken ct) =>
+            GetNicehashStaticMinDiff(worker, "Bitcoin", "SHA256", ct);
+
         public TestPool(IComponentContext ctx, IMessageBus messageBus,
             NicehashService nicehashService) : base(ctx,
             new JsonSerializerSettings(),

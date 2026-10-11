@@ -67,8 +67,8 @@
 
     <ItemGroup>
         <PackageReference Include="AspNetCoreRateLimit" Version="5.0.0" />
-        <PackageReference Include="Autofac" Version="9.3.2" />
-        <PackageReference Include="Autofac.Extensions.DependencyInjection" Version="10.0.0" />
+        <PackageReference Include="Autofac" Version="9.3.4" />
+        <PackageReference Include="Autofac.Extensions.DependencyInjection" Version="11.0.2" />
         <PackageReference Include="CircularBuffer" Version="1.4.0" />
         <PackageReference Include="blake3" Version="3.0.2" />
         <PackageReference Include="GitVersion.MsBuild" Version="6.8.2">
@@ -235,4 +235,7 @@
             <ContentWithTargetPath Include="@(Libs->'%(FullPath)')" RelativePath="%(Libs.Identity)" TargetPath="%(Libs.Filename)%(Libs.Extension)" CopyToPublishDirectory="PreserveNewest" />
         </ItemGroup>
     </Target>
+    <ItemGroup>
+        <EmbeddedResource Include="Persistence/Postgres/Scripts/add_pps_arithmetic_version.sql" />
+    </ItemGroup>
 </Project>

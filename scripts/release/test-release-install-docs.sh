@@ -9,6 +9,7 @@ document="$repository_root/docs/releases.md"
 readme="$repository_root/README.md"
 config_example="$repository_root/config.example.json"
 pps_document="$repository_root/docs/pps.md"
+pps_arithmetic_document="$repository_root/docs/pps-arithmetic-migration.md"
 database_document="$repository_root/docs/database.md"
 merged_mining_document="$repository_root/docs/merged-mining-litecoin-dogecoin.md"
 bitcoin_direct_document="$repository_root/docs/bitcoin-direct-solo.md"
@@ -466,6 +467,11 @@ assert_file_contains 'the pre-release direct-journal quarantine boundary' \
 assert_file_contains 'the release-level direct-SOLO downgrade prohibition' \
   'not roll the binary back below the release containing this feature when' \
   "$document"
+assert_file_contains 'the standalone packaged PPS arithmetic migration' \
+  '$MININGCORE_CANDIDATE_DIR/migrations/add_pps_arithmetic_version.sql' "$pps_arithmetic_document"
+for guide in "$pps_document" "$database_document" "$document"; do
+  assert_file_contains 'the cumulative PPS arithmetic migration' 'includes `add_pps_arithmetic_version.sql`' "$guide"
+done
 for migration in add_auxpow_block_idempotency.sql \
     add_payout_manager_ownership.sql add_share_accounting.sql; do
   assert_file_contains "the PPS $migration migration requirement" \
@@ -496,7 +502,7 @@ fi
 if grep -Fq 'src/Miningcore/Persistence/Postgres/Scripts/' \
     <<<"$database_upgrade_section" ||
     grep -Fq 'src/Miningcore/Persistence/Postgres/Scripts/' \
-      "$pps_document" "$merged_mining_document"; then
+      "$pps_document" "$merged_mining_document" "$pps_arithmetic_document"; then
   echo 'An existing-database guide has a repository-only executable migration path' >&2
   exit 1
 fi

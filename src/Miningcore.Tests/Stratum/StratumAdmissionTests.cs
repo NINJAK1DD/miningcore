@@ -414,21 +414,22 @@ public partial class StratumAdmissionTests
         internal bool ThrowOnConnect;
         internal Server(StratumAdmissionConfig config, TimeProvider time = null,
             TcpProxyProtocolConfig proxy = null, int ports = 1, bool tlsAuto = false, ILogger log = null,
-            string tlsCertificate = null) : base(
+            string tlsCertificate = null, IBanManager bans = null, IPAddress listenAddress = null,
+            ClusterConfig cluster = null, PoolEndpoint endpointConfig = null) : base(
             new ContainerBuilder().Build(), Substitute.For<IMessageBus>(), new RecyclableMemoryStreamManager(),
             Substitute.For<IMasterClock>())
         {
             logger = log ?? new NullLogger(LogManager.LogFactory);
-            banManager = Substitute.For<IBanManager>();
-            clusterConfig = new ClusterConfig { Banning = new ClusterBanningConfig { BanOnJunkReceive = true } };
+            banManager = bans ?? Substitute.For<IBanManager>();
+            clusterConfig = cluster ?? new ClusterConfig { Banning = new ClusterBanningConfig { BanOnJunkReceive = true } };
             // Isolate static Prometheus children across concurrently running tests.
             poolConfig = new PoolConfig { Id = Guid.NewGuid().ToString("N"), ConnectionAdmission = config };
             AdmissionTimeProvider = time ?? TimeProvider.System;
             var reservations = Enumerable.Range(0, ports).Select(_ =>
             {
-                var socket = CreateBoundSocket(new IPEndPoint(IPAddress.Loopback, 0));
+                var socket = CreateBoundSocket(new IPEndPoint(listenAddress ?? IPAddress.Loopback, 0));
                 var endpoint = new StratumEndpoint((IPEndPoint) socket.LocalEndPoint,
-                    new PoolEndpoint { TcpProxyProtocol = proxy, TlsAuto = tlsAuto,
+                    endpointConfig ?? new PoolEndpoint { TcpProxyProtocol = proxy, TlsAuto = tlsAuto,
                         Tls = tlsCertificate != null, TlsPfxFile = tlsCertificate });
                 var reservation = new StratumListenerReservation(poolConfig.Id, endpoint, socket);
                 reservation.Activate();
@@ -436,6 +437,13 @@ public partial class StratumAdmissionTests
             }).ToArray();
             Reservations = reservations;
             endpoints = reservations.Select(x => x.Endpoint.IPEndPoint).ToArray();
+            if(cluster == null)
+            {
+                poolConfig.Enabled = true;
+                poolConfig.EnableInternalStratum = true;
+                poolConfig.Ports = reservations.ToDictionary(x => x.Endpoint.IPEndPoint.Port, x => x.Endpoint.PoolEndpoint);
+                clusterConfig.Pools = new[] { poolConfig };
+            }
             run = RunAsync(stop.Token, reservations);
         }
         internal async Task<TcpClient> Connect(int port = 0, IPAddress source = null)
@@ -472,6 +480,10 @@ public partial class StratumAdmissionTests
         }
         internal Task Empty() => Until(() => TrackedConnectionTaskCount == 0 && ConnectionAdmission.Snapshot.Active == 0);
         internal Task Account(Miningcore.Blockchain.Share share, Func<Task> acknowledge) => PublishShareAndAcknowledgeAsync(share, acknowledge);
+        internal bool BanAutomatically(StratumConnection connection) => BanClient(connection, TimeSpan.FromMinutes(3));
+        internal void DisableBanManager() => banManager = null;
+        internal void SetJunkBanPolicy(string policy) => clusterConfig.Banning = policy == "missing" ? null :
+            new ClusterBanningConfig { BanOnJunkReceive = policy == "unset" ? null : policy == "enabled" };
         protected override Task BeforeConnectionTaskRemovalAsync(string id) => BeforeRemoval?.Invoke() ?? Task.CompletedTask;
         protected override void OnConnect(StratumConnection connection, IPEndPoint endpoint)
         {

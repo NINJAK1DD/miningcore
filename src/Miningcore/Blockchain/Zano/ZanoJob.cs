@@ -66,15 +66,26 @@ public class ZanoJob
 
     protected virtual string EncodeTarget(double difficulty, int size = 32)
     {
-        var diff = BigInteger.ValueOf((long) (difficulty * 255d));
+        if(size == 4) Cryptonote.CryptonoteDifficulty.ValidateShortAssignment(difficulty);
+        else Cryptonote.CryptonoteDifficulty.Validate(difficulty, Cryptonote.CryptonoteDifficulty.FullTargetMaximum);
+        var diff = BigInteger.ValueOf(checked((long) (difficulty * 255d)));
         var quotient = ZanoConstants.Diff1.Divide(diff).Multiply(BigInteger.ValueOf(255));
         var bytes = quotient.ToByteArray().AsSpan();
         Span<byte> padded = stackalloc byte[ZanoConstants.TargetPaddingLength];
+        padded.Clear();
 
         var padLength = padded.Length - bytes.Length;
 
         if(padLength > 0)
             bytes.CopyTo(padded.Slice(padLength, bytes.Length));
+        else
+            bytes.Slice(bytes.Length - padded.Length, padded.Length).CopyTo(padded);
+
+        if(padded[..size].IndexOfAnyExcept((byte) 0) < 0)
+            throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty produces a zero target");
+
+        if(size == 4 && System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(padded[..4]) < Cryptonote.CryptonoteDifficulty.ShortTargetMinimum)
+            throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty exceeds the short-target precision limit");
 
         padded = padded[..size];
 
@@ -89,6 +100,7 @@ public class ZanoJob
 
     public virtual ZanoWorkerJob PrepareWorkerJob(double difficulty)
     {
+        Cryptonote.CryptonoteDifficulty.Validate(difficulty, Cryptonote.CryptonoteDifficulty.FullTargetMaximum);
         var workerExtraNonce = (uint) Interlocked.Increment(ref extraNonce);
 
         if(extraNonce < 0)
@@ -155,7 +167,7 @@ public class ZanoJob
         var result = new Share
         {
             BlockHeight = BlockTemplate.Height,
-            Difficulty = stratumDifficulty / shareMultiplier,
+            Difficulty = Cryptonote.CryptonoteDifficulty.NormalizeShareCredit(stratumDifficulty, shareMultiplier),
         };
 
         if(isBlockCandidate)

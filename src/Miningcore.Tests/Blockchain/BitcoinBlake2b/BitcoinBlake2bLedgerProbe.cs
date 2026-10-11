@@ -15,6 +15,7 @@ using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
 using Npgsql;
 using NSubstitute;
+using Miningcore.Tests.Util.Postgres;
 using Xunit;
 
 namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
@@ -39,12 +40,25 @@ internal sealed class BitcoinBlake2bLedgerProbe : IAsyncDisposable
     private BitcoinBlake2bLedgerProbe() => connection = new NpgsqlConnection(
         Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"));
 
-    internal static async Task<BitcoinBlake2bLedgerProbe> CreateAsync()
+    internal NpgsqlConnection Observer => connection;
+    internal PgConnectionFactory Factory => new(new NpgsqlConnectionStringBuilder(
+        Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES")) { SearchPath = schema + ",public" }.ConnectionString);
+
+    internal static async Task<BitcoinBlake2bLedgerProbe> CreateAsync(bool fullSchema = false)
     {
         var probe = new BitcoinBlake2bLedgerProbe();
         await probe.connection.OpenAsync();
         try
         {
+            if(fullSchema)
+            {
+                await probe.connection.ExecuteAsync($"CREATE SCHEMA {probe.schema}; SET search_path TO {probe.schema}, public");
+                // Production schema/constraints in an owned disposable namespace.
+                // Retain the test connection's role instead of changing lab roles.
+                var production = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("createdb.sql"));
+                await probe.connection.ExecuteAsync(production.Replace("SET ROLE miningcore;", string.Empty, StringComparison.Ordinal));
+                return probe;
+            }
             await probe.connection.ExecuteAsync($@"
                 CREATE SCHEMA {probe.schema}; SET search_path TO {probe.schema}, public;
                 CREATE TABLE shares(
@@ -60,8 +74,7 @@ internal sealed class BitcoinBlake2bLedgerProbe : IAsyncDisposable
                 CREATE TABLE balance_changes(
                     id bigserial PRIMARY KEY, poolid text NOT NULL, address text NOT NULL,
                     amount decimal(28,12) NOT NULL, usage text NULL, tags text[] NULL, created timestamptz NOT NULL);");
-            var migration = await File.ReadAllTextAsync(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-                "../../../../Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql")));
+            var migration = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_share_accounting.sql"));
             await probe.connection.ExecuteAsync(migration.Replace("\\set ON_ERROR_STOP on", string.Empty, StringComparison.Ordinal));
             return probe;
         }

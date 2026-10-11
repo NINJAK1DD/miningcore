@@ -169,7 +169,7 @@ public class KaspaPool : PoolBase
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
             // Nicehash support
-            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName(), ct);
 
             if(nicehashDiff.HasValue)
             {
@@ -184,29 +184,36 @@ public class KaspaPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                // There are several reports of IDIOTS mining with ridiculous amount of hashrate and maliciously using a very low staticDiff in order to attack mining pools.
-                // StaticDiff is now disabled by default for the KASPA family. Use it at your own risks.
-                if(extraPoolConfig.EnableStaticDifficulty)
-                    context.VarDiff = null; // disable vardiff
+                assignmentGate.Activate();
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue &&
+                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
+                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                {
+                    // There are several reports of IDIOTS mining with ridiculous amount of hashrate and maliciously using a very low staticDiff in order to attack mining pools.
+                    // StaticDiff is now disabled by default for the KASPA family. Use it at your own risks.
+                    if(extraPoolConfig.EnableStaticDifficulty)
+                        context.VarDiff = null; // disable vardiff
 
-                context.SetDifficulty(staticDiff.Value);
+                    context.SetDifficulty(staticDiff.Value);
 
-                if(extraPoolConfig.EnableStaticDifficulty)
-                    logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
-                else
-                    logger.Warn(() => $"[{connection.ConnectionId}] Requesting static difficulty of {staticDiff.Value} (Request has been ignored and instead used as 'initial difficulty' for varDiff)");
+                    if(extraPoolConfig.EnableStaticDifficulty)
+                        logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                    else
+                        logger.Warn(() => $"[{connection.ConnectionId}] Requesting static difficulty of {staticDiff.Value} (Request has been ignored and instead used as 'initial difficulty' for varDiff)");
+                }
+
+                var minerJobParams = CreateWorkerJob(connection);
+
+                // send intial update
+                await connection.NotifyAsync(KaspaStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                await SendJob(connection, context, minerJobParams);
             }
-
-            var minerJobParams = CreateWorkerJob(connection);
-
-            // send intial update
-            await connection.NotifyAsync(KaspaStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-            await SendJob(connection, context, minerJobParams);
+            finally { assignmentGate.Release(); }
         }
 
         else
@@ -216,9 +223,8 @@ public class KaspaPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
-
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+                if(BanClient(connection, loginFailureBanTimeout))
+                    logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 Disconnect(connection);
             }
@@ -322,7 +328,7 @@ public class KaspaPool : PoolBase
     {
         logger.Info(() => $"Broadcasting job {jobParams[0]}");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<KaspaWorkerContext>();
 
@@ -472,9 +478,9 @@ public class KaspaPool : PoolBase
         }
     }
 
-    protected override async Task<double?> GetNicehashStaticMinDiff(WorkerContextBase context, string coinName, string algoName)
+    protected override async Task<double?> GetNicehashStaticMinDiff(WorkerContextBase context, string coinName, string algoName, CancellationToken ct)
     {
-        var result = await base.GetNicehashStaticMinDiff(context, coinName, algoName);
+        var result = await base.GetNicehashStaticMinDiff(context, coinName, algoName, ct);
 
         // adjust value to fit with our target value calculation
         if(result.HasValue)
