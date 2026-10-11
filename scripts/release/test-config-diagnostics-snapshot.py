@@ -108,7 +108,9 @@ class SnapshotHelperContract:
             [*self.interpreter, str(self.helper), *arguments],
             cwd=self.root.parent,
             env={**os.environ, "PATH": str(self.bin) + os.pathsep + os.environ["PATH"]},
-            capture_output=True, timeout=15, check=False,
+            # Allow cold PowerShell startup on CI plus the helper's own
+            # 60-second child-process deadline before the test watchdog fires.
+            capture_output=True, timeout=90, check=False,
         )
 
     def assert_invoked(self):
