@@ -73,10 +73,17 @@ public class BeamGpuProofTests
         Assert.NotNull(job);
         var nonce = proof.Value<string>("nonce");
         var solution = proof.Value<string>("solution");
+        // Alias attempts must fail before the native verifier/dedup commit; the
+        // captured genuine GPU proof remains eligible afterward.
+        foreach(var alias in new[] { Miningcore.Tests.Mining.ProofEncodingBoundaryTests.NibbleAlias(nonce), "0x" + nonce, nonce + "f", nonce + "\n" })
+            Assert.Equal(BeamConstants.BeamRpcShareBadNonce, job.ProcessShare(worker, alias, solution).stratumError);
+        foreach(var alias in new[] { Miningcore.Tests.Mining.ProofEncodingBoundaryTests.NibbleAlias(solution), "0x" + solution, solution + "f", solution + "\n" })
+            Assert.Equal(BeamConstants.BeamRpcShareBadSolution, job.ProcessShare(worker, nonce, alias).stratumError);
         var result = job.ProcessShare(worker, nonce, solution);
         Assert.Equal(BeamConstants.BeamRpcShareAccepted, result.stratumError);
         Assert.False(result.Share.IsBlockCandidate);
         Assert.Equal(proof.Value<double>("credit"), result.Share.Difficulty);
         Assert.Equal(BeamConstants.BeamRpcDuplicateShare, job.ProcessShare(worker, nonce, solution).stratumError);
+        Assert.Equal(BeamConstants.BeamRpcDuplicateShare, job.ProcessShare(worker, nonce.ToUpperInvariant(), solution.ToUpperInvariant()).stratumError);
     }
 }

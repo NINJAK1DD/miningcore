@@ -142,6 +142,60 @@ public class DifficultyReviewHardeningTests
     }
 
     [Fact]
+    public void ActiveNumericRegistryAndCompatibilityKeepTemplateIdentityAcrossCounterWrap()
+    {
+        var counter = new Counter();
+        typeof(JobManagerBase<object>).GetField("jobId", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(counter, int.MaxValue - 1);
+        var worker = new KaspaWorkerContext();
+        worker.Init(10, null, new MockMasterClock());
+        var source = Kaspa(counter.NextWorkerJobId("D"));
+        var old = source.ForWorker(worker, () => counter.NextWorkerJobId("D"));
+        worker.AddJob(old, 4);
+        worker.SetDifficulty(40);
+        var current = source.ForWorker(worker, () => counter.NextWorkerJobId("D"));
+        worker.AddJob(current, 4);
+        var fresh = Kaspa(counter.NextWorkerJobId("D")).ForWorker(worker, () => counter.NextWorkerJobId("D"));
+        worker.AddJob(fresh, 4);
+        Assert.Equal("1", current.JobId);
+        Assert.Equal("2", fresh.JobId);
+        Assert.Same(current, worker.GetJob("1"));
+        Assert.Same(fresh, worker.GetJob("2"));
+        Assert.Same(current, KaspaJobManager.FindCompatibleJob(worker.validJobs, int.MaxValue.ToString()));
+        Assert.Same(fresh, KaspaJobManager.FindCompatibleJob(worker.validJobs, "2"));
+        Assert.Equal(10, worker.ValidateShareDifficulty(20, false, old));
+        Assert.Throws<StratumException>(() => worker.ValidateShareDifficulty(20, false, current));
+        Assert.Equal(40, worker.ValidateShareDifficulty(40, false, current));
+    }
+
+    [Fact]
+    public void ActiveGroupRegistryRetainsOldestTemplateLatestAssignmentAcrossWrap()
+    {
+        var counter = new Counter();
+        typeof(JobManagerBase<object>).GetField("jobId", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(counter, int.MaxValue - 1);
+        var worker = new AlephiumWorkerContext();
+        worker.Init(10, null, new MockMasterClock());
+        AlephiumJob Source()
+        {
+            var result = new AlephiumJob();
+            typeof(AlephiumJob).GetProperty("JobId").SetValue(result, counter.NextWorkerJobId("X"));
+            typeof(AlephiumJob).GetProperty("BlockTemplate").SetValue(result, new AlephiumBlockTemplate { FromGroup = 0, ToGroup = 1 });
+            return result;
+        }
+        var source = Source();
+        var old = source.ForWorker(worker, () => counter.NextWorkerJobId("X"));
+        worker.AddJob(old, 4);
+        worker.SetDifficulty(40);
+        var current = source.ForWorker(worker, () => counter.NextWorkerJobId("X"));
+        worker.AddJob(current, 4);
+        var fresh = Source().ForWorker(worker, () => counter.NextWorkerJobId("X"));
+        worker.AddJob(fresh, 4);
+        Assert.Same(current, worker.GetJob("1"));
+        Assert.Same(fresh, worker.GetJob("2"));
+        Assert.Same(current, AlephiumJobManager.FindCompatibleJob(worker.validJobs, 0, 1));
+        Assert.Throws<StratumException>(() => worker.ValidateShareDifficulty(20, false, current));
+    }
+
+    [Fact]
     public void NumericCompatibilityRetainsOldestTemplateAndLatestAssignment()
     {
         var worker = new WorkerContextBase();

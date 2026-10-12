@@ -179,6 +179,8 @@ public class AlephiumJob
 
         var context = worker.ContextAs<AlephiumWorkerContext>();
         
+        if(!ProofHex.IsExact(nonce, AlephiumConstants.NonceLength * 2))
+            throw new AlephiumStratumException(AlephiumStratumError.InvalidNonce, "invalid nonce");
         if(IsDuplicateSubmit(nonce))
             throw new AlephiumStratumException(AlephiumStratumError.DuplicatedShare, "duplicate share");
         var result = ProcessShareInternal(worker, nonce);

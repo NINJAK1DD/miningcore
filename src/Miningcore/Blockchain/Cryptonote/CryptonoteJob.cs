@@ -158,7 +158,7 @@ public class CryptonoteJob
         var context = worker.ContextAs<CryptonoteWorkerContext>();
 
         // validate nonce
-        if(!CryptonoteConstants.RegexValidNonce.IsMatch(nonce))
+        if(!ProofHex.IsExact(nonce, 8) || !CryptonoteConstants.RegexValidNonce.IsMatch(nonce))
             throw new StratumException(StratumError.MinusOne, "malformed nonce");
 
         // clone template

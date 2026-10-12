@@ -76,10 +76,27 @@ its backing job now records the assignment and shares proof deduplication across
 those IDs without consuming another wire ID for its pool-local snapshot.
 
 Duplicate keys represent the validated proof inputs. Ergo's unused `nTime` cannot
-create another identity for the same nonce bytes. Ethereum/Cortex use the parsed
+create another identity for the same nonce bytes. Ethereum uses the parsed
 64-bit nonce, shared across connections and snapshots of the same template.
-Kaspa canonicalizes the effective 64-bit nonce after extranonce projection.
-Hexadecimal padding, case or supported prefixes cannot mint another credit.
+Cortex additionally includes the verified 42-edge solution, so distinct valid
+cycles on one nonce remain distinct proofs. Kaspa canonicalizes the effective
+64-bit nonce after extranonce projection; short tails use the connection prefix
+followed by a left-padded tail to form exactly 16 hex characters.
+
+Submitted byte fields in Bitcoin/merged mining, Handshake, Satoshicash, Warthog,
+Nexa, Xelis, Alephium, Beam, Progpow and Equihash/Verus require the advertised
+width and only ASCII `[0-9a-fA-F]` before duplicate lookup or expensive proof work.
+Unadvertised `0x` prefixes, odd tails, whitespace and non-hex nibble aliases are
+rejected with the family's existing protocol error. Blob nonces also enforce
+exact width so a regex end anchor cannot admit a trailing newline. Numeric
+Ethereum/Kaspa paths retain their documented normalization. Hex case and supported
+numeric aliases cannot create another accepted credit. The general-purpose
+legacy `HexToByteArray` helper is not a miner-input validator.
+
+Equihash identities include header time as well as nonce/solution. Verus PBaaS
+identifies work using the actual daemon nonce and solution, and commits duplicates
+only after verification and difficulty validation; ignored submitted extranonces
+cannot distinguish the same proof.
 
 CryptoNote, Conceal and Zano retain their unique worker blobs/extranonces. Their
 assignment map is keyed by **template identity plus extranonce**, since a new
@@ -117,6 +134,9 @@ refusals. Refusal leaves target, jobs and daemon validation untouched. There is 
 IP-wide state or background timer. Ordinary authorization and share submissions
 do not spend tokens and remain usable when difficulty tokens are exhausted.
 BLAKE2b retains its separate existing admission and immutable-target contract.
+Bitcoin suggested difficulty parses JSON numbers and strings with invariant
+floating-point syntax, without locale grouping separators. `1.5` always means
+1.5 under en-GB, nl-NL and de-DE; `1,5` and `1,000` are rejected as malformed.
 
 Legacy Ethereum V1 submits only a header, Alephium's IceRiver compatibility
 path can submit only group identity with an incorrect job ID, and Kaspa's
@@ -179,6 +199,12 @@ before gate release. Transport cases cover coalesced and split request receipt
 time across a blocked handler; Kaspa cases retry previously rejected proofs and
 race duplicate aliases.
 Their final hashes are controlled accounting vectors, not consensus evidence.
+Proof-encoding cases exercise real outer validators and shared duplicate registries
+across the remaining families. Cortex tests control verification outcomes for two
+distinct cycles and exercise the native verifier's rejection/retry boundary;
+they do not claim two captured consensus-valid Cortex cycles on one graph.
+The genuine canonical Bitcoin TCP/accounting and captured Beam GPU proofs also
+reject malformed aliases without additional accepted credit.
 The documented BLAKE2b Knots tests continue
 to exercise immutable targets and SOLO/PPS/PROP/PPLNS settlement.
 

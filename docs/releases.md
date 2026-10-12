@@ -33,12 +33,24 @@ an outstanding minimum target before its next job. See the
 header/group-only protocol limits, live tests and custom integration changes.
 No database or relay migration is required. Reconnect workers during rollout.
 
-Ergo, Ethereum/Cortex and Kaspa-family duplicate identities now follow the actual
-validated nonce, preventing unused time fields or equivalent hexadecimal encodings
-from creating additional credit. Rejected proofs remain retryable and concurrent
+Ergo, Ethereum and Kaspa-family duplicate identities follow the actual validated
+nonce. Cortex includes the verified 42-edge solution, preserving distinct valid
+cycles on the same nonce. Submitted byte fields across Bitcoin/merged mining,
+Handshake, Satoshicash, Warthog, Nexa, Xelis, Alephium, Beam, Progpow and
+Equihash/Verus now require advertised widths and strict ASCII hex before proof
+work and duplicate lookup. Prefixes, odd tails, whitespace and non-hex aliases
+are rejected; blob nonces cannot admit a trailing newline. Verus PBaaS duplicates
+use the actual daemon nonce and are committed only after successful validation.
+Rejected proofs remain retryable and concurrent
 aliases have one winner. Ordinary authorization is exempt from the difficulty
 request budget; static/NiceHash hints remain bounded. Invalid Bitcoin suggestions
 are recoverable and unchanged suggestions do not republish work.
+Bitcoin suggestions use invariant floating-point grammar without grouping
+separators on every server locale. Kaspa short nonces use the connection prefix
+plus a left-padded miner tail; full nonces and equivalent short echoes share one
+effective proof identity. Miners must send unprefixed byte fields at the announced
+width. Physical firmware/proxy commissioning should monitor rejected shares,
+duplicate rates, reconnections, accepted difficulty and payout-weighted totals.
 
 The native job counter wraps atomically in its positive range, keeping long-lived
 direct SOLO pools usable without restarting at counter exhaustion. Progpow's

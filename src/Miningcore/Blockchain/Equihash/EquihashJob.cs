@@ -420,16 +420,16 @@ public class EquihashJob
         return (result, null);
     }
 
-    private bool RegisterSubmit(string nonce, string solution)
+    protected bool RegisterSubmit(string nonce, string solution, uint nTime)
     {
-        var key = nonce + solution;
+        var key = nTime.ToString("x8", CultureInfo.InvariantCulture) + ":" + nonce + solution;
 
         return submissions.TryAdd(key, true);
     }
 
-    private bool IsDuplicateSubmit(string nonce, string solution)
+    protected bool IsDuplicateSubmit(string nonce, string solution, uint nTime)
     {
-        var key = nonce + solution;
+        var key = nTime.ToString("x8", CultureInfo.InvariantCulture) + ":" + nonce + solution;
 
         return submissions.ContainsKey(key);
     }
@@ -571,6 +571,9 @@ public class EquihashJob
         var context = worker.ContextAs<EquihashWorkerContext>();
 
         // validate nTime
+        ProofHex.Require(extraNonce2, 64 - context.ExtraNonce1.Length, "extraNonce2");
+        ProofHex.Require(nTime, 8, "ntime");
+        ProofHex.Require(solution, (networkParams.SolutionSize + networkParams.SolutionPreambleSize) * 2, "solution");
         if(nTime.Length != 8)
             throw new StratumException(StratumError.Other, "incorrect size of ntime");
 
@@ -589,10 +592,10 @@ public class EquihashJob
             throw new StratumException(StratumError.Other, "incorrect size of solution");
 
         // dupe check
-        if(IsDuplicateSubmit(nonce, solution))
+        if(IsDuplicateSubmit(nonce, solution, nTimeInt))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
         var result = ProcessShareInternal(worker, nonce, nTimeInt, solution);
-        if(!RegisterSubmit(nonce, solution))
+        if(!RegisterSubmit(nonce, solution, nTimeInt))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
 
         return result;

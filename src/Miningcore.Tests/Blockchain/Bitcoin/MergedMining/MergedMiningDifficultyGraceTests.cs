@@ -53,11 +53,18 @@ public class MergedMiningDifficultyGraceTests : TestBase
         var current = (MergedMiningBitcoinJob) source.ForWorker(context);
         context.AddJob(current, 4);
         MergedMiningShareResult Submit(MergedMiningBitcoinJob job, string nonce) => job.ProcessShareMerged(connection,
-            "00000000000000", template.CurTime.ToStringHex8(), nonce, null);
+            "10000000000000", template.CurTime.ToStringHex8(), nonce, null);
         var accepted = Submit(old, "00000001");
         Assert.Equal(10, accepted.Share.Difficulty);
         Assert.Equal(parentCandidate, accepted.Share.IsBlockCandidate);
         Assert.Equal(auxiliaryCandidate, accepted.AuxPowHex != null);
+        foreach(var alias in new[] { "0g000000000000", "0x10000000000000", "10000000000000f", "10000000000000z" })
+            Assert.Equal(StratumError.Other, Assert.Throws<StratumException>(() => old.ProcessShareMerged(connection,
+                alias, template.CurTime.ToStringHex8(), "00000001", null)).Code);
+        Assert.Equal(StratumError.Other, Assert.Throws<StratumException>(() => old.ProcessShareMerged(connection,
+            "10000000000000", template.CurTime.ToStringHex8(), " 0000001", null)).Code);
+        Assert.Equal(StratumError.Other, Assert.Throws<StratumException>(() => old.ProcessShareMerged(connection,
+            "10000000000000", " " + template.CurTime.ToStringHex8()[1..], "00000001", null)).Code);
         Assert.Equal((int) StratumError.DuplicateShare,
             (int) Assert.Throws<StratumException>(() => Submit(current, "00000001")).Code);
         time.AdvanceMonotonic(TimeSpan.FromSeconds(30));

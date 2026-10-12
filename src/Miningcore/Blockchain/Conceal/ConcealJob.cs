@@ -129,7 +129,7 @@ public class ConcealJob
         var context = worker.ContextAs<ConcealWorkerContext>();
 
         // validate nonce
-        if(!ConcealConstants.RegexValidNonce.IsMatch(nonce))
+        if(!ProofHex.IsExact(nonce, 8) || !ConcealConstants.RegexValidNonce.IsMatch(nonce))
             throw new StratumException(StratumError.MinusOne, "malformed nonce");
 
         // clone template

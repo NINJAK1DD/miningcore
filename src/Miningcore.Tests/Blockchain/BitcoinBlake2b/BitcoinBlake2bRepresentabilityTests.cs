@@ -155,19 +155,31 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         finally { CultureInfo.CurrentCulture = previous; }
     }
 
-    [Fact]
-    public async Task CanonicalSuggestion_RetainsItsLegacyCultureConversion()
+    [Theory]
+    [InlineData("en-GB")]
+    [InlineData("nl-NL")]
+    [InlineData("de-DE")]
+    public async Task CanonicalSuggestion_UsesInvariantWireGrammar(string culture)
     {
         var previous = CultureInfo.CurrentCulture;
         try
         {
-            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("de-DE");
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo(culture);
             var (config, manager, clock, bus) = Fixture();
             config.Template = ModuleInitializer.CoinTemplates["bitcoin"];
             await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: true);
             await wire.SendRequestAsync("mining.suggest_difficulty", "1.5");
             Assert.True((await wire.ReadAsync())["result"].Value<bool>());
-            Assert.Equal(15, (await wire.ReadAsync())["params"][0].Value<double>());
+            Assert.Equal(1.5, (await wire.ReadAsync())["params"][0].Value<double>());
+            await wire.SendRequestAsync("mining.suggest_difficulty", 2.5);
+            Assert.True((await wire.ReadAsync())["result"].Value<bool>());
+            Assert.Equal(2.5, (await wire.ReadAsync())["params"][0].Value<double>());
+            foreach(var invalid in new[] { "3,5", "1,000", "1.000,5" })
+            {
+                await wire.SendRequestAsync("mining.suggest_difficulty", invalid);
+                Assert.False((await wire.ReadAsync())["result"].Value<bool>());
+                Assert.Equal(2.5, wire.Connection.Context.Difficulty);
+            }
             await wire.SendRequestAsync("mining.extranonce.subscribe");
             var fence = await wire.ReadAsync();
             Assert.Null(fence["method"]);

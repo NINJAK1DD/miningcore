@@ -200,6 +200,9 @@ public class SatoshicashJob : BitcoinJob
         var context = worker.ContextAs<SatoshicashWorkerContext>();
 
         // validate nTime
+        ProofHex.Require(extraNonce2, BitcoinConstants.ExtranoncePlaceHolderLength * 2 - context.ExtraNonce1.Length, "extraNonce2");
+        ProofHex.Require(nTime, 8, "ntime");
+        ProofHex.Require(nonce, 8, "nonce");
         if(nTime.Length != 8)
             throw new StratumException(StratumError.Other, "incorrect size of ntime");
 

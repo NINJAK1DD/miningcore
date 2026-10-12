@@ -72,7 +72,7 @@ public partial class BitcoinPublicationRegtestTests
         Assert.NotNull(oldJob);
         var probe = manager.ProbeJob();
         var ntime = template.CurTime.ToStringHex8();
-        const string extranonce2 = "00000000000000";
+        const string extranonce2 = "10000000000000";
         var nonces = new List<string>();
         string currentNonce = null;
         for(uint i = 0; i < 10000 && (nonces.Count < 4 || currentNonce == null); i++)
@@ -113,6 +113,13 @@ public partial class BitcoinPublicationRegtestTests
         Assert.True((await Submit(oldId, nonces[0]))["result"].Value<bool>());
         Assert.Equal(2e-10 / coin.ShareMultiplier, ledger.Accepted.Difficulty);
         await ledger.AssertSingleCreditAsync();
+        foreach(var alias in new[] { "0g000000000000", "0x" + extranonce2, extranonce2 + "f", extranonce2 + "z", extranonce2 + "\n" })
+        {
+            var reply = await wire.RequestAsync("mining.submit", destination + ".worker", oldId,
+                alias, ntime, nonces[0], "00000000");
+            Assert.Equal((int) StratumError.Other, reply["error"]["code"].Value<int>());
+            await ledger.AssertSingleCreditAsync();
+        }
         Assert.NotNull((await Submit(currentId, nonces[1]))["error"]); // Below current announced target.
         Assert.Equal((int) StratumError.DuplicateShare,
             (await Submit(currentId, nonces[0]))["error"]["code"].Value<int>()); // Same proof under a new ID.

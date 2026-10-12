@@ -124,7 +124,7 @@ public class ZanoJob
         var context = worker.ContextAs<ZanoWorkerContext>();
 
         // validate nonce
-        if(!ZanoConstants.RegexValidNonce.IsMatch(nonce))
+        if(!ProofHex.IsExact(nonce, 16) || !ZanoConstants.RegexValidNonce.IsMatch(nonce))
             throw new StratumException(StratumError.MinusOne, "malformed nonce");
 
         if(!ulong.TryParse(nonce, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var fullNonce))

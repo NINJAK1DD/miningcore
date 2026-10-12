@@ -28,6 +28,9 @@ public class ProgpowWorkerJob
         var context = worker.ContextAs<ProgpowWorkerContext>();
 
         // mixHash
+        ProofHex.Require(nonce, 16, "nonce");
+        ProofHex.Require(headerHash, 64, "header hash");
+        ProofHex.Require(mixHash, 64, "mix hash");
         if(mixHash.Length != 64)
             throw new StratumException(StratumError.Other, $"incorrect size of mixHash: {mixHash}");
 

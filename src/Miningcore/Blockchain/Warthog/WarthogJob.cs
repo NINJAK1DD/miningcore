@@ -323,6 +323,9 @@ public class WarthogJob
         var context = worker.ContextAs<WarthogWorkerContext>();
 
         // validate nTime
+        ProofHex.Require(extraNonce2, WarthogConstants.ExtranoncePlaceHolderLength * 2 - context.ExtraNonce1.Length, "extraNonce2");
+        ProofHex.Require(nTime, 8, "ntime");
+        ProofHex.Require(nonce, WarthogConstants.NonceLength, "nonce");
         if(nTime.Length != 8)
             throw new StratumException(StratumError.Other, "incorrect size of ntime");
 

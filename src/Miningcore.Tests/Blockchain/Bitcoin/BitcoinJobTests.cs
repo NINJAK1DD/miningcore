@@ -336,7 +336,7 @@ public class BitcoinJobTests : TestBase
         // still exercises the "accepted share" path deterministically on Linux/current native libs.
         var (job, worker) = CreateJob(0.000000000001d);
 
-        var submitParams = JsonConvert.DeserializeObject<object[]>("[\"yXHmbak4AdgK5vWamwqFtEijn2NpgLvmi4\",\"00000001\",\"01000000\",\"63445774\",\"51036775\"]", jsonSerializerSettings);
+        var submitParams = JsonConvert.DeserializeObject<object[]>("[\"yXHmbak4AdgK5vWamwqFtEijn2NpgLvmi4\",\"00000001\",\"01000000000000\",\"63445774\",\"51036775\"]", jsonSerializerSettings);
 
         // extract params
         var extraNonce2 = submitParams[2] as string;
@@ -360,7 +360,7 @@ public class BitcoinJobTests : TestBase
         // Use the same low share difficulty as Process_Valid_Block so the first submit is accepted.
         var (job, worker) = CreateJob(0.000000000001d);
 
-        var submitParams = JsonConvert.DeserializeObject<object[]>("[\"yXHmbak4AdgK5vWamwqFtEijn2NpgLvmi4\",\"00000001\",\"01000000\",\"63445774\",\"51036775\"]", jsonSerializerSettings);
+        var submitParams = JsonConvert.DeserializeObject<object[]>("[\"yXHmbak4AdgK5vWamwqFtEijn2NpgLvmi4\",\"00000001\",\"01000000000000\",\"63445774\",\"51036775\"]", jsonSerializerSettings);
 
         // extract params
         var extraNonce2 = submitParams[2] as string;
@@ -390,7 +390,7 @@ public class BitcoinJobTests : TestBase
         worker.ContextAs<BitcoinWorkerContext>().VersionRollingMask = 0x1fffe000;
 
         var ex = Assert.Throws<StratumException>(() => job.ProcessShare(worker,
-            "01000000", "63445774", "51036775", versionBits));
+            "01000000000000", "63445774", "51036775", versionBits));
 
         Assert.Contains(expectedMessage, ex.Message);
     }
@@ -402,7 +402,7 @@ public class BitcoinJobTests : TestBase
         worker.ContextAs<BitcoinWorkerContext>().VersionRollingMask = 0x00002000;
 
         var ex = Assert.Throws<StratumException>(() => job.ProcessShare(worker,
-            "01000000", "63445774", "51036775", "00004000"));
+            "01000000000000", "63445774", "51036775", "00004000"));
 
         Assert.Contains("rolling-version mask violation", ex.Message);
     }
@@ -413,15 +413,15 @@ public class BitcoinJobTests : TestBase
         var (job, worker) = CreateJob(0.000000000001d);
         worker.ContextAs<BitcoinWorkerContext>().VersionRollingMask = 0x1fffe000;
 
-        var first = job.ProcessShare(worker, "01000000", "63445774",
+        var first = job.ProcessShare(worker, "01000000000000", "63445774",
             "51036775", "00002000");
-        var second = job.ProcessShare(worker, "01000000", "63445774",
+        var second = job.ProcessShare(worker, "01000000000000", "63445774",
             "51036775", "00004000");
 
         Assert.NotNull(first.Share);
         Assert.NotNull(second.Share);
         var duplicate = Assert.Throws<StratumException>(() => job.ProcessShare(worker,
-            "01000000", "63445774", "51036775", "00002000"));
+            "01000000000000", "63445774", "51036775", "00002000"));
         Assert.Equal(StratumError.DuplicateShare, duplicate.Code);
     }
 
@@ -431,7 +431,7 @@ public class BitcoinJobTests : TestBase
         var (job, worker) = CreateJob(0.000000000001d);
         worker.ContextAs<BitcoinWorkerContext>().VersionRollingMask = 0x1fffe000;
 
-        var result = job.ProcessShare(worker, "01000000", "63445774",
+        var result = job.ProcessShare(worker, "01000000000000", "63445774",
             "51036775", "00000000");
 
         Assert.NotNull(result.Share);
@@ -475,7 +475,7 @@ public class BitcoinJobTests : TestBase
         });
 
         var ex = Assert.Throws<StratumException>(() => job.ProcessShareMerged(worker,
-            "01000000", "63445774", "51036775", versionBits));
+            "01000000000000", "63445774", "51036775", versionBits));
 
         Assert.Contains(expectedMessage, ex.Message);
     }
@@ -485,7 +485,7 @@ public class BitcoinJobTests : TestBase
     {
         var (job, worker) = CreateJob();
 
-        var submitParams = JsonConvert.DeserializeObject<object[]>("[\"yXHmbak4AdgK5vWamwqFtEijn2NpgLvmi4\",\"00000001\",\"01000000\",\"63445774\",\"61036775\"]", jsonSerializerSettings);
+        var submitParams = JsonConvert.DeserializeObject<object[]>("[\"yXHmbak4AdgK5vWamwqFtEijn2NpgLvmi4\",\"00000001\",\"01000000000000\",\"63445774\",\"61036775\"]", jsonSerializerSettings);
 
         // extract params
         var extraNonce2 = submitParams[2] as string;
@@ -501,7 +501,7 @@ public class BitcoinJobTests : TestBase
     {
         var (job, worker) = CreateJob();
 
-        var submitParams = JsonConvert.DeserializeObject<object[]>("[\"yXHmbak4AdgK5vWamwqFtEijn2NpgLvmi4\",\"00000001\",\"01000000\",\"13445774\",\"51036775\"]", jsonSerializerSettings);
+        var submitParams = JsonConvert.DeserializeObject<object[]>("[\"yXHmbak4AdgK5vWamwqFtEijn2NpgLvmi4\",\"00000001\",\"01000000000000\",\"13445774\",\"51036775\"]", jsonSerializerSettings);
 
         // extract params
         var extraNonce2 = submitParams[2] as string;

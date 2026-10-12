@@ -298,13 +298,6 @@ public class VeruscoinJob : EquihashJob
         return (result, null);
     }
     
-    private bool RegisterVersucoinSubmit(string nonce, string solution)
-    {
-        var key = nonce + solution;
-
-        return submissions.TryAdd(key, true);
-    }
-
     #region API-Surface
 
     public override void Init(EquihashBlockTemplate blockTemplate, string jobId,
@@ -461,6 +454,9 @@ public class VeruscoinJob : EquihashJob
         var context = worker.ContextAs<EquihashWorkerContext>();
 
         // validate nTime
+        ProofHex.Require(extraNonce2, 64 - context.ExtraNonce1.Length, "extraNonce2");
+        ProofHex.Require(nTime, 8, "ntime");
+        ProofHex.Require(solution, (networkParams.SolutionSize + networkParams.SolutionPreambleSize) * 2, "solution");
         if(nTime.Length != 8)
             throw new StratumException(StratumError.Other, "incorrect size of ntime");
 
@@ -481,10 +477,6 @@ public class VeruscoinJob : EquihashJob
         if(solution.Length != (networkParams.SolutionSize + networkParams.SolutionPreambleSize) * 2)
             throw new StratumException(StratumError.Other, "incorrect size of solution");
 
-        // dupe check
-        if(!RegisterVersucoinSubmit(nonce, solution))
-            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
-        
         // when pbaas activates use block header nonce from daemon, pool/miner can no longer manipulate
         if(isPBaaSActive)
         {
@@ -495,11 +487,18 @@ public class VeruscoinJob : EquihashJob
             
             // verify pool nonce presence in solution
             var solutionExtraData = solution.Substring(solution.Length - 30);
-            if(solutionExtraData.IndexOf(context.ExtraNonce1) < 0)
+            if(solutionExtraData.IndexOf(context.ExtraNonce1, StringComparison.OrdinalIgnoreCase) < 0)
                 throw new StratumException(StratumError.Other, "invalid solution, pool nonce missing");
         }
             
-        return ProcessShareInternal(worker, nonce, nTimeInt, solution);
+        // PBaaS uses the daemon nonce, not the ignored submitted extranonce2.
+        // Commit actual validated proof identity only after successful validation.
+        if(IsDuplicateSubmit(nonce, solution, nTimeInt))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, nonce, nTimeInt, solution);
+        if(!RegisterSubmit(nonce, solution, nTimeInt))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        return result;
     }
     
     public override object GetJobParams(bool isNew)

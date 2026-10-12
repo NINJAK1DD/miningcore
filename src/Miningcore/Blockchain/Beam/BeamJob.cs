@@ -137,11 +137,11 @@ public class BeamJob
         var context = worker.ContextAs<BeamWorkerContext>();
 
         // validate nonce
-        if(nonce.Length != BeamConstants.NonceSize)
+        if(!ProofHex.IsExact(nonce, BeamConstants.NonceSize))
             return (new Share {}, null, BeamConstants.BeamRpcShareBadNonce);
 
         // validate solution
-        if(solution.Length != BeamConstants.SolutionSize)
+        if(!ProofHex.IsExact(solution, BeamConstants.SolutionSize))
             return (new Share {}, null, BeamConstants.BeamRpcShareBadSolution);
 
         if(IsDuplicateSubmit(nonce, solution))

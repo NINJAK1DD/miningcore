@@ -171,6 +171,7 @@ public class NexaJob
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(extraNonce1));
 
         // validate nonce. must be 8 bytes (16 hex chars without prefix)
+        ProofHex.Require(nonce, 16, "nonce");
         if(nonce.Length != 16)
             throw new StratumException(StratumError.Other, "incorrect size of nonce");
 

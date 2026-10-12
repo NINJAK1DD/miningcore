@@ -254,6 +254,7 @@ public class XelisJob
         var context = worker.ContextAs<XelisWorkerContext>();
 
         // validate nonce
+        ProofHex.Require(nonce, XelisConstants.NonceLength, "nonce");
         if(nonce.Length != XelisConstants.NonceLength)
             throw new StratumException(StratumError.Other, "incorrect size of nonce");
 

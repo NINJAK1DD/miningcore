@@ -189,6 +189,33 @@ public class KaspaDifficultyCreditTests
             Assert.Equal(StratumError.Other, Assert.Throws<StratumException>(() => current.ProcessShare(connection, nonce)).Code);
     }
 
+    [LinuxNativeTheory]
+    [InlineData("abcd")]
+    [InlineData("abcd0001")]
+    [InlineData("abcd00011234")]
+    public void ShortNonceProjectionUsesPrefixPlusLeftPaddedMinerTail(string extraNonce)
+    {
+        var clock = new MockMasterClock();
+        var context = new KaspaWorkerContext { ExtraNonce1 = extraNonce };
+        context.Init(10, null, clock);
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(), clock, "kaspa-padding", true);
+        worker.SetContext(context);
+        var source = new KaspaJob(new Sha256D(), new Sha256D(), new FixedProof { Difficulty = 20 });
+        typeof(KaspaJob).GetProperty("JobId").SetValue(source, "1");
+        typeof(KaspaJob).GetProperty("BlockTemplate").SetValue(source, new Kaspad.RpcBlock { Header = new Kaspad.RpcBlockHeader { DaaScore = 101, Timestamp = 123 } });
+        typeof(KaspaJob).GetProperty("prePowHashBytes").SetValue(source, Enumerable.Range(1, 32).Select(x => (byte) x).ToArray());
+        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(source, uint256.Parse(new string('f', 64)));
+        typeof(KaspaJob).GetField("shareMultiplier", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(source, 4d);
+        var job = source.ForWorker(context);
+        var tail = "1".PadLeft(16 - extraNonce.Length, '0');
+        var full = extraNonce + tail;
+        var accepted = job.ProcessShare(worker, "1");
+        Assert.Equal(Convert.ToUInt64(full, 16), source.GetBlockCandidate(accepted).Header.Nonce);
+        foreach(var alias in new[] { tail, "0x" + tail, full.ToUpperInvariant(), "0X" + full })
+            Assert.Equal(StratumError.DuplicateShare, Assert.Throws<StratumException>(() => job.ProcessShare(worker, alias)).Code);
+        Assert.Equal(0ul, source.BlockTemplate.Header.Nonce);
+    }
+
     private sealed class FixedProof : IHashAlgorithm
     {
         internal double Difficulty { get; set; }

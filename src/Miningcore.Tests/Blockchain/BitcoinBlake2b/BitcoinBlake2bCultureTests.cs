@@ -27,7 +27,7 @@ public class BitcoinBlake2bCultureTests
         }
         await scenarios.SuggestAndConfigure_UseInvariantNumbersAndStringsAcrossCultures("de-DE");
         Assert.Equal(original, CultureInfo.CurrentCulture);
-        await scenarios.CanonicalSuggestion_RetainsItsLegacyCultureConversion();
+        await scenarios.CanonicalSuggestion_UsesInvariantWireGrammar("de-DE");
         Assert.Equal(original, CultureInfo.CurrentCulture);
         foreach(var value in new[] { "NaN", "Infinity", "1e999", "-1", "2,0" })
             await scenarios.MalformedNumericStrings_ConsumeBudgetThenDisconnect(value);

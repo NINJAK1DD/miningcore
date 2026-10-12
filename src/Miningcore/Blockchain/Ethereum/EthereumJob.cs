@@ -55,7 +55,8 @@ public class EthereumJob
     {
         var context = worker.ContextAs<EthereumWorkerContext>();
 
-        if(!ulong.TryParse(fullNonceHex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var fullNonce))
+        if(!ProofHex.IsHex(fullNonceHex) || fullNonceHex.Length > 16 ||
+            !ulong.TryParse(fullNonceHex, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var fullNonce))
             throw new StratumException(StratumError.MinusOne, "bad nonce " + fullNonceHex);
 
         fullNonceHex = fullNonce.ToString("x16", CultureInfo.InvariantCulture);
