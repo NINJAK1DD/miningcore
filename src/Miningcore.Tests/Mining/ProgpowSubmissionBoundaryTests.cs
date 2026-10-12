@@ -103,12 +103,14 @@ public class ProgpowSubmissionBoundaryTests
         Assert.Equal(0, job.Calls);
     }
 
-    [Fact]
-    public async Task NonArraySubmissionIsRecoverable()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("invalid")]
+    public async Task NonArraySubmissionIsRecoverable(object submission)
     {
         var (manager, worker, job) = Create();
         Assert.Equal("invalid params", (await Assert.ThrowsAsync<StratumException>(() =>
-            manager.SubmitShareAsync(worker, "invalid", CancellationToken.None).AsTask())).Message);
+            manager.SubmitShareAsync(worker, submission, CancellationToken.None).AsTask())).Message);
         Assert.Equal(0, job.Calls);
     }
 }

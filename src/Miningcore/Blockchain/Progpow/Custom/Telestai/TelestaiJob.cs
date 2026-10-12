@@ -37,13 +37,13 @@ public class TelestaiJob : ProgpowJob
 
         var headerHashHex = headerHash.ToHexString();
 
-        if(headerHashHex != inputHeaderHash)
+        if(!string.Equals(headerHashHex, inputHeaderHash, StringComparison.OrdinalIgnoreCase))
             throw new StratumException(StratumError.MinusOne, $"bad header-hash");
 
         if(!progpowHasher.Compute(logger, (int) BlockTemplate.Height, headerHash.ToArray(), nonce, out var mixHashOut, out var resultBytes))
             throw new StratumException(StratumError.MinusOne, "bad hash");
 
-        if(mixHash != mixHashOut.ToHexString())
+        if(!string.Equals(mixHash, mixHashOut.ToHexString(), StringComparison.OrdinalIgnoreCase))
             throw new StratumException(StratumError.MinusOne, $"bad mix-hash");
 
         resultBytes.ReverseInPlace();

@@ -272,10 +272,8 @@ public class ProgpowPool : PoolBase
             else if(!context.IsSubscribed)
                 throw new StratumException(StratumError.NotSubscribed, "not subscribed");
 
-            var requestParams = request.ParamsAs<string[]>();
-
             // submit
-            var share = await manager.SubmitShareAsync(connection, requestParams, ct);
+            var share = await manager.SubmitShareAsync(connection, request.Params, ct);
 
             // Nicehash's stupid validator insists on "error" property present
             // in successful responses which is a violation of the JSON-RPC spec

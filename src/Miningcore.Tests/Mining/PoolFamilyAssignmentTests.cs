@@ -76,6 +76,50 @@ public class PoolFamilyAssignmentTests : TestBase
     [Fact]
     public Task Ethereum_AuthorizationCancellationDoesNotCommitQueuedDifficulty() => CanceledAuthorization("Ethereum");
 
+    [Theory]
+    [InlineData("null", false)]
+    [InlineData("null", true)]
+    [InlineData("\"invalid\"", false)]
+    [InlineData("\"invalid\"", true)]
+    [InlineData("{}", false)]
+    [InlineData("{}", true)]
+    [InlineData("[\"miner\",\"verified\",{},\"0xheader\",\"0xmix\"]", false)]
+    [InlineData("[\"miner\",\"verified\",{},\"0xheader\",\"0xmix\"]", true)]
+    [InlineData("[\"miner\",\"verified\",[],\"0xheader\",\"0xmix\"]", false)]
+    [InlineData("[\"miner\",\"verified\",[],\"0xheader\",\"0xmix\"]", true)]
+    [InlineData("[\"miner\",\"verified\",1,\"0xheader\",\"0xmix\"]", false)]
+    [InlineData("[\"miner\",\"verified\",1,\"0xheader\",\"0xmix\"]", true)]
+    [InlineData("[\"miner\",\"verified\",null,\"0xheader\",\"0xmix\"]", false)]
+    [InlineData("[\"miner\",\"verified\",null,\"0xheader\",\"0xmix\"]", true)]
+    [InlineData("[]", false)]
+    [InlineData("[]", true)]
+    [InlineData("[\"miner\",\"verified\",\"0xnonce\",\"0xheader\",\"0xmix\",\"extra\"]", false)]
+    [InlineData("[\"miner\",\"verified\",\"0xnonce\",\"0xheader\",\"0xmix\",\"extra\"]", true)]
+    public async Task ProgpowMalformedJsonIsRecoverableOnTcpBeforeUppercaseFirstProof(string malformed, bool configuredBanning)
+    {
+        await using var fixture = await Fixture.Create(this, "Progpow");
+        if(configuredBanning)
+            fixture.Pool.Config.Banning = new PoolShareBasedBanningConfig { Enabled = true, CheckThreshold = 100, InvalidPercent = 50, Time = 30 };
+        var (cache, parameters) = fixture.PrepareProgpowProductionSubmission();
+        await fixture.SubmitProgpow(JToken.Parse(malformed), 100);
+        fixture.AssertError(100, StratumError.Other, "invalid params");
+        Assert.Equal(0, cache.Calls);
+        Assert.True(fixture.Connection.IsAlive);
+        Assert.False(fixture.Connection.IsDisconnectRequested);
+        await fixture.SubmitProgpow(parameters, 101);
+        fixture.AssertOneSuccess(101);
+        Assert.Equal(1, cache.Calls);
+        Assert.Equal(1, fixture.Connection.Context.Stats.ValidShares);
+        Assert.True(fixture.Connection.IsAlive);
+        var alias = new JArray(parameters.Select(x => x.Value<string>().ToLowerInvariant()));
+        await fixture.SubmitProgpow(alias, 102);
+        fixture.AssertError(102, StratumError.DuplicateShare, "duplicate share");
+        Assert.Equal(1, cache.Calls);
+        Assert.Equal(1, fixture.Connection.Context.Stats.ValidShares);
+        Assert.True(fixture.Connection.IsAlive);
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
     [LinuxNativeTheory]
     [InlineData("Conceal")]
     [InlineData("Cryptonote")]
@@ -483,6 +527,7 @@ public class PoolFamilyAssignmentTests : TestBase
         private ClusterConfig cluster;
         private object job;
         private object manager;
+        private MockMasterClock clock;
         private TaskCompletionSource flushed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private TaskCompletionSource requestHandled;
         internal TaskCompletionSource RequestEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -511,7 +556,7 @@ public class PoolFamilyAssignmentTests : TestBase
         private void Initialize(PoolFamilyAssignmentTests test, string family)
         {
             this.family = family;
-            var clock = new MockMasterClock { CurrentTime = DateTime.UnixEpoch.AddDays(20000) };
+            clock = new MockMasterClock { CurrentTime = DateTime.UnixEpoch.AddDays(20000) };
             var streams = new RecyclableMemoryStreamManager();
             var factory = Substitute.For<IHttpClientFactory>();
             factory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient(new RestStub()));
@@ -712,6 +757,30 @@ public class PoolFamilyAssignmentTests : TestBase
             object parameters = method == "login" ? JObject.FromObject(new { login = address, pass = password, agent }) :
                 new[] { address + ".worker", password, agent };
             return DispatchRequest(new JsonRpcRequest(method, parameters, id));
+        }
+
+        internal (ProgpowProductionVerifierTests.Cache Cache, JArray Parameters) PrepareProgpowProductionSubmission()
+        {
+            Connection.SendMessageOverride = null;
+            wireRead = ReadWireMessages();
+            var context = Connection.ContextAs<ProgpowWorkerContext>();
+            context.VarDiff = null;
+            var cache = new ProgpowProductionVerifierTests.Cache("Progpow");
+            var source = ProgpowProductionVerifierTests.CreateSource("Progpow", clock, cache);
+            var job = new ProgpowWorkerJob("verified", context.ExtraNonce1);
+            ((ProgpowJob) source.ForWorker(context, preserveId: true)).PrepareWorkerJob(job, out var header);
+            context.AddJob(job, 4);
+            return (cache, new JArray("miner.worker", "verified", "0X000000000000000A", "0X" + header.ToUpperInvariant(),
+                "0X" + ProgpowProductionVerifierTests.Cache.Mix.ToUpperInvariant()));
+        }
+
+        internal Task SubmitProgpow(object parameters, int id) => DispatchRequest(new JsonRpcRequest(ProgpowStratumMethods.SubmitShare, parameters, id));
+
+        internal void AssertError(int id, StratumError code, string message)
+        {
+            var response = Assert.Single(Messages.Where(m => m["id"]?.Type == JTokenType.Integer && m["id"].Value<int>() == id));
+            Assert.Equal((int) code, response["error"]["code"].Value<int>());
+            Assert.Equal(message, response["error"]["message"].Value<string>());
         }
 
         private async Task DispatchRequest(JsonRpcRequest request)

@@ -52,6 +52,14 @@ effective proof identity. Miners must send byte fields at the announced width;
 Progpow requires its protocol's `0x` prefix (case-insensitive) before nonce and
 header/mix hashes. Malformed prefixes, short/nonstring fields and incorrect
 parameter counts return recoverable Stratum errors before proof work.
+The generic and Firo/Kiiro/Realichain/Telestai verifiers accept uppercase header
+and mix hashes on the first proof as well as recognising duplicate case aliases.
+Raw submit JSON is validated before conversion; null, scalar, object, nested and
+nonstring parameters return `invalid params` through normal Stratum dispatch.
+Exactly five string parameters are required; monitor firmware/proxies appending
+a sixth field during commissioning. Existing invalid-share banning still applies.
+Omitted optional share-banning settings no longer throw while handling a rejected
+share; configured policies retain their existing behavior.
 Bitcoin, merged mining, Handshake and Satoshicash derive extranonce2 validation
 from each job's actual coinbase placeholder layout. Firmware that ignores the
 advertised `extranonce2_size` now receives `incorrect size of extraNonce2`; those

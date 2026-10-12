@@ -15,6 +15,7 @@ using Miningcore.Rpc;
 using Miningcore.Stratum;
 using Miningcore.Time;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using NLog;
 
 namespace Miningcore.Blockchain.Progpow;
@@ -246,10 +247,16 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
         CancellationToken ct)
     {
         Contract.RequiresNonNull(worker);
-        Contract.RequiresNonNull(submission);
 
-        if(submission is not object[] submitParams || submitParams.Length != 5)
-            throw new StratumException(StratumError.Other, "invalid params");
+        // Validate raw JSON without coercing numbers, objects or nested arrays to
+        // strings. Null and malformed shapes must follow the recoverable wire path.
+        var submitParams = submission switch
+        {
+            object[] { Length: 5 } values when values.All(x => x is string) => values,
+            JArray { Count: 5 } values when values.All(x => x.Type == JTokenType.String) =>
+                values.Select(x => (object) x.Value<string>()).ToArray(),
+            _ => throw new StratumException(StratumError.Other, "invalid params")
+        };
 
         var context = worker.ContextAs<ProgpowWorkerContext>();
 

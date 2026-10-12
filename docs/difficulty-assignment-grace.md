@@ -203,7 +203,12 @@ Proof-encoding cases exercise real outer validators and shared duplicate registr
 across the remaining families. Custom-layout cases verify that Bitcoin, merged
 mining, Handshake and Satoshicash validate extranonce2 against each job's coinbase
 layout. Progpow manager cases reject malformed shapes, prefixes and widths before
-proof work, then accept one credit and reject the equivalent uppercase submission.
+proof work. TCP cases submit null, scalar, object and nested/nonstring parameter
+shapes, receive recoverable errors, and then accept an uppercase first proof on
+the same session with no extra duplicate credit. Production Progpow/Firo/Kiiro/
+Realichain/Telestai verifier cases exercise the real header/mix comparisons,
+serialization and credit/duplicate boundaries with a controlled final algorithm
+cache; they do not establish KawPoW/FiroPoW daemon consensus.
 Cortex tests control verification outcomes for two
 distinct cycles and exercise the native verifier's rejection/retry boundary;
 they do not claim two captured consensus-valid Cortex cycles on one graph.
@@ -291,7 +296,16 @@ remain pending or deployment-specific; the GPU probe does not certify them.
 Progpow submits require the protocol's `0x` prefix (case-insensitive), followed by
 exactly 16 hex characters for nonce and 64 for header/mix hashes. Missing prefixes,
 short or nonstring fields and malformed parameter counts return recoverable Stratum
-errors. Prefix and hex case do not change the accepted proof's identity.
+errors. Header and mix comparisons in generic and custom Progpow verifiers accept
+either hex case even on the first proof. Prefix and hex case do not change the
+accepted proof's identity. Submits require exactly five string parameters:
+worker, job ID, nonce, header hash and mix hash. Firmware or production proxies
+that append a sixth field receive `invalid params`; monitor this during
+commissioning. Raw JSON is validated before any conversion, so null, scalar,
+object, nested-object/array and nonstring fields receive the same recoverable
+error rather than terminating the session (subject to the existing invalid-share
+banning policy).
+Omitting optional share-banning settings does not interrupt this rejection path.
 
 Downstream family implementations must issue the worker snapshot under the
 existing assignment gate and validate the matching issued work. Do not recreate
