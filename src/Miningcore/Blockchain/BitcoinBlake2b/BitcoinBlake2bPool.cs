@@ -692,14 +692,9 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         if(requested.Any(x => x.Value<string>() == BitcoinStratumExtensions.MinimumDiff))
         {
             var value = values[BitcoinStratumExtensions.MinimumDiffValue];
-            if(value?.Type is not (JTokenType.Integer or JTokenType.Float or JTokenType.String))
-                return false;
             // Strings are an existing firmware compatibility case. Parse once
             // with invariant culture and pass this exact value to the base handler.
-            var text = value.Type == JTokenType.String ? value.Value<string>() : value.ToString(Formatting.None);
-            if(!double.TryParse(text, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var difficulty) ||
-                !double.IsFinite(difficulty) || difficulty <= 0)
+            if(!TryReadMinimumDifficulty(value, out var difficulty))
                 return false;
             minimumDifficulty = difficulty;
         }
