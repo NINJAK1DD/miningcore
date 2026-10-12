@@ -17,6 +17,19 @@ namespace Miningcore.Blockchain.Warthog;
 
 public class WarthogJob
 {
+    internal WarthogJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (WarthogJob) MemberwiseClone();
+            result.JobId = id;
+            if(result.jobParams != null)
+            {
+                result.jobParams = (object[]) result.jobParams.Clone();
+                result.jobParams[0] = id;
+            }
+            return result;
+        }, JobId, nextJobId);
+
     protected IMasterClock clock;
     protected readonly IHashAlgorithm sha256S = new Sha256S();
     protected readonly IHashAlgorithm sha256D = new Sha256D();
@@ -183,27 +196,8 @@ public class WarthogJob
 
         //throw new StratumException(StratumError.LowDifficultyShare, $"nonce: {nonce} - headerSolutionBytes: {headerSolutionBytes.ToHexString()} - headerSolutionVerusHash: {headerSolutionVerusHash.ToHexString()} - proofOfBalancedWorkC: {(double)WarthogConstants.ProofOfBalancedWorkC} - ProofOfBalancedWorkExponent: {(double)WarthogConstants.ProofOfBalancedWorkExponent} - sha256TFloat: {(double)sha256TFloat} - verusFloat: {(double)verusFloat} - CalculateHashrate: {WarthogUtils.CalculateHashrate(sha256TFloat, verusFloat)} ||| headerSolutionValue: {(double)headerSolutionValue} - exponent => (wcf: [{headerSolutionValue._exponent}, {(uint)(headerSolutionValue._exponent < 0 ? -headerSolutionValue._exponent : headerSolutionValue._exponent)}]), mantissa => (wcf: {headerSolutionValue._mantissa}) [stratum: {new WarthogTarget(context.Difficulty, IsJanusHash).data} - exponent => (wt: {new WarthogTarget(context.Difficulty, IsJanusHash).Zeros10()}), mantissa => (wt: {(new WarthogTarget(context.Difficulty, IsJanusHash).Bits22() << 10)}) - validShare: {(headerSolutionValue < new WarthogTarget(context.Difficulty, IsJanusHash))} - blockTemplate: {blockTargetValue.data} - exponent => (wt: {blockTargetValue.Zeros10()}), mantissa => (wt: {(blockTargetValue.Bits22() << 10)}) - blockCandidate: {isBlockCandidate}] ||| shareDiff: {shareDiff} [stratum: {context.Difficulty} - blockTemplate: {Difficulty}]");
 
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var result = new Share
         {
@@ -307,6 +301,18 @@ public class WarthogJob
         return submissions.TryAdd(key, true);
     }
 
+    protected virtual bool IsDuplicateSubmit(string extraNonce1, string extraNonce2, string nTime, string nonce)
+    {
+        var key = new StringBuilder()
+            .Append(extraNonce1)
+            .Append(extraNonce2) // lowercase as we don't want to accept case-sensitive values as valid.
+            .Append(nTime)
+            .Append(nonce) // lowercase as we don't want to accept case-sensitive values as valid.
+            .ToString();
+
+        return submissions.ContainsKey(key);
+    }
+
     public virtual (Share Share, string HeaderHex) ProcessShare(StratumConnection worker,
         string extraNonce2, string nTime, string nonce)
     {
@@ -317,6 +323,9 @@ public class WarthogJob
         var context = worker.ContextAs<WarthogWorkerContext>();
 
         // validate nTime
+        ProofHex.Require(extraNonce2, WarthogConstants.ExtranoncePlaceHolderLength * 2 - context.ExtraNonce1.Length, "extraNonce2");
+        ProofHex.Require(nTime, 8, "ntime");
+        ProofHex.Require(nonce, WarthogConstants.NonceLength, "nonce");
         if(nTime.Length != 8)
             throw new StratumException(StratumError.Other, "incorrect size of ntime");
 
@@ -331,10 +340,13 @@ public class WarthogJob
         var nonceInt = uint.Parse(nonce, NumberStyles.HexNumber);
 
         // dupe check
+        if(IsDuplicateSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt);
         if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce))
             throw new StratumException(StratumError.DuplicateShare, "duplicate");
 
-        return ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt);
+        return result;
     }
 
     #endregion // API-Surface

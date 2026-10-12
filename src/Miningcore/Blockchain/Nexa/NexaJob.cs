@@ -17,6 +17,19 @@ namespace Miningcore.Blockchain.Nexa;
 
 public class NexaJob
 {
+    internal NexaJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (NexaJob) MemberwiseClone();
+            result.JobId = id;
+            if(result.jobParams != null)
+            {
+                result.jobParams = (object[]) result.jobParams.Clone();
+                result.jobParams[0] = id;
+            }
+            return result;
+        }, JobId, nextJobId);
+
     private IMasterClock clock;
     private IHashAlgorithm headerHasher;
     private double shareMultiplier;
@@ -62,30 +75,11 @@ public class NexaJob
         var miningValue = new uint256(powHash);
 
         var shareDiff = (double) new BigRational(BitcoinConstants.Diff1, powHash.ToBigInteger()) * shareMultiplier;
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = miningValue <= blockTargetValue;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var submitParams = new object[]
         {
@@ -160,19 +154,34 @@ public class NexaJob
         return submissions.TryAdd(key, true);
     }
 
+    private bool IsDuplicateSubmit(string headerCommitment, string extraNonce1, string nonce)
+    {
+        var key = new StringBuilder()
+            .Append(headerCommitment)
+            .Append(extraNonce1)
+            .Append(nonce)
+            .ToString();
+
+        return submissions.ContainsKey(key);
+    }
+
     public (Share Share, object param) ProcessShare(StratumConnection worker, string nonce, string extraNonce1)
     {
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(nonce));
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(extraNonce1));
 
         // validate nonce. must be 8 bytes (16 hex chars without prefix)
+        ProofHex.Require(nonce, 16, "nonce");
         if(nonce.Length != 16)
             throw new StratumException(StratumError.Other, "incorrect size of nonce");
 
         // dupe check
+        if(IsDuplicateSubmit(this.MiningCandidate.HeaderCommitment, extraNonce1, nonce))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, nonce, extraNonce1);
         if(!RegisterSubmit(this.MiningCandidate.HeaderCommitment, extraNonce1, nonce))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
 
-        return ProcessShareInternal(worker, nonce, extraNonce1);
+        return result;
     }
 }

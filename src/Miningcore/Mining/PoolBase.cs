@@ -76,6 +76,7 @@ public abstract class PoolBase : StratumServer,
     protected static readonly Regex regexStaticDiff = new(@";?d=(\d*(\.\d+)?)", RegexOptions.Compiled);
     protected const string PasswordControlVarsSeparator = ";";
     private StratumListenerReservationSession stratumListenerReservations;
+    internal TimeProvider VarDiffTimeProvider { get; set; } = TimeProvider.System;
 
     protected abstract Task SetupJobManager(CancellationToken ct);
     protected virtual void NotifyPoolOnline()
@@ -113,7 +114,7 @@ public abstract class PoolBase : StratumServer,
         var poolEndpoint = poolConfig.Ports[ipEndPoint.Port];
         var varDiff = poolConfig.EnableInternalStratum == true ? poolEndpoint.VarDiff : null;
 
-        context.Init(poolEndpoint.Difficulty, varDiff, clock);
+        context.Init(poolEndpoint.Difficulty, varDiff, clock, VarDiffTimeProvider, poolEndpoint.DifficultyGraceSeconds);
         connection.SetContext(context);
 
         // StratumConnection bounds TLS, PROXY framing and the first complete request with
@@ -127,6 +128,14 @@ public abstract class PoolBase : StratumServer,
 
     protected virtual async Task UpdateVarDiffAsync(StratumConnection connection, bool idle, CancellationToken ct)
     {
+        await RunAssignmentAsync(connection, () => UpdateVarDiffCoreAsync(connection, idle, ct), ct, skipIfBusy: idle);
+    }
+
+    // Call only while owning the worker's assignment gate. BLAKE2b uses this
+    // core inside its terminal-publication boundary without acquiring twice.
+    protected async Task UpdateVarDiffCoreAsync(StratumConnection connection, bool idle, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
         var context = connection.Context;
 
         if(context.VarDiff != null)
@@ -136,8 +145,8 @@ public abstract class PoolBase : StratumServer,
             var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
 
             var newDiff = !idle ?
-                VarDiffManager.Update(context, poolEndpoint.VarDiff, clock, MaximumVarDiff) :
-                VarDiffManager.IdleUpdate(context, poolEndpoint.VarDiff, clock, MaximumVarDiff);
+                VarDiffManager.Update(context, poolEndpoint.VarDiff, clock, MaximumVarDiff, ct) :
+                VarDiffManager.IdleUpdate(context, poolEndpoint.VarDiff, clock, MaximumVarDiff, ct);
 
             if(newDiff != null)
             {
@@ -160,8 +169,7 @@ public abstract class PoolBase : StratumServer,
 
                 await Guard(() => ForEachMinerAsync(async (connection, _ct) =>
                 {
-                    await Guard(() => UpdateVarDiffAsync(connection, true, _ct),
-                        ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.RunVardiffIdleUpdaterAsync", failure: ex));
+                    await UpdateIdleVarDiffAsync(connection, _ct);
                 }, ct));
 
                 logger.Debug(() => "Vardiff Idle Update pass ends");
@@ -180,7 +188,143 @@ public abstract class PoolBase : StratumServer,
         return Task.CompletedTask;
     }
 
+    internal Task UpdateIdleVarDiffAsync(StratumConnection connection, CancellationToken ct) =>
+        Guard(() => UpdateVarDiffAsync(connection, true, ct), ex =>
+        {
+            if(!assignmentFailureReports.TryGetValue(connection, out _) &&
+                (ex is not OperationCanceledException || !ct.IsCancellationRequested))
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.RunVardiffIdleUpdaterAsync", failure: ex);
+        });
+
     #endregion // VarDiff
+
+    // Serialize calculation, state mutation and complete asynchronous publication.
+    // Acquire after daemon/NiceHash lookups, never around share validation/accounting.
+    // All producers for a worker use this gate even when VarDiff is replaced/disabled.
+    internal virtual async ValueTask<WorkerAssignmentLease> EnterAssignmentAsync(StratumConnection connection,
+        CancellationToken ct, bool skipIfBusy = false)
+    {
+        ct.ThrowIfCancellationRequested();
+        var worker = connection.Context;
+        WorkerAssignmentLease.ThrowIfNestedAssignment(worker);
+        var lease = new WorkerAssignmentLease(worker);
+        if(skipIfBusy)
+        {
+            if(!worker.AssignmentGate.Wait(0, ct))
+                return null;
+        }
+        else
+            await worker.AssignmentGate.WaitAsync(ct);
+        return lease;
+    }
+
+    protected async Task RunAssignmentAsync(StratumConnection connection, Func<Task> assignment,
+        CancellationToken ct = default, bool skipIfBusy = false)
+    {
+        var gate = await EnterAssignmentAsync(connection, ct, skipIfBusy);
+        if(gate == null)
+            return;
+        try
+        {
+            gate.Activate();
+            ct.ThrowIfCancellationRequested();
+            if(!connection.IsDisconnectRequested)
+                await assignment();
+        }
+        catch(Exception ex)
+        {
+            FailAssignmentPublication(connection, ex, ct);
+            throw;
+        }
+        finally { gate.Release(); }
+    }
+
+    // Invoked while still owning the assignment gate. No later producer or
+    // buffered submission may reuse a partially published assignment.
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<StratumConnection, object> assignmentFailureReports = new();
+
+    protected void FailAssignmentPublication(StratumConnection connection, Exception failure, CancellationToken ct = default)
+    {
+        var first = connection.TryBeginDisconnect();
+        // Cleanup must never replace the original publication failure, including
+        // callbacks that already removed the context or closed the transport.
+        Guard(() => connection.Context?.CloseDifficultyAssignments());
+        if(first && !(failure is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            assignmentFailureReports.GetValue(connection, static _ => new());
+            Guard(() => RpcConsumerDiagnostics.Write(logger, LogLevel.Error, "PoolBase.AssignmentPublication", failure: failure,
+                connectionId: connection.ConnectionId));
+        }
+        Guard(() => Disconnect(connection));
+    }
+
+    protected virtual bool UsesSharedDifficultyRequestBudget => true;
+
+    protected async Task<bool> AdmitDifficultyRequestAsync(StratumConnection connection, Miningcore.JsonRpc.JsonRpcRequest request)
+    {
+        if(!UsesSharedDifficultyRequestBudget)
+            return true;
+        if(connection.IsDisconnectRequested)
+            return false;
+        if(request.Method is not ("mining.suggest_difficulty" or "mining.authorize" or "login" or "eth_submitLogin" or "mining.configure"))
+            return true;
+        var controlled = request.Method == "mining.suggest_difficulty";
+        var parameters = request.Method == "mining.suggest_difficulty" || request.Params == null ? null :
+            Newtonsoft.Json.Linq.JToken.FromObject(request.Params);
+        if(request.Method is "mining.authorize" or "login" or "eth_submitLogin")
+        {
+            // Authorization itself is not a difficulty producer. Inspect only
+            // protocol hint fields, including Beam's top-level login fields.
+            var password = parameters is Newtonsoft.Json.Linq.JArray array ? array.ElementAtOrDefault(1) :
+                (parameters as Newtonsoft.Json.Linq.JObject)?["pass"];
+            var agent = (parameters as Newtonsoft.Json.Linq.JObject)?["agent"];
+            if(request.Extra != null)
+            {
+                if(password == null && request.Extra.TryGetValue("pass", out var pass))
+                    password = pass == null ? null : Newtonsoft.Json.Linq.JToken.FromObject(pass);
+                if(agent == null && request.Extra.TryGetValue("agent", out var userAgent))
+                    agent = userAgent == null ? null : Newtonsoft.Json.Linq.JToken.FromObject(userAgent);
+            }
+            controlled = connection.Context.IsNicehash ||
+                agent?.Type == Newtonsoft.Json.Linq.JTokenType.String && agent.ToObject<string>()
+                    .Contains(Miningcore.Nicehash.API.NicehashConstants.NicehashUA, StringComparison.OrdinalIgnoreCase) ||
+                password?.Type == Newtonsoft.Json.Linq.JTokenType.String && regexStaticDiff.IsMatch(password.ToObject<string>());
+        }
+        if(request.Method == "mining.configure")
+            controlled = parameters is Newtonsoft.Json.Linq.JArray config && config.First is Newtonsoft.Json.Linq.JArray extensions &&
+                extensions.Any(x => x.Type == Newtonsoft.Json.Linq.JTokenType.String && x.ToObject<string>() == "minimum-difficulty");
+        if(!controlled)
+            return true;
+        var budget = connection.Context.DifficultyRequests;
+        var admission = budget.TryAcquire();
+        if(admission == Miningcore.Blockchain.BitcoinBlake2b.DifficultyRequestBudget.Admission.Allowed)
+            return true;
+        if(admission == Miningcore.Blockchain.BitcoinBlake2b.DifficultyRequestBudget.Admission.Disconnect)
+        {
+            PublishTelemetry(TelemetryCategory.StratumAdmission, "difficulty-disconnect", TimeSpan.Zero);
+            budget.TryClose();
+            connection.Context.CloseDifficultyAssignments();
+            connection.TryBeginDisconnect();
+            Disconnect(connection);
+            return false;
+        }
+        PublishTelemetry(TelemetryCategory.StratumAdmission, "difficulty-refused", TimeSpan.Zero);
+        await connection.RespondErrorAsync(StratumError.Other, "Too many difficulty requests; retry later", request.Id, false);
+        return false;
+    }
+
+    protected Task ForEachMinerAssignmentAsync(Func<StratumConnection, CancellationToken, Task> func)
+    {
+        // Reject at the producer, before per-miner exception handling can turn
+        // inherited ownership into a pool-wide series of disconnects.
+        try { WorkerAssignmentLease.ThrowIfNestedAssignment(null); }
+        catch(InvalidOperationException ex)
+        {
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.NestedAssignmentBroadcast", failure: ex);
+            throw;
+        }
+        return ForEachMinerAsync((connection, ct) => RunAssignmentAsync(connection, () => func(connection, ct), ct));
+    }
 
     protected Task ForEachMinerAsync(Func<StratumConnection, CancellationToken, Task> func)
     {
@@ -204,9 +348,14 @@ public abstract class PoolBase : StratumServer,
                 }
             }
 
+            catch(OperationCanceledException) when(_ct.IsCancellationRequested)
+            {
+                // Normal shutdown, including cancellation of effort-check RPCs.
+            }
             catch(Exception ex)
             {
-                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.ForEachMinerAsync", failure: ex);
+                if(!assignmentFailureReports.TryGetValue(connection, out _))
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.ForEachMinerAsync", failure: ex);
 
                 Disconnect(connection);
             }
@@ -226,9 +375,11 @@ public abstract class PoolBase : StratumServer,
 
                 if(minerEffort.Value >= poolConfig.Banning.MinerEffortPercent.Value)
                 {
-                    banManager.Ban(connection.RemoteEndpoint.Address, TimeSpan.FromSeconds(poolConfig.Banning.MinerEffortTime.Value));
+                    var banned = BanClient(connection, TimeSpan.FromSeconds(poolConfig.Banning.MinerEffortTime.Value));
+                    if(banned)
+                        logger.Info(() => $"[{connection.ConnectionId}] Banning worker for suspicious effort for {poolConfig.Banning.MinerEffortTime.Value} sec");
 
-                    throw new Exception($"Detected suspicious over-sharing-worker: Current effort over {poolConfig.Banning.MinerEffortPercent.Value}%. Banning worker for {poolConfig.Banning.MinerEffortTime.Value} seconds");
+                    throw new Exception($"Detected suspicious over-sharing-worker: Current effort over {poolConfig.Banning.MinerEffortPercent.Value}%; automatic ban applied: {banned}");
                 }
             }
         }
@@ -283,6 +434,9 @@ public abstract class PoolBase : StratumServer,
 
     protected void ConsiderBan(StratumConnection connection, WorkerContextBase context, PoolShareBasedBanningConfig config)
     {
+        if(config == null)
+            return;
+
         var totalShares = context.Stats.ValidShares + context.Stats.InvalidShares;
 
         if(totalShares > config.CheckThreshold)
@@ -302,9 +456,8 @@ public abstract class PoolBase : StratumServer,
                    (clusterConfig.Banning?.BanOnInvalidShares.HasValue == false ||
                        clusterConfig.Banning?.BanOnInvalidShares == true))
                 {
-                    logger.Info(() => $"[{connection.ConnectionId}] Banning worker for {config.Time} sec: {Math.Floor(ratioBad * 100)}% of the last {totalShares} shares were invalid");
-
-                    banManager.Ban(connection.RemoteEndpoint.Address, TimeSpan.FromSeconds(config.Time));
+                    if(BanClient(connection, TimeSpan.FromSeconds(config.Time)))
+                        logger.Info(() => $"[{connection.ConnectionId}] Banning worker for {config.Time} sec: {Math.Floor(ratioBad * 100)}% of the last {totalShares} shares were invalid");
 
                     Disconnect(connection);
                 }
@@ -329,10 +482,11 @@ public abstract class PoolBase : StratumServer,
         await Task.WhenAll(tasks);
     }
 
-    protected virtual async Task<double?> GetNicehashStaticMinDiff(WorkerContextBase context, string coinName, string algoName)
+    protected virtual async Task<double?> GetNicehashStaticMinDiff(WorkerContextBase context, string coinName, string algoName,
+        CancellationToken ct)
     {
         if(context.IsNicehash && clusterConfig.Nicehash?.EnableAutoDiff == true)
-            return await nicehashService.GetStaticDiff(coinName, algoName, CancellationToken.None);
+            return await nicehashService.GetStaticDiff(coinName, algoName, ct);
 
         return null;
     }

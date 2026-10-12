@@ -7,6 +7,9 @@ namespace Miningcore.Blockchain.Zano;
 
 public class ZanoWorkerContext : WorkerContextBase
 {
+    internal override double MinimumDifficulty => Cryptonote.CryptonoteDifficulty.Minimum;
+    internal override double MaximumDifficulty => Cryptonote.CryptonoteDifficulty.FullTargetMaximum;
+    protected override double ValidateDifficulty(double value) => Cryptonote.CryptonoteDifficulty.Validate(value, MaximumDifficulty);
     /// <summary>
     /// Usually a wallet address
     /// NOTE: May include paymentid (seperated by a dot .)
@@ -30,11 +33,15 @@ public class ZanoWorkerContext : WorkerContextBase
 
     public virtual void AddJob(ZanoWorkerJob job, int maxActiveJobs)
     {
+        RegisterBlobDifficulty(job.DifficultyTemplate, job.ExtraNonce);
         if(!validJobs.Contains(job))
             validJobs.Enqueue(job);
 
         while(validJobs.Count > maxActiveJobs)
-            validJobs.Dequeue();
+        {
+            var expired = validJobs.Dequeue();
+            ForgetBlobDifficulty(expired.DifficultyTemplate, expired.ExtraNonce);
+        }
     }
 
     public ZanoWorkerJob GetJob(string jobId)

@@ -61,14 +61,22 @@ public abstract class JobManagerBase<TJob>
 
     protected string NextJobId(string format = null)
     {
-        Interlocked.Increment(ref jobId);
-        var value = Interlocked.CompareExchange(ref jobId, 0, int.MinValue);
+        int previous, value;
+        do
+        {
+            previous = Volatile.Read(ref jobId);
+            // IDs identify bounded recent job registries, not lifetime history.
+            // Stay positive and keep native formats without exhausting a long-lived pool.
+            value = previous == int.MaxValue ? 1 : previous + 1;
+        } while(Interlocked.CompareExchange(ref jobId, value, previous) != previous);
 
         if(format != null)
-            return value.ToString(format);
+            return value.ToString(format, System.Globalization.CultureInfo.InvariantCulture);
 
         return value.ToStringHex8();
     }
+
+    internal string NextWorkerJobId(string format = null) => NextJobId(format);
 
     protected IObservable<string> BtStreamSubscribe(ZmqPubSubEndpointConfig config)
     {

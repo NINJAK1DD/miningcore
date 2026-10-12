@@ -758,7 +758,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                     x.PoolId, (ShareAccountingRole) x.AccountingRole.Value))
                     .ToArray(),
                 batch.PpsCredits.Select(x => new ShareAccountingPpsTelemetry(
-                    x.PoolId, x.CalculatedAmount)).ToArray()));
+                    x.PoolId, x.CalculatedAmount, x.ArithmeticVersion)).ToArray()));
         }
 
         // Insert blocks

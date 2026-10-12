@@ -6,7 +6,7 @@ namespace Miningcore.Notifications.Messages;
 public sealed record ShareAccountingProjectionTelemetry(
     string PoolId, ShareAccountingRole Role);
 
-public sealed record ShareAccountingPpsTelemetry(string PoolId, decimal Amount);
+public sealed record ShareAccountingPpsTelemetry(string PoolId, decimal Amount, short ArithmeticVersion = 0);
 
 public sealed record ShareAccountingTelemetryEvent(
     Guid AccountingId,

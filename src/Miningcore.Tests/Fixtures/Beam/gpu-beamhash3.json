@@ -1,0 +1,76 @@
+{
+  "passed": true,
+  "stages": [
+    3,
+    3,
+    3
+  ],
+  "rejected": 0,
+  "duplicateChecks": 9,
+  "scope": "Real GPU BeamHash III ordinary proofs, production BeamJob/native verifier; no daemon consensus or durable credit",
+  "proofs": [
+    {
+      "stage": 0,
+      "id": "12345",
+      "nonce": "0000016b87a1415a",
+      "solution": "4bb20a20953a65379f9519e98ba3008193592da5a51f0f8dad0e1e5c90884519844b9c18af0ba0f02797ea69c13e5981fdf3772a11b809da1e447028f2dd8779a3227192683c80135b6f4a41e71b665d8b9099eaea0933897a69ca3bc3699325bf56cea46c6f6c21",
+      "credit": 8.0
+    },
+    {
+      "stage": 0,
+      "id": "12345",
+      "nonce": "0000016f87a1415a",
+      "solution": "7bea0d262de7ba8dfec469172daf41044720102ae8ab77f2cc82e8298c6dcd6ada094a7327a4abe64c565662d634bdec6b890dcc2fbc866f40ea0061f23b0c467e05ec1ab5bb2e967c517d24064a6e88f87d151da2b6e81ad26a6ecad43d7be45f95a1e56c6f6c21",
+      "credit": 8.0
+    },
+    {
+      "stage": 0,
+      "id": "12345",
+      "nonce": "0000017387a1415a",
+      "solution": "b3a0031cd5224fc6ca7b1b46094fd238c65bb4eabcf2c3d8f1f27e4230e4a9dcfb91a31f0f1dd49f27b9ae9ec35c32715fc015ea062aea9931c5d7eaa4bf9e6c9504cbe33d997633814cbd9bca3f42b14147aa7b67440c5f78e68c73a5bd7a30f0a8c5ee6c6f6c21",
+      "credit": 8.0
+    },
+    {
+      "stage": 1,
+      "id": "12345",
+      "nonce": "0000018787a1415a",
+      "solution": "d72b0fbeac6b88deb0eaca05168e4ca692cb1d047db2b30d76f2e4352e2de26351206966f93651fc48387816d98bcb75adabb578147844994bfbc42af53ebe2f1c4c8761db31824de27fdbf1f6381a91faf1bd5c32ed29f57f4072dff6272b2950aefdf96c6f6c21",
+      "credit": 32.0
+    },
+    {
+      "stage": 1,
+      "id": "12345",
+      "nonce": "0000018e87a1415a",
+      "solution": "2c600642cd3c09b9f27b569d6973e46053e394e45787c3b124f74a0a58d7c5a6243df8224e2d0010c2f7adabd9402eeab9ec625a2d82019933bc09aaf126cf420069897f5aa4a8b2194782817e5a8c75bceb96ae55d7bbde29cecf9119eb77c93f8d728c6c6f6c21",
+      "credit": 32.0
+    },
+    {
+      "stage": 1,
+      "id": "12345",
+      "nonce": "000001a887a1415a",
+      "solution": "58b518a45b5745bc6f7227866c8881080f03137138396f4ff6ada71a68a25246fdba828d1ebfcdf602693f391cfd0be0637142925e4af9f791413a1a66c3e4f0e6a6e921d193d2d5e756bbe3b18ac8a660a662f2260afcceb9f18bb2f2f9fa7f454195fc6c6f6c21",
+      "credit": 32.0
+    },
+    {
+      "stage": 2,
+      "id": "12346",
+      "nonce": "000001ab87a1415a",
+      "solution": "b87008b2d6d4783cf6722e5407b643a505641efcd5b1ee4bbe16d3523891da7dec23fac394f4c3870a6f97efaa26e6c87bd6e5ad20584cc6be082af595aa0db43c6708681600e2d386f7ff787f2c4600cbe2633d52ff45fe094c196cef79e2b0f292c3e56c6f6c21",
+      "credit": 16.0
+    },
+    {
+      "stage": 2,
+      "id": "12346",
+      "nonce": "000001ae87a1415a",
+      "solution": "5cab0424666b1b4b83ad194a3fea40217de9386e31b2492c9fd5e31b64d550dc2d31bee0defe9e1864f5993266f1d5b3dcdaa7f13a6a959429b847728c743fb45206f0b37ba9ceae7fe39f37f9add6c4f5d2fbda1c9de539d03fefae4fafa86a3d46cdcd6c6f6c21",
+      "credit": 16.0
+    },
+    {
+      "stage": 2,
+      "id": "12346",
+      "nonce": "000001b587a1415a",
+      "solution": "7d4302ec392465c44a802e1999420dd79582347606e457c3e4a0491226edd6812bf40b3439398b13891c94adf08253c7e5dfab3819aafb327c4ffa84e4722a11d0edebb06039cc3b55118bd5126c6a7dec3118a41274e82f97754e70426b8e7951c80be06c6f6c21",
+      "credit": 16.0
+    }
+  ]
+}

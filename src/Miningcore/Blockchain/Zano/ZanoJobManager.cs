@@ -298,12 +298,17 @@ public class ZanoJobManager : JobManagerBase<ZanoJob>
 
         var context = worker.ContextAs<ZanoWorkerContext>();
 
-        var job = currentJob;
-        if(workerJob.Height != job?.Height)
+        var job = workerJob.DifficultyTemplate as ZanoJob;
+        if(job == null || !ReferenceEquals(job, currentJob) || workerJob.Height != job.Height)
             throw new StratumException(StratumError.MinusOne, "block expired");
+
+        if(workerJob.Submissions.ContainsKey(request.Nonce))
+            throw new StratumException(StratumError.MinusOne, "duplicate share");
 
         // validate & process
         var (share, blobHex) = job.ProcessShare(logger, request.Nonce, workerJob.ExtraNonce, worker);
+        if(!workerJob.Submissions.TryAdd(request.Nonce, true))
+            throw new StratumException(StratumError.MinusOne, "duplicate share");
 
         // enrich share with common data
         share.PoolId = poolConfig.Id;

@@ -326,9 +326,9 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             AuxiliaryTemplateRpcOutcome.Cancellation =>
                 "cancelled by host shutdown",
             AuxiliaryTemplateRpcOutcome.RpcError =>
-                result.Response?.Error?.Message ?? "RPC error",
+                result.Response?.Error is { } error ? $"RPC error (code {error.Code.ToString(CultureInfo.InvariantCulture)})" : "RPC error",
             AuxiliaryTemplateRpcOutcome.TransportFailure =>
-                result.Response?.Error?.Message ?? "transport failure",
+                "transport failure",
             AuxiliaryTemplateRpcOutcome.Success => "completed successfully",
             _ => "unknown auxiliary-template RPC failure",
         };
@@ -695,6 +695,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
         using var candidatePreparation = BeginCandidatePreparation();
         var result = ProcessMergedShare(job, worker, extraNonce2, nTime, nonce, versionBits);
+        context.MarkProofAccepted();
         var share = result.Share;
 
         share.PoolId = poolConfig.Id;
@@ -766,6 +767,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                 share.AccountingRole = ShareAccountingRole.None;
                 share.RewardBasisSatoshis = 0;
                 share.PpsCalculatedAmount = null;
+                share.PpsArithmeticVersion = 0;
                 share.PairedShare = null;
             }
 
@@ -1135,6 +1137,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
             AccountingRole = share.AccountingRole,
             RewardBasisSatoshis = share.RewardBasisSatoshis,
             PpsCalculatedAmount = share.PpsCalculatedAmount,
+            PpsArithmeticVersion = share.PpsArithmeticVersion,
             PairedShare = share.PairedShare,
             BlockHeight = share.BlockHeight,
             BlockReward = share.BlockReward,

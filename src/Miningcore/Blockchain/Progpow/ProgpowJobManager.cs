@@ -15,6 +15,7 @@ using Miningcore.Rpc;
 using Miningcore.Stratum;
 using Miningcore.Time;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using NLog;
 
 namespace Miningcore.Blockchain.Progpow;
@@ -246,19 +247,25 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
         CancellationToken ct)
     {
         Contract.RequiresNonNull(worker);
-        Contract.RequiresNonNull(submission);
 
-        if(submission is not object[] submitParams)
-            throw new StratumException(StratumError.Other, "invalid params");
+        // Validate raw JSON without coercing numbers, objects or nested arrays to
+        // strings. Null and malformed shapes must follow the recoverable wire path.
+        var submitParams = submission switch
+        {
+            object[] { Length: 5 } values when values.All(x => x is string) => values,
+            JArray { Count: 5 } values when values.All(x => x.Type == JTokenType.String) =>
+                values.Select(x => (object) x.Value<string>()).ToArray(),
+            _ => throw new StratumException(StratumError.Other, "invalid params")
+        };
 
         var context = worker.ContextAs<ProgpowWorkerContext>();
 
         // extract params
         var workerValue = (submitParams[0] as string)?.Trim();
         var jobId = submitParams[1] as string;
-        var nonce = (submitParams[2] as string)?.Substring(2);
-        var headerHash = (submitParams[3] as string)?.Substring(2);
-        var mixHash = (submitParams[4] as string)?.Substring(2);
+        var nonce = ProofHex.StripRequiredPrefix(submitParams[2] as string, 16, "nonce");
+        var headerHash = ProofHex.StripRequiredPrefix(submitParams[3] as string, 64, "header hash");
+        var mixHash = ProofHex.StripRequiredPrefix(submitParams[4] as string, 64, "mix hash");
 
         if(string.IsNullOrEmpty(workerValue))
             throw new StratumException(StratumError.Other, "missing or invalid workername");

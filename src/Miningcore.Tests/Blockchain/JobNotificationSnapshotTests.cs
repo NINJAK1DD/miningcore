@@ -6,7 +6,6 @@ using System.Reflection;
 using System.Reactive;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Threading.Tasks.Dataflow;
 using Autofac;
 using AutoMapper;
 using Microsoft.Extensions.Caching.Memory;
@@ -128,7 +127,7 @@ public class JobNotificationSnapshotTests : TestBase
         }
     }
 
-    private static ProgpowJob CreateProgpowJob(string family)
+    internal static ProgpowJob CreateProgpowJob(string family)
     {
         ProgpowJob job = family switch
         {
@@ -236,11 +235,9 @@ public class JobNotificationSnapshotTests : TestBase
             await (Task) update.Invoke(pool, new object[] { connection, difficulty, CancellationToken.None });
             Assert.Equal(difficulty, context.Difficulty);
 
-            var queue = Assert.IsType<BufferBlock<object>>(FindField(typeof(StratumConnection), "sendQueue")
-                .GetValue(connection));
-            Assert.True(queue.TryReceive(out var difficultyMessage));
-            Assert.True(queue.TryReceive(out var jobMessage));
-            Assert.False(queue.TryReceive(out _));
+            Assert.True(connection.TryReceiveQueuedMessage(out var difficultyMessage));
+            Assert.True(connection.TryReceiveQueuedMessage(out var jobMessage));
+            Assert.False(connection.TryReceiveQueuedMessage(out _));
             var diff = Assert.IsType<JsonRpcRequest<object[]>>(difficultyMessage);
             Assert.Equal(family is "equihash" or "verus" ? EquihashStratumMethods.SetTarget :
                 BitcoinStratumMethods.SetDifficulty, diff.Method);
@@ -309,15 +306,14 @@ public class JobNotificationSnapshotTests : TestBase
         var request = new Timestamped<JsonRpcRequest>(
             new JsonRpcRequest(BitcoinStratumMethods.Subscribe, new[] { "test-miner" }, 1), DateTimeOffset.UtcNow);
         await (Task) FindMethod(typeof(ProgpowPool), "OnSubscribeAsync",
-            typeof(StratumConnection), typeof(Timestamped<JsonRpcRequest>)).Invoke(pool, new object[] { connection, request });
+            typeof(StratumConnection), typeof(Timestamped<JsonRpcRequest>), typeof(CancellationToken)).Invoke(pool, new object[] { connection, request, CancellationToken.None });
 
         Assert.True(context.IsSubscribed);
-        var queue = Assert.IsType<BufferBlock<object>>(FindField(typeof(StratumConnection), "sendQueue").GetValue(connection));
-        Assert.True(queue.TryReceive(out var response));
+        Assert.True(connection.TryReceiveQueuedMessage(out var response));
         Assert.Equal(1, Assert.IsType<JsonRpcResponse<object[]>>(response).Id);
-        Assert.True(queue.TryReceive(out var difficulty));
+        Assert.True(connection.TryReceiveQueuedMessage(out var difficulty));
         Assert.Equal(ProgpowStratumMethods.SetDifficulty, Assert.IsType<JsonRpcRequest<object[]>>(difficulty).Method);
-        Assert.True(queue.TryReceive(out var message));
+        Assert.True(connection.TryReceiveQueuedMessage(out var message));
         var notification = Assert.IsType<JsonRpcRequest<object>>(message);
         Assert.Equal(ProgpowStratumMethods.MiningNotify, notification.Method);
         var snapshot = Assert.IsType<object[]>(notification.Params);
@@ -327,20 +323,20 @@ public class JobNotificationSnapshotTests : TestBase
         Assert.Equal(new string('0', 64), snapshot[2]);
         Assert.Equal(101u, snapshot[5]);
         Assert.Equal("207fffff", snapshot[6]);
-        Assert.False(queue.TryReceive(out _));
+        Assert.False(connection.TryReceiveQueuedMessage(out _));
 
         // A subsequent difficulty update still preserves the subscribed work.
         var initialJson = JsonConvert.SerializeObject(snapshot);
         await (Task) FindMethod(typeof(ProgpowPool), "OnVarDiffUpdateAsync",
             typeof(StratumConnection), typeof(double), typeof(CancellationToken))
             .Invoke(pool, new object[] { connection, 2d, CancellationToken.None });
-        Assert.True(queue.TryReceive(out _));
-        Assert.True(queue.TryReceive(out var update));
+        Assert.True(connection.TryReceiveQueuedMessage(out _));
+        Assert.True(connection.TryReceiveQueuedMessage(out var update));
         var updated = Assert.IsType<object[]>(Assert.IsType<JsonRpcRequest<object>>(update).Params);
         Assert.False(Assert.IsType<bool>(updated[4]));
         Assert.NotSame(snapshot, updated);
         Assert.Equal(initialJson, JsonConvert.SerializeObject(snapshot));
-        Assert.False(queue.TryReceive(out _));
+        Assert.False(connection.TryReceiveQueuedMessage(out _));
     }
 
     private PoolBase CreatePool(string family, IComponentContext scope, IMasterClock clock,
@@ -384,7 +380,7 @@ public class JobNotificationSnapshotTests : TestBase
         throw new InvalidOperationException($"Test fixture field {type.Name}.{name} no longer exists");
     }
 
-    private static (Func<bool, object[]> Get, object[] Template, int FlagIndex, object Job) CreateArrayJob(string family)
+    internal static (Func<bool, object[]> Get, object[] Template, int FlagIndex, object Job) CreateArrayJob(string family)
     {
         if(family == "ergo")
         {

@@ -125,9 +125,14 @@ inside that TLS stream; a cleartext PROXY preface before a TLS handshake is unsu
 
 Existing client bans are checked against the normalized forwarded identity before
 each request reaches the pool handler. A banned client therefore cannot resume
-mining by reconnecting through a trusted proxy. Earlier rejection immediately after
-header validation and shared-proxy ban policy for pre-identity TLS failures are
-tracked separately in [Issue #187](https://github.com/NINJAK1DD/miningcore/issues/187).
+mining by reconnecting through a trusted proxy. Miningcore also rejects a banned
+identity immediately after validating its trusted TCP4/TCP6 header, before charging
+the address admission allowance or deserializing any following JSON. The header
+alone is sufficient; the client cannot hold startup capacity until a request arrives.
+The transport is checked again at that boundary and before every request, so an
+intentional proxy transport ban also applies to established forwarded sessions.
+See [Stratum ban attribution](stratum-ban-attribution.md) for automatic bans,
+optional/headerless sessions, `UNKNOWN`, TLS setup and recovery.
 
 Many legitimate miners behind NAT share one address allowance. Defaults permit 32
 immediate startups, two more per second, and 256 simultaneously active miners on

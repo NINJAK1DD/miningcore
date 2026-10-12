@@ -9,6 +9,7 @@ orphaning a later block does not change that credit.
 | Decide whether PPS is suitable | [Economic and support boundary](#economic-and-support-boundary) |
 | Prepare an existing database | [Database prerequisites](#database-prerequisites) |
 | Configure a direct pool | [Direct configuration](#direct-configuration) |
+| Opt in to exact binary64 arithmetic | [PPS arithmetic migration](pps-arithmetic-migration.md) |
 | Use PPS with LTC/DOGE | [Merged-mining PPS](#merged-mining-pps) |
 | Commission and monitor it | [Pre-production checklist](#pre-production-checklist) |
 | Respond to an accounting incident | [Recovery and rollback](#recovery-and-rollback) |
@@ -31,8 +32,11 @@ reward-recipient fraction `f`, Miningcore calculates:
 
 The assigned difficulty is used; an unusually lucky share does not receive a larger PPS credit.
 The fraction `f` may be zero, but must remain below one so the retained reward fraction is positive.
-The exact liability is retained at 24 decimal places, the payable balance is rounded down to 12
-decimal places, and the sub-unit remainder is carried per pool and miner.
+The liability is retained at 24 decimal places, the payable balance is rounded down to 12
+decimal places, and the sub-unit remainder is carried per pool and miner. Arithmetic version 0
+retains the historical binary64-to-decimal conversion; version 1 uses exact binary64 ratios
+with one final scale-24 truncation. Version 1 requires the explicit configuration and database
+cutoff in the [migration runbook](pps-arithmetic-migration.md); historical credits stay unchanged.
 
 Current support is deliberately narrow:
 
@@ -51,6 +55,17 @@ withdrawals, payout fees and an emergency shutdown. Reward-recipient percentages
 basis but do not replace a solvency policy. Never use future block income as the only available
 liquidity for already credited balances.
 
+For Bitcoin BLAKE2b Knots 29.4.2, wallet/mempool policy holds **all** coinbase funds
+for 6480 blocks (6481 RPC confirmations), even after the temporary consensus interval
+ends. Estimate at least 45 days of payout demand at a 600-second block interval, plus
+variance, outage/revalidation time, transaction fees and an emergency buffer. Validate
+this against current liabilities and independently monitored mature wallet liquidity;
+`immature` wallet balances and pending block rewards are not spendable reserves.
+Miningcore has no automatic solvency guarantee or reserve admission circuit breaker.
+Stop new PPS admission if mature liquidity cannot cover the reserve policy, preserve
+accepted shares and liabilities, and reconcile pending rewards before resuming.
+Upgrading or orphaning a block never authorizes automatic reversal of booked PPS credit.
+
 ## Database prerequisites
 
 A new database created from the current `createdb.sql` already contains the required contracts. To
@@ -61,7 +76,7 @@ in order, and activates that candidate only after they all succeed:
 
 1. `add_auxpow_block_idempotency.sql`
 2. `add_payout_manager_ownership.sql`
-3. `add_share_accounting.sql`
+3. `add_share_accounting.sql` (includes `add_pps_arithmetic_version.sql`)
 
 These migrations provide synchronous accepted-block idempotency, one durable payout owner, and the
 atomic receipt/credit/remainder ledger. Startup checks them before accepting PPS work. Do not create

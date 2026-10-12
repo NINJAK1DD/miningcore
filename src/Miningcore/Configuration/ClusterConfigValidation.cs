@@ -65,6 +65,7 @@ public class PoolEndpointValidator : AbstractValidator<PoolEndpoint>
 {
     public PoolEndpointValidator()
     {
+        RuleFor(j => j.DifficultyGraceSeconds).InclusiveBetween(0, 300);
         RuleForEach(j => j.TcpProxyProtocol.ProxyAddresses)
             .Must(address => IPAddress.TryParse(address, out _))
             .When(j => j.TcpProxyProtocol?.Enable == true)
@@ -344,6 +345,11 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
                 $"Pool '{(string.IsNullOrEmpty(pool.Id) ? "<unnamed>" : pool.Id)}': " +
                 "paymentProcessing configuration missing; keep the object and " +
                 "set enabled=false to disable payouts");
+
+        RuleFor(j => j.PaymentProcessing.PpsBinary64Activation)
+            .Must(value => value == null || (value.Value.Kind == DateTimeKind.Utc && value.Value.Ticks % 10 == 0))
+            .When(j => !recoveryMode && j.PaymentProcessing != null)
+            .WithMessage("paymentProcessing.ppsBinary64Activation must be a microsecond-aligned UTC timestamp");
 
         RuleFor(j => j.PaymentProcessing.PpsShareRetentionDays)
             .InclusiveBetween(1, 365)

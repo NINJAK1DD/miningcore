@@ -244,6 +244,14 @@ The configured Stratum `difficulty` is the initial fixed difficulty. A `varDiff`
 to adjust it toward a target share interval. A miner can request a supported starting difficulty with
 `d=VALUE` in its password.
 
+Each Stratum port may set `difficultyGraceSeconds` to an integer from `0` through
+`300` (default `30`). It bounds acceptance at a retired work assignment after a
+difficulty change; `0` disables retired-target grace. Complete requests received
+within grace retain their original credit despite server processing backlog.
+After expiry, retained work must meet the current target and receives current
+credit. See [issued difficulty and in-flight grace](difficulty-assignment-grace.md)
+for protocol compatibility and BLAKE2b's separate immutable-target policy.
+
 Shipped miner-facing examples expose low and high starting tiers with VarDiff enabled. Their common
 15-second target, 90-second retarget interval and 30% variance band are commissioning baselines, not
 hardware classifications. Select the tier that produces prompt first shares, then verify accepted

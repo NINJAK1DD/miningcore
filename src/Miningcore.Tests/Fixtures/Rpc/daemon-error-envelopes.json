@@ -1,0 +1,125 @@
+[
+  {
+    "name": "cryptonote-method-not-found",
+    "method": "transfer_split",
+    "source": "https://github.com/monero-project/monero/blob/f6a591c33a40957800bc0d8cb4804058ab36d1f3/contrib/epee/include/net/jsonrpc_structs.h",
+    "reply": {
+      "jsonrpc": "2.0",
+      "id": "fixture",
+      "error": {
+        "code": -32601,
+        "message": "Method not found"
+      }
+    }
+  },
+  {
+    "name": "zano-method-not-found",
+    "method": "transfer_split",
+    "source": "https://github.com/hyle-team/zano/blob/f05767c44367d9427e64b0d81863bf83a40c92ac/contrib/epee/include/net/http_server_handlers_map2.h",
+    "reply": {
+      "jsonrpc": "2.0",
+      "id": "fixture",
+      "error": {
+        "code": -32601,
+        "message": "Method not found"
+      },
+      "method": "transfer_split"
+    }
+  },
+  {
+    "name": "ethereum-subscription-unsupported",
+    "method": "eth_subscribe",
+    "source": "https://github.com/ethereum/go-ethereum/blob/9bbffb6fcdbc1068849b013da448a0e7561d7d4c/rpc/json.go",
+    "reply": {
+      "jsonrpc": "2.0",
+      "id": "fixture",
+      "error": {
+        "code": -32601,
+        "message": "notifications not supported"
+      }
+    }
+  },
+  {
+    "name": "ethereum-error-data",
+    "method": "eth_getBlockByNumber",
+    "source": "https://github.com/ethereum/go-ethereum/blob/9bbffb6fcdbc1068849b013da448a0e7561d7d4c/rpc/json.go",
+    "reply": {
+      "jsonrpc": "2.0",
+      "id": "fixture",
+      "error": {
+        "code": -32000,
+        "message": "synthetic-private-secret",
+        "data": {
+          "reason": "synthetic-private-secret"
+        }
+      }
+    }
+  },
+  {
+    "name": "beam-wallet-method-not-found",
+    "method": "tx_send",
+    "source": "https://github.com/BeamMW/beam/blob/daf7191567b746953e6e7a8d72d4396b6d4c94f5/wallet/api/base/api_base.cpp",
+    "reply": {
+      "jsonrpc": "2.0",
+      "id": "fixture",
+      "error": {
+        "code": -32601,
+        "message": "Procedure not found.",
+        "data": "tx_send"
+      }
+    }
+  },
+  {
+    "name": "handshake-method-not-found",
+    "method": "getblock",
+    "source": "https://github.com/bcoin-org/bweb/blob/10f922f2a4fcbd3845e9e70827d9882e718f55fb/lib/rpc.js",
+    "reply": {
+      "result": null,
+      "error": {
+        "code": -32601,
+        "message": "Method not found."
+      },
+      "id": "fixture"
+    }
+  },
+  {
+    "name": "handshake-not-found-code",
+    "method": "gettransaction",
+    "source": "https://github.com/bcoin-org/bweb/blob/10f922f2a4fcbd3845e9e70827d9882e718f55fb/lib/rpc.js",
+    "reply": {
+      "result": null,
+      "error": {
+        "code": -5,
+        "message": "Transaction not found."
+      },
+      "id": "fixture"
+    }
+  },
+  {
+    "name": "xelis-invalid-params",
+    "method": "get_block_by_hash",
+    "source": "https://github.com/xelis-project/xelis-blockchain/blob/db59b5c246ab0e40386d6c241dcd77f0aea84b10/xelis_common/src/rpc/error.rs",
+    "reply": {
+      "jsonrpc": "2.0",
+      "id": "fixture",
+      "error": {
+        "code": -32602,
+        "message": "Invalid params: synthetic-private-secret",
+        "kind": "INVALID_PARAMS"
+      }
+    }
+  },
+  {
+    "name": "cryptonote-empty-string-message",
+    "method": "get_info",
+    "source": "https://github.com/monero-project/monero/blob/f6a591c33a40957800bc0d8cb4804058ab36d1f3/contrib/epee/include/net/jsonrpc_structs.h",
+    "reply": {
+      "jsonrpc": "2.0",
+      "id": "fixture",
+      "error": {
+        "code": 0,
+        "message": ""
+      }
+    }
+  }
+]

@@ -44,5 +44,24 @@ public class IntegratedBanManagerTests : TestBase
 
         manager.Ban(IPAddress.IPv6Loopback, TimeSpan.FromSeconds(1));
         Assert.False(manager.IsBanned(address));
+
+        manager.Ban(IPAddress.Loopback.MapToIPv6(), TimeSpan.FromSeconds(1));
+        Assert.False(manager.IsBanned(IPAddress.Loopback));
+        Assert.False(manager.IsBanned(IPAddress.Loopback.MapToIPv6()));
+    }
+
+    [Fact]
+    public void Ban_Normalizes_Mapped_Addresses_On_Read_And_Write()
+    {
+        var manager = ModuleInitializer.Container.ResolveKeyed<IBanManager>(BanManagerKind.Integrated);
+        var mappedWrite = IPAddress.Parse("203.0.113.244");
+        var plainWrite = IPAddress.Parse("203.0.113.245");
+
+        manager.Ban(mappedWrite.MapToIPv6(), TimeSpan.FromSeconds(10));
+        Assert.True(manager.IsBanned(mappedWrite));
+        Assert.True(manager.IsBanned(mappedWrite.MapToIPv6()));
+
+        manager.Ban(plainWrite, TimeSpan.FromSeconds(10));
+        Assert.True(manager.IsBanned(plainWrite.MapToIPv6()));
     }
 }

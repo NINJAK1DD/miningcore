@@ -15,6 +15,7 @@ namespace Miningcore.Blockchain.Ethereum.Custom.Cortex;
 
 public class CortexJob : EthereumJob
 {
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(ulong Nonce, string Solution), bool> acceptedProofs = new();
     protected CortexCuckooCycle cortexCuckooCycleHasher;
     protected Sha3_256 sha3Hasher;
     protected Blake2b blake2bHasher;
@@ -56,6 +57,8 @@ public class CortexJob : EthereumJob
         return solutionUints;
     }
 
+    protected virtual int VerifySolution(byte[] header, uint[] solution) => cortexCuckooCycleHasher.Verify(header, solution);
+
     protected virtual byte[] SerializeCoinbase(uint[] solution)
     {
         // allocate a byte array of size 42 * 4
@@ -78,16 +81,20 @@ public class CortexJob : EthereumJob
     public override async Task<SubmitResult> ProcessShareAsync(StratumConnection worker,
         string workerName, string fullNonceHex, string solution, CancellationToken ct)
     {
-        // dupe check
-        lock(workerNonces)
-        {
-            RegisterNonce(worker, fullNonceHex);
-        }
-
         var context = worker.ContextAs<EthereumWorkerContext>();
 
-        if(!ulong.TryParse(fullNonceHex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var fullNonce))
+        if(!ProofHex.IsHex(fullNonceHex) || fullNonceHex.Length > 16 ||
+            !ulong.TryParse(fullNonceHex, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var fullNonce))
             throw new StratumException(StratumError.MinusOne, "bad nonce " + fullNonceHex);
+
+        fullNonceHex = fullNonce.ToString("x16", CultureInfo.InvariantCulture);
+        if(!ProofHex.IsExact(solution, CortexConstants.CuckarooSolutionSize * sizeof(uint) * 2))
+            throw new StratumException(StratumError.MinusOne, "bad solution");
+        var identity = (fullNonce, solution.ToLowerInvariant());
+        // One graph can have multiple valid cycles. Only the same nonce AND
+        // verified 42-edge solution identify the same Cortex proof.
+        if(acceptedProofs.ContainsKey(identity))
+            throw new StratumException(StratumError.MinusOne, "duplicate share");
 
         var solutionBytes = SerializeSolution(solution);
 
@@ -95,7 +102,7 @@ public class CortexJob : EthereumJob
         {
             var headerBytes = SerializeHeader(fullNonce);
 
-            if(cortexCuckooCycleHasher.Verify(headerBytes, solutionBytes) > 0)
+            if(VerifySolution(headerBytes, solutionBytes) != 0)
                 throw new StratumException(StratumError.MinusOne, "bad hash");
         }, ct);
 
@@ -106,27 +113,9 @@ public class CortexJob : EthereumJob
         var resultValue = new uint256(resultBytes);
         var resultValueBig = resultBytes.AsSpan().ToBigInteger();
         var shareDiff = (double) BigInteger.Divide(EthereumConstants.BigMaxValue, resultValueBig) / EthereumConstants.Pow2x32;
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
         var isBlockCandidate = resultValue <= blockTarget;
 
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var share = new Share
         {
@@ -138,6 +127,10 @@ public class CortexJob : EthereumJob
             IsBlockCandidate = isBlockCandidate,
             Difficulty = stratumDifficulty * EthereumConstants.Pow2x32
         };
+
+        // Commit only validated proofs, before returning to candidate RPC/accounting.
+        if(!acceptedProofs.TryAdd(identity, true))
+            throw new StratumException(StratumError.MinusOne, "duplicate share");
 
         if(share.IsBlockCandidate)
         {

@@ -6,8 +6,6 @@ using Miningcore.Configuration;
 
 namespace Miningcore.Stratum;
 
-internal sealed class StratumAdmissionException : Exception;
-
 // Built once per listener before accepting connections. No mutable configuration or
 // IPAddress instance escapes into the lookup set; admission and header parsing share it.
 internal sealed class StratumProxyPolicy
@@ -37,14 +35,16 @@ internal sealed class StratumProxyPolicy
 
     internal bool Enabled { get; }
     internal bool Mandatory { get; }
+    internal IEnumerable<IPAddress> TrustedPeers => trusted.Select(address => IPAddress.Parse(address.ToString()));
     internal bool IsTrustedPeer(IPAddress peer) =>
         Enabled && trusted.Contains(StratumConnectionAdmission.Normalize(peer));
 }
 
 internal static class StratumProxyProtocol
 {
-    internal static IPEndPoint Parse(string line, IPEndPoint peer)
+    internal static IPEndPoint Parse(string line, IPEndPoint peer, out bool validatedIdentity)
     {
+        validatedIdentity = false;
         // Includes CR but excludes LF, which the line dispatcher consumed. v1's wire maximum
         // is 107 bytes including CRLF. Never accept a family, address or port by partial parse.
         if(line.Length > 106 || !line.EndsWith('\r') || line.Any(c => c > 127))
@@ -59,6 +59,7 @@ internal static class StratumProxyProtocol
             !TryAddress(parts[3], family, out _) ||
             !TryPort(parts[4], out var sourcePort) || !TryPort(parts[5], out _))
             throw new InvalidDataException("Invalid PROXY v1 endpoint");
+        validatedIdentity = true;
         return new IPEndPoint(StratumConnectionAdmission.Normalize(source), sourcePort);
     }
 
