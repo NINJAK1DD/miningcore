@@ -266,10 +266,33 @@ public abstract class PoolBase : StratumServer,
             return true;
         if(connection.IsDisconnectRequested)
             return false;
-        var controlled = request.Method is "mining.suggest_difficulty" or "mining.authorize" or "login" or "eth_submitLogin";
+        if(request.Method is not ("mining.suggest_difficulty" or "mining.authorize" or "login" or "eth_submitLogin" or "mining.configure"))
+            return true;
+        var controlled = request.Method == "mining.suggest_difficulty";
+        var parameters = request.Method == "mining.suggest_difficulty" || request.Params == null ? null :
+            Newtonsoft.Json.Linq.JToken.FromObject(request.Params);
+        if(request.Method is "mining.authorize" or "login" or "eth_submitLogin")
+        {
+            // Authorization itself is not a difficulty producer. Inspect only
+            // protocol hint fields, including Beam's top-level login fields.
+            var password = parameters is Newtonsoft.Json.Linq.JArray array ? array.ElementAtOrDefault(1) :
+                (parameters as Newtonsoft.Json.Linq.JObject)?["pass"];
+            var agent = (parameters as Newtonsoft.Json.Linq.JObject)?["agent"];
+            if(request.Extra != null)
+            {
+                if(password == null && request.Extra.TryGetValue("pass", out var pass))
+                    password = pass == null ? null : Newtonsoft.Json.Linq.JToken.FromObject(pass);
+                if(agent == null && request.Extra.TryGetValue("agent", out var userAgent))
+                    agent = userAgent == null ? null : Newtonsoft.Json.Linq.JToken.FromObject(userAgent);
+            }
+            controlled = connection.Context.IsNicehash ||
+                agent?.Type == Newtonsoft.Json.Linq.JTokenType.String && agent.ToObject<string>()
+                    .Contains(Miningcore.Nicehash.API.NicehashConstants.NicehashUA, StringComparison.OrdinalIgnoreCase) ||
+                password?.Type == Newtonsoft.Json.Linq.JTokenType.String && regexStaticDiff.IsMatch(password.ToObject<string>());
+        }
         if(request.Method == "mining.configure")
-            controlled = Newtonsoft.Json.Linq.JToken.FromObject(request.Params ?? new object())
-                .ToString(Newtonsoft.Json.Formatting.None).Contains("minimum-difficulty", StringComparison.Ordinal);
+            controlled = parameters is Newtonsoft.Json.Linq.JArray config && config.First is Newtonsoft.Json.Linq.JArray extensions &&
+                extensions.Any(x => x.Type == Newtonsoft.Json.Linq.JTokenType.String && x.ToObject<string>() == "minimum-difficulty");
         if(!controlled)
             return true;
         var budget = connection.Context.DifficultyRequests;

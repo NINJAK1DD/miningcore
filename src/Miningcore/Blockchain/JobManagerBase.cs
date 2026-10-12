@@ -65,8 +65,9 @@ public abstract class JobManagerBase<TJob>
         do
         {
             previous = Volatile.Read(ref jobId);
-            // Exhaustion fails closed instead of silently reusing an active ID.
-            value = checked(previous + 1);
+            // IDs identify bounded recent job registries, not lifetime history.
+            // Stay positive and keep native formats without exhausting a long-lived pool.
+            value = previous == int.MaxValue ? 1 : previous + 1;
         } while(Interlocked.CompareExchange(ref jobId, value, previous) != previous);
 
         if(format != null)

@@ -20,7 +20,7 @@ namespace Miningcore.Blockchain.Bitcoin;
 
 public class BitcoinJob
 {
-    internal BitcoinJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
+    internal BitcoinJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null, bool preserveId = false) =>
         context.JobForDifficulty(this, (_, id) =>
         {
             var result = (BitcoinJob) MemberwiseClone();
@@ -31,7 +31,7 @@ public class BitcoinJob
                 result.jobParams[0] = id;
             }
             return result;
-        }, JobId, nextJobId);
+        }, JobId, nextJobId, preserveId);
 
     internal const long BitcoinConsensusMaxBlockWeight = 4_000_000;
     protected IHashAlgorithm blockHasher;

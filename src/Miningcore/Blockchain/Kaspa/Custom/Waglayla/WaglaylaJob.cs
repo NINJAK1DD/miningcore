@@ -65,11 +65,10 @@ public class WagLaylaJob : KaspaJob
     {
         var context = worker.ContextAs<KaspaWorkerContext>();
 
-        var header = BlockTemplate.Header.Clone();
-        header.Nonce = Convert.ToUInt64(nonce, 16);
+        var nonceValue = Convert.ToUInt64(nonce, 16);
 
         Span<byte> coinbaseBytes = stackalloc byte[32];
-        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, header.Nonce, coinbaseBytes);
+        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, nonceValue, coinbaseBytes);
 
         Span<byte> sha3_256Bytes = stackalloc byte[32];
         sha3_256Hasher.Digest(coinbaseBytes, sha3_256Bytes);
@@ -103,6 +102,8 @@ public class WagLaylaJob : KaspaJob
 
         if(isBlockCandidate)
         {
+            var header = BlockTemplate.Header.Clone();
+            header.Nonce = nonceValue;
             Span<byte> hashBytes = stackalloc byte[32];
             SerializeHeader(header, hashBytes, false);
 

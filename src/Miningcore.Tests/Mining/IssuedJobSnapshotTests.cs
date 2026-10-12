@@ -71,8 +71,7 @@ public class IssuedJobSnapshotTests
         if(duplicates != null && duplicates.GetValue(template) == null)
             duplicates.SetValue(template, Activator.CreateInstance(duplicates.FieldType));
         var method = Copier(type);
-        object Copy() => method.Invoke(template, method.GetParameters().Length == 1 ?
-            new object[] { worker } : new object[] { worker, Type.Missing });
+        object Copy() => method.Invoke(template, method.GetParameters().Select((_, i) => i == 0 ? (object) worker : Type.Missing).ToArray());
         var old = Copy();
         Assert.Equal(type, old.GetType());
         Assert.Same(old, Copy());

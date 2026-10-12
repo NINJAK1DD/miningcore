@@ -216,7 +216,8 @@ public class ProgpowPool : PoolBase
         var job = new ProgpowWorkerJob(NextJobId(), context.ExtraNonce1);
 
         manager.PrepareWorkerJob(job, out var headerHash);
-        job.Job = (ProgpowJob) job.Job.ForWorker(context, () => manager.NextWorkerJobId());
+        // This snapshot's ID is pool-local; the worker job carries the wire identity.
+        job.Job = (ProgpowJob) job.Job.ForWorker(context, preserveId: true);
 
         var result = new object[]
         {

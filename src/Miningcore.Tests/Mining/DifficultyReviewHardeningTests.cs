@@ -95,7 +95,42 @@ public class DifficultyReviewHardeningTests
         Assert.Matches("^[0-9A-F]+$", counter.NextWorkerJobId("X"));
         typeof(JobManagerBase<object>).GetField("jobId", BindingFlags.NonPublic | BindingFlags.Instance)
             .SetValue(counter, int.MaxValue);
-        Assert.Throws<OverflowException>(() => counter.NextWorkerJobId());
+        Assert.Equal("00000001", counter.NextWorkerJobId());
+        Assert.Equal("2", counter.NextWorkerJobId("D"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("D")]
+    [InlineData("x8")]
+    [InlineData("X")]
+    public void NativeCounterWrapsAtomicallyWithoutDuplicatesInTheRecentWindow(string format)
+    {
+        var counter = new Counter();
+        typeof(JobManagerBase<object>).GetField("jobId", BindingFlags.NonPublic | BindingFlags.Instance)
+            .SetValue(counter, int.MaxValue - 5000);
+        var ids = new ConcurrentBag<string>();
+        Parallel.For(0, 10000, _ => ids.Add(counter.NextWorkerJobId(format)));
+        Assert.Equal(10000, ids.Distinct().Count());
+        Assert.DoesNotContain(ids, id => id.StartsWith("-", StringComparison.Ordinal));
+        Assert.Contains(format == "D" ? "1" : format == "X" ? "1" : "00000001", ids);
+        Assert.Equal(format == "D" ? "5001" : format == "X" ? "1389" : "00001389", counter.NextWorkerJobId(format));
+    }
+
+    [Fact]
+    public void ProgpowAssignmentSnapshotsPreserveBackingIdWithoutAllocatingWireIds()
+    {
+        var worker = new WorkerContextBase();
+        worker.Init(10, null, new MockMasterClock());
+        var source = new Miningcore.Blockchain.Progpow.ProgpowJob();
+        typeof(Miningcore.Blockchain.Bitcoin.BitcoinJob).GetProperty("JobId").SetValue(source, "backing");
+        var old = source.ForWorker(worker, () => throw new InvalidOperationException("unused"), preserveId: true);
+        worker.SetDifficulty(40);
+        var current = source.ForWorker(worker, () => throw new InvalidOperationException("unused"), preserveId: true);
+        Assert.NotSame(old, current);
+        Assert.Equal(old.JobId, current.JobId);
+        Assert.Equal(10, worker.ValidateShareDifficulty(20, false, old));
+        Assert.Throws<StratumException>(() => worker.ValidateShareDifficulty(20, false, current));
     }
 
     private static KaspaJob Kaspa(string id)

@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Text;
 using Miningcore.Contracts;
 using Miningcore.Crypto;
 using Miningcore.Crypto.Hashing.Algorithms;
@@ -64,22 +63,14 @@ public class ErgoJob
 
     protected bool RegisterSubmit(string nTime, string nonce)
     {
-        var key = new StringBuilder()
-            .Append(nTime)
-            .Append(nonce)
-            .ToString();
-
-        return submissions.TryAdd(key, true);
+        // nTime is not an input to Autolykos validation. Only the nonce bytes
+        // distinguish proofs for this immutable template.
+        return submissions.TryAdd(nonce, true);
     }
 
     protected bool IsDuplicateSubmit(string nTime, string nonce)
     {
-        var key = new StringBuilder()
-            .Append(nTime)
-            .Append(nonce)
-            .ToString();
-
-        return submissions.ContainsKey(key);
+        return submissions.ContainsKey(nonce);
     }
 
     protected virtual byte[] SerializeCoinbase(string msg, string nonce)
@@ -204,10 +195,13 @@ public class ErgoJob
         if(nonce.Length != context.ExtraNonce1.Length + extraNonceSize * 2)
             throw new StratumException(StratumError.Other, "incorrect size of nonce");
 
-        if(!nonce.StartsWith(context.ExtraNonce1))
+        if(!nonce.StartsWith(context.ExtraNonce1, StringComparison.OrdinalIgnoreCase))
             throw new StratumException(StratumError.Other, $"incorrect extraNonce2 in nonce (expected {context.ExtraNonce1}, got {nonce.Substring(0, Math.Min(nonce.Length, context.ExtraNonce1.Length))})");
 
-        // currently unused
+        if(nonce.Any(c => !Uri.IsHexDigit(c)))
+            throw new StratumException(StratumError.Other, "invalid nonce");
+
+        // Legacy miners send this unused field; it never distinguishes a proof.
         if(nTime == "undefined")
             nTime = string.Empty;
 

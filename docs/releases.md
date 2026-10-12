@@ -33,6 +33,20 @@ an outstanding minimum target before its next job. See the
 header/group-only protocol limits, live tests and custom integration changes.
 No database or relay migration is required. Reconnect workers during rollout.
 
+Ergo, Ethereum/Cortex and Kaspa-family duplicate identities now follow the actual
+validated nonce, preventing unused time fields or equivalent hexadecimal encodings
+from creating additional credit. Rejected proofs remain retryable and concurrent
+aliases have one winner. Ordinary authorization is exempt from the difficulty
+request budget; static/NiceHash hints remain bounded. Invalid Bitcoin suggestions
+are recoverable and unchanged suggestions do not republish work.
+
+The native job counter wraps atomically in its positive range, keeping long-lived
+direct SOLO pools usable without restarting at counter exhaustion. Progpow's
+pool-local snapshots retain their backing ID. Kaspa-family block submission retains
+each accepted candidate's private nonce-bearing block, correcting a pre-existing
+concurrent nonce overwrite race; ordinary shares avoid protobuf header cloning.
+Physical IceRiver/Bitmain ASIC commissioning remains **pending** in the GPU-only lab.
+
 ## Unreleased: Handshake difficulty notification and CryptoNote-family targets
 
 Handshake static-difficulty authorization now sends `mining.set_difficulty` under

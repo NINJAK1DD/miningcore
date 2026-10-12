@@ -106,6 +106,35 @@ public class PoolFamilyAssignmentTests : TestBase
         Assert.Empty(fixture.Errors.Logs);
     }
 
+    [Theory]
+    [InlineData("mining.authorize", "array")]
+    [InlineData("eth_submitLogin", "array")]
+    [InlineData("login", "object")]
+    [InlineData("login", "top-level")]
+    [InlineData("login", "nicehash-object")]
+    [InlineData("login", "nicehash-top-level")]
+    public async Task SharedAdmissionChargesOnlyDifficultyHintsAcrossLoginShapes(string method, string shape)
+    {
+        await using var fixture = await Fixture.Create(this, "Bitcoin");
+        var admission = typeof(PoolBase).GetMethod("AdmitDifficultyRequestAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        Task<bool> Admit(bool hint)
+        {
+            var password = hint && !shape.StartsWith("nicehash", StringComparison.Ordinal) ? "d=40" : "x";
+            var agent = hint && shape.StartsWith("nicehash", StringComparison.Ordinal) ? "NiceHash/1.0" : "miner";
+            var request = new JsonRpcRequest(method, shape == "array" ? new JArray("miner", password) :
+                shape.EndsWith("object", StringComparison.Ordinal) ? new JObject { ["login"] = "miner", ["pass"] = password, ["agent"] = agent } : null, 1);
+            if(shape.EndsWith("top-level", StringComparison.Ordinal))
+                request.Extra = new Dictionary<string, object> { ["login"] = "miner", ["pass"] = password, ["agent"] = agent };
+            return (Task<bool>) admission.Invoke(fixture.Pool, new object[] { fixture.Connection, request });
+        }
+        for(var i = 0; i < 20; i++) Assert.True(await Admit(false));
+        for(var i = 0; i < 8; i++) Assert.True(await Admit(true));
+        Assert.False(await Admit(true));
+        Assert.True(await Admit(false));
+        Assert.False(fixture.Connection.IsDisconnectRequested);
+        Assert.Equal(10, fixture.Connection.Context.Difficulty);
+    }
+
     private async Task Race(string family, bool idleOwnsGate)
     {
         await using var fixture = await Fixture.Create(this, family);

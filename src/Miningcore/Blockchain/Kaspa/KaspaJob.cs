@@ -2,7 +2,6 @@ using System;
 using System.Globalization;
 using System.Numerics;
 using System.Collections.Concurrent;
-using System.Text;
 using Miningcore.Contracts;
 using Miningcore.Crypto;
 using Miningcore.Crypto.Hashing.Algorithms;
@@ -101,20 +100,12 @@ public class KaspaJob
     
     protected bool RegisterSubmit(string nonce)
     {
-        var key = new StringBuilder()
-            .Append(nonce)
-            .ToString();
-
-        return submissions.TryAdd(key, true);
+        return submissions.TryAdd(nonce, true);
     }
 
     protected bool IsDuplicateSubmit(string nonce)
     {
-        var key = new StringBuilder()
-            .Append(nonce)
-            .ToString();
-
-        return submissions.ContainsKey(key);
+        return submissions.ContainsKey(nonce);
     }
     
     protected virtual ushort[][] GenerateMatrix(ReadOnlySpan<byte> prePowHash)
@@ -294,11 +285,10 @@ public class KaspaJob
     {
         var context = worker.ContextAs<KaspaWorkerContext>();
 
-        var header = BlockTemplate.Header.Clone();
-        header.Nonce = Convert.ToUInt64(nonce, 16);
+        var nonceValue = ulong.Parse(nonce, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture);
 
         Span<byte> coinbaseBytes = stackalloc byte[32];
-        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, header.Nonce, coinbaseBytes);
+        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, nonceValue, coinbaseBytes);
 
         Span<byte> matrixBytes = stackalloc byte[32];
         ComputeCoinbase(prePowHashBytes, coinbaseBytes, matrixBytes);
@@ -330,6 +320,8 @@ public class KaspaJob
 
         if(isBlockCandidate)
         {
+            var header = BlockTemplate.Header.Clone();
+            header.Nonce = nonceValue;
             Span<byte> hashBytes = stackalloc byte[32];
             SerializeHeader(header, hashBytes, false);
 
@@ -353,13 +345,21 @@ public class KaspaJob
         var context = worker.ContextAs<KaspaWorkerContext>();
         
         // We don't need "0x"
-        nonce = (nonce.StartsWith("0x")) ? nonce.Substring(2) : nonce;
+        nonce = nonce.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? nonce.Substring(2) : nonce;
+        if(nonce.Length < 1 || nonce.Length > KaspaConstants.NonceLength || nonce.Any(c => !Uri.IsHexDigit(c)))
+            throw new StratumException(StratumError.Other, "invalid nonce");
         
         // Add extranonce to nonce if enabled and submitted nonce is shorter than expected (16 - <extranonce length> characters)
         if (nonce.Length <= (KaspaConstants.NonceLength - context.ExtraNonce1.Length))
         {
             nonce = context.ExtraNonce1.PadRight(KaspaConstants.NonceLength - context.ExtraNonce1.Length, '0') + nonce;
         }
+
+        // Canonicalize the effective nonce after the existing extranonce projection.
+        // Equivalent encodings must identify the same nonce-bearing header.
+        if(!ulong.TryParse(nonce, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var nonceValue))
+            throw new StratumException(StratumError.Other, "invalid nonce");
+        nonce = nonceValue.ToString("x16", CultureInfo.InvariantCulture);
         
         // dupe check
         if(IsDuplicateSubmit(nonce))
@@ -371,7 +371,7 @@ public class KaspaJob
         if(result.IsBlockCandidate)
         {
             var block = BlockTemplate.Clone();
-            block.Header.Nonce = Convert.ToUInt64(nonce, 16);
+            block.Header.Nonce = nonceValue;
             candidateBlocks.Add(result, block);
         }
         return result;

@@ -32,7 +32,9 @@ public class EthereumJob
         blockTarget = new uint256(target.HexToReverseByteArray());
     }
 
-    protected Dictionary<string, HashSet<string>> workerNonces = new();
+    // A nonce identifies work for this template, independent of its spelling or
+    // submitting connection. Snapshots share the same accepted-proof registry.
+    protected HashSet<ulong> workerNonces = new();
 
     public string Id { get; private set; }
     public EthereumBlockTemplate BlockTemplate { get; }
@@ -44,33 +46,22 @@ public class EthereumJob
 
     protected void RegisterNonce(StratumConnection worker, string nonce)
     {
-        var nonceLower = nonce.ToLower();
-
-        if(!workerNonces.TryGetValue(worker.ConnectionId, out var nonces))
-        {
-            nonces = new HashSet<string>(new[] { nonceLower });
-            workerNonces[worker.ConnectionId] = nonces;
-        }
-
-        else
-        {
-            if(nonces.Contains(nonceLower))
-                throw new StratumException(StratumError.MinusOne, "duplicate share");
-
-            nonces.Add(nonceLower);
-        }
+        if(!workerNonces.Add(ulong.Parse(nonce, NumberStyles.HexNumber, CultureInfo.InvariantCulture)))
+            throw new StratumException(StratumError.MinusOne, "duplicate share");
     }
 
     public virtual async Task<SubmitResult> ProcessShareAsync(StratumConnection worker,
         string workerName, string fullNonceHex, string solution, CancellationToken ct)
     {
-        lock(workerNonces)
-            if(workerNonces.TryGetValue(worker.ConnectionId, out var nonces) && nonces.Contains(fullNonceHex.ToLowerInvariant()))
-                throw new StratumException(StratumError.MinusOne, "duplicate share");
         var context = worker.ContextAs<EthereumWorkerContext>();
 
         if(!ulong.TryParse(fullNonceHex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var fullNonce))
             throw new StratumException(StratumError.MinusOne, "bad nonce " + fullNonceHex);
+
+        fullNonceHex = fullNonce.ToString("x16", CultureInfo.InvariantCulture);
+        lock(workerNonces)
+            if(workerNonces.Contains(fullNonce))
+                throw new StratumException(StratumError.MinusOne, "duplicate share");
 
         // get dag/light cache for block
         var cache = await ethash.GetCacheAsync(logger, BlockTemplate.Height, ct);

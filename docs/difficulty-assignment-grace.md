@@ -61,8 +61,11 @@ template without allocating a worker copy. Reissuing a template after a difficul
 change allocates a snapshot and an ID from the job manager's native counter:
 decimal Kaspa IDs, eight-digit hexadecimal Ethereum IDs, uppercase hexadecimal
 Alephium IDs and existing family formats elsewhere. Fresh templates keep their
-original native IDs. The counter allocates atomically and fails before overflow
-can reuse an ID. Repeating the same template under an unchanged assignment reuses
+original native IDs. The counter allocates atomically in the positive range
+1 through `int.MaxValue`, then wraps to 1. This keeps long-lived direct SOLO and
+retargeting pools usable; identity is scoped to bounded recent job registries,
+not lifetime history. Wrap does not recycle a recent assignment within the
+2,147,483,647-allocation window. Repeating the same template under an unchanged assignment reuses
 that snapshot and ID. Notification arrays are copied. The template's duplicate-proof registry is shared across
 snapshots, so submitting the same proof under an older and newer ID cannot create
 two accepted shares. Rejected proofs never enter the accepted-proof registry:
@@ -70,7 +73,13 @@ proof/target/expiry validation precedes the atomic duplicate commit, and concurr
 aliases have exactly one winner. Already accepted proofs retain a cheap duplicate
 precheck. Progpow's unique worker-job IDs already separate issuance;
 its backing job now records the assignment and shares proof deduplication across
-those IDs.
+those IDs without consuming another wire ID for its pool-local snapshot.
+
+Duplicate keys represent the validated proof inputs. Ergo's unused `nTime` cannot
+create another identity for the same nonce bytes. Ethereum/Cortex use the parsed
+64-bit nonce, shared across connections and snapshots of the same template.
+Kaspa canonicalizes the effective 64-bit nonce after extranonce projection.
+Hexadecimal padding, case or supported prefixes cannot mint another credit.
 
 CryptoNote, Conceal and Zano retain their unique worker blobs/extranonces. Their
 assignment map is keyed by **template identity plus extranonce**, since a new
@@ -79,7 +88,8 @@ entries. Generic snapshot metadata uses weak keys; active job count and eviction
 still come from each existing worker registry. Difficulty changes do not renew
 job age, clean-job, authorization or reconnect eligibility.
 
-Kaspa-family validators hash a private nonce-bearing header. A validated block
+Kaspa-family validators hash the nonce value directly without cloning an ordinary
+share's protobuf header. Only block candidates need a private header/block. A validated block
 candidate retains its own cloned block for daemon submission; concurrent shares
 cannot mutate the source header or change another candidate's nonce.
 
@@ -99,11 +109,13 @@ exceptions and later producers cannot reuse partially published work. Malformed
 suggestions are rejected before mutation and remain recoverable. Canonical Bitcoin,
 Nexa and Satoshicash no-op suggestions do not republish unchanged work.
 
-Generic miner-driven authorization, suggestions and minimum-difficulty configuration
+Generic miner-driven authorization carrying a static difficulty hint or NiceHash
+identity, suggestions and minimum-difficulty configuration
 share one connection-local monotonic token bucket: a burst of eight requests,
 one token per ten seconds, and terminal disconnect after eight consecutive
 refusals. Refusal leaves target, jobs and daemon validation untouched. There is no
-IP-wide state or background timer. Ordinary share submissions do not spend tokens.
+IP-wide state or background timer. Ordinary authorization and share submissions
+do not spend tokens and remain usable when difficulty tokens are exhausted.
 BLAKE2b retains its separate existing admission and immutable-target contract.
 
 Legacy Ethereum V1 submits only a header, Alephium's IceRiver compatibility
@@ -161,7 +173,7 @@ original PROP/PPLNS reward weights. Concrete Kaspa, Astrix, Karlsen, Spectre and
 Waglayla validators verify original credit with the family share multiplier,
 including proofs exceeding the new target, expiry and shared duplicate rejection.
 `DifficultyReviewHardeningTests` adds configurable grace, receipt-clock isolation,
-counter concurrency/overflow, same-height blob identity and oldest-template/latest-
+counter concurrency/wrap, same-height blob identity and oldest-template/latest-
 assignment compatibility. Concrete pool fault cases require terminal invalidation
 before gate release. Transport cases cover coalesced and split request receipt
 time across a blocked handler; Kaspa cases retry previously rejected proofs and

@@ -24,11 +24,10 @@ public class AstrixJob : KaspaJob
     {
         var context = worker.ContextAs<KaspaWorkerContext>();
 
-        var header = BlockTemplate.Header.Clone();
-        header.Nonce = Convert.ToUInt64(nonce, 16);
+        var nonceValue = Convert.ToUInt64(nonce, 16);
 
         Span<byte> coinbaseBytes = stackalloc byte[32];
-        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, header.Nonce, coinbaseBytes);
+        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, nonceValue, coinbaseBytes);
 
         Span<byte> blake3Bytes = stackalloc byte[32];
         blake3Hasher.Digest(coinbaseBytes, blake3Bytes);
@@ -66,6 +65,8 @@ public class AstrixJob : KaspaJob
 
         if(isBlockCandidate)
         {
+            var header = BlockTemplate.Header.Clone();
+            header.Nonce = nonceValue;
             Span<byte> hashBytes = stackalloc byte[32];
             SerializeHeader(header, hashBytes, false);
 

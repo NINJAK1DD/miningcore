@@ -142,6 +142,53 @@ public class KaspaDifficultyCreditTests
         Assert.Equal(0ul, source.BlockTemplate.Header.Nonce);
     }
 
+    [LinuxNativeTheory]
+    [InlineData("KaspaJob")]
+    [InlineData("AstrixJob")]
+    [InlineData("KarlsencoinJob")]
+    [InlineData("SpectreJob")]
+    [InlineData("WagLaylaJob")]
+    public void EquivalentEffectiveNonceEncodingsCannotCreateAnotherCredit(string validator)
+    {
+        var clock = new MockMasterClock();
+        var context = new KaspaWorkerContext { ExtraNonce1 = "00000000" };
+        context.Init(100, null, clock);
+        var connection = new StratumConnection(new NullLogger(LogManager.LogFactory),
+            new RecyclableMemoryStreamManager(), clock, "kaspa-encoding", true);
+        connection.SetContext(context);
+        var hash = new FixedProof { Difficulty = 20 };
+        var source = (KaspaJob) Activator.CreateInstance(JobTypes.Single(type => type.Name == validator), new Sha256D(), new Sha256D(), hash);
+        typeof(KaspaJob).GetProperty("JobId").SetValue(source, "1");
+        typeof(KaspaJob).GetProperty("BlockTemplate").SetValue(source,
+            new Kaspad.RpcBlock { Header = new Kaspad.RpcBlockHeader { DaaScore = 101, Timestamp = 123 } });
+        typeof(KaspaJob).GetProperty("prePowHashBytes").SetValue(source, Enumerable.Range(1, 32).Select(x => (byte) x).ToArray());
+        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(source, uint256.Zero);
+        typeof(KaspaJob).GetField("shareMultiplier", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(source, 4d);
+        var old = source.ForWorker(context);
+        Assert.Equal(StratumError.LowDifficultyShare,
+            Assert.Throws<StratumException>(() => old.ProcessShare(connection, "0x1")).Code);
+        context.SetDifficulty(10);
+        var current = source.ForWorker(context, () => "2");
+        Assert.Equal(10 / 4d, current.ProcessShare(connection, "0000000000000001").Difficulty);
+        foreach(var nonce in new[] { "1", "0x01", "000000001", "0X0000000000000001" })
+            Assert.Equal(StratumError.DuplicateShare, Assert.Throws<StratumException>(() => old.ProcessShare(connection, nonce)).Code);
+
+        var credits = new ConcurrentBag<double>();
+        var failures = new ConcurrentBag<StratumError>();
+        Parallel.For(0, 32, i =>
+        {
+            try { credits.Add(current.ProcessShare(connection, i % 2 == 0 ? "0xA" : "000000000000000a").Difficulty); }
+            catch(StratumException ex) { failures.Add(ex.Code); }
+        });
+        Assert.Single(credits);
+        Assert.Equal(31, failures.Count);
+        Assert.All(failures, code => Assert.Equal(StratumError.DuplicateShare, code));
+        Assert.Equal(10 / 4d, credits.Sum());
+        Assert.Equal(0ul, source.BlockTemplate.Header.Nonce);
+        foreach(var nonce in new[] { "0x", "g", "-1", "10000000000000000", " 1" })
+            Assert.Equal(StratumError.Other, Assert.Throws<StratumException>(() => current.ProcessShare(connection, nonce)).Code);
+    }
+
     private sealed class FixedProof : IHashAlgorithm
     {
         internal double Difficulty { get; set; }

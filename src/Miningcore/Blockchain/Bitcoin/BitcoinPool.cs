@@ -534,9 +534,11 @@ public class BitcoinPool : PoolBase
                 // still use strict float syntax, without grouping separators.
                 if(value is sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal)
                     return Convert.ToDouble(value, culture);
-                return double.Parse(value?.ToString().Trim(), System.Globalization.NumberStyles.Float, culture);
+                return double.TryParse(value?.ToString().Trim(), System.Globalization.NumberStyles.Float, culture, out var parsed) ? parsed : null;
             }
-            return (double) Convert.ChangeType(requestParams.FirstOrDefault()?.ToString().Trim(), typeof(double));
+            return double.TryParse(requestParams.FirstOrDefault()?.ToString().Trim(),
+                System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowThousands,
+                System.Globalization.CultureInfo.CurrentCulture, out var legacy) ? legacy : null;
         }
         catch(Exception ex)
         {
@@ -550,6 +552,15 @@ public class BitcoinPool : PoolBase
     {
         var request = tsRequest.Value;
         var context = connection.ContextAs<BitcoinWorkerContext>();
+
+        var requestedDiff = parsedDifficulty.HasValue ? parsedDifficulty.Value.Value : ReadSuggestedDifficulty(request);
+        if(requestedDiff is { } invalid && (!double.IsFinite(invalid) || invalid <= 0))
+            requestedDiff = null;
+        if(!requestedDiff.HasValue && !parsedDifficulty.HasValue)
+        {
+            await connection.RespondErrorAsync(StratumError.Other, "Invalid difficulty", request.Id, false);
+            return;
+        }
 
         // Nicehash's stupid validator insists on "error" property present
         // in successful responses which is a violation of the JSON-RPC spec
@@ -565,12 +576,12 @@ public class BitcoinPool : PoolBase
         // acknowledge
         await connection.RespondAsync(response);
 
-        var requestedDiff = parsedDifficulty.HasValue ? parsedDifficulty.Value.Value : ReadSuggestedDifficulty(request);
-
         // client may suggest higher-than-base difficulty, but not a lower one
         var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
 
-        if(requestedDiff > poolEndpoint.Difficulty)
+        // BLAKE2b supplies its validated value and retains its separate legacy
+        // notification contract; generic no-ops publish nothing beyond the ack.
+        if(requestedDiff > poolEndpoint.Difficulty && (parsedDifficulty.HasValue || requestedDiff != context.Difficulty))
         {
             context.SetDifficulty(requestedDiff.Value);
             await NotifyAssignedDifficultyAsync(connection);

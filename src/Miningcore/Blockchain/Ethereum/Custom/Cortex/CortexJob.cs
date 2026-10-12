@@ -78,13 +78,15 @@ public class CortexJob : EthereumJob
     public override async Task<SubmitResult> ProcessShareAsync(StratumConnection worker,
         string workerName, string fullNonceHex, string solution, CancellationToken ct)
     {
-        lock(workerNonces)
-            if(workerNonces.TryGetValue(worker.ConnectionId, out var nonces) && nonces.Contains(fullNonceHex.ToLowerInvariant()))
-                throw new StratumException(StratumError.MinusOne, "duplicate share");
         var context = worker.ContextAs<EthereumWorkerContext>();
 
         if(!ulong.TryParse(fullNonceHex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var fullNonce))
             throw new StratumException(StratumError.MinusOne, "bad nonce " + fullNonceHex);
+
+        fullNonceHex = fullNonce.ToString("x16", CultureInfo.InvariantCulture);
+        lock(workerNonces)
+            if(workerNonces.Contains(fullNonce))
+                throw new StratumException(StratumError.MinusOne, "duplicate share");
 
         var solutionBytes = SerializeSolution(solution);
 
