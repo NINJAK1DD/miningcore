@@ -1249,7 +1249,7 @@ public class BitcoinJob
         var context = worker.ContextAs<BitcoinWorkerContext>();
 
         // validate nTime
-        ProofHex.Require(extraNonce2, BitcoinConstants.ExtranoncePlaceHolderLength * 2 - context.ExtraNonce1.Length, "extraNonce2");
+        ProofHex.Require(extraNonce2, extraNoncePlaceHolderLength * 2 - context.ExtraNonce1.Length, "extraNonce2");
         ProofHex.Require(nTime, 8, "ntime");
         ProofHex.Require(nonce, 8, "nonce");
         if(nTime.Length != 8)

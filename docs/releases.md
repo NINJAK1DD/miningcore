@@ -48,9 +48,19 @@ are recoverable and unchanged suggestions do not republish work.
 Bitcoin suggestions use invariant floating-point grammar without grouping
 separators on every server locale. Kaspa short nonces use the connection prefix
 plus a left-padded miner tail; full nonces and equivalent short echoes share one
-effective proof identity. Miners must send unprefixed byte fields at the announced
-width. Physical firmware/proxy commissioning should monitor rejected shares,
-duplicate rates, reconnections, accepted difficulty and payout-weighted totals.
+effective proof identity. Miners must send byte fields at the announced width;
+Progpow requires its protocol's `0x` prefix (case-insensitive) before nonce and
+header/mix hashes. Malformed prefixes, short/nonstring fields and incorrect
+parameter counts return recoverable Stratum errors before proof work.
+Bitcoin, merged mining, Handshake and Satoshicash derive extranonce2 validation
+from each job's actual coinbase placeholder layout. Firmware that ignores the
+advertised `extranonce2_size` now receives `incorrect size of extraNonce2`; those
+wrong-width coinbases would have been invalid block candidates. Physical
+firmware/proxy commissioning should monitor that error, duplicate rates,
+low-difficulty rejections, stale shares, connection resets, accepted-difficulty
+totals and PPS/PROP/PPLNS accounting. The unused `invariant` argument of the
+protected `ReadSuggestedDifficulty` helper has been removed; custom pool
+subclasses should use the single-argument call. Wire parsing remains invariant.
 
 The native job counter wraps atomically in its positive range, keeping long-lived
 direct SOLO pools usable without restarting at counter exhaustion. Progpow's

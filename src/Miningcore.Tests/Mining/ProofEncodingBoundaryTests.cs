@@ -158,6 +158,43 @@ public class ProofEncodingBoundaryTests
     }
 
     [Theory]
+    [InlineData("Bitcoin", 10)]
+    [InlineData("Bitcoin", 12)]
+    [InlineData("Handshake", 10)]
+    [InlineData("Handshake", 12)]
+    [InlineData("Satoshicash", 10)]
+    [InlineData("Satoshicash", 12)]
+    public void ExtranonceWidthFollowsJobLayout(string family, int placeholderBytes)
+    {
+        var source = Activator.CreateInstance(typeof(ProofEncodingBoundaryTests).GetNestedTypes(BindingFlags.NonPublic).Single(x => x.Name == family));
+        WorkerContextBase context = family switch
+        {
+            "Bitcoin" => new BitcoinWorkerContext(), "Handshake" => new HandshakeWorkerContext(),
+            _ => new SatoshicashWorkerContext()
+        };
+        context.Init(10, null, Clock);
+        Set(context, "ExtraNonce1", "10000001");
+        Set(source, "extraNoncePlaceHolderLength", placeholderBytes);
+        Set(source, "clock", Clock);
+        var template = Activator.CreateInstance(source.GetType().BaseType.GetProperty("BlockTemplate").PropertyType);
+        Set(template, "CurTime", 1700000000u);
+        Set(source, "BlockTemplate", template);
+        var job = context.JobForDifficulty(source, (_, _) => typeof(object).GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(source, null), "layout");
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(), Clock, "layout", true);
+        worker.SetContext(context);
+        Share Submit(string en2) => family switch
+        {
+            "Bitcoin" => ((BitcoinJob) job).ProcessShare(worker, en2, Time, "00000001").Share,
+            "Handshake" => ((HandshakeJob) job).ProcessShare(worker, en2, Time, "00000001").Share,
+            _ => ((SatoshicashJob) job).ProcessShare(worker, en2, Time, "00000001").Share
+        };
+        Assert.Equal("incorrect size of extraNonce2", Assert.Throws<StratumException>(() => Submit(Hex(14))).Message);
+        var valid = Hex(placeholderBytes * 2 - 8);
+        Assert.Equal(10, Submit(valid).Difficulty);
+        Assert.Equal(StratumError.DuplicateShare, Assert.Throws<StratumException>(() => Submit(valid.ToUpperInvariant())).Code);
+    }
+
+    [Theory]
     [MemberData(nameof(Fields))]
     public void SubmittedHexAliasesNeverReachAnotherAcceptedCredit(string family, string field)
     {
@@ -177,6 +214,7 @@ public class ProofEncodingBoundaryTests
         worker.SetContext(context);
         if(family is "Bitcoin" or "Handshake" or "Satoshicash")
         {
+            Set(source, "extraNoncePlaceHolderLength", BitcoinConstants.ExtranoncePlaceHolderLength);
             Set(source, "clock", Clock);
             var templateType = source.GetType().BaseType.GetProperty("BlockTemplate").PropertyType;
             var template = Activator.CreateInstance(templateType);

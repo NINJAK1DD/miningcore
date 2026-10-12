@@ -23,4 +23,16 @@ internal static class ProofHex
         if(!IsHex(value))
             throw new StratumException(StratumError.Other, $"invalid {field}");
     }
+
+    internal static string StripRequiredPrefix(string value, int characters, string field)
+    {
+        if(value == null || !value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            throw new StratumException(StratumError.Other, $"invalid {field}");
+        // Check the bounded wire width before allocating the unprefixed field.
+        if(value.Length != characters + 2)
+            throw new StratumException(StratumError.Other, $"incorrect size of {field}");
+        var hex = value[2..];
+        Require(hex, characters, field);
+        return hex;
+    }
 }

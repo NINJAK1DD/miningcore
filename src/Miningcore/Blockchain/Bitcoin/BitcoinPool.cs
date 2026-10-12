@@ -521,15 +521,14 @@ public class BitcoinPool : PoolBase
     // to parse again. BLAKE2b validates and executes the same converted value.
     protected readonly record struct ParsedSuggestedDifficulty(double? Value);
 
-    protected double? ReadSuggestedDifficulty(JsonRpcRequest request, bool invariant = true)
+    protected double? ReadSuggestedDifficulty(JsonRpcRequest request)
     {
         try
         {
             var requestParams = request.ParamsAs<object[]>();
             var value = requestParams.FirstOrDefault();
             var culture = System.Globalization.CultureInfo.InvariantCulture;
-            // Keep the legacy flag for downstream callers; wire numerics are
-            // always invariant. Boxed JSON numbers need no text round-trip.
+            // Wire numerics are always invariant. Boxed JSON numbers need no text round-trip.
             if(value is sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal)
                 return Convert.ToDouble(value, culture);
             return double.TryParse(value?.ToString().Trim(), System.Globalization.NumberStyles.Float, culture, out var parsed) ? parsed : null;
@@ -547,7 +546,7 @@ public class BitcoinPool : PoolBase
         var request = tsRequest.Value;
         var context = connection.ContextAs<BitcoinWorkerContext>();
 
-        var requestedDiff = parsedDifficulty.HasValue ? parsedDifficulty.Value.Value : ReadSuggestedDifficulty(request, invariant: true);
+        var requestedDiff = parsedDifficulty.HasValue ? parsedDifficulty.Value.Value : ReadSuggestedDifficulty(request);
         if(requestedDiff is { } invalid && (!double.IsFinite(invalid) || invalid <= 0))
             requestedDiff = null;
         if(!requestedDiff.HasValue && !parsedDifficulty.HasValue)

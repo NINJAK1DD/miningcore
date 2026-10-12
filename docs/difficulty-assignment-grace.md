@@ -200,7 +200,11 @@ time across a blocked handler; Kaspa cases retry previously rejected proofs and
 race duplicate aliases.
 Their final hashes are controlled accounting vectors, not consensus evidence.
 Proof-encoding cases exercise real outer validators and shared duplicate registries
-across the remaining families. Cortex tests control verification outcomes for two
+across the remaining families. Custom-layout cases verify that Bitcoin, merged
+mining, Handshake and Satoshicash validate extranonce2 against each job's coinbase
+layout. Progpow manager cases reject malformed shapes, prefixes and widths before
+proof work, then accept one credit and reject the equivalent uppercase submission.
+Cortex tests control verification outcomes for two
 distinct cycles and exercise the native verifier's rejection/retry boundary;
 they do not claim two captured consensus-valid Cortex cycles on one graph.
 The genuine canonical Bitcoin TCP/accounting and captured Beam GPU proofs also
@@ -274,6 +278,21 @@ credit even when they exceed a later target. Legacy header/group-only submission
 have the conservative behavior documented above. BLAKE2b target and credit
 semantics are unchanged.
 
+Bitcoin, merged mining, Handshake and Satoshicash enforce the extranonce2 width
+from each job's coinbase placeholder layout. Firmware that ignores the advertised
+`extranonce2_size` now receives `incorrect size of extraNonce2`; previously accepted
+ordinary shares with that wrong width would produce an invalid coinbase push
+length if they became block candidates. During firmware/proxy commissioning,
+monitor this error, duplicate rates, low-difficulty rejections, stale shares,
+connection resets, accepted-difficulty totals and PPS/PROP/PPLNS accounting.
+Physical IceRiver/Bitmain ASIC, production proxy and mainnet-family commissioning
+remain pending or deployment-specific; the GPU probe does not certify them.
+
+Progpow submits require the protocol's `0x` prefix (case-insensitive), followed by
+exactly 16 hex characters for nonce and 64 for header/mix hashes. Missing prefixes,
+short or nonstring fields and malformed parameter counts return recoverable Stratum
+errors. Prefix and hex case do not change the accepted proof's identity.
+
 Downstream family implementations must issue the worker snapshot under the
 existing assignment gate and validate the matching issued work. Do not recreate
 grace from public `PreviousDifficulty`, UTC or a new VarDiff context. Blob families
@@ -285,3 +304,5 @@ Custom snapshot callers must supply the manager's native ID allocator; the optio
 fallback suffix is only for direct/custom callers without a wire-format allocator.
 The public `Difficulty` setter now
 uses the same validation and retirement boundary as `SetDifficulty`.
+Custom Bitcoin pool subclasses should call `ReadSuggestedDifficulty(request)`;
+its unused `invariant` argument has been removed. Parsing remains invariant.

@@ -1300,6 +1300,7 @@ public class BitcoinJobTests : TestBase
     {
         public void Configure(Miningcore.Time.IMasterClock masterClock)
         {
+            extraNoncePlaceHolderLength = BitcoinConstants.ExtranoncePlaceHolderLength;
             clock = masterClock;
             BlockTemplate = new Miningcore.Blockchain.Bitcoin.DaemonResponses.BlockTemplate
             {

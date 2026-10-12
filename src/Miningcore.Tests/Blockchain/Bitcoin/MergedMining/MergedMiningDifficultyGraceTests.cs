@@ -19,6 +19,46 @@ namespace Miningcore.Tests.Blockchain.Bitcoin.MergedMining;
 
 public class MergedMiningDifficultyGraceTests : TestBase
 {
+    private sealed class CustomLayoutJob(int placeholderBytes) : MergedMiningBitcoinJob
+    {
+        protected override Script GenerateScriptSigInitial()
+        {
+            extraNoncePlaceHolderLength = placeholderBytes;
+            return base.GenerateScriptSigInitial();
+        }
+    }
+
+    [Theory]
+    [InlineData(10)]
+    [InlineData(12)]
+    public void MergedExtranonceWidthFollowsSerializedJobLayout(int placeholderBytes)
+    {
+        var coin = (BitcoinTemplate) ModuleInitializer.CoinTemplates["litecoin"];
+        var clock = new MockMasterClock { CurrentTime = DateTime.UnixEpoch.AddSeconds(1_700_000_000) };
+        var template = new BlockTemplate
+        {
+            Height = 101, Version = 0x20000000, CurTime = 1_700_000_000,
+            PreviousBlockhash = new string('0', 64), CoinbaseValue = 5_000_000_000,
+            Bits = "1b010000", Target = new Target(0x1b010000).ToUInt256().ToString(),
+            Transactions = Array.Empty<BitcoinBlockTransaction>(),
+        };
+        var source = new CustomLayoutJob(placeholderBytes);
+        source.InitMerged(template, new AuxBlockTemplate { Hash = new string('1', 64), Bits = "1b010000", Height = 101 },
+            "layout", new PoolConfig { Template = coin }, null, new ClusterConfig(), clock,
+            new KeyId(new byte[20]), Network.RegTest, false, 1, new Sha256D(), new FixedProof(), new Sha256D());
+        var context = new MergedMiningBitcoinWorkerContext { ExtraNonce1 = "60000001" };
+        context.Init(10, null, clock);
+        var connection = new StratumConnection(new NullLogger(LogManager.LogFactory),
+            container.Resolve<RecyclableMemoryStreamManager>(), clock, "merged-layout", false);
+        connection.SetContext(context);
+        var job = (MergedMiningBitcoinJob) source.ForWorker(context);
+        MergedMiningShareResult Submit(string en2) => job.ProcessShareMerged(connection, en2, template.CurTime.ToStringHex8(), "00000001");
+        Assert.Equal("incorrect size of extraNonce2", Assert.Throws<StratumException>(() => Submit(new string('0', 14))).Message);
+        var valid = "ab" + new string('0', placeholderBytes * 2 - context.ExtraNonce1.Length - 2);
+        Assert.Equal(10, Submit(valid).Share.Difficulty);
+        Assert.Equal(StratumError.DuplicateShare, Assert.Throws<StratumException>(() => Submit(valid.ToUpperInvariant())).Code);
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]

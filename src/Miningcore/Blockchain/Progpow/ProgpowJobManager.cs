@@ -248,7 +248,7 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
         Contract.RequiresNonNull(worker);
         Contract.RequiresNonNull(submission);
 
-        if(submission is not object[] submitParams)
+        if(submission is not object[] submitParams || submitParams.Length != 5)
             throw new StratumException(StratumError.Other, "invalid params");
 
         var context = worker.ContextAs<ProgpowWorkerContext>();
@@ -256,9 +256,9 @@ public class ProgpowJobManager : BitcoinJobManagerBase<ProgpowJob>
         // extract params
         var workerValue = (submitParams[0] as string)?.Trim();
         var jobId = submitParams[1] as string;
-        var nonce = (submitParams[2] as string)?.Substring(2);
-        var headerHash = (submitParams[3] as string)?.Substring(2);
-        var mixHash = (submitParams[4] as string)?.Substring(2);
+        var nonce = ProofHex.StripRequiredPrefix(submitParams[2] as string, 16, "nonce");
+        var headerHash = ProofHex.StripRequiredPrefix(submitParams[3] as string, 64, "header hash");
+        var mixHash = ProofHex.StripRequiredPrefix(submitParams[4] as string, 64, "mix hash");
 
         if(string.IsNullOrEmpty(workerValue))
             throw new StratumException(StratumError.Other, "missing or invalid workername");

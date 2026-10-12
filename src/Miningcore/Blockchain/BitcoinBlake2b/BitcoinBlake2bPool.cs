@@ -461,7 +461,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 try
                 {
                     var suggestedDifficulty = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty
-                        ? ReadSuggestedDifficulty(request.Value, invariant: true) : null;
+                        ? ReadSuggestedDifficulty(request.Value) : null;
                     var proposedDifficulty = minimumDifficulty ?? suggestedDifficulty;
                     if(proposedDifficulty > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty &&
                        !await ValidateProposedDifficultyAsync(connection, request.Value, proposedDifficulty.Value))
