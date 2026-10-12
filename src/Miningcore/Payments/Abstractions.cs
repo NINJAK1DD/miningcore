@@ -22,3 +22,9 @@ public interface IPayoutScheme
 {
     Task UpdateBalancesAsync(IDbConnection con, IDbTransaction tx, IMiningPool pool, IPayoutHandler payoutHandler, Block block, decimal blockReward, CancellationToken ct);
 }
+
+/// <summary>Optional post-commit notification for a durable allocation quarantine.</summary>
+public interface IBlockAllocationHoldNotifier
+{
+    void NotifyAllocationHold(Block block);
+}

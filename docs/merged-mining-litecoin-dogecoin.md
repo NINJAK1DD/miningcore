@@ -484,3 +484,5 @@ processes:
     `bash scripts/regtest/validate-physical-relay.sh RELAY_HOST RELAY_PORT POOL_ID SENDER_SOURCE`
     with PostgreSQL environment variables set, then submit through the physical sender. The script
     verifies both TCP reachability and end-to-end ordinary-share persistence.
+
+The cumulative `add_share_accounting.sql` includes `add_pps_arithmetic_version.sql`; see the [PPS arithmetic rollout](pps-arithmetic-migration.md).

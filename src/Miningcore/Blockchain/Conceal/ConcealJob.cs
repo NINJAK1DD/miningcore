@@ -64,15 +64,26 @@ public class ConcealJob
 
     private string EncodeTarget(double difficulty, int size = 4)
     {
-        var diff = BigInteger.ValueOf((long) (difficulty * 255d));
+        if(size == 4) Cryptonote.CryptonoteDifficulty.ValidateShortAssignment(difficulty);
+        else Cryptonote.CryptonoteDifficulty.Validate(difficulty, Cryptonote.CryptonoteDifficulty.FullTargetMaximum);
+        var diff = BigInteger.ValueOf(checked((long) (difficulty * 255d)));
         var quotient = ConcealConstants.Diff1.Divide(diff).Multiply(BigInteger.ValueOf(255));
         var bytes = quotient.ToByteArray().AsSpan();
         Span<byte> padded = stackalloc byte[32];
+        padded.Clear();
 
         var padLength = padded.Length - bytes.Length;
 
         if(padLength > 0)
             bytes.CopyTo(padded.Slice(padLength, bytes.Length));
+        else
+            bytes.Slice(bytes.Length - padded.Length, padded.Length).CopyTo(padded);
+
+        if(padded[..size].IndexOfAnyExcept((byte) 0) < 0)
+            throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty produces a zero target");
+
+        if(size == 4 && System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(padded[..4]) < Cryptonote.CryptonoteDifficulty.ShortTargetMinimum)
+            throw new ArgumentOutOfRangeException(nameof(difficulty), "Difficulty exceeds the short-target precision limit");
 
         padded = padded[..size];
         padded.Reverse();
@@ -97,6 +108,8 @@ public class ConcealJob
 
     public void PrepareWorkerJob(ConcealWorkerJob workerJob, out string blob, out string target)
     {
+        Cryptonote.CryptonoteDifficulty.ValidateShortAssignment(workerJob.Difficulty);
+        workerJob.DifficultyTemplate = this;
         workerJob.Height = BlockTemplate.Height;
         workerJob.ExtraNonce = (uint) Interlocked.Increment(ref extraNonce);
 
@@ -116,7 +129,7 @@ public class ConcealJob
         var context = worker.ContextAs<ConcealWorkerContext>();
 
         // validate nonce
-        if(!ConcealConstants.RegexValidNonce.IsMatch(nonce))
+        if(!ProofHex.IsExact(nonce, 8) || !ConcealConstants.RegexValidNonce.IsMatch(nonce))
             throw new StratumException(StratumError.MinusOne, "malformed nonce");
 
         // clone template
@@ -147,33 +160,14 @@ public class ConcealJob
         // check difficulty
         var headerValue = headerHash.ToBigInteger();
         var shareDiff = (double) new BigRational(ConcealConstants.Diff1b, headerValue);
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
         var isBlockCandidate = shareDiff >= BlockTemplate.Difficulty;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, ((object) this, workerExtraNonce));
 
         var result = new Share
         {
             BlockHeight = BlockTemplate.Height,
-            Difficulty = stratumDifficulty,
+            Difficulty = Cryptonote.CryptonoteDifficulty.ValidateShortAssignment(stratumDifficulty),
         };
 
         if(isBlockCandidate)

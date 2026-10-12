@@ -54,7 +54,7 @@ public class ProgpowPool : PoolBase
         }
     }
 
-    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
 
@@ -93,21 +93,33 @@ public class ProgpowPool : PoolBase
         context.UserAgent = requestParams.FirstOrDefault()?.Trim();
 
         // Nicehash support
-        var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+        var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName(), ct);
 
-        if(nicehashDiff.HasValue)
+        var assignmentGate = await EnterAssignmentAsync(connection, ct);
+        try
         {
-            logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
+            assignmentGate.Activate();
+            ct.ThrowIfCancellationRequested();
+            if(nicehashDiff.HasValue)
+            {
+                logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
 
-            context.VarDiff = null; // disable vardiff
-            context.SetDifficulty(nicehashDiff.Value);
+                context.VarDiff = null; // disable vardiff
+                context.SetDifficulty(nicehashDiff.Value);
+            }
+
+            // Initial work starts a clean job set independently of prior broadcasts.
+            var minerJobParams = CreateWorkerJob(connection, true);
+            // send initial update
+            await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
+            await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, minerJobParams);
         }
-
-        // Initial work starts a clean job set independently of prior broadcasts.
-        var minerJobParams = CreateWorkerJob(connection, true);
-        // send initial update
-        await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
-        await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, minerJobParams);
+        catch(Exception ex)
+        {
+            FailAssignmentPublication(connection, ex, ct);
+            throw;
+        }
+        finally { assignmentGate.Release(); }
     }
 
     protected virtual async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -155,18 +167,32 @@ public class ProgpowPool : PoolBase
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                assignmentGate.Activate();
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue &&
+                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
+                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                {
+                    context.VarDiff = null; // disable vardiff
+                    context.SetDifficulty(staticDiff.Value);
 
-                logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
-                await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
+                    await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
+                    if(context.IsSubscribed)
+                        await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
+                }
             }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
+            finally { assignmentGate.Release(); }
         }
 
         else
@@ -176,9 +202,8 @@ public class ProgpowPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
-
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+                if(BanClient(connection, loginFailureBanTimeout))
+                    logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 Disconnect(connection);
             }
@@ -191,6 +216,8 @@ public class ProgpowPool : PoolBase
         var job = new ProgpowWorkerJob(NextJobId(), context.ExtraNonce1);
 
         manager.PrepareWorkerJob(job, out var headerHash);
+        // This snapshot's ID is pool-local; the worker job carries the wire identity.
+        job.Job = (ProgpowJob) job.Job.ForWorker(context, preserveId: true);
 
         var result = new object[]
         {
@@ -245,10 +272,8 @@ public class ProgpowPool : PoolBase
             else if(!context.IsSubscribed)
                 throw new StratumException(StratumError.NotSubscribed, "not subscribed");
 
-            var requestParams = request.ParamsAs<string[]>();
-
             // submit
-            var share = await manager.SubmitShareAsync(connection, requestParams, ct);
+            var share = await manager.SubmitShareAsync(connection, request.Params, ct);
 
             // Nicehash's stupid validator insists on "error" property present
             // in successful responses which is a violation of the JSON-RPC spec
@@ -303,14 +328,14 @@ public class ProgpowPool : PoolBase
         // Bind this broadcast to its own flag while miner callbacks are running.
         var cleanJobs = notification.CleanJobs;
 
-        await Guard(() => ForEachMinerAsync(async (connection, _) =>
+        await Guard(() => ForEachMinerAssignmentAsync(async (connection, _) =>
         {
             var context = connection.ContextAs<ProgpowWorkerContext>();
 
-            var minerJobParams = CreateWorkerJob(connection, cleanJobs);
-
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
+
+            var minerJobParams = CreateWorkerJob(connection, cleanJobs);
 
             // send job
             await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, minerJobParams);
@@ -397,6 +422,9 @@ public class ProgpowPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
 
         try
@@ -404,7 +432,7 @@ public class ProgpowPool : PoolBase
             switch(request.Method)
             {
                 case ProgpowStratumMethods.Subscribe:
-                    await OnSubscribeAsync(connection, tsRequest);
+                    await OnSubscribeAsync(connection, tsRequest, ct);
                     break;
 
                 case ProgpowStratumMethods.Authorize:

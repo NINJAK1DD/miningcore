@@ -25,6 +25,22 @@ public class AlephiumJobParams
 
 public class AlephiumJob
 {
+    private AlephiumJob sourceTemplate;
+    internal AlephiumJob SourceTemplate => sourceTemplate ?? this;
+    internal AlephiumJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (AlephiumJob) MemberwiseClone();
+            result.sourceTemplate = SourceTemplate;
+            result.JobId = id;
+            result.jobParams = jobParams == null ? null : new AlephiumJobParams
+            {
+                JobId = id, FromGroup = jobParams.FromGroup, ToGroup = jobParams.ToGroup,
+                HeaderBlob = jobParams.HeaderBlob, TxsBlob = jobParams.TxsBlob, TargetBlob = jobParams.TargetBlob
+            };
+            return result;
+        }, JobId, nextJobId);
+
     protected IMasterClock clock;
     public AlephiumBlockTemplate BlockTemplate { get; private set; }
     public double Difficulty { get; private set; }
@@ -54,6 +70,15 @@ public class AlephiumJob
             .ToString();
 
         return submissions.TryAdd(key, true);
+    }
+
+    protected bool IsDuplicateSubmit(string nonce)
+    {
+        var key = new StringBuilder()
+            .Append(nonce)
+            .ToString();
+
+        return submissions.ContainsKey(key);
     }
     
     public virtual byte[] SerializeCoinbase(string nonce, int socketMiningProtocol = 0)
@@ -118,30 +143,13 @@ public class AlephiumJob
         // calc share-diff
         var shareDiff = (double) new BigRational(AlephiumConstants.Diff1Target * 1024, targetHashBytes.ToBigInteger()) / 1024;
         // diff check
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = hashBytesValue <= blockTargetValue;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new AlephiumStratumException(AlephiumStratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new AlephiumStratumException(AlephiumStratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        if(!context.TryValidateShareDifficulty(shareDiff, isBlockCandidate, this, out var stratumDifficulty))
+            throw new AlephiumStratumException(AlephiumStratumError.LowDifficultyShare,
+                $"low difficulty or expired assignment ({shareDiff})");
 
         var result = new Share
         {
@@ -171,11 +179,15 @@ public class AlephiumJob
 
         var context = worker.ContextAs<AlephiumWorkerContext>();
         
-        // dupe check
+        if(!ProofHex.IsExact(nonce, AlephiumConstants.NonceLength * 2))
+            throw new AlephiumStratumException(AlephiumStratumError.InvalidNonce, "invalid nonce");
+        if(IsDuplicateSubmit(nonce))
+            throw new AlephiumStratumException(AlephiumStratumError.DuplicatedShare, "duplicate share");
+        var result = ProcessShareInternal(worker, nonce);
         if(!RegisterSubmit(nonce))
             throw new AlephiumStratumException(AlephiumStratumError.DuplicatedShare, $"duplicate share");
 
-        return ProcessShareInternal(worker, nonce);
+        return result;
     }
 
     public void Init(AlephiumBlockTemplate blockTemplate)

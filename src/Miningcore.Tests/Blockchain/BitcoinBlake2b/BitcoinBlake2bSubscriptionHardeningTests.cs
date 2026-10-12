@@ -14,6 +14,35 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public partial class BitcoinBlake2bDifficultyBudgetTests
 {
+    [Fact]
+    public async Task DuplicateSubscribe_ObserverFailuresCannotKeepAdmissionOrJobsOpen()
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
+        await Subscribe(wire);
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var job = Assert.Single(context.validJobs);
+        wire.NicehashLookup = _ => throw new InvalidOperationException("Duplicate reached NiceHash lookup");
+        bus.When(x => x.SendMessage(Arg.Is<TelemetryEvent>(e => e.Category == TelemetryCategory.StratumAdmission),
+            Arg.Any<string>())).Do(_ => throw new InvalidOperationException("Telemetry failure"));
+        var logger = Substitute.For<NLog.ILogger>();
+        logger.When(x => x.Log(Arg.Any<NLog.LogLevel>(), Arg.Any<string>())).Do(_ => throw new InvalidOperationException("Logger failure"));
+        wire.SetLogger(logger);
+        var warning = await wire.RequestAsync("mining.subscribe", "NiceHash/1.0");
+        Assert.Equal((int) StratumError.Other, warning["error"]["code"].Value<int>());
+        Assert.Same(job, Assert.Single(context.validJobs));
+        await wire.SendRequestAsync("mining.subscribe", "NiceHash/1.0");
+        await wire.AssertNoMoreMessagesAsync();
+        await wire.DispatchBufferedAsync("mining.suggest_difficulty", 2e-9);
+        Assert.True(wire.Connection.IsDisconnectRequested);
+        Assert.Empty(context.validJobs);
+        Assert.Throws<BitcoinJobRegistryClosedException>(() => context.AddJob(job, 4));
+        Assert.False(wire.DispatchError is InvalidOperationException);
+        Assert.Equal(1, wire.JobsCreated);
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "duplicate-subscribe-warning"), Arg.Any<string>());
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "duplicate-subscribe"), Arg.Any<string>());
+    }
+
     [Theory]
     [InlineData("{}")]
     [InlineData("123")]

@@ -50,4 +50,10 @@ public class Block
     /// property.
     /// </summary>
     public bool NotifyBlockUnlockedOnUpdate { get; set; }
+
+    /// <summary>
+    /// Runtime-only evidence that this classification verified a matching active
+    /// header and wallet coinbase. Never restored from a database/API projection.
+    /// </summary>
+    public bool BitcoinBlake2bCustodialEvidenceVerified { get; set; }
 }

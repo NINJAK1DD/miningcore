@@ -23,6 +23,14 @@ namespace Miningcore.Blockchain.Beam;
 
 public class BeamJob
 {
+    internal BeamJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (BeamJob) MemberwiseClone();
+            result.JobId = id;
+            return result;
+        }, JobId, preserveId: true);
+
     protected IMasterClock clock;
     protected BeamCoinTemplate coin;
     
@@ -51,32 +59,14 @@ public class BeamJob
         
         // calc share-diff
         var shareDiff = (double) new BigRational(BeamConstants.BigMaxValue, solutionHashValue);
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
         
         //throw new StratumException(StratumError.Other, $"Job difficulty: {BlockTemplate.Difficulty}, Job packed difficulty: {BlockTemplate.PackedDifficulty}, stratum difficulty: {stratumDifficulty}, shareDiff: {shareDiff}, BigMaxValue: {BeamConstants.BigMaxValue}, solutionHashValue: {solutionHashValue}");
         
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = shareDiff >= BlockTemplate.Difficulty;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    return (new Share { Difficulty = shareDiff }, null, BeamConstants.BeamRpcLowDifficultyShare);
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                return (new Share { Difficulty = shareDiff }, null, BeamConstants.BeamRpcLowDifficultyShare);
-        }
+        if(!context.TryValidateShareDifficulty(shareDiff, isBlockCandidate, this, out var stratumDifficulty))
+            return (new Share { Difficulty = shareDiff }, null, BeamConstants.BeamRpcLowDifficultyShare);
 
         var result = new Share
         {
@@ -100,6 +90,13 @@ public class BeamJob
         var key = nonce + solution;
 
         return submissions.TryAdd(key, true);
+    }
+
+    private bool IsDuplicateSubmit(string nonce, string solution)
+    {
+        var key = nonce + solution;
+
+        return submissions.ContainsKey(key);
     }
 
     #region API-Surface
@@ -140,18 +137,22 @@ public class BeamJob
         var context = worker.ContextAs<BeamWorkerContext>();
 
         // validate nonce
-        if(nonce.Length != BeamConstants.NonceSize)
+        if(!ProofHex.IsExact(nonce, BeamConstants.NonceSize))
             return (new Share {}, null, BeamConstants.BeamRpcShareBadNonce);
 
         // validate solution
-        if(solution.Length != BeamConstants.SolutionSize)
+        if(!ProofHex.IsExact(solution, BeamConstants.SolutionSize))
             return (new Share {}, null, BeamConstants.BeamRpcShareBadSolution);
 
-        // dupe check
+        if(IsDuplicateSubmit(nonce, solution))
+            return (new Share {}, null, BeamConstants.BeamRpcDuplicateShare);
+        var result = ProcessShareInternal(worker, nonce, solution);
+        if(result.stratumError != BeamConstants.BeamRpcShareAccepted)
+            return result;
         if(!RegisterSubmit(nonce, solution))
             return (new Share {}, null, BeamConstants.BeamRpcDuplicateShare);
 
-        return ProcessShareInternal(worker, nonce, solution);
+        return result;
     }
     
     public object[] GetJobParamsForStratum()

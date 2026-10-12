@@ -240,10 +240,8 @@ public class BitcoinBlake2bJob : BitcoinJob
         var stratumDifficulty = assignedDifficulty ?? throw new StratumException(
             StratumError.Other, "Bitcoin BLAKE2b shares require an issued difficulty snapshot");
 
-        if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce,
-               null))
-            throw new StratumException(StratumError.DuplicateShare,
-                "duplicate share");
+        if(IsDuplicateSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce, null))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
 
         var combinedExtraNonce = new byte[12];
         connectionExtraNonce.CopyTo(combinedExtraNonce, 0);
@@ -261,6 +259,11 @@ public class BitcoinBlake2bJob : BitcoinJob
             throw new StratumException(StratumError.LowDifficultyShare,
                 $"low difficulty share ({actual})");
         }
+
+        if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce,
+               null))
+            throw new StratumException(StratumError.DuplicateShare,
+                "duplicate share");
 
         var actualDifficulty = BitcoinBlake2bHeader.DifficultyForHash(hashValue);
         var share = new Share

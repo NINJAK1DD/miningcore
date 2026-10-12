@@ -42,7 +42,7 @@ public class SatoshicashPool : PoolBase
     protected SatoshicashJobManager manager;
     private BitcoinTemplate coin;
 
-    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
 
@@ -81,21 +81,33 @@ public class SatoshicashPool : PoolBase
         context.UserAgent = requestParams.FirstOrDefault()?.Trim();
 
         // Nicehash support
-        var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+        var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName(), ct);
 
-        if(nicehashDiff.HasValue)
+        var assignmentGate = await EnterAssignmentAsync(connection, ct);
+        try
         {
-            logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
+            assignmentGate.Activate();
+            ct.ThrowIfCancellationRequested();
+            if(nicehashDiff.HasValue)
+            {
+                logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
 
-            context.VarDiff = null; // disable vardiff
-            context.SetDifficulty(nicehashDiff.Value);
+                context.VarDiff = null; // disable vardiff
+                context.SetDifficulty(nicehashDiff.Value);
+            }
+
+            var minerJobParams = CreateWorkerJob(connection, context.IsSubscribed);
+
+            // send intial update
+            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
         }
-
-        var minerJobParams = CreateWorkerJob(connection, context.IsSubscribed);
-
-        // send intial update
-        await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
+        catch(Exception ex)
+        {
+            FailAssignmentPublication(connection, ex, ct);
+            throw;
+        }
+        finally { assignmentGate.Release(); }
     }
 
     protected virtual async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -143,18 +155,32 @@ public class SatoshicashPool : PoolBase
             // extract control vars from password
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                assignmentGate.Activate();
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue &&
+                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
+                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                {
+                    context.VarDiff = null; // disable vardiff
+                    context.SetDifficulty(staticDiff.Value);
 
-                logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
-                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                    await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                    if(context.IsSubscribed)
+                        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
+                }
             }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
+            finally { assignmentGate.Release(); }
         }
 
         else
@@ -164,9 +190,8 @@ public class SatoshicashPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
-
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+                if(BanClient(connection, loginFailureBanTimeout))
+                    logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 Disconnect(connection);
             }
@@ -176,7 +201,7 @@ public class SatoshicashPool : PoolBase
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
         var context = connection.ContextAs<SatoshicashWorkerContext>();
-        var job = manager.GetJobForStratum();
+        var job = (SatoshicashJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
 
         // update context
         lock(context)
@@ -265,60 +290,49 @@ public class SatoshicashPool : PoolBase
         }
     }
 
-    private async Task OnSuggestDifficultyAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest)
+    private async Task OnSuggestDifficultyAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
         var request = tsRequest.Value;
-        var context = connection.ContextAs<SatoshicashWorkerContext>();
-
-        // Nicehash's stupid validator insists on "error" property present
-        // in successful responses which is a violation of the JSON-RPC spec
-        // [Respect the goddamn standards Nicehack :(]
-        var response = new JsonRpcResponse<object>(true, request.Id);
-
-        if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+        var token = Newtonsoft.Json.Linq.JToken.FromObject(request.Params ?? new object());
+        if(token is Newtonsoft.Json.Linq.JArray array && array.Count == 1)
+            token = array[0];
+        if(token.Type is not (Newtonsoft.Json.Linq.JTokenType.Integer or Newtonsoft.Json.Linq.JTokenType.Float) ||
+            !double.TryParse(token.ToString(Newtonsoft.Json.Formatting.None), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var requestedDiff) ||
+            !double.IsFinite(requestedDiff) || requestedDiff <= 0)
         {
-            response.Extra = new Dictionary<string, object>();
-            response.Extra["error"] = null;
+            await connection.RespondErrorAsync(StratumError.Other, "Invalid difficulty", request.Id, false);
+            return;
         }
-
-        // acknowledge
-        await connection.RespondAsync(response);
-
-        try
+        await RunAssignmentAsync(connection, async () =>
         {
-            var requestParams = request.ParamsAs<object[]>();
-            var requestedDiff = (double) Convert.ChangeType(requestParams.FirstOrDefault()?.ToString().Trim(), typeof(double));
-
-            // client may suggest higher-than-base difficulty, but not a lower one
-            var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
-
-            if(requestedDiff > poolEndpoint.Difficulty)
+            var context = connection.ContextAs<SatoshicashWorkerContext>();
+            var response = new JsonRpcResponse<object>(true, request.Id);
+            if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
+                response.Extra = new Dictionary<string, object> { ["error"] = null };
+            await connection.RespondAsync(response);
+            if(requestedDiff > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty && requestedDiff != context.Difficulty)
             {
                 context.SetDifficulty(requestedDiff);
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-
-                logger.Info(() => $"[{connection.ConnectionId}] Difficulty set to {requestedDiff} as requested by miner");
+                if(context.IsSubscribed)
+                    await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
             }
-        }
-
-        catch(Exception ex)
-        {
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "SatoshicashPool.OnSuggestDifficultyAsync", failure: ex);
-        }
+        }, ct);
     }
 
     protected virtual async Task OnNewJobAsync(object jobParams)
     {
         logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<SatoshicashWorkerContext>();
-            var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
-
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+
+            var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
 
             // send job
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
@@ -394,6 +408,9 @@ public class SatoshicashPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
 
         try
@@ -401,7 +418,7 @@ public class SatoshicashPool : PoolBase
             switch(request.Method)
             {
                 case BitcoinStratumMethods.Subscribe:
-                    await OnSubscribeAsync(connection, tsRequest);
+                    await OnSubscribeAsync(connection, tsRequest, ct);
                     break;
 
                 case BitcoinStratumMethods.Authorize:
@@ -413,7 +430,7 @@ public class SatoshicashPool : PoolBase
                     break;
 
                 case BitcoinStratumMethods.SuggestDifficulty:
-                    await OnSuggestDifficultyAsync(connection, tsRequest);
+                    await OnSuggestDifficultyAsync(connection, tsRequest, ct);
                     break;
 
                 case BitcoinStratumMethods.ExtraNonceSubscribe:

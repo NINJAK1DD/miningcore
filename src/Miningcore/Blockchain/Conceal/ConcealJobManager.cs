@@ -307,12 +307,17 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
 
         var context = worker.ContextAs<ConcealWorkerContext>();
 
-        var job = currentJob;
-        if(workerJob.Height != job?.BlockTemplate.Height)
+        var job = workerJob.DifficultyTemplate as ConcealJob;
+        if(job == null || !ReferenceEquals(job, currentJob) || workerJob.Height != job.BlockTemplate.Height)
             throw new StratumException(StratumError.MinusOne, "block expired");
+
+        if(workerJob.Submissions.ContainsKey(request.Nonce))
+            throw new StratumException(StratumError.MinusOne, "duplicate share");
 
         // validate & process
         var (share, blobHex) = job.ProcessShare(request.Nonce, workerJob.ExtraNonce, request.Hash, worker);
+        if(!workerJob.Submissions.TryAdd(request.Nonce, true))
+            throw new StratumException(StratumError.MinusOne, "duplicate share");
 
         // enrich share with common data
         share.PoolId = poolConfig.Id;

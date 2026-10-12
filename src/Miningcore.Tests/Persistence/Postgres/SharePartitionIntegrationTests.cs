@@ -5,6 +5,7 @@ using AutoMapper;
 using Dapper;
 using Miningcore.Persistence.Postgres.Repositories;
 using Npgsql;
+using Miningcore.Tests.Util.Postgres;
 using Xunit;
 
 namespace Miningcore.Tests.Persistence.Postgres;
@@ -28,9 +29,7 @@ public class SharePartitionIntegrationTests
                 CREATE TABLE shares(poolid text NOT NULL);
             ");
 
-            var scriptPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(
-                AppContext.BaseDirectory,
-                "../../../../Miningcore/Persistence/Postgres/Scripts/createdb_postgresql_11_appendix.sql"));
+            var scriptPath = PostgresTestScripts.PathFor("createdb_postgresql_11_appendix.sql");
             var script = await System.IO.File.ReadAllTextAsync(scriptPath);
 
             // Dapper executes SQL rather than psql meta-commands. Removing this one directive
@@ -62,9 +61,7 @@ public class SharePartitionIntegrationTests
                     usage text NULL, tags text[] NULL,
                     created timestamptz NOT NULL);
             ");
-            var migrationPath = System.IO.Path.GetFullPath(
-                System.IO.Path.Combine(AppContext.BaseDirectory,
-                    "../../../../Miningcore/Persistence/Postgres/Scripts/add_share_accounting.sql"));
+            var migrationPath = PostgresTestScripts.PathFor("add_share_accounting.sql");
             var migration = (await System.IO.File.ReadAllTextAsync(migrationPath))
                 .Replace("\\set ON_ERROR_STOP on", string.Empty,
                     StringComparison.Ordinal);

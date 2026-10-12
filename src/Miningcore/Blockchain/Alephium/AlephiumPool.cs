@@ -175,7 +175,7 @@ public class AlephiumPool : PoolBase
             var staticDiff = GetStaticDiffFromPassparts(passParts);
 
             // Nicehash support
-            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName());
+            var nicehashDiff = await GetNicehashStaticMinDiff(context, coin.Name, coin.GetAlgorithmName(), ct);
 
             if(nicehashDiff.HasValue)
             {
@@ -190,21 +190,33 @@ public class AlephiumPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using miner supplied difficulty of {staticDiff.Value}");
             }
 
-            // Static diff
-            if(staticDiff.HasValue &&
-               (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
-                   context.VarDiff == null && staticDiff.Value > context.Difficulty))
+            var assignmentGate = await EnterAssignmentAsync(connection, ct);
+            try
             {
-                context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(staticDiff.Value);
+                assignmentGate.Activate();
+                ct.ThrowIfCancellationRequested();
+                // Static diff
+                if(staticDiff.HasValue &&
+                   (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
+                       context.VarDiff == null && staticDiff.Value > context.Difficulty))
+                {
+                    context.VarDiff = null; // disable vardiff
+                    context.SetDifficulty(staticDiff.Value);
 
-                logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                    logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
+                }
+
+                var minerJobParams = CreateWorkerJob(connection);
+
+                // send intial update
+                await SendJob(connection, context, minerJobParams);
             }
-
-            var minerJobParams = CreateWorkerJob(connection);
-
-            // send intial update
-            await SendJob(connection, context, minerJobParams);
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
+            finally { assignmentGate.Release(); }
         }
 
         else
@@ -214,9 +226,8 @@ public class AlephiumPool : PoolBase
             if(clusterConfig?.Banning?.BanOnLoginFailure is null or true)
             {
                 // issue short-time ban if unauthorized to prevent DDos on daemon (validateaddress RPC)
-                logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
-
-                banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
+                if(BanClient(connection, loginFailureBanTimeout))
+                    logger.Info(() => $"[{connection.ConnectionId}] Banning unauthorized worker (identity withheld) for {loginFailureBanTimeout.TotalSeconds} sec");
 
                 Disconnect(connection);
             }
@@ -227,7 +238,7 @@ public class AlephiumPool : PoolBase
     {
         var context = connection.ContextAs<AlephiumWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
-        var job = manager.GetJobForStratum();
+        var job = (AlephiumJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId("X"));
 
         // update context
         lock(context)
@@ -320,7 +331,7 @@ public class AlephiumPool : PoolBase
     {
         logger.Info(() => $"Broadcasting job {jobParams.JobId}");
 
-        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
+        await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<AlephiumWorkerContext>();
             var minerJobParams = CreateWorkerJob(connection);
@@ -420,6 +431,9 @@ public class AlephiumPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
         var context = connection.ContextAs<AlephiumWorkerContext>();
 
@@ -497,9 +511,9 @@ public class AlephiumPool : PoolBase
         }
     }
 
-    protected override async Task<double?> GetNicehashStaticMinDiff(WorkerContextBase context, string coinName, string algoName)
+    protected override async Task<double?> GetNicehashStaticMinDiff(WorkerContextBase context, string coinName, string algoName, CancellationToken ct)
     {
-        var result = await base.GetNicehashStaticMinDiff(context, coinName, algoName);
+        var result = await base.GetNicehashStaticMinDiff(context, coinName, algoName, ct);
 
         // adjust value to fit with our target value calculation
         if(result.HasValue)

@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using Miningcore.Configuration;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json.Schema;
 using Xunit;
 using DiagnosticPolicy = Miningcore.Configuration.ConfigurationDiagnosticProjection.DiagnosticPolicy;
 
@@ -19,6 +20,23 @@ namespace Miningcore.Tests;
 public class ConfigurationDiagnosticTests
 {
     private const string Secret = "ISSUE144_SYNTHETIC_SECRET";
+
+    [Theory]
+    [InlineData(0, "2026-09-21T00:00:00Z")]
+    [InlineData(1234560, "2026-09-21T00:00:00.123456Z")]
+    [InlineData(1000000, "2026-09-21T00:00:00.1Z")]
+    public void Projection_ReportsUtcPpsCutoffForReconciliation(long ticks, string expected)
+    {
+        var cutoff = new DateTime(2026, 9, 21, 0, 0, 0, DateTimeKind.Utc).AddTicks(ticks);
+        var config = new ClusterConfig { Pools = new[] { new PoolConfig
+            { PaymentProcessing = new() { PpsBinary64Activation = cutoff } } } };
+        Assert.Contains(expected, ConfigurationDiagnosticProjection.Serialize(config));
+        var schema = Newtonsoft.Json.Schema.JSchema.Parse(Program.GenerateJsonConfigSchemaDocument()
+            .SelectToken("definitions.PoolPaymentProcessingConfig.properties.ppsBinary64Activation").ToString());
+        Assert.True(new JValue(expected).IsValid(schema));
+        Assert.Equal(cutoff, DateTime.Parse(expected, CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind));
+    }
 
     [Fact]
     public void Projection_ConnectionAdmissionReportsNumericControlsWithoutIdentity()
@@ -143,7 +161,7 @@ public class ConfigurationDiagnosticTests
         var objects = ConfigurationDiagnosticProjection.ReviewedObjectTypes.ToHashSet();
         var supported = new HashSet<Type>(objects)
         {
-            typeof(bool), typeof(byte), typeof(int), typeof(double), typeof(decimal),
+            typeof(bool), typeof(byte), typeof(int), typeof(double), typeof(decimal), typeof(DateTime),
             typeof(PayoutScheme), typeof(BanManagerKind), typeof(PostgresSslMode), typeof(PoolConfig[]),
             typeof(DaemonEndpointConfig[]), typeof(RewardRecipient[]),
             typeof(ShareRelayEndpointConfig[]), typeof(Dictionary<int, PoolEndpoint>),

@@ -15,6 +15,18 @@ public class BlockRepository : IBlockRepository
     }
 
     private readonly IMapper mapper;
+
+    public Task<bool> HasLaterConfirmedCustodialBlockAsync(IDbConnection con, IDbTransaction tx,
+        string poolId, DateTime created, long id)
+    {
+        // Ordinary block types exclude direct settlements without requiring
+        // optional direct-SOLO schema columns. Equal timestamps are ambiguous
+        // allocation order and are conservatively held as well.
+        const string query = @"SELECT EXISTS (SELECT 1 FROM blocks
+            WHERE poolid = @poolId AND status = 'confirmed'
+              AND (type IS NULL OR type = 'block') AND created >= @created AND id <> @id)";
+        return con.ExecuteScalarAsync<bool>(query, new { poolId, created, id }, tx);
+    }
     internal const int MaximumPublicPageSize = 100;
     private const string PublicBlockTypesFilter =
         "(type IS NULL OR type NOT IN ('auxpow-claim', 'parent-uncertain', 'merged-parent-uncertain'))";
@@ -236,6 +248,24 @@ public class BlockRepository : IBlockRepository
         return (await con.QueryAsync<Entities.Block>(query, new { status = BlockStatus.Pending.ToString().ToLower(), poolid = poolId }))
             .Select(mapper.Map<Block>)
             .ToArray();
+    }
+
+    public async Task<Block[]> GetBitcoinBlake2bOrphanedBlocksForReconciliationAsync(
+        IDbConnection con, string poolId, long minimumBlockHeight,
+        long afterId, int pageSize, CancellationToken ct)
+    {
+        if(minimumBlockHeight < 0 || afterId < 0 || pageSize is < 1 or > 64)
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+        // Only the typed BLAKE2b manager calls this query. Do not reopen confirmed
+        // custodial settlements or include direct/auxiliary candidate records.
+        const string query = @"SELECT * FROM blocks
+            WHERE poolid = @poolId AND status = 'orphaned'
+              AND (type IS NULL OR type = 'block')
+              AND blockheight >= @minimumBlockHeight AND id > @afterId
+            ORDER BY id ASC LIMIT @pageSize";
+        return (await con.QueryAsync<Entities.Block>(new CommandDefinition(query,
+                new { poolId, minimumBlockHeight, afterId, pageSize }, cancellationToken: ct)))
+            .Select(mapper.Map<Block>).ToArray();
     }
 
     public async Task<Block[]> GetBitcoinDirectBlocksForReconciliationAsync(

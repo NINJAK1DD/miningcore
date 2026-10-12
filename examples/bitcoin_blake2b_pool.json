@@ -1,5 +1,7 @@
 {
   // This is the separate BLAKE2b hard-fork chain, NOT SHA-256d Bitcoin.
+  // Reviewed daemon: Knots 29.4.2.knots20260508. Wallet maturity is 6481
+  // RPC confirmations on mainnet, even after consensus deployment inactivity.
   // See ../docs/bitcoin-blake2b.md. Replace every CHANGE_ME value.
   "clusterName": "bitcoin-blake2b-example",
   "logging": { "level": "info", "enableConsoleLog": true, "enableConsoleColors": true, "logFile": "miningcore.log" },

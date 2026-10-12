@@ -15,6 +15,7 @@ public class IntegratedBanManager : IBanManager
 
     public bool IsBanned(IPAddress address)
     {
+        address = Normalize(address);
         var result = cache.Get(address.ToString());
         return result != null;
     }
@@ -23,6 +24,7 @@ public class IntegratedBanManager : IBanManager
     {
         Contract.RequiresNonNull(address);
         Contract.Requires<ArgumentException>(duration.TotalMilliseconds > 0);
+        address = Normalize(address);
 
         // don't ban loopback
         if(address.Equals(IPAddress.Loopback) || address.Equals(IPAddress.IPv6Loopback))
@@ -30,6 +32,9 @@ public class IntegratedBanManager : IBanManager
 
         cache.Set(address.ToString(), string.Empty, duration);
     }
+
+    private static IPAddress Normalize(IPAddress address) =>
+        address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
 
     #endregion
 }

@@ -20,6 +20,19 @@ namespace Miningcore.Blockchain.Equihash;
 
 public class EquihashJob
 {
+    internal EquihashJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (EquihashJob) MemberwiseClone();
+            result.JobId = id;
+            if(result.jobParams != null)
+            {
+                result.jobParams = (object[]) result.jobParams.Clone();
+                result.jobParams[0] = id;
+            }
+            return result;
+        }, JobId, nextJobId);
+
     protected IMasterClock clock;
     protected static IHashAlgorithm headerHasher = new Sha256D();
     protected EquihashCoinTemplate coin;
@@ -377,30 +390,11 @@ public class EquihashJob
 
         // calc share-diff
         var shareDiff = (double) new BigRational(networkParams.Diff1BValue, headerHash.ToBigInteger());
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = headerValue <= blockTargetValue;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var result = new Share
         {
@@ -426,11 +420,18 @@ public class EquihashJob
         return (result, null);
     }
 
-    private bool RegisterSubmit(string nonce, string solution)
+    protected bool RegisterSubmit(string nonce, string solution, uint nTime)
     {
-        var key = nonce + solution;
+        var key = nTime.ToString("x8", CultureInfo.InvariantCulture) + ":" + nonce + solution;
 
         return submissions.TryAdd(key, true);
+    }
+
+    protected bool IsDuplicateSubmit(string nonce, string solution, uint nTime)
+    {
+        var key = nTime.ToString("x8", CultureInfo.InvariantCulture) + ":" + nonce + solution;
+
+        return submissions.ContainsKey(key);
     }
 
     #region API-Surface
@@ -570,6 +571,9 @@ public class EquihashJob
         var context = worker.ContextAs<EquihashWorkerContext>();
 
         // validate nTime
+        ProofHex.Require(extraNonce2, 64 - context.ExtraNonce1.Length, "extraNonce2");
+        ProofHex.Require(nTime, 8, "ntime");
+        ProofHex.Require(solution, (networkParams.SolutionSize + networkParams.SolutionPreambleSize) * 2, "solution");
         if(nTime.Length != 8)
             throw new StratumException(StratumError.Other, "incorrect size of ntime");
 
@@ -588,10 +592,13 @@ public class EquihashJob
             throw new StratumException(StratumError.Other, "incorrect size of solution");
 
         // dupe check
-        if(!RegisterSubmit(nonce, solution))
+        if(IsDuplicateSubmit(nonce, solution, nTimeInt))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, nonce, nTimeInt, solution);
+        if(!RegisterSubmit(nonce, solution, nTimeInt))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
 
-        return ProcessShareInternal(worker, nonce, nTimeInt, solution);
+        return result;
     }
 
     public virtual object GetJobParams(bool isNew)

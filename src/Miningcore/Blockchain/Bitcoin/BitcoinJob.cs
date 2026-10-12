@@ -20,6 +20,19 @@ namespace Miningcore.Blockchain.Bitcoin;
 
 public class BitcoinJob
 {
+    internal BitcoinJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null, bool preserveId = false) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (BitcoinJob) MemberwiseClone();
+            result.JobId = id;
+            if(result.jobParams != null)
+            {
+                result.jobParams = (object[]) result.jobParams.Clone();
+                result.jobParams[0] = id;
+            }
+            return result;
+        }, JobId, nextJobId, preserveId);
+
     internal const long BitcoinConsensusMaxBlockWeight = 4_000_000;
     protected IHashAlgorithm blockHasher;
     protected IMasterClock clock;
@@ -348,6 +361,24 @@ public class BitcoinJob
         return submissions.TryAdd(key, true);
     }
 
+    protected bool IsDuplicateSubmit(string extraNonce1, string extraNonce2, string nTime,
+        string nonce, uint? versionBits)
+    {
+        var key = new StringBuilder()
+            .Append(extraNonce1)
+            .Append(':')
+            .Append(extraNonce2.ToLowerInvariant())
+            .Append(':')
+            .Append(nTime.ToLowerInvariant())
+            .Append(':')
+            .Append(nonce.ToLowerInvariant())
+            .Append(':')
+            .Append(versionBits?.ToString("x8", CultureInfo.InvariantCulture) ?? "-")
+            .ToString();
+
+        return submissions.ContainsKey(key);
+    }
+
     protected static uint? ParseVersionBits(uint? versionMask, string versionBits)
     {
         // BIP310 makes version_bits part of mining.submit whenever version-rolling was
@@ -425,30 +456,11 @@ public class BitcoinJob
 
         // calc share-diff
         var shareDiff = (double) new BigRational(BitcoinConstants.Diff1, headerHash.ToBigInteger()) * shareMultiplier;
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = headerValue <= blockTargetValue;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var actualShareDifficulty = shareDiff / shareMultiplier;
 
@@ -1237,6 +1249,9 @@ public class BitcoinJob
         var context = worker.ContextAs<BitcoinWorkerContext>();
 
         // validate nTime
+        ProofHex.Require(extraNonce2, extraNoncePlaceHolderLength * 2 - context.ExtraNonce1.Length, "extraNonce2");
+        ProofHex.Require(nTime, 8, "ntime");
+        ProofHex.Require(nonce, 8, "nonce");
         if(nTime.Length != 8)
             throw new StratumException(StratumError.Other, "incorrect size of ntime");
 
@@ -1253,11 +1268,15 @@ public class BitcoinJob
         var versionBitsInt = ParseVersionBits(context.VersionRollingMask, versionBits);
 
         // dupe check
+        if(IsDuplicateSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce,
+               versionBitsInt))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt, versionBitsInt);
         if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce,
                versionBitsInt))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
 
-        return ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt, versionBitsInt);
+        return result;
     }
 
     #endregion // API-Surface
