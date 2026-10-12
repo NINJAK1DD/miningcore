@@ -19,7 +19,8 @@ public class VarDiffContext
     public long LastRetargetTimestamp { get; internal set; }
     // Measured elapsed seconds, never absolute wall-clock timestamps.
     public CircularBuffer<double> TimeBuffer { get; set; }
-    // UTC assignment metadata retained for previous-difficulty share validation.
+    // UTC assignment metadata for diagnostics. Proof acceptance uses issued work
+    // and the worker's independent monotonic assignment lifetime.
     public DateTime? LastUpdate { get; set; }
     public VarDiffConfig Config { get; set; }
 }

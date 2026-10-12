@@ -42,6 +42,12 @@ public class BitcoinPool : PoolBase
     }
 
     protected BitcoinJobManager manager;
+    private async Task NotifyAssignedDifficultyAsync(StratumConnection connection)
+    {
+        var context = connection.ContextAs<BitcoinWorkerContext>();
+        await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+        context.AnnouncedDifficulty = context.Difficulty;
+    }
     private BitcoinTemplate coin;
     private int directJobPipelineFailed;
     private readonly ConditionalWeakTable<StratumConnection, PublicationFailureState> publicationFailures = new();
@@ -177,7 +183,7 @@ public class BitcoinPool : PoolBase
 
         // send initial update. Direct-SOLO work is withheld until the username
         // address has passed network-aware authorization.
-        await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+        await NotifyAssignedDifficultyAsync(connection);
         if(!manager.DirectCoinbasePayoutEnabled || context.IsAuthorized)
         {
             var minerJobParams = CreateWorkerJob(connection,
@@ -301,8 +307,18 @@ public class BitcoinPool : PoolBase
 
             logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
-            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+            await NotifyAssignedDifficultyAsync(connection);
+            // Direct SOLO publishes after the payout authorization is committed.
+            if(!manager.DirectCoinbasePayoutEnabled)
+                await PublishReplacementAssignmentAsync(connection);
         }
+    }
+
+    protected virtual async Task PublishReplacementAssignmentAsync(StratumConnection connection)
+    {
+        var context = connection.ContextAs<BitcoinWorkerContext>();
+        if(context.IsSubscribed && (!manager.DirectCoinbasePayoutEnabled || context.IsAuthorized))
+            await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
     }
 
     protected virtual Task<bool> ValidateWorkerAsync(BitcoinWorkerContext context,
@@ -355,7 +371,7 @@ public class BitcoinPool : PoolBase
                         "Direct SOLO worker has no payout authorization");
                 var directJob = manager.GetDirectJobForStratum(
                     authorization.Address, authorization.Destination,
-                    authorization.Generation);
+                    authorization.Generation).ForWorker(context, () => manager.NextWorkerJobId());
 
                 if(context.TryAddDirectJob(directJob,
                        manager.maxActiveJobs))
@@ -366,7 +382,7 @@ public class BitcoinPool : PoolBase
                 "Direct SOLO payout authorization changed while assigning work");
         }
 
-        var job = manager.GetJobForStratum();
+        var job = (BitcoinJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
         context.AddJob(job, manager.maxActiveJobs);
         return job.GetJobParams(cleanJob);
     }
@@ -505,22 +521,17 @@ public class BitcoinPool : PoolBase
     // to parse again. BLAKE2b validates and executes the same converted value.
     protected readonly record struct ParsedSuggestedDifficulty(double? Value);
 
-    protected double? ReadSuggestedDifficulty(JsonRpcRequest request, bool invariant = false)
+    protected double? ReadSuggestedDifficulty(JsonRpcRequest request)
     {
         try
         {
             var requestParams = request.ParamsAs<object[]>();
-            if(invariant)
-            {
-                var value = requestParams.FirstOrDefault();
-                var culture = System.Globalization.CultureInfo.InvariantCulture;
-                // Boxed JSON numerics need no formatting round-trip. Strings
-                // still use strict float syntax, without grouping separators.
-                if(value is sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal)
-                    return Convert.ToDouble(value, culture);
-                return double.Parse(value?.ToString().Trim(), System.Globalization.NumberStyles.Float, culture);
-            }
-            return (double) Convert.ChangeType(requestParams.FirstOrDefault()?.ToString().Trim(), typeof(double));
+            var value = requestParams.FirstOrDefault();
+            var culture = System.Globalization.CultureInfo.InvariantCulture;
+            // Wire numerics are always invariant. Boxed JSON numbers need no text round-trip.
+            if(value is sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal)
+                return Convert.ToDouble(value, culture);
+            return double.TryParse(value?.ToString().Trim(), System.Globalization.NumberStyles.Float, culture, out var parsed) ? parsed : null;
         }
         catch(Exception ex)
         {
@@ -534,6 +545,15 @@ public class BitcoinPool : PoolBase
     {
         var request = tsRequest.Value;
         var context = connection.ContextAs<BitcoinWorkerContext>();
+
+        var requestedDiff = parsedDifficulty.HasValue ? parsedDifficulty.Value.Value : ReadSuggestedDifficulty(request);
+        if(requestedDiff is { } invalid && (!double.IsFinite(invalid) || invalid <= 0))
+            requestedDiff = null;
+        if(!requestedDiff.HasValue && !parsedDifficulty.HasValue)
+        {
+            await connection.RespondErrorAsync(StratumError.Other, "Invalid difficulty", request.Id, false);
+            return;
+        }
 
         // Nicehash's stupid validator insists on "error" property present
         // in successful responses which is a violation of the JSON-RPC spec
@@ -549,15 +569,16 @@ public class BitcoinPool : PoolBase
         // acknowledge
         await connection.RespondAsync(response);
 
-        var requestedDiff = parsedDifficulty.HasValue ? parsedDifficulty.Value.Value : ReadSuggestedDifficulty(request);
-
         // client may suggest higher-than-base difficulty, but not a lower one
         var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
 
-        if(requestedDiff > poolEndpoint.Difficulty)
+        // BLAKE2b supplies its validated value and retains its separate legacy
+        // notification contract; generic no-ops publish nothing beyond the ack.
+        if(requestedDiff > poolEndpoint.Difficulty && (parsedDifficulty.HasValue || requestedDiff != context.Difficulty))
         {
             context.SetDifficulty(requestedDiff.Value);
-            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+            await NotifyAssignedDifficultyAsync(connection);
+            await PublishReplacementAssignmentAsync(connection);
 
             logger.Info(() => $"[{connection.ConnectionId}] Difficulty set to {requestedDiff} as requested by miner");
         }
@@ -570,6 +591,7 @@ public class BitcoinPool : PoolBase
         var context = connection.ContextAs<BitcoinWorkerContext>();
 
         var requestParams = request.ParamsAs<JToken[]>();
+        var previousDifficulty = context.Difficulty;
         var extensions = requestParams[0].ToObject<string[]>();
         var extensionParams = requestParams[1].ToObject<Dictionary<string, JToken>>();
         var result = new Dictionary<string, object>();
@@ -603,6 +625,16 @@ public class BitcoinPool : PoolBase
         }
 
         await connection.RespondAsync(response);
+        if(context.Difficulty != previousDifficulty)
+            await NotifyConfiguredAssignmentAsync(connection);
+    }
+
+    protected virtual async Task NotifyConfiguredAssignmentAsync(StratumConnection connection)
+    {
+        if(!connection.Context.IsSubscribed)
+            return;
+        await NotifyAssignedDifficultyAsync(connection);
+        await PublishReplacementAssignmentAsync(connection);
     }
 
     private void ConfigureVersionRolling(StratumConnection connection, BitcoinWorkerContext context,
@@ -775,11 +807,12 @@ public class BitcoinPool : PoolBase
                 return;
             try
             {
-                var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
-
                 // varDiff: if the client has a pending difficulty change, apply it now
-                if(context.ApplyPendingDifficulty())
-                    await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                if(context.ApplyPendingDifficulty() ||
+                    context.AnnouncedDifficulty is { } announcedDifficulty && announcedDifficulty != context.Difficulty)
+                    await NotifyAssignedDifficultyAsync(connection);
+
+                var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
 
                 await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
             }
@@ -932,6 +965,9 @@ public class BitcoinPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         if(connection.IsDisconnectRequested)
         {
             Guard(() => Disconnect(connection));
@@ -1099,7 +1135,7 @@ public class BitcoinPool : PoolBase
                 // A difficulty change preserves work from the current block.
                 var minerJobParams = CreateWorkerJob(connection, false);
 
-                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
+                await NotifyAssignedDifficultyAsync(connection);
                 await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, minerJobParams);
             }
             catch(OperationCanceledException ex) when(ex is StratumConnectionClosedException or BitcoinJobRegistryClosedException)

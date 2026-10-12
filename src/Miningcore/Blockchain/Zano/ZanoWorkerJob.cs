@@ -10,6 +10,7 @@ public class ZanoWorkerJob
         Difficulty = difficulty;
     }
 
+    internal object DifficultyTemplate { get; set; }
     public string Id { get; }
     public string Height { get; set; }
     public uint ExtraNonce { get; set; }

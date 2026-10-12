@@ -320,6 +320,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     }
 
     protected override double MaximumVarDiff => BitcoinBlake2bDifficulty.Maximum;
+    protected override bool UsesSharedDifficultyRequestBudget => false;
 
     protected override async Task UpdateVarDiffAsync(StratumConnection connection, bool idle, CancellationToken ct)
     {
@@ -460,7 +461,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 try
                 {
                     var suggestedDifficulty = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty
-                        ? ReadSuggestedDifficulty(request.Value, invariant: true) : null;
+                        ? ReadSuggestedDifficulty(request.Value) : null;
                     var proposedDifficulty = minimumDifficulty ?? suggestedDifficulty;
                     if(proposedDifficulty > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty &&
                        !await ValidateProposedDifficultyAsync(connection, request.Value, proposedDifficulty.Value))
@@ -660,6 +661,10 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         }
         finally { gate.Release(); }
     }
+
+    // CompleteAssignmentAsync owns publication and terminal cleanup for this family.
+    protected override Task PublishReplacementAssignmentAsync(StratumConnection connection) => Task.CompletedTask;
+    protected override Task NotifyConfiguredAssignmentAsync(StratumConnection connection) => Task.CompletedTask;
 
     // An omitted/null parameter list is an empty subscription, just like [].
     // Reject nested containers before the inherited string-array conversion.

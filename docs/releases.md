@@ -22,6 +22,61 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased: in-flight difficulty assignments
+
+Static/NiceHash and minimum-difficulty assignments preserve original credit for
+retained generic jobs for less than 30 monotonic seconds. Newly issued work has
+its own target and job ID; duplicate proofs remain shared across IDs. BLAKE2b
+keeps its exact immutable assigned-target contract. Canonical Bitcoin publishes
+an outstanding minimum target before its next job. See the
+[issued-difficulty policy](difficulty-assignment-grace.md) for expiry, legacy
+header/group-only protocol limits, live tests and custom integration changes.
+No database or relay migration is required. Reconnect workers during rollout.
+
+Ergo, Ethereum and Kaspa-family duplicate identities follow the actual validated
+nonce. Cortex includes the verified 42-edge solution, preserving distinct valid
+cycles on the same nonce. Submitted byte fields across Bitcoin/merged mining,
+Handshake, Satoshicash, Warthog, Nexa, Xelis, Alephium, Beam, Progpow and
+Equihash/Verus now require advertised widths and strict ASCII hex before proof
+work and duplicate lookup. Prefixes, odd tails, whitespace and non-hex aliases
+are rejected; blob nonces cannot admit a trailing newline. Verus PBaaS duplicates
+use the actual daemon nonce and are committed only after successful validation.
+Rejected proofs remain retryable and concurrent
+aliases have one winner. Ordinary authorization is exempt from the difficulty
+request budget; static/NiceHash hints remain bounded. Invalid Bitcoin suggestions
+are recoverable and unchanged suggestions do not republish work.
+Bitcoin suggestions use invariant floating-point grammar without grouping
+separators on every server locale. Kaspa short nonces use the connection prefix
+plus a left-padded miner tail; full nonces and equivalent short echoes share one
+effective proof identity. Miners must send byte fields at the announced width;
+Progpow requires its protocol's `0x` prefix (case-insensitive) before nonce and
+header/mix hashes. Malformed prefixes, short/nonstring fields and incorrect
+parameter counts return recoverable Stratum errors before proof work.
+The generic and Firo/Kiiro/Realichain/Telestai verifiers accept uppercase header
+and mix hashes on the first proof as well as recognising duplicate case aliases.
+Raw submit JSON is validated before conversion; null, scalar, object, nested and
+nonstring parameters return `invalid params` through normal Stratum dispatch.
+Exactly five string parameters are required; monitor firmware/proxies appending
+a sixth field during commissioning. Existing invalid-share banning still applies.
+Omitted optional share-banning settings no longer throw while handling a rejected
+share; configured policies retain their existing behavior.
+Bitcoin, merged mining, Handshake and Satoshicash derive extranonce2 validation
+from each job's actual coinbase placeholder layout. Firmware that ignores the
+advertised `extranonce2_size` now receives `incorrect size of extraNonce2`; those
+wrong-width coinbases would have been invalid block candidates. Physical
+firmware/proxy commissioning should monitor that error, duplicate rates,
+low-difficulty rejections, stale shares, connection resets, accepted-difficulty
+totals and PPS/PROP/PPLNS accounting. The unused `invariant` argument of the
+protected `ReadSuggestedDifficulty` helper has been removed; custom pool
+subclasses should use the single-argument call. Wire parsing remains invariant.
+
+The native job counter wraps atomically in its positive range, keeping long-lived
+direct SOLO pools usable without restarting at counter exhaustion. Progpow's
+pool-local snapshots retain their backing ID. Kaspa-family block submission retains
+each accepted candidate's private nonce-bearing block, correcting a pre-existing
+concurrent nonce overwrite race; ordinary shares avoid protobuf header cloning.
+Physical IceRiver/Bitmain ASIC commissioning remains **pending** in the GPU-only lab.
+
 ## Unreleased: Handshake difficulty notification and CryptoNote-family targets
 
 Handshake static-difficulty authorization now sends `mining.set_difficulty` under

@@ -56,11 +56,27 @@ public class CryptonoteDifficultyCreditTests : TestBase
     public Task NativeProof_FractionalAssignmentUsesRoundedCredit(string family, double hint) =>
         VerifyNativeProof(family, 0.5, hint);
 
-    private async Task VerifyNativeProof(string family, double invalid, double requested = 1)
+    [LinuxNativeTheory]
+    [InlineData("Conceal", false)]
+    [InlineData("Conceal", true)]
+    [InlineData("Cryptonote", false)]
+    [InlineData("Cryptonote", true)]
+    public Task NativeProof_FixedIncreaseAfterDynamicAssignmentKeepsOriginalCredit(string family, bool nicehash) =>
+        VerifyNativeProof(family, 0.5, 2, true, nicehash);
+
+    private async Task VerifyNativeProof(string family, double invalid, double requested = 1,
+        bool fixedIncrease = false, bool nicehash = false)
     {
         var expected = Math.Floor(requested);
         WorkerContextBase worker = family == "Conceal" ? new ConcealWorkerContext() : new CryptonoteWorkerContext();
         worker.Init(requested, null, new MockMasterClock());
+        if(fixedIncrease)
+        {
+            worker.Init(1, new VarDiffConfig { MinDiff = 1, TargetTime = 10, RetargetTime = 5, VariancePercent = 1 }, new MockMasterClock());
+            worker.SetDifficulty(requested);
+            worker.VarDiff.LastUpdate = DateTime.UtcNow;
+            if(nicehash) worker.UserAgent = "NiceHash";
+        }
         Assert.Throws<ArgumentOutOfRangeException>(() => worker.SetDifficulty(invalid));
         var connection = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(),
             new MockMasterClock(), "proof-credit", false);
@@ -93,6 +109,12 @@ public class CryptonoteDifficultyCreditTests : TestBase
             var assignment = new ConcealWorkerJob("job", worker.Difficulty);
             job.PrepareWorkerJob(assignment, out miningBlob, out target);
             var nonce = FindProofNonce(Cryptonight.Algorithm.CN_CCX);
+            if(fixedIncrease)
+            {
+                ((ConcealWorkerContext) worker).AddJob(assignment, 4);
+                worker.VarDiff = null;
+                worker.SetDifficulty(1_000_000);
+            }
             accepted = job.ProcessShare(nonce, assignment.ExtraNonce, hash.ToHexString(), connection).Share;
             Assert.Equal(expected, assignment.Difficulty);
         }
@@ -105,12 +127,18 @@ public class CryptonoteDifficultyCreditTests : TestBase
             var assignment = new CryptonoteWorkerJob("job", worker.Difficulty);
             job.PrepareWorkerJob(assignment, out miningBlob, out target);
             var nonce = FindProofNonce(Cryptonight.Algorithm.CN_0);
+            if(fixedIncrease)
+            {
+                ((CryptonoteWorkerContext) worker).AddJob(assignment, 4);
+                worker.VarDiff = null;
+                worker.SetDifficulty(1_000_000);
+            }
             accepted = job.ProcessShare(nonce, assignment.ExtraNonce, hash.ToHexString(), connection).Share;
             Assert.Equal(expected, assignment.Difficulty);
         }
         Assert.Equal(expected == 1 ? "ffffffff" : "ffffff7f", target);
         Assert.NotEmpty(miningBlob);
-        Assert.Equal(expected, worker.Difficulty);
+        Assert.Equal(fixedIncrease ? 1_000_000 : expected, worker.Difficulty);
         Assert.Equal(expected, accepted.Difficulty);
         await AssertRewardWeights(accepted, expected);
     }

@@ -55,6 +55,12 @@ if(args.Length > 0 && string.Equals(args[0], "api",
 if(args.Length == 1 && args[0] == "metrics-registration")
     return await MetricsRegistrationProbe.RunAsync();
 
+if(args.Length == 3 && args[0] == "beam-gpu")
+    return await BeamGpuProbe.RunAsync(args[1], args[2]);
+
+if(args.Length == 5 && args[0] == "beam-gpu")
+    return await BeamGpuProbe.RunAsync(args[1], args[2], args[3], args[4]);
+
 Console.Error.WriteLine(
     "usage: Miningcore.Tests.ProcessHost hold <recovery-file> <state-directory> <ready-file>\n" +
     "   or: Miningcore.Tests.ProcessHost api <config-file>\n" +

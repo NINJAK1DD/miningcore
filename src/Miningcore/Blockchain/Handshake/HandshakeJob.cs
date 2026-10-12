@@ -31,6 +31,19 @@ public class HandshakeTransactionOutput
 
 public class HandshakeJob
 {
+    internal HandshakeJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (HandshakeJob) MemberwiseClone();
+            result.JobId = id;
+            if(result.jobParams != null)
+            {
+                result.jobParams = (object[]) result.jobParams.Clone();
+                result.jobParams[0] = id;
+            }
+            return result;
+        }, JobId, nextJobId);
+
     protected IHashAlgorithm blockHasher;
     protected IMasterClock clock;
     protected IHashAlgorithm coinbaseHasher;
@@ -574,30 +587,11 @@ public class HandshakeJob
 
         // calc share-diff
         var shareDiff = (double) new BigRational(HandshakeConstants.Diff1, targetShareHashBytes.ToBigInteger()) * shareMultiplier;
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = shareHashValue <= blockTargetValue;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var result = new Share
         {
@@ -762,6 +756,18 @@ public class HandshakeJob
         return submissions.TryAdd(key, true);
     }
 
+    protected virtual bool IsDuplicateSubmit(string extraNonce1, string extraNonce2, string nTime, string nonce)
+    {
+        var key = new StringBuilder()
+            .Append(extraNonce1)
+            .Append(extraNonce2) // lowercase as we don't want to accept case-sensitive values as valid.
+            .Append(nTime)
+            .Append(nonce) // lowercase as we don't want to accept case-sensitive values as valid.
+            .ToString();
+
+        return submissions.ContainsKey(key);
+    }
+
     public virtual (Share Share, string BlockHex) ProcessShare(StratumConnection worker,
         string extraNonce2, string nTime, string nonce)
     {
@@ -772,6 +778,9 @@ public class HandshakeJob
         var context = worker.ContextAs<HandshakeWorkerContext>();
 
         // validate nTime
+        ProofHex.Require(extraNonce2, extraNoncePlaceHolderLength * 2 - context.ExtraNonce1.Length, "extraNonce2");
+        ProofHex.Require(nTime, 8, "ntime");
+        ProofHex.Require(nonce, 8, "nonce");
         if(nTime.Length != 8)
             throw new StratumException(StratumError.Other, "incorrect size of ntime");
 
@@ -786,10 +795,13 @@ public class HandshakeJob
         var nonceInt = uint.Parse(nonce, NumberStyles.HexNumber);
 
         // dupe check
+        if(IsDuplicateSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt);
         if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce))
             throw new StratumException(StratumError.DuplicateShare, "duplicate");
 
-        return ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt);
+        return result;
     }
 
     #endregion // API-Surface

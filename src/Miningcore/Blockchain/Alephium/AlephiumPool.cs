@@ -211,6 +211,11 @@ public class AlephiumPool : PoolBase
                 // send intial update
                 await SendJob(connection, context, minerJobParams);
             }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
             finally { assignmentGate.Release(); }
         }
 
@@ -233,7 +238,7 @@ public class AlephiumPool : PoolBase
     {
         var context = connection.ContextAs<AlephiumWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
-        var job = manager.GetJobForStratum();
+        var job = (AlephiumJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId("X"));
 
         // update context
         lock(context)
@@ -426,6 +431,9 @@ public class AlephiumPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
         var context = connection.ContextAs<AlephiumWorkerContext>();
 

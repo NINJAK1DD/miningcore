@@ -10,6 +10,14 @@ namespace Miningcore.Blockchain.Ethereum;
 
 public class EthereumJob
 {
+    internal EthereumJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (EthereumJob) MemberwiseClone();
+            result.Id = id;
+            return result;
+        }, Id, nextJobId);
+
     public EthereumJob(string id, EthereumBlockTemplate blockTemplate, ILogger logger, IEthashLight ethash)
     {
         Id = id;
@@ -24,9 +32,11 @@ public class EthereumJob
         blockTarget = new uint256(target.HexToReverseByteArray());
     }
 
-    protected Dictionary<string, HashSet<string>> workerNonces = new();
+    // A nonce identifies work for this template, independent of its spelling or
+    // submitting connection. Snapshots share the same accepted-proof registry.
+    protected HashSet<ulong> workerNonces = new();
 
-    public string Id { get; }
+    public string Id { get; private set; }
     public EthereumBlockTemplate BlockTemplate { get; }
     protected uint256 blockTarget;
     protected ILogger logger;
@@ -36,36 +46,23 @@ public class EthereumJob
 
     protected void RegisterNonce(StratumConnection worker, string nonce)
     {
-        var nonceLower = nonce.ToLower();
-
-        if(!workerNonces.TryGetValue(worker.ConnectionId, out var nonces))
-        {
-            nonces = new HashSet<string>(new[] { nonceLower });
-            workerNonces[worker.ConnectionId] = nonces;
-        }
-
-        else
-        {
-            if(nonces.Contains(nonceLower))
-                throw new StratumException(StratumError.MinusOne, "duplicate share");
-
-            nonces.Add(nonceLower);
-        }
+        if(!workerNonces.Add(ulong.Parse(nonce, NumberStyles.HexNumber, CultureInfo.InvariantCulture)))
+            throw new StratumException(StratumError.MinusOne, "duplicate share");
     }
 
     public virtual async Task<SubmitResult> ProcessShareAsync(StratumConnection worker,
         string workerName, string fullNonceHex, string solution, CancellationToken ct)
     {
-        // dupe check
-        lock(workerNonces)
-        {
-            RegisterNonce(worker, fullNonceHex);
-        }
-
         var context = worker.ContextAs<EthereumWorkerContext>();
 
-        if(!ulong.TryParse(fullNonceHex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var fullNonce))
+        if(!ProofHex.IsHex(fullNonceHex) || fullNonceHex.Length > 16 ||
+            !ulong.TryParse(fullNonceHex, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var fullNonce))
             throw new StratumException(StratumError.MinusOne, "bad nonce " + fullNonceHex);
+
+        fullNonceHex = fullNonce.ToString("x16", CultureInfo.InvariantCulture);
+        lock(workerNonces)
+            if(workerNonces.Contains(fullNonce))
+                throw new StratumException(StratumError.MinusOne, "duplicate share");
 
         // get dag/light cache for block
         var cache = await ethash.GetCacheAsync(logger, BlockTemplate.Height, ct);
@@ -79,27 +76,9 @@ public class EthereumJob
         var resultValue = new uint256(resultBytes);
         var resultValueBig = resultBytes.AsSpan().ToBigInteger();
         var shareDiff = (double) BigInteger.Divide(EthereumConstants.BigMaxValue, resultValueBig) / EthereumConstants.Pow2x32;
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
         var isBlockCandidate = resultValue <= blockTarget;
 
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var share = new Share
         {
@@ -111,6 +90,10 @@ public class EthereumJob
             IsBlockCandidate = isBlockCandidate,
             Difficulty = stratumDifficulty * EthereumConstants.Pow2x32
         };
+
+        // Commit only validated proofs, before returning to candidate RPC/accounting.
+        lock(workerNonces)
+            RegisterNonce(worker, fullNonceHex);
 
         if(share.IsBlockCandidate)
         {

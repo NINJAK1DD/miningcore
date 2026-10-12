@@ -76,6 +76,50 @@ public class PoolFamilyAssignmentTests : TestBase
     [Fact]
     public Task Ethereum_AuthorizationCancellationDoesNotCommitQueuedDifficulty() => CanceledAuthorization("Ethereum");
 
+    [Theory]
+    [InlineData("null", false)]
+    [InlineData("null", true)]
+    [InlineData("\"invalid\"", false)]
+    [InlineData("\"invalid\"", true)]
+    [InlineData("{}", false)]
+    [InlineData("{}", true)]
+    [InlineData("[\"miner\",\"verified\",{},\"0xheader\",\"0xmix\"]", false)]
+    [InlineData("[\"miner\",\"verified\",{},\"0xheader\",\"0xmix\"]", true)]
+    [InlineData("[\"miner\",\"verified\",[],\"0xheader\",\"0xmix\"]", false)]
+    [InlineData("[\"miner\",\"verified\",[],\"0xheader\",\"0xmix\"]", true)]
+    [InlineData("[\"miner\",\"verified\",1,\"0xheader\",\"0xmix\"]", false)]
+    [InlineData("[\"miner\",\"verified\",1,\"0xheader\",\"0xmix\"]", true)]
+    [InlineData("[\"miner\",\"verified\",null,\"0xheader\",\"0xmix\"]", false)]
+    [InlineData("[\"miner\",\"verified\",null,\"0xheader\",\"0xmix\"]", true)]
+    [InlineData("[]", false)]
+    [InlineData("[]", true)]
+    [InlineData("[\"miner\",\"verified\",\"0xnonce\",\"0xheader\",\"0xmix\",\"extra\"]", false)]
+    [InlineData("[\"miner\",\"verified\",\"0xnonce\",\"0xheader\",\"0xmix\",\"extra\"]", true)]
+    public async Task ProgpowMalformedJsonIsRecoverableOnTcpBeforeUppercaseFirstProof(string malformed, bool configuredBanning)
+    {
+        await using var fixture = await Fixture.Create(this, "Progpow");
+        if(configuredBanning)
+            fixture.Pool.Config.Banning = new PoolShareBasedBanningConfig { Enabled = true, CheckThreshold = 100, InvalidPercent = 50, Time = 30 };
+        var (cache, parameters) = fixture.PrepareProgpowProductionSubmission();
+        await fixture.SubmitProgpow(JToken.Parse(malformed), 100);
+        fixture.AssertError(100, StratumError.Other, "invalid params");
+        Assert.Equal(0, cache.Calls);
+        Assert.True(fixture.Connection.IsAlive);
+        Assert.False(fixture.Connection.IsDisconnectRequested);
+        await fixture.SubmitProgpow(parameters, 101);
+        fixture.AssertOneSuccess(101);
+        Assert.Equal(1, cache.Calls);
+        Assert.Equal(1, fixture.Connection.Context.Stats.ValidShares);
+        Assert.True(fixture.Connection.IsAlive);
+        var alias = new JArray(parameters.Select(x => x.Value<string>().ToLowerInvariant()));
+        await fixture.SubmitProgpow(alias, 102);
+        fixture.AssertError(102, StratumError.DuplicateShare, "duplicate share");
+        Assert.Equal(1, cache.Calls);
+        Assert.Equal(1, fixture.Connection.Context.Stats.ValidShares);
+        Assert.True(fixture.Connection.IsAlive);
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
     [LinuxNativeTheory]
     [InlineData("Conceal")]
     [InlineData("Cryptonote")]
@@ -104,6 +148,35 @@ public class PoolFamilyAssignmentTests : TestBase
         Assert.Equal(1, worker.AssignmentGate.CurrentCount);
         Assert.True(fixture.Connection.IsAlive);
         Assert.Empty(fixture.Errors.Logs);
+    }
+
+    [Theory]
+    [InlineData("mining.authorize", "array")]
+    [InlineData("eth_submitLogin", "array")]
+    [InlineData("login", "object")]
+    [InlineData("login", "top-level")]
+    [InlineData("login", "nicehash-object")]
+    [InlineData("login", "nicehash-top-level")]
+    public async Task SharedAdmissionChargesOnlyDifficultyHintsAcrossLoginShapes(string method, string shape)
+    {
+        await using var fixture = await Fixture.Create(this, "Bitcoin");
+        var admission = typeof(PoolBase).GetMethod("AdmitDifficultyRequestAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        Task<bool> Admit(bool hint)
+        {
+            var password = hint && !shape.StartsWith("nicehash", StringComparison.Ordinal) ? "d=40" : "x";
+            var agent = hint && shape.StartsWith("nicehash", StringComparison.Ordinal) ? "NiceHash/1.0" : "miner";
+            var request = new JsonRpcRequest(method, shape == "array" ? new JArray("miner", password) :
+                shape.EndsWith("object", StringComparison.Ordinal) ? new JObject { ["login"] = "miner", ["pass"] = password, ["agent"] = agent } : null, 1);
+            if(shape.EndsWith("top-level", StringComparison.Ordinal))
+                request.Extra = new Dictionary<string, object> { ["login"] = "miner", ["pass"] = password, ["agent"] = agent };
+            return (Task<bool>) admission.Invoke(fixture.Pool, new object[] { fixture.Connection, request });
+        }
+        for(var i = 0; i < 20; i++) Assert.True(await Admit(false));
+        for(var i = 0; i < 8; i++) Assert.True(await Admit(true));
+        Assert.False(await Admit(true));
+        Assert.True(await Admit(false));
+        Assert.False(fixture.Connection.IsDisconnectRequested);
+        Assert.Equal(10, fixture.Connection.Context.Difficulty);
     }
 
     private async Task Race(string family, bool idleOwnsGate)
@@ -160,6 +233,52 @@ public class PoolFamilyAssignmentTests : TestBase
         Assert.Equal(55, worker.Difficulty);
     }
 
+    [Theory]
+    [InlineData("Bitcoin")]
+    [InlineData("Handshake")]
+    [InlineData("Nexa")]
+    [InlineData("Progpow")]
+    [InlineData("Satoshicash")]
+    public async Task StaticAuthorization_PublishesReplacementWithoutTemplateBroadcast(string family)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        // Issue subscription-era work, then authorize at a different assignment.
+        await fixture.Broadcast();
+        await fixture.Flush();
+        var oldNotice = fixture.Messages.Last(m => m["method"]?.Value<string>() == "mining.notify");
+        fixture.Connection.Context.IsAuthorized = false;
+        fixture.Messages.Clear();
+        await fixture.Authorize();
+        await fixture.Flush();
+        fixture.AssertFinalWireAssignment();
+        var replacement = Assert.Single(fixture.Messages.Where(m => m["method"]?.Value<string>() == "mining.notify"));
+        Assert.NotEqual(oldNotice["params"][0].Value<string>(), replacement["params"][0].Value<string>());
+        var targetIndex = fixture.Messages.FindLastIndex(m => m["method"]?.Value<string>() is "mining.set_difficulty" or "mining.set_target");
+        Assert.True(fixture.Messages.IndexOf(replacement) > targetIndex);
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
+    [Theory]
+    [InlineData("Bitcoin")]
+    [InlineData("Nexa")]
+    [InlineData("Satoshicash")]
+    public async Task SuggestedDifficulty_PublishesReplacementWithoutTemplateBroadcast(string family)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        var oldNotice = fixture.Messages.Last(m => m["method"]?.Value<string>() == "mining.notify");
+        fixture.Messages.Clear();
+        await fixture.SuggestDifficulty();
+        fixture.AssertOneSuccess(2);
+        fixture.AssertFinalWireAssignment();
+        var replacement = Assert.Single(fixture.Messages.Where(m => m["method"]?.Value<string>() == "mining.notify"));
+        Assert.NotEqual(oldNotice["params"][0].Value<string>(), replacement["params"][0].Value<string>());
+        var targetIndex = fixture.Messages.FindLastIndex(m => m["method"]?.Value<string>() == "mining.set_difficulty");
+        Assert.True(fixture.Messages.IndexOf(replacement) > targetIndex);
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
     [Fact]
     public void ConcreteFamilyMatrix_CoversEveryGenericCoinFamilyPool()
     {
@@ -168,6 +287,60 @@ public class PoolFamilyAssignmentTests : TestBase
             t.Name is not ("BitcoinBlake2bPool" or "MergedMiningBitcoinPool"))
             .Select(t => t.Name[..^4]).OrderBy(x => x);
         Assert.Equal(expected, Families.OrderBy(x => x));
+    }
+
+    [Theory]
+    [InlineData("Bitcoin", false)]
+    [InlineData("Nexa", false)]
+    [InlineData("Satoshicash", false)]
+    [InlineData("Bitcoin", true)]
+    [InlineData("Nexa", true)]
+    [InlineData("Satoshicash", true)]
+    [InlineData("Handshake", false)]
+    [InlineData("Progpow", false)]
+    [InlineData("Ethereum", false)]
+    [InlineData("Kaspa", false)]
+    [InlineData("Beam", false)]
+    public async Task ReplacementConstructionFailureInvalidatesSessionBeforeGateRelease(string family, bool suggest)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        var worker = fixture.Connection.Context;
+        fixture.RemoveTemplateForFault();
+        await Assert.ThrowsAnyAsync<Exception>(() => suggest ? fixture.SuggestDifficulty() : fixture.Authorize());
+        Assert.True(fixture.Connection.IsDisconnectRequested);
+        Assert.False(worker.IsAuthorized);
+        Assert.Equal(1, worker.AssignmentGate.CurrentCount);
+        Assert.False(worker.TryValidateShareDifficulty(double.PositiveInfinity, true, new object(), out _));
+        Assert.False(worker.TryValidateShareDifficulty(double.PositiveInfinity, false, new object(), out _));
+        Assert.NotEmpty(fixture.Errors.Logs);
+    }
+
+    [Theory]
+    [InlineData("Bitcoin")]
+    [InlineData("Nexa")]
+    [InlineData("Satoshicash")]
+    [InlineData("Handshake")]
+    [InlineData("Progpow")]
+    [InlineData("Ethereum")]
+    [InlineData("Kaspa")]
+    [InlineData("Beam")]
+    public async Task VarDiffReplacementFailureClosesSessionBeforeGateRelease(string family)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        fixture.Time.Timestamp = 30 * TimeSpan.TicksPerSecond;
+        fixture.RemoveTemplateForFault();
+        await Assert.ThrowsAnyAsync<Exception>(() => fixture.Idle());
+        var worker = fixture.Connection.Context;
+        Assert.True(fixture.Connection.IsDisconnectRequested);
+        Assert.False(worker.IsAuthorized);
+        Assert.Equal(1, worker.AssignmentGate.CurrentCount);
+        Assert.False(worker.TryValidateShareDifficulty(double.PositiveInfinity, true, new object(), out _));
+        if(family != "Bitcoin") // Bitcoin retains its existing once-only Info diagnostic.
+            Assert.NotEmpty(fixture.Errors.Logs);
     }
 
     [LinuxNativeTheory]
@@ -353,6 +526,8 @@ public class PoolFamilyAssignmentTests : TestBase
         private string family;
         private ClusterConfig cluster;
         private object job;
+        private object manager;
+        private MockMasterClock clock;
         private TaskCompletionSource flushed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private TaskCompletionSource requestHandled;
         internal TaskCompletionSource RequestEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -381,7 +556,7 @@ public class PoolFamilyAssignmentTests : TestBase
         private void Initialize(PoolFamilyAssignmentTests test, string family)
         {
             this.family = family;
-            var clock = new MockMasterClock { CurrentTime = DateTime.UnixEpoch.AddDays(20000) };
+            clock = new MockMasterClock { CurrentTime = DateTime.UnixEpoch.AddDays(20000) };
             var streams = new RecyclableMemoryStreamManager();
             var factory = Substitute.For<IHttpClientFactory>();
             factory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient(new RestStub()));
@@ -396,7 +571,7 @@ public class PoolFamilyAssignmentTests : TestBase
             extraNonce.ByteSize.Returns(4);
             var managerType = typeof(PoolBase).Assembly.GetType($"Miningcore.Blockchain.{family}.{family}JobManager", true);
             var constructor = managerType.GetConstructors().Single();
-            var manager = constructor.Invoke(constructor.GetParameters().Select(p =>
+            manager = constructor.Invoke(constructor.GetParameters().Select(p =>
                 p.ParameterType == typeof(IComponentContext) ? (object) scope :
                 p.ParameterType == typeof(IMasterClock) ? clock :
                 p.ParameterType == typeof(IExtraNonceProvider) ? extraNonce :
@@ -500,6 +675,9 @@ public class PoolFamilyAssignmentTests : TestBase
         }
 
         internal Task Idle() => (Task) Invoke(Pool, "UpdateVarDiffAsync", Connection, true, stop.Token);
+        internal void RemoveTemplateForFault() => SetField(manager, "currentJob", null);
+        internal Task SuggestDifficulty() => DispatchRequest(new JsonRpcRequest("mining.suggest_difficulty",
+            family == "Nexa" ? (object) 55d : new object[] { 55d }, 2));
         internal Task Authorize(CancellationToken? ct = null, double difficulty = 55)
         {
             var address = family switch
@@ -579,6 +757,30 @@ public class PoolFamilyAssignmentTests : TestBase
             object parameters = method == "login" ? JObject.FromObject(new { login = address, pass = password, agent }) :
                 new[] { address + ".worker", password, agent };
             return DispatchRequest(new JsonRpcRequest(method, parameters, id));
+        }
+
+        internal (ProgpowProductionVerifierTests.Cache Cache, JArray Parameters) PrepareProgpowProductionSubmission()
+        {
+            Connection.SendMessageOverride = null;
+            wireRead = ReadWireMessages();
+            var context = Connection.ContextAs<ProgpowWorkerContext>();
+            context.VarDiff = null;
+            var cache = new ProgpowProductionVerifierTests.Cache("Progpow");
+            var source = ProgpowProductionVerifierTests.CreateSource("Progpow", clock, cache);
+            var job = new ProgpowWorkerJob("verified", context.ExtraNonce1);
+            ((ProgpowJob) source.ForWorker(context, preserveId: true)).PrepareWorkerJob(job, out var header);
+            context.AddJob(job, 4);
+            return (cache, new JArray("miner.worker", "verified", "0X000000000000000A", "0X" + header.ToUpperInvariant(),
+                "0X" + ProgpowProductionVerifierTests.Cache.Mix.ToUpperInvariant()));
+        }
+
+        internal Task SubmitProgpow(object parameters, int id) => DispatchRequest(new JsonRpcRequest(ProgpowStratumMethods.SubmitShare, parameters, id));
+
+        internal void AssertError(int id, StratumError code, string message)
+        {
+            var response = Assert.Single(Messages.Where(m => m["id"]?.Type == JTokenType.Integer && m["id"].Value<int>() == id));
+            Assert.Equal((int) code, response["error"]["code"].Value<int>());
+            Assert.Equal(message, response["error"]["message"].Value<string>());
         }
 
         private async Task DispatchRequest(JsonRpcRequest request)

@@ -29,11 +29,15 @@ public class CryptonoteWorkerContext : WorkerContextBase
 
     public virtual void AddJob(CryptonoteWorkerJob job, int maxActiveJobs)
     {
+        RegisterBlobDifficulty(job.DifficultyTemplate, job.ExtraNonce);
         if(!validJobs.Contains(job))
             validJobs.Enqueue(job);
 
         while(validJobs.Count > maxActiveJobs)
-            validJobs.Dequeue();
+        {
+            var expired = validJobs.Dequeue();
+            ForgetBlobDifficulty(expired.DifficultyTemplate, expired.ExtraNonce);
+        }
     }
 
     public CryptonoteWorkerJob GetJob(string jobId)

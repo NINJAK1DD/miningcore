@@ -65,30 +65,11 @@ public class SatoshicashJob : BitcoinJob
 
         // calc share-diff
         var shareDiff = (double) new BigRational(BitcoinConstants.Diff1, commitmentRandomXSCashBytes.ToBigInteger()) * shareMultiplier;
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = commitmentRandomXSCashValue <= blockTargetValue;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var result = new Share
         {
@@ -219,6 +200,9 @@ public class SatoshicashJob : BitcoinJob
         var context = worker.ContextAs<SatoshicashWorkerContext>();
 
         // validate nTime
+        ProofHex.Require(extraNonce2, extraNoncePlaceHolderLength * 2 - context.ExtraNonce1.Length, "extraNonce2");
+        ProofHex.Require(nTime, 8, "ntime");
+        ProofHex.Require(nonce, 8, "nonce");
         if(nTime.Length != 8)
             throw new StratumException(StratumError.Other, "incorrect size of ntime");
 
@@ -233,10 +217,13 @@ public class SatoshicashJob : BitcoinJob
         var nonceInt = uint.Parse(nonce, NumberStyles.HexNumber);
 
         // dupe check
+        if(IsDuplicateSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce, null))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt);
         if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce, null))
             throw new StratumException(StratumError.DuplicateShare, "duplicate");
 
-        return ProcessShareInternal(worker, extraNonce2, nTimeInt, nonceInt);
+        return result;
     }
 
     #endregion // API-Surface

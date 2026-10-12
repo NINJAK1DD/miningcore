@@ -65,6 +65,7 @@ public class PoolEndpointValidator : AbstractValidator<PoolEndpoint>
 {
     public PoolEndpointValidator()
     {
+        RuleFor(j => j.DifficultyGraceSeconds).InclusiveBetween(0, 300);
         RuleForEach(j => j.TcpProxyProtocol.ProxyAddresses)
             .Must(address => IPAddress.TryParse(address, out _))
             .When(j => j.TcpProxyProtocol?.Enable == true)

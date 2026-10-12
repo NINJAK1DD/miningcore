@@ -104,6 +104,11 @@ public class XelisPool : PoolBase
                 context.SetDifficulty(nicehashDiff.Value);
             }
         }
+        catch(Exception ex)
+        {
+            FailAssignmentPublication(connection, ex, ct);
+            throw;
+        }
         finally { assignmentGate.Release(); }
     }
     
@@ -184,6 +189,11 @@ public class XelisPool : PoolBase
                 await connection.NotifyAsync(XelisStratumMethods.SetDifficulty, new object[] { context.Difficulty });
                 await connection.NotifyAsync(XelisStratumMethods.MiningNotify, minerJobParams);
             }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
             finally { assignmentGate.Release(); }
         }
 
@@ -206,7 +216,7 @@ public class XelisPool : PoolBase
     {
         var context = connection.ContextAs<XelisWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
-        var job = manager.GetJobForStratum();
+        var job = (XelisJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
 
         // update context
         lock(context)
@@ -302,11 +312,11 @@ public class XelisPool : PoolBase
         await Guard(() => ForEachMinerAssignmentAsync(async (connection, ct) =>
         {
             var context = connection.ContextAs<XelisWorkerContext>();
-            var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
-
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(XelisStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+
+            var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
 
             // send job
             await connection.NotifyAsync(XelisStratumMethods.MiningNotify, minerJobParams);
@@ -381,6 +391,9 @@ public class XelisPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
 
         try

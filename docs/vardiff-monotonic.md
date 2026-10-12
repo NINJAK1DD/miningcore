@@ -228,8 +228,11 @@ family; a renamed member fails setup rather than silently skipping it. These com
 the worker-context matrix rather than replacing it. CI validates the full suite's TRX
 with `scripts/release/test-native-family-evidence.py`; all six native contention, three
 native cancellation, nine sub-unit request, six accepted-proof credit, twenty TCP hint,
-five blocked-gate, twelve fractional-hint and six fractional-proof cases (67 total) must
-be present exactly once and pass. Negative fixtures
+five blocked-gate, twelve fractional-hint and six fractional-proof cases (67 timing cases) must
+be present exactly once and pass. The [issued-difficulty policy](difficulty-assignment-grace.md)
+adds fixed-increase native proofs, daemon/credit cases and ten concrete Kaspa-family
+credit vectors to that guard (90 total).
+Negative fixtures
 verify the guard rejects skipped, failed, absent, duplicated and unrecognized cases.
 
 The short-target ceiling can increase share rates for large proxy/NiceHash connections.
@@ -306,8 +309,10 @@ UTC-based request-age, job timestamp, activity and payout policies are outside t
 elapsed-time change. Live regtest evidence does not establish physical-miner firmware
 compatibility or long-running mainnet performance.
 
-Two pre-existing protocol behaviors are tracked separately: bounded previous-difficulty
-grace after static assignments in [#210](https://github.com/NINJAK1DD/miningcore/issues/210),
-and coherent canonical Bitcoin minimum-difficulty notifications in
-[#211](https://github.com/NINJAK1DD/miningcore/issues/211). Their acceptance criteria include
-proof credit and live wire validation; this timing change retains their current behavior.
+The follow-up [#210](https://github.com/NINJAK1DD/miningcore/issues/210) implements
+bounded issued-difficulty grace after static assignments, original proof credit and
+replacement work without a template broadcast. Its
+[acceptance and compatibility policy](difficulty-assignment-grace.md) describes
+receipt-time grace, native job IDs and the live wire/accounting lab. Coherent canonical
+Bitcoin minimum-difficulty notifications are also tracked in
+[#211](https://github.com/NINJAK1DD/miningcore/issues/211).

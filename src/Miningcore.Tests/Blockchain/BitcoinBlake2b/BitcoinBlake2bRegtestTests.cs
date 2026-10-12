@@ -151,8 +151,7 @@ public class BitcoinBlake2bRegtestTests : TestBase
             await wire.SendRequestAsync("mining.configure", new[] { "version-rolling" },
                 new Dictionary<string, object> { ["version-rolling.mask"] = "1fffe000" });
             Assert.Null((await wire.ReadAsync())["method"]);
-            worker.ContextAs<BitcoinWorkerContext>().SetDifficulty(0);
-            Assert.Throws<StratumException>(() => wire.CreateJob());
+            Assert.Throws<ArgumentOutOfRangeException>(() => worker.ContextAs<BitcoinWorkerContext>().SetDifficulty(0));
             worker.ContextAs<BitcoinWorkerContext>().SetDifficulty(2e-9);
             var configure = await wire.RequestAsync("mining.configure", new[] { "version-rolling" },
                 new Dictionary<string, object> { ["version-rolling.mask"] = "1fffe000" });

@@ -1146,6 +1146,10 @@ public class PoolEndpoint
     public string ListenAddress { get; set; }
     public string Name { get; set; }
     public double Difficulty { get; set; }
+    /// <summary>Seconds to accept retired work at its issued difficulty (0–300).</summary>
+    [Range(0, 300)]
+    [DefaultValue(30)]
+    public int DifficultyGraceSeconds { get; set; } = 30;
     public TcpProxyProtocolConfig TcpProxyProtocol { get; set; }
     public VarDiffConfig VarDiff { get; set; }
 

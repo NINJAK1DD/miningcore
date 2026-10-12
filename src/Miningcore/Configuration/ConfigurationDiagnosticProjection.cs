@@ -89,7 +89,7 @@ internal static class ConfigurationDiagnosticProjection
                 nameof(StratumAdmissionConfig.MaxTrackedAddresses), nameof(StratumAdmissionConfig.IdleExpirySeconds),
                 nameof(StratumAdmissionConfig.StartupTimeoutSeconds)),
             [typeof(PoolEndpoint)] = Fields<PoolEndpoint>(
-                nameof(PoolEndpoint.Difficulty), nameof(PoolEndpoint.TcpProxyProtocol),
+                nameof(PoolEndpoint.Difficulty), nameof(PoolEndpoint.DifficultyGraceSeconds), nameof(PoolEndpoint.TcpProxyProtocol),
                 nameof(PoolEndpoint.VarDiff), nameof(PoolEndpoint.Tls), nameof(PoolEndpoint.TlsAuto)),
             [typeof(TcpProxyProtocolConfig)] = Fields<TcpProxyProtocolConfig>(
                 nameof(TcpProxyProtocolConfig.Enable), nameof(TcpProxyProtocolConfig.Mandatory)),

@@ -29,6 +29,11 @@ public class ProgpowJob : BitcoinJob
     protected IProgpowCache progpowHasher;
     private ProgpowJobParams notificationTemplate;
 
+    internal bool RegisterWorkerProof(string extraNonce1, string nonce, string headerHash, string mixHash) =>
+        submissions.TryAdd($"progpow:{extraNonce1}:{nonce}:{headerHash}:{mixHash}", true);
+    internal bool IsDuplicateWorkerProof(string extraNonce1, string nonce, string headerHash, string mixHash) =>
+        submissions.ContainsKey($"progpow:{extraNonce1}:{nonce}:{headerHash}:{mixHash}");
+
     protected virtual byte[] SerializeHeader(Span<byte> coinbaseHash)
     {
         // build merkle-root
@@ -71,13 +76,13 @@ public class ProgpowJob : BitcoinJob
 
         var headerHashHex = headerHash.ToHexString();
 
-        if(headerHashHex != inputHeaderHash)
+        if(!string.Equals(headerHashHex, inputHeaderHash, StringComparison.OrdinalIgnoreCase))
             throw new StratumException(StratumError.MinusOne, $"bad header-hash");
 
         if(!progpowHasher.Compute(logger, (int) BlockTemplate.Height, headerHash.ToArray(), nonce, out var mixHashOut, out var resultBytes))
             throw new StratumException(StratumError.MinusOne, "bad hash");
 
-        if(mixHash != mixHashOut.ToHexString())
+        if(!string.Equals(mixHash, mixHashOut.ToHexString(), StringComparison.OrdinalIgnoreCase))
             throw new StratumException(StratumError.MinusOne, $"bad mix-hash");
 
         resultBytes.ReverseInPlace();
@@ -87,30 +92,11 @@ public class ProgpowJob : BitcoinJob
         var resultValueBig = resultBytes.AsSpan().ToBigInteger();
         // calc share-diff
         var shareDiff = (double) new BigRational(RavencoinConstants.Diff1, resultValueBig) * shareMultiplier;
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = resultValue <= blockTargetValue;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var result = new Share
         {

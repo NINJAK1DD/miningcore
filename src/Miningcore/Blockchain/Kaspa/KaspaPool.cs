@@ -213,6 +213,11 @@ public class KaspaPool : PoolBase
                 await connection.NotifyAsync(KaspaStratumMethods.SetDifficulty, new object[] { context.Difficulty });
                 await SendJob(connection, context, minerJobParams);
             }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
+            }
             finally { assignmentGate.Release(); }
         }
 
@@ -235,7 +240,7 @@ public class KaspaPool : PoolBase
     {
         var context = connection.ContextAs<KaspaWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
-        var job = manager.GetJobForStratum();
+        var job = (KaspaJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId("D"));
 
         // update context
         lock(context)
@@ -332,11 +337,11 @@ public class KaspaPool : PoolBase
         {
             var context = connection.ContextAs<KaspaWorkerContext>();
 
-            var minerJobParams = CreateWorkerJob(connection);
-
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(KaspaStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+
+            var minerJobParams = CreateWorkerJob(connection);
 
             await SendJob(connection, context, minerJobParams);
         }));
@@ -434,6 +439,9 @@ public class KaspaPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
 
         try

@@ -114,6 +114,11 @@ public class ProgpowPool : PoolBase
             await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
             await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, minerJobParams);
         }
+        catch(Exception ex)
+        {
+            FailAssignmentPublication(connection, ex, ct);
+            throw;
+        }
         finally { assignmentGate.Release(); }
     }
 
@@ -178,7 +183,14 @@ public class ProgpowPool : PoolBase
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
                     await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
+                    if(context.IsSubscribed)
+                        await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
                 }
+            }
+            catch(Exception ex)
+            {
+                FailAssignmentPublication(connection, ex, ct);
+                throw;
             }
             finally { assignmentGate.Release(); }
         }
@@ -204,6 +216,8 @@ public class ProgpowPool : PoolBase
         var job = new ProgpowWorkerJob(NextJobId(), context.ExtraNonce1);
 
         manager.PrepareWorkerJob(job, out var headerHash);
+        // This snapshot's ID is pool-local; the worker job carries the wire identity.
+        job.Job = (ProgpowJob) job.Job.ForWorker(context, preserveId: true);
 
         var result = new object[]
         {
@@ -258,10 +272,8 @@ public class ProgpowPool : PoolBase
             else if(!context.IsSubscribed)
                 throw new StratumException(StratumError.NotSubscribed, "not subscribed");
 
-            var requestParams = request.ParamsAs<string[]>();
-
             // submit
-            var share = await manager.SubmitShareAsync(connection, requestParams, ct);
+            var share = await manager.SubmitShareAsync(connection, request.Params, ct);
 
             // Nicehash's stupid validator insists on "error" property present
             // in successful responses which is a violation of the JSON-RPC spec
@@ -320,10 +332,10 @@ public class ProgpowPool : PoolBase
         {
             var context = connection.ContextAs<ProgpowWorkerContext>();
 
-            var minerJobParams = CreateWorkerJob(connection, cleanJobs);
-
             if(context.ApplyPendingDifficulty())
                 await connection.NotifyAsync(ProgpowStratumMethods.SetDifficulty, new object[] { createEncodeTarget(context.Difficulty) });
+
+            var minerJobParams = CreateWorkerJob(connection, cleanJobs);
 
             // send job
             await connection.NotifyAsync(ProgpowStratumMethods.MiningNotify, minerJobParams);
@@ -410,6 +422,9 @@ public class ProgpowPool : PoolBase
     protected override async Task OnRequestAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
+            return;
+
         var request = tsRequest.Value;
 
         try

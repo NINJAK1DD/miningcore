@@ -160,14 +160,17 @@ public class PoolBaseVarDiffTests
     }
 
     [Fact]
-    public async Task FailedPublication_ReleasesAssignmentGate()
+    public async Task FailedPublication_ReleasesAssignmentGateAndRejectsLaterAssignments()
     {
         await using var fixture = new Fixture();
         fixture.Time.Timestamp = 5 * TimeSpan.TicksPerSecond;
         fixture.Pool.BeforePublication = () => throw new InvalidOperationException("publication failure");
         await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Pool.Retarget(fixture.Connection, true));
         await fixture.Pool.AssignExplicit(fixture.Connection, false).WaitAsync(Timeout);
-        Assert.Equal(55, fixture.Connection.Context.Difficulty);
+        Assert.Equal(10, fixture.Connection.Context.Difficulty);
+        Assert.True(fixture.Connection.IsDisconnectRequested);
+        Assert.False(fixture.Connection.Context.HasPendingDifficulty);
+        Assert.Equal(1, fixture.Connection.Context.AssignmentGate.CurrentCount);
     }
 
     [Theory]
@@ -428,7 +431,7 @@ public class PoolBaseVarDiffTests
         }
         await fixture.Pool.UpdateIdleVarDiffAsync(fixture.Connection, cancel.Token);
         Assert.Equal(shutdown ? 0 : 1, target.Logs.Count);
-        Assert.False(fixture.Connection.IsDisconnectRequested);
+        Assert.Equal(!shutdown, fixture.Connection.IsDisconnectRequested);
     }
 
     private sealed class BlockingTimeProvider : TimeProvider

@@ -77,6 +77,9 @@ public class MergedMiningBitcoinJob : BitcoinJob
 
         var context = worker.ContextAs<MergedMiningBitcoinWorkerContext>();
 
+        ProofHex.Require(extraNonce2, extraNoncePlaceHolderLength * 2 - context.ExtraNonce1.Length, "extraNonce2");
+        ProofHex.Require(nTime, 8, "ntime");
+        ProofHex.Require(nonce, 8, "nonce");
         if(nTime.Length != 8)
             throw new StratumException(StratumError.Other, "incorrect size of ntime");
 
@@ -90,11 +93,14 @@ public class MergedMiningBitcoinJob : BitcoinJob
         var nonceInt = uint.Parse(nonce, NumberStyles.HexNumber);
         var versionBitsInt = ParseVersionBits(context.VersionRollingMask, versionBits);
 
+        if(IsDuplicateSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce, versionBitsInt))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareMergedInternal(worker, extraNonce2, nTimeInt, nonceInt, versionBitsInt);
         if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce,
                versionBitsInt))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
 
-        return ProcessShareMergedInternal(worker, extraNonce2, nTimeInt, nonceInt, versionBitsInt);
+        return result;
     }
 
     private MergedMiningShareResult ProcessShareMergedInternal(StratumConnection worker, string extraNonce2,
@@ -112,25 +118,11 @@ public class MergedMiningBitcoinJob : BitcoinJob
 
         var headerValue = new uint256(headerHash);
         var shareDiff = (double) new BigRational(BitcoinConstants.Diff1, headerHash.ToBigInteger()) * shareMultiplier;
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
         var isParentBlockCandidate = headerValue <= blockTargetValue;
         var isAuxiliaryBlockCandidate = headerValue <= auxiliaryTargetValue;
 
-        if(!isParentBlockCandidate && !isAuxiliaryBlockCandidate && ratio < 0.99)
-        {
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isParentBlockCandidate || isAuxiliaryBlockCandidate, this);
 
         var share = new Share
         {
