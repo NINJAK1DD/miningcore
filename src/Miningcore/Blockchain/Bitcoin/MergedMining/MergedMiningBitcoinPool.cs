@@ -60,7 +60,9 @@ public class MergedMiningBitcoinPool : BitcoinPool
 
     protected override WorkerContextBase CreateWorkerContext()
     {
-        return new MergedMiningBitcoinWorkerContext();
+        var context = new MergedMiningBitcoinWorkerContext();
+        ConfigureWorkerDifficultyContext(context);
+        return context;
     }
 
     protected override async Task<bool> ValidateWorkerAsync(BitcoinWorkerContext context,

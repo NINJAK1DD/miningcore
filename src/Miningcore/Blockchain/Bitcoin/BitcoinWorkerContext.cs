@@ -4,6 +4,8 @@ using System.Reactive.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Miningcore.Mining;
+using Miningcore.Configuration;
+using Miningcore.Time;
 using NBitcoin;
 
 namespace Miningcore.Blockchain.Bitcoin;
@@ -20,6 +22,47 @@ public class BitcoinWorkerContext : WorkerContextBase
     private bool jobsClosed;
     private int duplicateSubscribeWarning;
     internal double? AnnouncedDifficulty { get; set; }
+    internal double? NegotiatedMinimumDifficulty { get; private set; }
+    private double shareMultiplier = 1;
+    private Func<double, double> difficultyValidator;
+    internal override double MinimumDifficulty => NegotiatedMinimumDifficulty ?? 0;
+    internal override double MaximumDifficulty => Math.Min(double.MaxValue, (double) BitcoinConstants.Diff1 * shareMultiplier);
+
+    internal void ConfigureDifficultyPolicy(double multiplier, Func<double, double> validator = null)
+    {
+        if(!double.IsFinite(multiplier) || multiplier <= 0)
+            throw new ArgumentOutOfRangeException(nameof(multiplier));
+        shareMultiplier = multiplier;
+        difficultyValidator = validator;
+    }
+
+    internal double ValidateRequestedDifficulty(double value)
+    {
+        var normalized = value / shareMultiplier;
+        if(!double.IsFinite(value) || value <= 0 || !double.IsFinite(normalized) ||
+            normalized <= 0 || normalized > (double) BitcoinConstants.Diff1)
+            throw new ArgumentOutOfRangeException(nameof(value), "Difficulty produces an unrepresentable target or credit");
+        return difficultyValidator?.Invoke(value) ?? value;
+    }
+
+    protected override double ValidateDifficulty(double value) =>
+        Math.Max(ValidateRequestedDifficulty(value), MinimumDifficulty);
+
+    internal void SetMinimumDifficulty(double value)
+    {
+        value = ValidateRequestedDifficulty(value);
+        NegotiatedMinimumDifficulty = value;
+        VarDiff = null;
+        SetDifficulty(value);
+    }
+
+    public override void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock,
+        TimeProvider timeProvider = null, int difficultyGraceSeconds = 30)
+    {
+        NegotiatedMinimumDifficulty = null;
+        AnnouncedDifficulty = null;
+        base.Init(difficulty, varDiffConfig, clock, timeProvider, difficultyGraceSeconds);
+    }
 
     // One recoverable duplicate per TCP session. Authorization, shares and
     // difficulty changes must never reset this allowance.

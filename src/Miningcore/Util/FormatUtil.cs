@@ -42,7 +42,7 @@ public static class FormatUtil
         {
             value /= 1000;
             i++;
-        } while(value > 1000);
+        } while(value > 1000 && i < QuantityUnits.Length - 1);
 
         return Math.Round(value, 2) + QuantityUnits[i];
     }

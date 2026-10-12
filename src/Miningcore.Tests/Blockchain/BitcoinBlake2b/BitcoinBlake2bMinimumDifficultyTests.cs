@@ -9,6 +9,25 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public partial class BitcoinBlake2bDifficultyBudgetTests
 {
+    [Fact]
+    public async Task MinimumFloor_NiceHashAndSuggestionCannotOverrideAcceptedDeviceConstraint()
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
+        wire.NicehashLookup = _ => Task.FromResult<double?>(2e-9);
+        await wire.SendRequestAsync("mining.configure", new[] { "minimum-difficulty" },
+            new Dictionary<string, object> { ["minimum-difficulty.value"] = 8e-9 });
+        Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+        await wire.SendRequestAsync("mining.subscribe", "NiceHash/1.0");
+        Assert.NotNull((await wire.ReadAsync())["result"]);
+        await Assignment(wire, 8e-9);
+        await wire.SendRequestAsync("mining.suggest_difficulty", 2e-9);
+        Assert.NotNull((await wire.ReadAsync())["error"]);
+        await Fence(wire);
+        Assert.Equal(8e-9, wire.Connection.ContextAs<BitcoinWorkerContext>().NegotiatedMinimumDifficulty);
+        Assert.Equal(8e-9, wire.Connection.Context.Difficulty);
+        Assert.Equal(1, wire.JobsCreated);
+    }
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

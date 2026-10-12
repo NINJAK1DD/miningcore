@@ -240,12 +240,16 @@ public partial class BitcoinPublicationRegtestTests : TestBase
 
     private sealed class TemplateManager : BitcoinJobManager
     {
-        internal TemplateManager(IComponentContext ctx, IMasterClock clock, IMessageBus bus) :
-            base(ctx, clock, bus, new BitcoinExtraNonceProvider("publication-regtest", null)) { }
+        internal TemplateManager(IComponentContext ctx, IMasterClock clock, IMessageBus bus,
+            IBlockCandidateRecorder recorder = null) :
+            base(ctx, clock, bus, new BitcoinExtraNonceProvider("publication-regtest", null), recorder) { }
 
         internal void SetTemplate(BlockTemplate template, IDestination destination)
         {
             network = Network.RegTest;
+            // These fixtures use the pinned modern Bitcoin Core daemon, without
+            // running the manager's startup capability probe/background loop.
+            hasSubmitBlockMethod = true;
             poolAddressDestination = destination;
             currentJob = CreateTemplateJob(template);
         }

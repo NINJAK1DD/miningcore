@@ -54,7 +54,15 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal Miningcore.Banning.IBanManager EnableInvalidShareBanning() => pool.EnableInvalidShareBanning();
     internal int JobsCreated => pool.JobsCreated;
     internal void SetLogger(NLog.ILogger value) => pool.SetLogger(value);
-    internal Func<Miningcore.Mining.WorkerContextBase, Task<double?>> NicehashLookup { set => ((TestPool) pool).NicehashLookup = value; }
+    internal Func<Miningcore.Mining.WorkerContextBase, Task<double?>> NicehashLookup
+    {
+        set
+        {
+            if(pool is TestPool test) test.NicehashLookup = value;
+            else if(pool is CanonicalPool canonical) canonical.NicehashLookup = value;
+            else if(pool is MergedPool merged) merged.NicehashLookup = value;
+        }
+    }
     internal void FailJobPipeline() => ((BitcoinBlake2bPool) pool)
         .HandleBlake2bPipelineFailure(new InvalidOperationException("test pipeline failure"));
     internal bool MiningFaulted => ((TestPool) pool).MiningFaulted;
@@ -234,6 +242,13 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
 
     internal sealed class TestPool : BitcoinBlake2bPool, IWirePool
     {
+        protected override void ConfigureWorkerDifficultyContext(BitcoinWorkerContext context)
+        {
+            // Dispatcher-only fault tests supply a generic fake manager. Genuine
+            // header/target cases use the production isolated manager and policy.
+            if(manager is BitcoinBlake2bJobManager) base.ConfigureWorkerDifficultyContext(context);
+            else context.ConfigureDifficultyPolicy(ShareMultiplier);
+        }
         internal Func<Miningcore.Mining.WorkerContextBase, Task<double?>> NicehashLookup;
         internal Action BeforeConfigure;
         internal Func<Task> AfterConfigure;
@@ -429,6 +444,10 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     // dispatcher and actual worker context, without starting auxiliary daemons.
     internal sealed class MergedPool : MergedMiningBitcoinPool, IWirePool
     {
+        internal Func<WorkerContextBase, Task<double?>> NicehashLookup;
+        protected override Task<double?> GetNicehashStaticMinDiff(WorkerContextBase context,
+            string coinName, string algorithm, CancellationToken ct) =>
+            NicehashLookup?.Invoke(context) ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm, ct);
         internal MergedPool(IComponentContext ctx, IMasterClock clock,
             IMessageBus bus, RecyclableMemoryStreamManager streams) :
             base(ctx, new JsonSerializerSettings(), Substitute.For<IConnectionFactory>(),

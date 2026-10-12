@@ -50,8 +50,13 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
             "\n{\"id\":101,\"method\":\"mining.extranonce.subscribe\",\"params\":[]}");
         var rejected = await wire.ReadAsync();
         Assert.Equal(100, rejected["id"].Value<int>());
-        Assert.Equal((int) StratumError.Other, rejected["error"]["code"].Value<int>());
-        Assert.False(rejected["result"].Value<bool>());
+        if(method == "mining.configure")
+            Assert.Equal(JTokenType.String, rejected["result"]["minimum-difficulty"].Type);
+        else
+        {
+            Assert.Equal((int) StratumError.Other, rejected["error"]["code"].Value<int>());
+            Assert.False(rejected["result"].Value<bool>());
+        }
         var fence = await wire.ReadAsync();
         Assert.Equal(101, fence["id"].Value<int>());
         Assert.Null(fence["error"]);
@@ -106,15 +111,15 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
             @params = nicehash ? new object[] { "NiceHash/1.0" } : PublicationParameters(method) }) +
             "\n{\"id\":101,\"method\":\"mining.extranonce.subscribe\",\"params\":[]}");
         var messages = await wire.ReadUntilDisconnectedAsync();
-        Assert.Equal(1, wire.Connection.ResponseSequence - responses);
+        Assert.Equal(nicehash ? 0 : 1, wire.Connection.ResponseSequence - responses);
         Assert.DoesNotContain(messages, x => x["id"]?.Value<int?>() == 101);
         Assert.DoesNotContain(messages, x => x["error"]?.Type is not (null or JTokenType.Null));
         Assert.DoesNotContain(messages, x => x["method"]?.Value<string>() == "mining.notify");
         Assert.Equal(jobs, wire.JobsCreated);
         Assert.Empty(context.validJobs);
         if(!nicehash)
-            Assert.Equal(1e-9, context.Difficulty);
-        AssertPublicationCause(target, nicehash ? "share-rejected" : "argument", nicehash ? (int) StratumError.Other : null);
+            Assert.Equal(2e-9, context.Difficulty);
+        AssertPublicationCause(target, "argument");
         bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
             x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());
     }

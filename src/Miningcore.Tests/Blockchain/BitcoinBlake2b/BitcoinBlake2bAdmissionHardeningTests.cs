@@ -263,7 +263,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: true);
         await Subscribe(wire);
         var response = await wire.RequestAsync("mining.configure", new[] { "minimum-difficulty" }, new JObject());
-        Assert.False(response["result"]["minimum-difficulty"].Value<bool>());
+        Assert.Equal(JTokenType.String, response["result"]["minimum-difficulty"].Type);
         Assert.Equal(1e-9, wire.Connection.Context.Difficulty);
         Assert.Equal(1, wire.JobsCreated);
         response = await wire.RequestAsync("mining.configure", new[] { "minimum-difficulty" },
@@ -349,9 +349,12 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
             await wire.SendRequestAsync("mining.configure", new[] { "minimum-difficulty" },
                 new Dictionary<string, object> { ["minimum-difficulty.value"] = value });
             var response = await wire.ReadAsync();
-            Assert.Equal((int) StratumError.Other, response["error"]["code"].Value<int>());
-            Assert.Equal(i < DifficultyRequestBudget.Capacity ? "Invalid request parameters" : RetryMessage(),
-                response["error"]["message"].Value<string>());
+            Assert.Null(response["error"]);
+            Assert.Equal(JTokenType.String, response["result"]["minimum-difficulty"].Type);
+            if(i >= DifficultyRequestBudget.Capacity)
+                Assert.Equal(RetryMessage(), response["result"]["minimum-difficulty"].Value<string>());
+            else
+                Assert.Contains("finite", response["result"]["minimum-difficulty"].Value<string>());
         }
         Assert.Equal(1e-9, wire.Connection.Context.Difficulty);
         Assert.Equal(1, wire.JobsCreated);

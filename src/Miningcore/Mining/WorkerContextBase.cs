@@ -104,7 +104,7 @@ public class WorkerContextBase
 
     public bool IsNicehash { get; private set; }
 
-    public void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock, TimeProvider timeProvider = null,
+    public virtual void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock, TimeProvider timeProvider = null,
         int difficultyGraceSeconds = 30)
     {
         if(difficultyGraceSeconds is < 0 or > 300)

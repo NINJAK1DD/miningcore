@@ -29,7 +29,7 @@ public class BitcoinMinimumDifficultyTests : TestBase
         new Dictionary<string, object> { ["minimum-difficulty.value"] = value },
     };
 
-    private (PoolConfig Config, JobManager Manager, IMasterClock Clock, IMessageBus Bus) Fixture(bool merged)
+    private (PoolConfig Config, JobManager Manager, IMasterClock Clock, IMessageBus Bus) Fixture(bool merged, bool direct = false)
     {
         var clock = Substitute.For<IMasterClock>();
         clock.Now.Returns(DateTime.UtcNow);
@@ -39,6 +39,7 @@ public class BitcoinMinimumDifficultyTests : TestBase
             Id = "minimum-" + Guid.NewGuid().ToString("N"), Coin = "bitcoin",
             Template = ModuleInitializer.CoinTemplates["bitcoin"],
             Daemons = new[] { new DaemonEndpointConfig() },
+            Extra = new Dictionary<string, object> { ["soloCoinbasePayout"] = direct },
         };
         var manager = new JobManager(container, clock, bus);
         manager.Configure(config, new ClusterConfig());
@@ -172,7 +173,7 @@ public class BitcoinMinimumDifficultyTests : TestBase
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task MaximumRepresentableMinimum_AcceptsTargetOneAndRejectsNextValue(bool merged)
+    public async Task MaximumTargetRepresentation_AcceptsTargetOneAndRejectsNextValue(bool merged)
     {
         var (config, manager, clock, bus) = Fixture(merged);
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
@@ -183,7 +184,7 @@ public class BitcoinMinimumDifficultyTests : TestBase
         Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
         await Assignment(wire, maximum);
         await wire.SendRequestAsync("mining.configure", Minimum(double.BitIncrement(maximum)));
-        Assert.False((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+        Assert.Equal(JTokenType.String, (await wire.ReadAsync())["result"]["minimum-difficulty"].Type);
         await Fence(wire);
         Assert.Equal(maximum, wire.Connection.Context.Difficulty);
         Assert.Equal(2, wire.JobsCreated);
@@ -204,12 +205,12 @@ public class BitcoinMinimumDifficultyTests : TestBase
         var dynamic = context.VarDiff;
         context.EnqueueNewDifficulty(2);
         var jobs = context.validJobs.ToArray();
-        foreach(var value in new object[] { 0, -1, 0.5, 1, "NaN", "Infinity", "1e400", "1,5", true, null,
+        foreach(var value in new object[] { 0, -1, 0.5, "NaN", "Infinity", "1e400", "1,5", true, null,
             new object[] { 3 }, new { value = 3 }, 1e100 })
         {
             time.AdvanceMonotonic(TimeSpan.FromSeconds(10));
             await wire.SendRequestAsync("mining.configure", Minimum(value));
-            Assert.False((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+            Assert.Equal(JTokenType.String, (await wire.ReadAsync())["result"]["minimum-difficulty"].Type);
             await Fence(wire);
             Assert.Equal(1, context.Difficulty);
             Assert.Same(dynamic, context.VarDiff);
@@ -217,7 +218,7 @@ public class BitcoinMinimumDifficultyTests : TestBase
             Assert.Equal(jobs, context.validJobs.ToArray());
         }
         await wire.SendRequestAsync("mining.configure", new[] { "minimum-difficulty" }, new Dictionary<string, object>());
-        Assert.False((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+        Assert.Equal(JTokenType.String, (await wire.ReadAsync())["result"]["minimum-difficulty"].Type);
         await Fence(wire);
         await wire.SendRequestAsync("mining.configure", new[] { "version-rolling", "unknown" },
             new Dictionary<string, object> { ["minimum-difficulty.value"] = 3 });
@@ -298,6 +299,125 @@ public class BitcoinMinimumDifficultyTests : TestBase
         await Fence(wire);
         Assert.Equal(1, wire.Connection.Context.Difficulty);
         Assert.Equal(1, wire.JobsCreated);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NegotiatedMinimum_SurvivesSuggestionsAndCanBeExplicitlyReplaced(bool merged)
+    {
+        var (config, manager, clock, bus) = Fixture(merged);
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: !merged, merged: merged, difficulty: 1);
+        await Subscribe(wire);
+        await wire.SendRequestAsync("mining.configure", Minimum(8));
+        Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+        await Assignment(wire, 8);
+        await wire.SendRequestAsync("mining.suggest_difficulty", 2);
+        Assert.NotNull((await wire.ReadAsync())["error"]);
+        await Fence(wire);
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        Assert.Equal(8, context.NegotiatedMinimumDifficulty);
+        Assert.Equal(8, context.Difficulty);
+        await wire.SendRequestAsync("mining.configure", Minimum(4));
+        Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+        await Assignment(wire, 4);
+        Assert.Equal(4, context.NegotiatedMinimumDifficulty);
+        await wire.SendRequestAsync("mining.suggest_difficulty", 6);
+        Assert.True((await wire.ReadAsync())["result"].Value<bool>());
+        await Assignment(wire, 6);
+        Assert.Equal(4, context.NegotiatedMinimumDifficulty);
+        await Fence(wire);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PreSubscriptionMinimum_SurvivesLowerNiceHashAutoDifficulty(bool merged)
+    {
+        var (config, manager, clock, bus) = Fixture(merged);
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: !merged, merged: merged, difficulty: 1);
+        wire.NicehashLookup = _ => Task.FromResult<double?>(2);
+        await wire.SendRequestAsync("mining.configure", Minimum(8));
+        Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+        await wire.SendRequestAsync("mining.subscribe", "NiceHash/1.0");
+        Assert.NotNull((await wire.ReadAsync())["result"]);
+        await Assignment(wire, 8);
+        await Fence(wire);
+        Assert.Equal(8, wire.Connection.ContextAs<BitcoinWorkerContext>().NegotiatedMinimumDifficulty);
+        Assert.Equal(8, wire.Connection.Context.Difficulty);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DirectSoloMinimum_PreservesAuthorizationAwareWorkBoundary(bool authorized)
+    {
+        var (config, manager, clock, bus) = Fixture(false, direct: true);
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: true, difficulty: 1);
+        await wire.SendRequestAsync("mining.subscribe", "direct-minimum");
+        Assert.NotNull((await wire.ReadAsync())["result"]);
+        Assert.Equal("mining.set_difficulty", (await wire.ReadAsync())["method"].Value<string>());
+        await Fence(wire);
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        BitcoinWorkerContext.DirectPayoutAuthorization authorization = null;
+        if(authorized)
+        {
+            var destination = new KeyId(new byte[20]).GetAddress(Network.RegTest);
+            authorization = context.SetDirectPayoutAuthorization(destination.ToString(), destination);
+            context.IsAuthorized = true;
+        }
+        await wire.SendRequestAsync("mining.configure", Minimum(8));
+        Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+        if(authorized)
+        {
+            var notice = await Assignment(wire, 8);
+            var job = context.GetJob(notice["params"][0].Value<string>());
+            Assert.Equal(authorization.Generation, job.DirectPayoutGeneration);
+            Assert.Equal(authorization.Address, job.DirectPayoutAddress);
+        }
+        else
+        {
+            Assert.Equal(8, (await wire.ReadAsync())["params"][0].Value<double>());
+            Assert.Empty(context.validJobs);
+        }
+        await Fence(wire);
+        Assert.Equal(authorized ? 1 : 0, wire.JobsCreated);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BudgetRefusal_DefinesEveryExtensionWithoutMutationAndNullIdsSpendNothing(bool merged)
+    {
+        var (config, manager, clock, bus) = Fixture(merged);
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: !merged, merged: merged, difficulty: 1, varDiffTimeProvider: new ManualTimeProvider());
+        await Subscribe(wire);
+        for(var i = 0; i < 10; i++)
+        {
+            await wire.SendRawAsync("{\"id\":null,\"method\":\"mining.configure\",\"params\":[[\"minimum-difficulty\"],{\"minimum-difficulty.value\":8}]}");
+            Assert.NotNull((await wire.ReadAsync())["error"]);
+        }
+        for(var i = 0; i < Miningcore.Blockchain.BitcoinBlake2b.DifficultyRequestBudget.Capacity; i++)
+        {
+            await wire.SendRequestAsync("mining.configure", Minimum(0));
+            Assert.Equal(JTokenType.String, (await wire.ReadAsync())["result"]["minimum-difficulty"].Type);
+        }
+        await wire.SendRequestAsync("mining.configure", Minimum(8, "minimum-difficulty", "version-rolling", "unknown"));
+        var refused = await wire.ReadAsync();
+        Assert.Null(refused["error"]);
+        Assert.Equal(JTokenType.String, refused["result"]["minimum-difficulty"].Type);
+        Assert.Equal(JTokenType.String, refused["result"]["version-rolling"].Type);
+        Assert.False(refused["result"]["unknown"].Value<bool>());
+        Assert.Null(wire.Connection.ContextAs<BitcoinWorkerContext>().VersionRollingMask);
+        Assert.Equal(1, wire.Connection.Context.Difficulty);
+        await Fence(wire);
+        await wire.SendRequestAsync("mining.configure", Enumerable.Range(0, 33).Select(i => "unknown-" + i).ToArray(), new { });
+        Assert.NotNull((await wire.ReadAsync())["error"]);
+        await Fence(wire);
     }
 
     [Theory]

@@ -309,9 +309,13 @@ public abstract class PoolBase : StratumServer,
             return false;
         }
         PublishTelemetry(TelemetryCategory.StratumAdmission, "difficulty-refused", TimeSpan.Zero);
-        await connection.RespondErrorAsync(StratumError.Other, "Too many difficulty requests; retry later", request.Id, false);
+        await RespondDifficultyBudgetRefusalAsync(connection, request);
         return false;
     }
+
+    protected virtual Task RespondDifficultyBudgetRefusalAsync(StratumConnection connection,
+        Miningcore.JsonRpc.JsonRpcRequest request) =>
+        connection.RespondErrorAsync(StratumError.Other, "Too many difficulty requests; retry later", request.Id, false);
 
     protected Task ForEachMinerAssignmentAsync(Func<StratumConnection, CancellationToken, Task> func)
     {

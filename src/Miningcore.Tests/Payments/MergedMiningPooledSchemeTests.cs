@@ -177,6 +177,27 @@ public class MergedMiningPooledSchemeTests
             payoutHandler);
     }
 
+    [Theory]
+    [InlineData(1e100, 1)]
+    [InlineData(double.MaxValue, 1e-200)]
+    public async Task Pplns_LargeFiniteLegacyShareCannotOverflowWindowOrDiagnostics(double difficulty, double network)
+    {
+        var fixture = CreateFixture();
+        var pool = CreatePool("large-pplns", PayoutScheme.PPLNS, 2m);
+        var block = CreateBlock("large-pplns", 100);
+        var id = pool.Config.Id;
+        var page = new[] { CreateShare(id, "miner", difficulty, network, block.Created) };
+        fixture.ShareRepository.ReadSharesBeforeAsync(fixture.ReadConnection, id, block.Created,
+            true, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(new[]
+                { page[0] });
+        var scheme = new PPLNSPaymentScheme(fixture.ConnectionFactory, fixture.ShareRepository,
+            fixture.BlockRepository, fixture.BalanceRepository);
+        await scheme.UpdateBalancesAsync(fixture.WriteConnection, fixture.Transaction, pool,
+            fixture.PayoutHandler, block, 50m, CancellationToken.None);
+        await fixture.BalanceRepository.Received(1).AddAmountAsync(fixture.WriteConnection,
+            fixture.Transaction, pool.Config.Id, "miner", 50m, Arg.Any<string>());
+    }
+
     private static IMiningPool CreatePool(string id, PayoutScheme scheme,
         decimal? factor = null)
     {

@@ -175,6 +175,9 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     private BitcoinBlake2bJobManager Blake2bManager => manager as BitcoinBlake2bJobManager ??
         throw new InvalidOperationException("Bitcoin BLAKE2b requires its isolated job manager");
 
+    protected override void ConfigureWorkerDifficultyContext(BitcoinWorkerContext context) =>
+        context.ConfigureDifficultyPolicy(ShareMultiplier, value => Blake2bManager.ValidateWorkerDifficulty(value).Difficulty);
+
     protected override async Task OnSubmitAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> request, CancellationToken ct)
     {
@@ -403,7 +406,8 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             BitcoinStratumMethods.Subscribe => !IsValidSubscribe(request.Value.Params),
             _ => false,
         };
-        var difficultyRequest = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty || minimumDifficulty.HasValue;
+        var difficultyRequest = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty ||
+            extensions?.Values<string>().Contains(BitcoinStratumExtensions.MinimumDiff) == true;
         if(malformed || difficultyRequest)
         {
             budget ??= difficultyBudgets.GetValue(connection, createDifficultyBudget);
@@ -463,7 +467,8 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                     var suggestedDifficulty = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty
                         ? ReadSuggestedDifficulty(request.Value) : null;
                     var proposedDifficulty = minimumDifficulty ?? suggestedDifficulty;
-                    if(proposedDifficulty > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty &&
+                    if(request.Value.Method != BitcoinStratumMethods.MiningConfigure &&
+                       proposedDifficulty > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty &&
                        !await ValidateProposedDifficultyAsync(connection, request.Value, proposedDifficulty.Value))
                         return;
                     if(request.Value.Method == BitcoinStratumMethods.MiningConfigure)
@@ -686,17 +691,15 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     {
         extensions = null;
         minimumDifficulty = null;
-        if(parameters is not JArray { Count: >= 2 } array || array[0] is not JArray requested ||
-            requested.Any(x => x.Type != JTokenType.String) || array[1] is not JObject values)
+        if(!BitcoinConfigureRequest.TryParse(parameters, out var requested, out var values))
             return false;
         if(requested.Any(x => x.Value<string>() == BitcoinStratumExtensions.MinimumDiff))
         {
             var value = values[BitcoinStratumExtensions.MinimumDiffValue];
             // Strings are an existing firmware compatibility case. Parse once
             // with invariant culture and pass this exact value to the base handler.
-            if(!TryReadMinimumDifficulty(value, out var difficulty))
-                return false;
-            minimumDifficulty = difficulty;
+            if(TryReadMinimumDifficulty(value, out var difficulty))
+                minimumDifficulty = difficulty;
         }
         extensions = requested;
         return true;

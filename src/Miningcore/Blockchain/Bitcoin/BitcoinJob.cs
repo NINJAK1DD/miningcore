@@ -461,6 +461,8 @@ public class BitcoinJob
         var isBlockCandidate = headerValue <= blockTargetValue;
 
         var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
+        if(isBlockCandidate)
+            stratumDifficulty = BitcoinShareCredit.ForCandidate(stratumDifficulty, Difficulty * shareMultiplier);
 
         var actualShareDifficulty = shareDiff / shareMultiplier;
 

@@ -136,7 +136,7 @@ public class BitcoinBlake2bJobTests : TestBase
         var (job, worker) = CreateJob();
         var share = FindShare(job.ForDifficulty(1000), worker);
         Assert.True(share.IsBlockCandidate);
-        Assert.Equal(1000, share.Difficulty);
+        Assert.Equal(job.Difficulty, share.Difficulty);
         Assert.Equal(64, share.BlockHash.Length);
     }
 

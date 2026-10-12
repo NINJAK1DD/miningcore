@@ -107,7 +107,11 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
         var varDiff = context.VarDiff = new VarDiffContext { Config = new VarDiffConfig { MinDiff = 1e-9 } };
         context.EnqueueNewDifficulty(6e-9);
         await wire.SendRawAsync($"{{\"id\":100,\"method\":\"mining.configure\",\"params\":{parameters}}}");
-        Assert.Equal((int) StratumError.Other, (await wire.ReadAsync())["error"]["code"].Value<int>());
+        var malformedResponse = await wire.ReadAsync();
+        if(parameters.StartsWith("[[\"minimum-difficulty\"],{", StringComparison.Ordinal))
+            Assert.Equal(JTokenType.String, malformedResponse["result"]["minimum-difficulty"].Type);
+        else
+            Assert.Equal((int) StratumError.Other, malformedResponse["error"]["code"].Value<int>());
         await Fence(wire);
         Assert.Equal(1e-9, context.Difficulty);
         Assert.Same(varDiff, context.VarDiff);
@@ -225,8 +229,13 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
             if(i % 3 == 0) await wire.SendRequestAsync("mining.authorize", "test.worker", "d=10");
             else await Send(wire, i % 3 == 1, 10);
             var refused = await wire.ReadAsync();
-            Assert.False(refused["result"].Value<bool>());
-            Assert.Equal((int) StratumError.Other, refused["error"]["code"].Value<int>());
+            if(i % 3 == 1)
+                Assert.Equal(JTokenType.String, refused["result"]["minimum-difficulty"].Type);
+            else
+            {
+                Assert.False(refused["result"].Value<bool>());
+                Assert.Equal((int) StratumError.Other, refused["error"]["code"].Value<int>());
+            }
         }
         await wire.SendRequestAsync("mining.extranonce.subscribe");
         Assert.True((await wire.ReadAsync())["result"].Value<bool>());
@@ -427,7 +436,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
             {
                 var share = oldJob.ProcessShare(wire.Connection, "0000000000000000",
                     (string) parameters[7], nonce.ToHexString()).Share;
-                Assert.Equal(2e-9, share.Difficulty);
+                Assert.Equal(share.IsBlockCandidate ? Math.Min(2e-9, oldJob.Difficulty) : 2e-9, share.Difficulty);
                 return;
             }
             catch(StratumException ex) when(ex.Code == StratumError.LowDifficultyShare) { }
