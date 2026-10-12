@@ -537,7 +537,7 @@ public class BeamJobManager : JobManagerBase<BeamJob>
             
             var shareSubmitRequest = new BeamSubmitRequest
             {
-                Id = JobId,
+                Id = job.BlockTemplate.JobId,
                 Nonce = (!string.IsNullOrEmpty(PoolNoncePrefix)) ? PoolNoncePrefix : nonce,
                 Output = solution
             };

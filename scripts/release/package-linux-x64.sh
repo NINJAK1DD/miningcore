@@ -59,7 +59,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$package_root" "$package_root/examples" "$package_root/migrations" \
-    "$package_root/systemd" "$output_dir"
+    "$package_root/systemd" "$package_root/scripts/ops" "$output_dir"
 cp -a "$publish_dir/." "$package_root/"
 cp "$repository_root/README.md" "$repository_root/LICENSE" \
     "$repository_root/config.example.json" "$package_root/"
@@ -69,6 +69,7 @@ cp "$repository_root/docs/releases.md" "$package_root/INSTALL.md"
 cp -a "$repository_root/docs" "$package_root/docs"
 cp "$repository_root"/src/Miningcore/Persistence/Postgres/Scripts/*.sql \
     "$package_root/migrations/"
+cp "$repository_root"/scripts/ops/*.sql "$package_root/scripts/ops/"
 cp "$repository_root/packaging/systemd/miningcore.service" \
     "$repository_root/packaging/systemd/configure-postgresql-ordering.sh" \
     "$repository_root/packaging/systemd/postgresql-ordering.conf.example" \

@@ -61,8 +61,9 @@ ports remain typed numeric metadata, not copies of password-control strings.
 
 New transport records start with `Stratum diagnostic ` followed by compact JSON:
 
-For BLAKE2b, `AssignmentPublicationFailure` is a bounded Info event for a terminal
-publication error after a response started, or an error observed after pool isolation.
+For Bitcoin-family pools, `AssignmentPublicationFailure` is a bounded Info event for a terminal
+publication error after a response started or during idle VarDiff. BLAKE2b also uses it
+for an error observed after pool isolation.
 The connection closes without sending another response for the same request. Its payload
 contains the event and server-generated connection ID, with no miner identity or request
 parameters. It is distinct from the negotiation-budget and duplicate-subscription events.
@@ -119,12 +120,28 @@ ambient serializer settings. The RPC consumer record retains its existing field 
 its shared failure-category changes are covered in the
 [RPC compatibility notes](rpc-consumer-diagnostics.md#compatibility).
 
-Only diagnostic output and telemetry label projection change. The original request,
-reply, exception, authorization result, share/counter updates, mining fail-stop gate,
-socket ownership, cancellation and ban branches are not rewritten. In particular,
-the legacy junk-ban distinction is retained: a missing `Banning` object does not
+Diagnostic hardening preserves the original request, reply, exception, authorization
+result, share/counter updates, mining fail-stop gate, socket ownership and cancellation.
+Ban attribution is specified separately below. The legacy junk-ban distinction is
+retained: a missing `Banning` object does not
 ban; an existing object with unset/true `BanOnJunkReceive` does; false disables it.
 Oversized-input and malformed PROXY failures do not acquire a new junk-ban rule.
+Automatic bans now also require an attributable client; trusted headerless,
+`UNKNOWN` and pre-identity TLS sessions cannot automatically ban a shared proxy.
+Every trusted proxy address across enabled cluster listeners is also excluded
+from automatic bans on other pools or forwarded identities. Positive ban logs
+require a completed manager call; suppression is visible at Info and in
+`miningcore_stratum_automatic_bans_total{pool,outcome,reason}` with fixed outcomes
+`applied`, `suppressed`, `unavailable` and suppression reasons `unattributed`,
+`trusted-proxy` or `loopback` (`none` means no suppression reason). It has no
+client labels. Only configure `proxyAddresses` for actual proxy hosts: a listed
+address cannot receive an automatic ban anywhere in the cluster. A NAT gateway
+shared with miners therefore cannot be automatically banned, though connection
+and request rate limits still apply.
+Fixed Debug events `BannedIdentity` and `AutomaticBanSuppressed` retain only the
+server connection ID. Request rejection logs now say `Disconnecting banned address @`
+instead of `Disconnecting banned client @`; the selected address can be a transport.
+See [Stratum ban attribution](stratum-ban-attribution.md).
 
 Unknown request methods now share the telemetry label `other`; request event timing
 and counting remain unchanged. Update dashboards or parsers that matched raw method
@@ -147,6 +164,15 @@ identities, block metadata, difficulty, counts and timing remain operational met
 The existing IP-censor flag is now honored consistently by both early banned-IP and
 already-connected banned-client messages. It remains partial address masking, not
 an anonymity guarantee, and does not authorize raw identity or credential logging.
+This also applies to expected and unexpected publication exceptions at Debug level.
+`AssignmentPublicationFailure` retains a bounded cause/code and an independent
+once-per-connection reporting flag. A bounded Debug `PublicationCleanupFailure`
+describes a secondary cleanup/sink failure without replacing the original cause.
+It also describes accepted-share telemetry/logging failures, which cannot veto the
+share acknowledgement. Neither event attaches raw exceptions. An ordinary pre-response
+invalid-share ban and shutdown cancellation during recovery-error publication do not
+consume the publication report flag. Normal transport-owned teardown cancellation
+does not count as a publication failure either.
 Connection initialization and acceptance logging also tolerate an absent `Logging`
 object, treating censoring as not enabled, consistently with the banned-IP paths.
 This removes an incidental null-reference connection rejection for that configuration;
@@ -226,7 +252,8 @@ The opt-out is for managed-only Windows testing, not a release packaging instruc
 The Windows CI lifecycle selection already excludes
 `RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake` (certificate rotation);
 apply that existing exclusion when reproducing the supported Windows lane. The
-Linux selection includes it. No new security test is skipped on either platform.
+Linux selection includes it. Non-loopback ban tests explicitly skip when no local
+IPv4 interface is available; provision that interface to validate proxy protection.
 On Linux use the documented source-build/native dependencies before the full suite.
 The documented WSL lab can execute the same isolated socket tests without replacing
 `/opt/miningcore`, reading live pool secrets, starting payouts or changing the regtest

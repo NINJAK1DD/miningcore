@@ -7,6 +7,10 @@ namespace Miningcore.Blockchain.Conceal;
 
 public class ConcealWorkerContext : WorkerContextBase
 {
+    internal override double MinimumDifficulty => Cryptonote.CryptonoteDifficulty.Minimum;
+    internal override double MaximumDifficulty => Cryptonote.CryptonoteDifficulty.ShortTargetMaximum;
+    internal override bool RequiresIntegerDifficulty => true;
+    protected override double ValidateDifficulty(double value) => Cryptonote.CryptonoteDifficulty.NormalizeShortAssignment(value);
     /// <summary>
     /// Usually a wallet address
     /// NOTE: May include paymentid (seperated by a dot .)
@@ -25,11 +29,15 @@ public class ConcealWorkerContext : WorkerContextBase
 
     public virtual void AddJob(ConcealWorkerJob job, int maxActiveJobs)
     {
+        RegisterBlobDifficulty(job.DifficultyTemplate, job.ExtraNonce);
         if(!validJobs.Contains(job))
             validJobs.Enqueue(job);
 
         while(validJobs.Count > maxActiveJobs)
-            validJobs.Dequeue();
+        {
+            var expired = validJobs.Dequeue();
+            ForgetBlobDifficulty(expired.DifficultyTemplate, expired.ExtraNonce);
+        }
     }
 
     public ConcealWorkerJob GetJob(string jobId)

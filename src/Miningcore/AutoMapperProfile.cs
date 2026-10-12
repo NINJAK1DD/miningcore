@@ -40,7 +40,8 @@ public class AutoMapperProfile : Profile
                 opt => opt.Ignore())
             .ForMember(dest => dest.NotifyBlockFoundOnUpdate, opt => opt.Ignore())
             .ForMember(dest => dest.NotifyBlockConfirmationProgressOnUpdate, opt => opt.Ignore())
-            .ForMember(dest => dest.NotifyBlockUnlockedOnUpdate, opt => opt.Ignore());
+            .ForMember(dest => dest.NotifyBlockUnlockedOnUpdate, opt => opt.Ignore())
+            .ForMember(dest => dest.BitcoinBlake2bCustodialEvidenceVerified, opt => opt.Ignore());
 
         CreateMap<BlockStatus, string>().ConvertUsing(e => e.ToString().ToLower());
 
@@ -164,7 +165,8 @@ public class AutoMapperProfile : Profile
         CreateMap<Persistence.Postgres.Entities.Block, Block>()
             .ForMember(dest => dest.NotifyBlockFoundOnUpdate, opt => opt.Ignore())
             .ForMember(dest => dest.NotifyBlockConfirmationProgressOnUpdate, opt => opt.Ignore())
-            .ForMember(dest => dest.NotifyBlockUnlockedOnUpdate, opt => opt.Ignore());
+            .ForMember(dest => dest.NotifyBlockUnlockedOnUpdate, opt => opt.Ignore())
+            .ForMember(dest => dest.BitcoinBlake2bCustodialEvidenceVerified, opt => opt.Ignore());
         CreateMap<Persistence.Postgres.Entities.Balance, Balance>();
         CreateMap<Persistence.Postgres.Entities.Payment, Payment>();
         CreateMap<Persistence.Postgres.Entities.BalanceChange, BalanceChange>();

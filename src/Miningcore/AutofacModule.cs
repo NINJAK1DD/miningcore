@@ -83,6 +83,9 @@ public class AutofacModule : Module
             .AsImplementedInterfaces()
             .SingleInstance();
 
+        builder.RegisterType<Miningcore.Blockchain.BitcoinBlake2b.BitcoinBlake2bPayoutContractTracker>()
+            .SingleInstance();
+
         builder.RegisterType<IntegratedBanManager>()
             .Keyed<IBanManager>(BanManagerKind.Integrated)
             .SingleInstance();

@@ -203,6 +203,18 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
   done < <(find "$repository_root/src/Miningcore/Persistence/Postgres/Scripts" \
     -maxdepth 1 -type f -name '*.sql' -print | sort)
 
+  # Operator actions must be available at the documented path and excluded from
+  # the migration directory, where unattended schema runners may look for SQL.
+  operator=resolve_blake2b_allocation_hold.sql
+  tar -xOf "$output_dir/$archive" "$package_root/scripts/ops/$operator" |
+    cmp - "$repository_root/scripts/ops/$operator"
+  if tar -tzf "$output_dir/$archive" | grep -Fx "$package_root/migrations/$operator" >/dev/null; then
+    echo "$archive misclassified the operator tool as a schema migration" >&2
+    exit 1
+  fi
+  tar -xOf "$output_dir/$archive" "$package_root/docs/bitcoin-blake2b.md" |
+    grep -F '../scripts/ops/resolve_blake2b_allocation_hold.sql' >/dev/null
+
   cp "$output_dir/$archive" "$complete_dir/"
 
   extracted="$work_dir/extracted-$ubuntu_version"

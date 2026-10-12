@@ -2,7 +2,6 @@ using System;
 using System.Globalization;
 using System.Numerics;
 using System.Collections.Concurrent;
-using System.Text;
 using Miningcore.Contracts;
 using Miningcore.Crypto;
 using Miningcore.Crypto.Hashing.Algorithms;
@@ -54,6 +53,25 @@ public class KaspaXoShiRo256PlusPlus
 
 public class KaspaJob
 {
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Share, Kaspad.RpcBlock> candidateBlocks = new();
+    internal Kaspad.RpcBlock GetBlockCandidate(Share share) => candidateBlocks.TryGetValue(share, out var block) ? block :
+        throw new InvalidOperationException("No validated block candidate");
+    private KaspaJob sourceTemplate;
+    internal KaspaJob SourceTemplate => sourceTemplate ?? this;
+    internal KaspaJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (KaspaJob) MemberwiseClone();
+            result.sourceTemplate = SourceTemplate;
+            result.JobId = id;
+            if(result.jobParams != null)
+            {
+                result.jobParams = (object[]) result.jobParams.Clone();
+                result.jobParams[0] = id;
+            }
+            return result;
+        }, JobId, nextJobId);
+
     protected IMasterClock clock;
     protected double shareMultiplier;
     public Kaspad.RpcBlock BlockTemplate { get; protected set; }
@@ -82,11 +100,12 @@ public class KaspaJob
     
     protected bool RegisterSubmit(string nonce)
     {
-        var key = new StringBuilder()
-            .Append(nonce)
-            .ToString();
+        return submissions.TryAdd(nonce, true);
+    }
 
-        return submissions.TryAdd(key, true);
+    protected bool IsDuplicateSubmit(string nonce)
+    {
+        return submissions.ContainsKey(nonce);
     }
     
     protected virtual ushort[][] GenerateMatrix(ReadOnlySpan<byte> prePowHash)
@@ -266,10 +285,10 @@ public class KaspaJob
     {
         var context = worker.ContextAs<KaspaWorkerContext>();
 
-        BlockTemplate.Header.Nonce = Convert.ToUInt64(nonce, 16);
+        var nonceValue = ulong.Parse(nonce, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture);
 
         Span<byte> coinbaseBytes = stackalloc byte[32];
-        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, BlockTemplate.Header.Nonce, coinbaseBytes);
+        SerializeCoinbase(prePowHashBytes, BlockTemplate.Header.Timestamp, nonceValue, coinbaseBytes);
 
         Span<byte> matrixBytes = stackalloc byte[32];
         ComputeCoinbase(prePowHashBytes, coinbaseBytes, matrixBytes);
@@ -285,43 +304,26 @@ public class KaspaJob
         var shareDiff = (double) new BigRational(KaspaConstants.Diff1b, targetHashCoinbaseBytes.ToBigInteger()) * shareMultiplier;
 
         // diff check
-        var stratumDifficulty = context.Difficulty;
-        var ratio = shareDiff / stratumDifficulty;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = hashCoinbaseBytesValue <= blockTargetValue;
         //var isBlockCandidate = true;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = shareDiff / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({shareDiff})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isBlockCandidate, this);
 
         var result = new Share
         {
             BlockHeight = (long) BlockTemplate.Header.DaaScore,
             NetworkDifficulty = Difficulty,
-            Difficulty = context.Difficulty / shareMultiplier
+            Difficulty = stratumDifficulty / shareMultiplier
         };
 
         if(isBlockCandidate)
         {
+            var header = BlockTemplate.Header.Clone();
+            header.Nonce = nonceValue;
             Span<byte> hashBytes = stackalloc byte[32];
-            SerializeHeader(BlockTemplate.Header, hashBytes, false);
+            SerializeHeader(header, hashBytes, false);
 
             result.IsBlockCandidate = true;
             result.BlockHash = hashBytes.ToHexString();
@@ -343,19 +345,36 @@ public class KaspaJob
         var context = worker.ContextAs<KaspaWorkerContext>();
         
         // We don't need "0x"
-        nonce = (nonce.StartsWith("0x")) ? nonce.Substring(2) : nonce;
+        nonce = nonce.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? nonce.Substring(2) : nonce;
+        if(nonce.Length < 1 || nonce.Length > KaspaConstants.NonceLength || nonce.Any(c => !Uri.IsHexDigit(c)))
+            throw new StratumException(StratumError.Other, "invalid nonce");
         
         // Add extranonce to nonce if enabled and submitted nonce is shorter than expected (16 - <extranonce length> characters)
         if (nonce.Length <= (KaspaConstants.NonceLength - context.ExtraNonce1.Length))
         {
-            nonce = context.ExtraNonce1.PadRight(KaspaConstants.NonceLength - context.ExtraNonce1.Length, '0') + nonce;
+            nonce = context.ExtraNonce1 + nonce.PadLeft(KaspaConstants.NonceLength - context.ExtraNonce1.Length, '0');
         }
+
+        // Canonicalize the effective nonce after the existing extranonce projection.
+        // Equivalent encodings must identify the same nonce-bearing header.
+        if(!ulong.TryParse(nonce, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var nonceValue))
+            throw new StratumException(StratumError.Other, "invalid nonce");
+        nonce = nonceValue.ToString("x16", CultureInfo.InvariantCulture);
         
         // dupe check
+        if(IsDuplicateSubmit(nonce))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, nonce);
         if(!RegisterSubmit(nonce))
             throw new StratumException(StratumError.DuplicateShare, $"duplicate share");
 
-        return ProcessShareInternal(worker, nonce);
+        if(result.IsBlockCandidate)
+        {
+            var block = BlockTemplate.Clone();
+            block.Header.Nonce = nonceValue;
+            candidateBlocks.Add(result, block);
+        }
+        return result;
     }
 
     public virtual void Init(Kaspad.RpcBlock blockTemplate, string jobId, double shareMultiplier)

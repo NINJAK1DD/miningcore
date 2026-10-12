@@ -13,8 +13,11 @@ internal sealed class BitcoinCoreIntegrationFactAttribute : FactAttribute
 {
     public const string BinaryEnvironmentVariable = "MININGCORE_TEST_BITCOIND";
 
-    public BitcoinCoreIntegrationFactAttribute()
+    public BitcoinCoreIntegrationFactAttribute(bool requiresPostgres = false)
     {
+        if(requiresPostgres && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES")))
+            Skip = "Set MININGCORE_TEST_POSTGRES to run the Bitcoin/PPS database integration test";
+
         var binary = Environment.GetEnvironmentVariable(BinaryEnvironmentVariable);
 
         if(string.IsNullOrWhiteSpace(binary) || !File.Exists(binary))
