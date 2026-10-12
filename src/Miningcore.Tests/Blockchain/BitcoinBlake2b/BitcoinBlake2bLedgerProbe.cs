@@ -156,7 +156,16 @@ internal sealed class BitcoinBlake2bLedgerProbe : IAsyncDisposable
             await transaction.CommitAsync();
         }
         var after = await balances.GetBalanceAsync(connection, config.Id, share.Miner);
-        Assert.Equal(payoutScheme == PayoutScheme.PPS ? before : 49m, after);
+        if(payoutScheme == PayoutScheme.PPLNS)
+        {
+            // One capped network candidate supplies one block of work, half of
+            // the default two-block PPLNS window. It cannot fill the window by
+            // carrying a miner-selected assignment above the chain target.
+            Assert.Equal(share.NetworkDifficulty, share.Difficulty);
+            Assert.Equal(24.5m, after);
+        }
+        else
+            Assert.Equal(payoutScheme == PayoutScheme.PPS ? before : 49m, after);
         if(payoutScheme == PayoutScheme.PPS)
         {
             Assert.True(before > 0);

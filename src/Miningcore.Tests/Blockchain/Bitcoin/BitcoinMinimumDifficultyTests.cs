@@ -420,6 +420,32 @@ public class BitcoinMinimumDifficultyTests : TestBase
         await Fence(wire);
     }
 
+    [Fact]
+    public async Task PreResponseInvariantFailure_ClosesWorkAndReportsMutationWithoutReply()
+    {
+        var (config, manager, clock, bus) = Fixture(false);
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: true, difficulty: 1);
+        await Subscribe(wire);
+        using var logs = new NLog.LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}|${exception:format=tostring}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(NLog.LogLevel.Info, NLog.LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        wire.SetLogger(logs.GetLogger("pre-response"));
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        context.ConfigureDifficultyPolicy(1, _ => throw new InvalidOperationException("private-marker"));
+        var responses = wire.Connection.ResponseSequence;
+        await wire.SendRequestAsync("mining.configure", Minimum(8));
+        await wire.ReadUntilDisconnectedAsync();
+        Assert.Equal(responses, wire.Connection.ResponseSequence);
+        Assert.Empty(context.validJobs);
+        Assert.Contains(target.Logs, x => x.Contains("AssignmentMutationFailure"));
+        Assert.DoesNotContain(target.Logs, x => x.Contains("AssignmentPublicationFailure") || x.Contains("private-marker"));
+        await wire.DispatchBufferedAsync("mining.extranonce.subscribe");
+        Assert.Equal(responses, wire.Connection.ResponseSequence);
+    }
+
     [Theory]
     [InlineData(false, 16)]
     [InlineData(false, 15)]

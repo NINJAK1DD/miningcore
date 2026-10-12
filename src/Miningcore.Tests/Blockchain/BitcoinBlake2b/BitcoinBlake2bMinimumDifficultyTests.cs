@@ -9,6 +9,35 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public partial class BitcoinBlake2bDifficultyBudgetTests
 {
+    [Theory]
+    [InlineData("empty")]
+    [InlineData("reserved")]
+    [InlineData("limit")]
+    public async Task InvalidEnvelope_AfterBudgetExhaustionCannotEchoReservedResultKeys(string shape)
+    {
+        var (config, manager, clock, bus) = Fixture();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            budgetTimeProvider: new ManualTimeProvider());
+        await Subscribe(wire);
+        for(var i = 0; i < Miningcore.Blockchain.BitcoinBlake2b.DifficultyRequestBudget.Capacity; i++)
+        {
+            await wire.SendRequestAsync("mining.suggest_difficulty", 0);
+            Assert.True((await wire.ReadAsync())["result"].Value<bool>());
+        }
+        var extensions = shape == "limit"
+            ? System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(System.Linq.Enumerable.Range(0, 33), i => "unknown-" + i))
+            : new[] { shape == "empty" ? "" : "version-rolling.mask", "minimum-difficulty" };
+        await wire.SendRequestAsync("mining.configure", extensions,
+            new Dictionary<string, object> { ["minimum-difficulty.value"] = 8e-9 });
+        var response = await wire.ReadAsync();
+        Assert.NotNull(response["error"]);
+        Assert.Equal(JTokenType.Boolean, response["result"].Type);
+        Assert.False(response["result"].Value<bool>());
+        await Fence(wire);
+        Assert.Equal(1, wire.JobsCreated);
+        Assert.Equal(1e-9, wire.Connection.Context.Difficulty);
+        Assert.Null(wire.Connection.ContextAs<BitcoinWorkerContext>().NegotiatedMinimumDifficulty);
+    }
     [Fact]
     public async Task MinimumFloor_NiceHashAndSuggestionCannotOverrideAcceptedDeviceConstraint()
     {
