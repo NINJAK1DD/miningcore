@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -10,6 +11,7 @@ using Microsoft.IO;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
+using Miningcore.Mining;
 using Miningcore.Stratum;
 using Miningcore.Time;
 using Newtonsoft.Json;
@@ -24,6 +26,90 @@ namespace Miningcore.Tests.Stratum;
 
 public class StratumConnectionTests : TestBase
 {
+    private sealed class ReceiptStream : System.IO.Stream
+    {
+        internal readonly System.Threading.Channels.Channel<byte[]> Chunks = System.Threading.Channels.Channel.CreateUnbounded<byte[]>();
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            if(!await Chunks.Reader.WaitToReadAsync(ct)) return 0;
+            var bytes = await Chunks.Reader.ReadAsync(ct);
+            bytes.CopyTo(buffer);
+            return bytes.Length;
+        }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, System.IO.SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long length) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GraceUsesReadContainingTerminatorAcrossHandlerBacklog(bool lateTerminator)
+    {
+        var time = new ManualTimeProvider();
+        var worker = new WorkerContextBase();
+        worker.Init(10, null, clock, time);
+        var old = worker.JobForDifficulty(new object(), (_, _) => new object(), "1");
+        worker.SetDifficulty(40);
+        var connection = new StratumConnection(logger, rmsm, clock, "receipt-test", false);
+        connection.SetContext(worker);
+        var wrapper = new PrivateObject(connection);
+        var input = new ReceiptStream();
+        wrapper.SetField("networkStream", input);
+        var pipe = (Pipe) wrapper.GetField("receivePipe");
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var result = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Func<StratumConnection, JsonRpcRequest, CancellationToken, Task> handler = async (_, request, _) =>
+        {
+            if(Convert.ToInt32(request.Id) == 1)
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(TestTimeout);
+            }
+            else
+            {
+                var accepted = worker.TryValidateShareDifficulty(20, false, old, out var credit);
+                if(accepted) Assert.Equal(10, credit);
+                result.TrySetResult(accepted);
+            }
+        };
+        using var stop = new CancellationTokenSource(TestTimeout);
+        var fill = (Task) wrapper.Invoke("FillReceivePipeAsync", stop.Token);
+        var process = (Task) wrapper.Invoke("ProcessReceivePipeAsync", stop.Token,
+            new StratumProxyPolicy(null), handler);
+        try
+        {
+            time.AdvanceMonotonic(TimeSpan.FromSeconds(29));
+            await input.Chunks.Writer.WriteAsync(Encoding.UTF8.GetBytes(
+                "{\"id\":1,\"method\":\"test\"}\n{\"id\":2,\"method\":\"test\",\"receivedAt\":0}" + (lateTerminator ? "" : "\n")));
+            await entered.Task.WaitAsync(TestTimeout);
+            time.AdvanceMonotonic(TimeSpan.FromSeconds(31));
+            if(lateTerminator) await input.Chunks.Writer.WriteAsync(new byte[] { (byte) '\n' });
+            input.Chunks.Writer.Complete();
+            await fill.WaitAsync(TestTimeout);
+            await pipe.Writer.CompleteAsync();
+            release.TrySetResult();
+            Assert.Equal(!lateTerminator, await result.Task.WaitAsync(TestTimeout));
+            await process.WaitAsync(TestTimeout);
+            Assert.False(worker.TryValidateShareDifficulty(20, false, old, out _)); // Ambient receipt restored.
+        }
+        finally
+        {
+            release.TrySetResult();
+            input.Chunks.Writer.TryComplete();
+            stop.Cancel();
+            await pipe.Reader.CompleteAsync();
+        }
+    }
+
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
     private const string JsonRpcVersion = "2.0";
     private const string ConnectionId = "foo";
@@ -33,6 +119,48 @@ public class StratumConnectionTests : TestBase
     private static readonly RecyclableMemoryStreamManager rmsm = ModuleInitializer.Container.Resolve<RecyclableMemoryStreamManager>();
     private static readonly IMasterClock clock = ModuleInitializer.Container.Resolve<IMasterClock>();
     private static readonly ILogger logger = new NullLogger(LogManager.LogFactory);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BufferedRequests_StopAtEachLineAfterDisconnectOrCancellation(bool cancel)
+    {
+        var connection = new StratumConnection(logger, rmsm, clock, ConnectionId, false);
+        var wrapper = new PrivateObject(connection);
+        var pipe = (Pipe) wrapper.GetField("receivePipe");
+        // Fill a single ReadResult deterministically. TCP tests separately drive
+        // the real transport; they cannot guarantee OS packet coalescing.
+        await pipe.Writer.WriteAsync(Encoding.UTF8.GetBytes(string.Concat(
+            "{\"id\":42,\"method\":\"mining.subscribe\"}\n",
+            "{\"id\":42,\"method\":\"mining.authorize\"}\n",
+            "{\"id\":42,\"method\":\"mining.submit\"}\n")));
+        await pipe.Writer.CompleteAsync();
+        using var stop = new CancellationTokenSource();
+        var dispatched = 0;
+        Func<StratumConnection, JsonRpcRequest, CancellationToken, Task> handler = (worker, _, _) =>
+        {
+            dispatched++;
+            if(cancel)
+                stop.Cancel();
+            else
+                worker.Disconnect();
+            return Task.CompletedTask;
+        };
+        var processing = (Task) wrapper.Invoke("ProcessReceivePipeAsync", stop.Token,
+            new StratumProxyPolicy(null), handler);
+        if(cancel)
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => processing.WaitAsync(TestTimeout));
+        else
+            await processing.WaitAsync(TestTimeout);
+        Assert.Equal(1, dispatched);
+        // A fresh read must be legal even when the loop exits mid-buffer.
+        // It must also expose only the two undispatched lines.
+        var remaining = await pipe.Reader.ReadAsync().AsTask().WaitAsync(TestTimeout);
+        Assert.Equal(2, Encoding.UTF8.GetString(remaining.Buffer.ToArray()).Split('\n',
+            StringSplitOptions.RemoveEmptyEntries).Length);
+        pipe.Reader.AdvanceTo(remaining.Buffer.End);
+        await pipe.Reader.CompleteAsync();
+    }
 
     [Fact]
     public void RespondAsync_FailStopTokenRejectsAcknowledgement()
@@ -204,22 +332,28 @@ public class StratumConnectionTests : TestBase
         var connection = new StratumConnection(logger, rmsm, clock, ConnectionId, false);
         var wrapper = new PrivateObject(connection);
         var callCount = 0;
+        using var cts = new CancellationTokenSource();
 
-        async Task handler(StratumConnection con, JsonRpcRequest request, CancellationToken ct)
+        Task handler(StratumConnection con, JsonRpcRequest request, CancellationToken ct)
         {
             callCount++;
-
-            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            Assert.Equal(cts.Token, ct);
+            Assert.False(ct.IsCancellationRequested);
+            // Cancel only after the handler owns the request. No competing
+            // timers or runner continuations decide whether cancellation wins.
+            cts.Cancel();
+            return Task.Delay(Timeout.InfiniteTimeSpan, ct);
         }
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(20));
-
-        await Assert.ThrowsAnyAsync<TaskCanceledException>(()=> (Task) wrapper.Invoke(ProcessRequestAsyncMethod,
+        var processing = (Task) wrapper.Invoke(ProcessRequestAsyncMethod,
             cts.Token,
             handler,
-            new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(requestString))));
+            new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(requestString)));
+        var error = await Assert.ThrowsAnyAsync<TaskCanceledException>(() => processing);
 
-        Assert.Equal(callCount, 1);
+        Assert.True(processing.IsCanceled);
+        Assert.Equal(1, callCount);
+        Assert.Equal(cts.Token, error.CancellationToken);
     }
 
     // [Fact]

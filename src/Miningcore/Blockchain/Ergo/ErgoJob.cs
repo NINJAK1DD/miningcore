@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Text;
 using Miningcore.Contracts;
 using Miningcore.Crypto;
 using Miningcore.Crypto.Hashing.Algorithms;
@@ -12,6 +11,19 @@ namespace Miningcore.Blockchain.Ergo;
 
 public class ErgoJob
 {
+    internal ErgoJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
+        context.JobForDifficulty(this, (_, id) =>
+        {
+            var result = (ErgoJob) MemberwiseClone();
+            result.JobId = id;
+            if(result.jobParams != null)
+            {
+                result.jobParams = (object[]) result.jobParams.Clone();
+                result.jobParams[0] = id;
+            }
+            return result;
+        }, JobId, nextJobId);
+
     public WorkMessage BlockTemplate { get; private set; }
     public double Difficulty { get; private set; }
     public uint Height => BlockTemplate.Height;
@@ -51,12 +63,14 @@ public class ErgoJob
 
     protected bool RegisterSubmit(string nTime, string nonce)
     {
-        var key = new StringBuilder()
-            .Append(nTime)
-            .Append(nonce)
-            .ToString();
+        // nTime is not an input to Autolykos validation. Only the nonce bytes
+        // distinguish proofs for this immutable template.
+        return submissions.TryAdd(nonce, true);
+    }
 
-        return submissions.TryAdd(key, true);
+    protected bool IsDuplicateSubmit(string nTime, string nonce)
+    {
+        return submissions.ContainsKey(nonce);
     }
 
     protected virtual byte[] SerializeCoinbase(string msg, string nonce)
@@ -138,30 +152,11 @@ public class ErgoJob
         var fhTarget = new Target(fh);
 
         // diff check
-        var stratumDifficulty = context.Difficulty;
-        var ratio = fhTarget.Difficulty / stratumDifficulty;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = fh < BlockTemplate.B;
 
-        // test if share meets at least workers current difficulty
-        if(!isBlockCandidate && ratio < 0.99)
-        {
-            // check if share matched the previous difficulty from before a vardiff retarget
-            if(context.VarDiff?.LastUpdate != null && context.PreviousDifficulty.HasValue)
-            {
-                ratio = fhTarget.Difficulty / context.PreviousDifficulty.Value;
-
-                if(ratio < 0.99)
-                    throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({fhTarget.Difficulty})");
-
-                // use previous difficulty
-                stratumDifficulty = context.PreviousDifficulty.Value;
-            }
-
-            else
-                throw new StratumException(StratumError.LowDifficultyShare, $"low difficulty share ({fhTarget.Difficulty})");
-        }
+        var stratumDifficulty = context.ValidateShareDifficulty(fhTarget.Difficulty, isBlockCandidate, this);
 
         var result = new Share
         {
@@ -200,18 +195,24 @@ public class ErgoJob
         if(nonce.Length != context.ExtraNonce1.Length + extraNonceSize * 2)
             throw new StratumException(StratumError.Other, "incorrect size of nonce");
 
-        if(!nonce.StartsWith(context.ExtraNonce1))
+        if(!nonce.StartsWith(context.ExtraNonce1, StringComparison.OrdinalIgnoreCase))
             throw new StratumException(StratumError.Other, $"incorrect extraNonce2 in nonce (expected {context.ExtraNonce1}, got {nonce.Substring(0, Math.Min(nonce.Length, context.ExtraNonce1.Length))})");
 
-        // currently unused
+        if(nonce.Any(c => !Uri.IsHexDigit(c)))
+            throw new StratumException(StratumError.Other, "invalid nonce");
+
+        // Legacy miners send this unused field; it never distinguishes a proof.
         if(nTime == "undefined")
             nTime = string.Empty;
 
         // dupe check
+        if(IsDuplicateSubmit(nTime, nonce))
+            throw new StratumException(StratumError.DuplicateShare, "duplicate share");
+        var result = ProcessShareInternal(worker, nonce);
         if(!RegisterSubmit(nTime, nonce))
             throw new StratumException(StratumError.DuplicateShare, $"duplicate share");
 
-        return ProcessShareInternal(worker, nonce);
+        return result;
     }
 
     public void Init(WorkMessage blockTemplate, int blockVersion, int extraNonceSize, string jobId)

@@ -16,7 +16,9 @@ internal static class StratumDiagnostics
         AcceptError, ListenError, TerminalCallback, UntrackedCompletion,
         Completion, TaskRemoval, Drain, CertificateLoad, ReceiveWait, BufferWait,
         DifficultyBudgetDisconnect, DuplicateSubscription, AssignmentPublicationFailure,
+        PublicationCleanupFailure,
         CancelledFailure,
+        BannedIdentity, AutomaticBanSuppressed,
     }
 
     internal static string Method(string method) => method switch

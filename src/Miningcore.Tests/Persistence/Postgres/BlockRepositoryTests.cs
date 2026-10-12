@@ -12,6 +12,7 @@ using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Postgres.Repositories;
+using Miningcore.Tests.Util.Postgres;
 using Xunit;
 
 namespace Miningcore.Tests.Persistence.Postgres;
@@ -544,8 +545,7 @@ public class BlockRepositoryTests
     [Fact]
     public void AuxPowMigration_IsAtomicAndRecreatesEveryRequiredIndex()
     {
-        var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-            "../../../../Miningcore/Persistence/Postgres/Scripts/add_auxpow_block_idempotency.sql"));
+        var path = PostgresTestScripts.PathFor("add_auxpow_block_idempotency.sql");
         var script = File.ReadAllText(path);
         var indexNames = new[]
         {

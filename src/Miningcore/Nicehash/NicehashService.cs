@@ -11,16 +11,21 @@ public class NicehashService
 {
     public NicehashService(
         IHttpClientFactory httpClientFactory,
-        IMemoryCache cache)
+        IMemoryCache cache) : this(httpClientFactory, cache, LogManager.GetCurrentClassLogger())
+    {
+    }
+
+    internal NicehashService(IHttpClientFactory httpClientFactory, IMemoryCache cache, ILogger logger)
     {
         this.cache = cache;
+        this.logger = logger;
         client = new SimpleRestClient(httpClientFactory, NicehashConstants.ApiBaseUrl);
     }
 
     private readonly SimpleRestClient client;
     private readonly IMemoryCache cache;
 
-    private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
+    private readonly ILogger logger;
 
     public Task<double?> GetStaticDiff(string coin, string algo, CancellationToken ct)
     {
@@ -49,7 +54,14 @@ public class NicehashService
                 return (double?) null;
 
             return item.MinimalPoolDifficulty;
-        }, ex=> logger.Error(()=> $"Error updating Nicehash diffs: {ex.Message}"));
+        }, ex =>
+        {
+            // Disconnect/shutdown cancellation is expected. A service timeout or
+            // an unrelated failure must still be visible, even during shutdown.
+            if(ex is OperationCanceledException && ct.IsCancellationRequested)
+                return;
+            logger.Error(() => $"Error updating Nicehash diffs: {ex.Message}");
+        });
     }
 
     private string GetNicehashAlgo(string coin, string algo)

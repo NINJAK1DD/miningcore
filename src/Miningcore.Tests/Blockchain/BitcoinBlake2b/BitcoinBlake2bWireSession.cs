@@ -12,10 +12,12 @@ using Autofac;
 using AutoMapper;
 using Microsoft.IO;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Nicehash;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
@@ -44,12 +46,20 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     private Exception dispatchError;
 
     internal StratumConnection Connection { get; }
+    internal CancellationToken RequestCancellation { get; private set; }
+    internal Exception DispatchError => dispatchError;
+    internal void SendEof() => client.Client.Shutdown(SocketShutdown.Send);
+    internal void ClosePublicationFailure(Exception error) => pool.ClosePublicationFailure(Connection, error);
+    internal CanonicalPool Canonical => (CanonicalPool) pool;
+    internal Miningcore.Banning.IBanManager EnableInvalidShareBanning() => pool.EnableInvalidShareBanning();
     internal int JobsCreated => pool.JobsCreated;
     internal void SetLogger(NLog.ILogger value) => pool.SetLogger(value);
     internal Func<Miningcore.Mining.WorkerContextBase, Task<double?>> NicehashLookup { set => ((TestPool) pool).NicehashLookup = value; }
     internal void FailJobPipeline() => ((BitcoinBlake2bPool) pool)
         .HandleBlake2bPipelineFailure(new InvalidOperationException("test pipeline failure"));
     internal bool MiningFaulted => ((TestPool) pool).MiningFaulted;
+    internal Task AssignOperationAsync(Func<Task> operation) => ((TestPool) pool).AssignOperation(Connection, operation);
+    internal IDisposable SubscribeJobs(IObservable<object> jobs) => ((TestPool) pool).SubscribeJobNotifications(jobs);
     internal Action BeforeConfigure { set => ((TestPool) pool).BeforeConfigure = value; }
     internal Func<Task> AfterConfigure { set => ((TestPool) pool).AfterConfigure = value; }
     internal Action BeforeCreateJob { set => ((TestPool) pool).BeforeCreateJob = value; }
@@ -105,7 +115,9 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
 
     internal BitcoinBlake2bWireSession(IComponentContext container, IMasterClock clock,
         PoolConfig config, BitcoinJobManager manager, IMessageBus bus,
-        BitcoinBlake2bWireSession sharedPool = null, TimeProvider budgetTimeProvider = null, bool canonical = false)
+        BitcoinBlake2bWireSession sharedPool = null, TimeProvider budgetTimeProvider = null, bool canonical = false,
+        double difficulty = 1e-9, bool merged = false, VarDiffConfig varDiff = null,
+        TimeProvider varDiffTimeProvider = null)
     {
         var streams = container.Resolve<RecyclableMemoryStreamManager>();
         scope = ((ILifetimeScope) container).BeginLifetimeScope(builder =>
@@ -113,7 +125,8 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
             builder.RegisterInstance(Substitute.For<IBlockRepository>());
             builder.RegisterInstance(Substitute.For<IShareRepository>());
         });
-        pool = sharedPool?.pool ?? (canonical ? new CanonicalPool(scope, clock, bus, streams) :
+        pool = sharedPool?.pool ?? (merged ? new MergedPool(scope, clock, bus, streams) :
+            canonical ? new CanonicalPool(scope, clock, bus, streams) :
             new TestPool(scope, clock, bus, streams, budgetTimeProvider ?? TimeProvider.System));
         if(sharedPool == null)
         {
@@ -132,21 +145,25 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var endpoint = new StratumEndpoint((IPEndPoint) listener.LocalEndpoint,
-            new PoolEndpoint { Difficulty = 1e-9 });
+            new PoolEndpoint { Difficulty = difficulty });
         config.Ports ??= new Dictionary<int, PoolEndpoint>();
-        config.Ports[endpoint.IPEndPoint.Port] = new PoolEndpoint { Difficulty = 1e-9 };
+        config.Ports[endpoint.IPEndPoint.Port] = new PoolEndpoint { Difficulty = difficulty, VarDiff = varDiff };
+        if(varDiff != null)
+            config.EnableInternalStratum = true;
         client = new TcpClient(AddressFamily.InterNetwork);
         client.Connect(endpoint.IPEndPoint);
         var socket = listener.AcceptSocket();
         Connection = new StratumConnection(new NLog.NullLogger(NLog.LogManager.LogFactory),
             streams, clock, Guid.NewGuid().ToString("N"), false);
-        var context = new BitcoinWorkerContext();
-        context.Init(1e-9, null, clock);
-        Connection.SetContext(context);
+        pool.Initialize(Connection, endpoint.IPEndPoint, varDiffTimeProvider ?? TimeProvider.System);
         pool.AddConnection(Connection);
         dispatch = Connection.DispatchAsync(socket, stop.Token, endpoint,
             (IPEndPoint) socket.RemoteEndPoint, null,
-            pool.Dispatch,
+            (connection, request, ct) =>
+            {
+                RequestCancellation = ct;
+                return pool.Dispatch(connection, request, ct);
+            },
             _ => { }, (_, error) => dispatchError = error);
         reader = new StreamReader(client.GetStream(), Encoding.UTF8, false, 1024, true);
         writer = new StreamWriter(client.GetStream(), new UTF8Encoding(false), 1024, true)
@@ -168,7 +185,18 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal async Task<JObject> ReadAsync()
     {
         var line = await reader.ReadLineAsync(stop.Token);
-        Assert.False(string.IsNullOrEmpty(line), $"Stratum connection closed before a complete response: {dispatchError}");
+        if(string.IsNullOrEmpty(line))
+        {
+            // EOF can reach the reader before DispatchAsync records its terminal
+            // classification. Preserve that evidence instead of reporting an
+            // empty error for a normal startup-timeout completion.
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Fail($"Stratum connection closed before a complete response: " +
+                $"requestId={requestId}, completion={Connection.CompletionReason}, " +
+                $"dispatchCompleted={dispatch.IsCompleted}, subscribed={Connection.Context.IsSubscribed}, " +
+                $"harnessCancelled={stop.IsCancellationRequested}, requestCancelled={RequestCancellation.IsCancellationRequested}, " +
+                $"disconnectRequested={Connection.IsDisconnectRequested}, responses={Connection.ResponseSequence}; {dispatchError}");
+        }
         return JObject.Parse(line);
     }
 
@@ -178,7 +206,7 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
     internal Task AnnounceJobAsync(object jobParams) => pool.Announce(jobParams);
     internal object CreateJob() => pool.CreateJob(Connection);
     internal Task UpdateVarDiffAsync(double difficulty) => pool.UpdateVarDiff(Connection, difficulty);
-    internal Task RetargetVarDiffAsync(bool idle, CancellationToken ct = default) => ((TestPool) pool).RetargetVarDiff(Connection, idle, ct);
+    internal Task RetargetVarDiffAsync(bool idle, CancellationToken ct = default) => pool.RetargetVarDiff(Connection, idle, ct);
     // Reproduce a decoded request already owned by the receive loop when a
     // concurrent idle producer closes the session. Uses the production dispatcher.
     internal Task DispatchBufferedAsync(string method, params object[] parameters) => DispatchBufferedAsync(CancellationToken.None, method, parameters);
@@ -211,21 +239,23 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         internal Func<Task> AfterConfigure;
 
         protected override Task<double?> GetNicehashStaticMinDiff(Miningcore.Mining.WorkerContextBase context,
-            string coinName, string algorithm) => NicehashLookup?.Invoke(context) ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm);
+            string coinName, string algorithm, CancellationToken ct) => NicehashLookup?.Invoke(context) ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm, ct);
         internal Action BeforeCreateJob;
         internal Action AssignmentWaiting;
         internal Action AssignmentAcquired;
         internal Func<Task> BeforeAssignment;
         internal Func<Task> BeforeVarDiffPublication;
 
-        internal override async ValueTask<SemaphoreSlim> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct)
+        internal override async ValueTask<WorkerAssignmentLease> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct, bool skipIfBusy = false)
         {
             if(BeforeAssignment != null)
                 await BeforeAssignment();
-            var wait = base.EnterAssignmentAsync(connection, ct);
+            var wait = base.EnterAssignmentAsync(connection, ct, skipIfBusy);
             if(!wait.IsCompleted)
                 AssignmentWaiting?.Invoke();
             var gate = await wait;
+            if(gate == null)
+                return null;
             try
             {
                 AssignmentAcquired?.Invoke();
@@ -261,19 +291,34 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
                     new Microsoft.Extensions.Caching.Memory.MemoryCache(
                         new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions())), budgetTimeProvider) { }
 
-        public int JobsCreated { get; private set; }
+        private int jobsCreated;
+        public int JobsCreated => Volatile.Read(ref jobsCreated);
         internal int ConnectionCount => connections.Count;
+        public Miningcore.Banning.IBanManager EnableInvalidShareBanning()
+        {
+            clusterConfig.Banning = new ClusterBanningConfig { BanOnInvalidShares = true };
+            return banManager = Substitute.For<Miningcore.Banning.IBanManager>();
+        }
+        public Task Reject(StratumConnection connection, StratumException error, CancellationToken ct) =>
+            OnRequestErrorAsync(connection, new JsonRpcRequest { Id = 1 }, error, false, ct);
         public void SetLogger(NLog.ILogger value) => logger = value;
         protected override object CreateWorkerJob(StratumConnection connection, bool cleanJob)
         {
             BeforeCreateJob?.Invoke();
             var result = base.CreateWorkerJob(connection, cleanJob);
-            JobsCreated++;
+            Interlocked.Increment(ref jobsCreated);
             return result;
         }
 
         public void SetManager(BitcoinJobManager value) => manager = value;
+        public void ClosePublicationFailure(StratumConnection connection, Exception error) =>
+            CloseRequestPublicationFailure(connection, error);
         public void AddConnection(StratumConnection value) => RegisterConnection(value);
+        public void Initialize(StratumConnection connection, IPEndPoint endpoint, TimeProvider timeProvider)
+        {
+            VarDiffTimeProvider = timeProvider;
+            OnConnect(connection, endpoint);
+        }
         public Task Dispatch(StratumConnection connection, JsonRpcRequest request,
             CancellationToken ct) => OnRequestAsync(connection, request, ct);
         // Explicit assignment injection for publication-only tests. Actual
@@ -281,17 +326,36 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         public async Task UpdateVarDiff(StratumConnection connection, double difficulty)
         {
             var gate = await EnterAssignmentAsync(connection, CancellationToken.None);
-            try { await OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None); }
+            try { gate.Activate(); await OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None); }
             finally { gate.Release(); }
         }
-        internal Task RetargetVarDiff(StratumConnection connection, bool idle, CancellationToken ct) =>
+        public Task RetargetVarDiff(StratumConnection connection, bool idle, CancellationToken ct) =>
             UpdateVarDiffAsync(connection, idle, ct);
         public Task Announce(object jobParams) => OnNewJobAsync(jobParams);
+        internal Task AssignOperation(StratumConnection connection, Func<Task> operation) => RunAssignmentAsync(connection, operation);
         public object CreateJob(StratumConnection connection) => CreateWorkerJob(connection, false);
     }
     // Same TCP harness, canonical production dispatcher; jobs/RPC supplied by the fixture.
-    private sealed class CanonicalPool : BitcoinPool, IWirePool
+    internal sealed class CanonicalPool : BitcoinPool, IWirePool
     {
+        internal Func<Miningcore.Mining.WorkerContextBase, Task<double?>> NicehashLookup;
+        protected override Task<double?> GetNicehashStaticMinDiff(Miningcore.Mining.WorkerContextBase context,
+            string coinName, string algorithm, CancellationToken ct) => NicehashLookup?.Invoke(context) ?? base.GetNicehashStaticMinDiff(context, coinName, algorithm, ct);
+        internal Func<Task> BeforeSubscribe;
+        internal Func<Task> AfterConfigure;
+        internal Func<Task> BeforeStaticDifficulty;
+        internal Func<Task> BeforeVarDiffPublication;
+        internal Action AssignmentWaiting;
+        internal Action BeforeCreateJob;
+        internal DateTime? LastPoolBlockTime => poolStats.LastPoolBlockTime;
+        public Miningcore.Banning.IBanManager EnableInvalidShareBanning()
+        {
+            clusterConfig.Banning = new ClusterBanningConfig { BanOnInvalidShares = true };
+            return banManager = Substitute.For<Miningcore.Banning.IBanManager>();
+        }
+        public Task Reject(StratumConnection connection, StratumException error, CancellationToken ct) =>
+            OnRequestErrorAsync(connection, new JsonRpcRequest { Id = 1 }, error, false, ct);
+
         internal CanonicalPool(IComponentContext ctx, IMasterClock clock,
             IMessageBus bus, RecyclableMemoryStreamManager streams) :
             base(ctx, new JsonSerializerSettings(), Substitute.For<IConnectionFactory>(),
@@ -304,31 +368,122 @@ internal sealed class BitcoinBlake2bWireSession : IAsyncDisposable
         public void SetLogger(NLog.ILogger value) => logger = value;
         protected override object CreateWorkerJob(StratumConnection connection, bool cleanJob)
         {
+            BeforeCreateJob?.Invoke();
             var result = base.CreateWorkerJob(connection, cleanJob);
             JobsCreated++;
             return result;
         }
         public void SetManager(BitcoinJobManager value) => manager = value;
+        public void ClosePublicationFailure(StratumConnection connection, Exception error) =>
+            CloseRequestPublicationFailure(connection, error);
         public void AddConnection(StratumConnection value) => RegisterConnection(value);
+        public void Initialize(StratumConnection connection, IPEndPoint endpoint, TimeProvider timeProvider)
+        {
+            VarDiffTimeProvider = timeProvider;
+            OnConnect(connection, endpoint);
+        }
         public Task Dispatch(StratumConnection connection, JsonRpcRequest request,
             CancellationToken ct) => OnRequestAsync(connection, request, ct);
+        protected override async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> request, CancellationToken ct)
+        {
+            if(BeforeSubscribe != null)
+                await BeforeSubscribe();
+            await base.OnSubscribeAsync(connection, request, ct);
+        }
+        protected override async Task OnConfigureMiningAsync(StratumConnection connection,
+            Timestamped<JsonRpcRequest> request, double? validatedMinimumDifficulty = null)
+        {
+            await base.OnConfigureMiningAsync(connection, request, validatedMinimumDifficulty);
+            if(AfterConfigure != null)
+                await AfterConfigure();
+        }
+        protected override async Task ApplyStaticDifficultyAsync(StratumConnection connection, double? difficulty,
+            CancellationToken ct)
+        {
+            if(BeforeStaticDifficulty != null)
+                await BeforeStaticDifficulty();
+            await base.ApplyStaticDifficultyAsync(connection, difficulty, ct);
+        }
         public Task UpdateVarDiff(StratumConnection connection, double difficulty) =>
             OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None);
+        public Task RetargetVarDiff(StratumConnection connection, bool idle, CancellationToken ct) =>
+            UpdateVarDiffAsync(connection, idle, ct);
+        internal override async ValueTask<WorkerAssignmentLease> EnterAssignmentAsync(StratumConnection connection, CancellationToken ct, bool skipIfBusy = false)
+        {
+            var wait = base.EnterAssignmentAsync(connection, ct, skipIfBusy);
+            if(!wait.IsCompleted)
+                AssignmentWaiting?.Invoke();
+            return await wait;
+        }
+        protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double difficulty, CancellationToken ct)
+        {
+            if(BeforeVarDiffPublication != null)
+                await BeforeVarDiffPublication();
+            await base.OnVarDiffUpdateAsync(connection, difficulty, ct);
+        }
         public Task Announce(object jobParams) => OnNewJobAsync(jobParams);
         public object CreateJob(StratumConnection connection) => CreateWorkerJob(connection, false);
     }
 
-    private interface IWirePool
+    // Exercise the production merged-mining subclass, including its inherited
+    // dispatcher and actual worker context, without starting auxiliary daemons.
+    internal sealed class MergedPool : MergedMiningBitcoinPool, IWirePool
+    {
+        internal MergedPool(IComponentContext ctx, IMasterClock clock,
+            IMessageBus bus, RecyclableMemoryStreamManager streams) :
+            base(ctx, new JsonSerializerSettings(), Substitute.For<IConnectionFactory>(),
+                Substitute.For<IStatsRepository>(), AutoMapperFactory.CreateMapper(), clock,
+                bus, streams, new NicehashService(Substitute.For<IHttpClientFactory>(),
+                    new Microsoft.Extensions.Caching.Memory.MemoryCache(
+                        new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()))) { }
+
+        public int JobsCreated { get; private set; }
+        protected override object CreateWorkerJob(StratumConnection connection, bool cleanJob)
+        {
+            var result = base.CreateWorkerJob(connection, cleanJob);
+            JobsCreated++;
+            return result;
+        }
+        public void SetLogger(NLog.ILogger value) => logger = value;
+        public void SetManager(BitcoinJobManager value) => manager = value;
+        public void AddConnection(StratumConnection value) => RegisterConnection(value);
+        public void Initialize(StratumConnection connection, IPEndPoint endpoint, TimeProvider timeProvider)
+        {
+            VarDiffTimeProvider = timeProvider;
+            OnConnect(connection, endpoint);
+        }
+        public Task Dispatch(StratumConnection connection, JsonRpcRequest request, CancellationToken ct) =>
+            OnRequestAsync(connection, request, ct);
+        public Task UpdateVarDiff(StratumConnection connection, double difficulty) =>
+            OnVarDiffUpdateAsync(connection, difficulty, CancellationToken.None);
+        public Task RetargetVarDiff(StratumConnection connection, bool idle, CancellationToken ct) =>
+            UpdateVarDiffAsync(connection, idle, ct);
+        public Task Announce(object jobParams) => OnNewJobAsync(jobParams);
+        public object CreateJob(StratumConnection connection) => CreateWorkerJob(connection, false);
+        public void ClosePublicationFailure(StratumConnection connection, Exception error) =>
+            CloseRequestPublicationFailure(connection, error);
+        public Miningcore.Banning.IBanManager EnableInvalidShareBanning() =>
+            throw new NotSupportedException();
+        public Task Reject(StratumConnection connection, StratumException error, CancellationToken ct) =>
+            OnRequestErrorAsync(connection, new JsonRpcRequest { Id = 1 }, error, false, ct);
+    }
+
+    internal interface IWirePool
     {
         int JobsCreated { get; }
         void Configure(PoolConfig config, ClusterConfig cluster);
         void SetLogger(NLog.ILogger logger);
         void SetManager(BitcoinJobManager manager);
         void AddConnection(StratumConnection connection);
+        void Initialize(StratumConnection connection, IPEndPoint endpoint, TimeProvider timeProvider);
         Task Dispatch(StratumConnection connection, JsonRpcRequest request, CancellationToken ct);
         Task UpdateVarDiff(StratumConnection connection, double difficulty);
+        Task RetargetVarDiff(StratumConnection connection, bool idle, CancellationToken ct);
         Task Announce(object jobParams);
         object CreateJob(StratumConnection connection);
+        void ClosePublicationFailure(StratumConnection connection, Exception error);
+        Miningcore.Banning.IBanManager EnableInvalidShareBanning();
+        Task Reject(StratumConnection connection, StratumException error, CancellationToken ct);
     }
 
 }

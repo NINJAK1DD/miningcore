@@ -375,12 +375,12 @@
         "symbol": "BTCB2B",
         "family": "bitcoin-blake2b",
         "website": "https://btc-blake2b.org/",
-        "github": "https://github.com/bitcoinknots/bitcoin/tree/8c85b1585dac23f964e2dd32045624de7f02aa58",
+        "github": "https://github.com/bitcoinknots/bitcoin/tree/58398baf33e588779685ead478e6397bb28ed3d6",
         "market": "",
         "twitter": "",
         "telegram": "",
         "discord": "",
-        "blake2bProtocol": "knots-29.4.1-header-v2",
+        "blake2bProtocol": "knots-29.4.2-header-v2",
         "disableVersionRolling": true,
         "coinbaseHasher": {
             "hash": "sha256d"

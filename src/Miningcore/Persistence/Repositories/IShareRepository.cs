@@ -12,6 +12,8 @@ public interface IShareRepository
         CancellationToken ct);
     Task<bool> HasShareAccountingSchemaAsync(IDbConnection con,
         CancellationToken ct);
+    Task<bool> HasMatchingPpsArithmeticTransitionAsync(IDbConnection con,
+        string poolId, DateTime? activation, CancellationToken ct);
     Task<bool> HasMatchingRecoveryImportAsync(IDbConnection con,
         string fileHash, string filename, int recordCount,
         CancellationToken ct);

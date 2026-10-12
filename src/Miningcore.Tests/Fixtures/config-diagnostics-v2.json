@@ -125,11 +125,13 @@
           "enabled": true,
           "minimumPayment": 0.01,
           "payoutScheme": "SOLO",
+          "ppsBinary64Activation": null,
           "ppsShareRetentionDays": 7
         },
         "ports": {
           "3032": {
             "difficulty": 1024.0,
+            "difficultyGraceSeconds": 30,
             "listenAddressCategory": "any",
             "name": "[set]",
             "tcpProxyProtocol": {
@@ -152,6 +154,7 @@
           },
           "3033": {
             "difficulty": 65536.0,
+            "difficultyGraceSeconds": 30,
             "listenAddressCategory": "any",
             "name": "[set]",
             "tcpProxyProtocol": null,
@@ -214,11 +217,13 @@
           "enabled": true,
           "minimumPayment": 1.0,
           "payoutScheme": "SOLO",
+          "ppsBinary64Activation": null,
           "ppsShareRetentionDays": 7
         },
         "ports": {
           "3042": {
             "difficulty": 1024.0,
+            "difficultyGraceSeconds": 30,
             "listenAddressCategory": "loopback",
             "name": "[set]",
             "tcpProxyProtocol": null,
@@ -274,11 +279,13 @@
           "enabled": false,
           "minimumPayment": 0.001,
           "payoutScheme": "SOLO",
+          "ppsBinary64Activation": null,
           "ppsShareRetentionDays": 7
         },
         "ports": {
           "3052": {
             "difficulty": 8192.0,
+            "difficultyGraceSeconds": 30,
             "listenAddressCategory": "loopback",
             "name": "[set]",
             "tcpProxyProtocol": null,
@@ -297,6 +304,7 @@
           },
           "3053": {
             "difficulty": 1048576.0,
+            "difficultyGraceSeconds": 30,
             "listenAddressCategory": "loopback",
             "name": "[set]",
             "tcpProxyProtocol": null,

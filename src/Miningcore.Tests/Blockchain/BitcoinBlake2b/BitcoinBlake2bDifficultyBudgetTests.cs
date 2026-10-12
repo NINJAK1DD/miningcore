@@ -75,8 +75,11 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
         Assert.Equal(1, wire.JobsCreated);
         Assert.Equal(extraNonce, context.ExtraNonce1);
         Assert.Equal(difficulty, context.Difficulty);
-        Assert.Equal(jobs, context.validJobs.ToArray());
+        Assert.Empty(context.validJobs);
+        Assert.Throws<BitcoinJobRegistryClosedException>(() => context.AddJob(jobs[0], 4));
         Assert.Single(target.Logs.Where(x => x.Contains("DuplicateSubscription")));
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
+            x.Category == TelemetryCategory.StratumAdmission && x.Info == "duplicate-subscribe-warning"), Arg.Any<string>());
         bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x =>
             x.Category == TelemetryCategory.StratumAdmission && x.Info == "duplicate-subscribe"), Arg.Any<string>());
     }
@@ -194,13 +197,14 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
         string.Format(CultureInfo.InvariantCulture, format, difficulty.ToString("0.000000000", CultureInfo.InvariantCulture));
 
     [Fact]
-    public async Task CanonicalBitcoin_DifficultyAndAuthorizationRemainUnbudgeted()
+    public async Task CanonicalBitcoin_SharesBudgetAcrossDifficultyConfigureAndAuthorization()
     {
         var (config, manager, clock, bus) = Fixture();
         config.Template = ModuleInitializer.CoinTemplates["bitcoin"];
-        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, canonical: true);
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: true, varDiffTimeProvider: new ManualTimeProvider());
         await Subscribe(wire);
-        for(var i = 0; i < 20; i++)
+        for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
         {
             var difficulty = (i + 2) / 1e9;
             if(i % 3 == 0)
@@ -210,20 +214,32 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
             var response = await wire.ReadAsync();
             Assert.Null(response["method"]);
             Assert.True((i % 3 == 1 ? response["result"]["minimum-difficulty"] : response["result"]).Value<bool>());
-            if(i % 3 != 1)
-                Assert.Equal(difficulty, (await wire.ReadAsync())["params"][0].Value<double>());
+            Assert.Equal(difficulty, (await wire.ReadAsync())["params"][0].Value<double>());
+            Assert.Equal("mining.notify", (await wire.ReadAsync())["method"].Value<string>());
             Assert.Equal(difficulty, wire.Connection.Context.Difficulty);
         }
-        // Canonical Bitcoin still issues work only at subscribe here.
-        Assert.Equal(1, wire.JobsCreated);
-        Assert.Equal(7, manager.AddressValidations);
-        // Documents existing canonical behavior, not a safe resubscription contract:
-        // extranonce rotation can strand old jobs. Tracked in issue #181; keep this
-        // scope regression until the canonical Bitcoin-family policy is fixed.
-        await Subscribe(wire);
-        Assert.Equal(2, wire.JobsCreated);
-        bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
-            x.Category == TelemetryCategory.StratumAdmission), Arg.Any<string>());
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var jobs = context.validJobs.ToArray();
+        for(var i = 0; i < DifficultyRequestBudget.DisconnectAfterRefusals - 1; i++)
+        {
+            if(i % 3 == 0) await wire.SendRequestAsync("mining.authorize", "test.worker", "d=10");
+            else await Send(wire, i % 3 == 1, 10);
+            var refused = await wire.ReadAsync();
+            Assert.False(refused["result"].Value<bool>());
+            Assert.Equal((int) StratumError.Other, refused["error"]["code"].Value<int>());
+        }
+        await wire.SendRequestAsync("mining.extranonce.subscribe");
+        Assert.True((await wire.ReadAsync())["result"].Value<bool>());
+        Assert.Equal(jobs, context.validJobs.ToArray());
+        Assert.Equal(9e-9, context.Difficulty);
+        Assert.Equal(DifficultyRequestBudget.Capacity + 1, wire.JobsCreated);
+        Assert.Equal(3, manager.AddressValidations);
+        await wire.SendDisconnectingBatchAsync("{\"id\":100,\"method\":\"mining.suggest_difficulty\",\"params\":[10]}");
+        await wire.AssertNoMoreMessagesAsync();
+        Assert.Equal(DifficultyRequestBudget.Capacity + 1, wire.JobsCreated);
+        Assert.False(context.IsAuthorized);
+        bus.Received(7).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "difficulty-refused"), Arg.Any<string>());
+        bus.Received(1).SendMessage(Arg.Is<TelemetryEvent>(x => x.Info == "difficulty-disconnect"), Arg.Any<string>());
     }
 
     [Theory]
@@ -555,6 +571,12 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
 
     private sealed class FixtureManager : BitcoinBlake2bJobManager
     {
+        internal Action BeforeGetJob;
+        public override BitcoinJob GetJobForStratum()
+        {
+            BeforeGetJob?.Invoke();
+            return base.GetJobForStratum();
+        }
         internal int AddressValidations { get; private set; }
         internal Func<Task> BeforeValidation { get; set; }
         internal void SetCurrentJob(BitcoinBlake2bJob job) => currentJob = job;

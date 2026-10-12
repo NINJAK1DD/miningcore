@@ -50,7 +50,7 @@ internal sealed class PostgresPersistenceTestDatabase : IAsyncDisposable
             db.Observer = new NpgsqlConnection(control.ConnectionString);
             await db.Observer.OpenAsync();
             await db.Observer.ExecuteAsync($"CREATE SCHEMA {db.schema}");
-            var script = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../Miningcore/Persistence/Postgres/Scripts/createdb.sql"));
+            var script = PostgresTestScripts.PathFor("createdb.sql");
             await db.Observer.ExecuteAsync(await File.ReadAllTextAsync(script));
             return db;
         }

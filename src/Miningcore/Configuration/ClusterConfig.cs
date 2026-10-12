@@ -251,6 +251,15 @@ public partial class BitcoinTemplate : CoinTemplate
         [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
         public byte? Blake2bTargetShift { get; set; }
 
+        // Explicit fixture-only -testcoinbasematuritylong=start:enforce:release.
+        // Omission selects the reviewed daemon defaults; mainnet overrides are refused.
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public int? Blake2bMaturityStart { get; set; }
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public int? Blake2bMaturityEnforce { get; set; }
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public int? Blake2bMaturityRelease { get; set; }
+
         /// <summary>
         /// Arbitrary extension data
         /// </summary>
@@ -1137,6 +1146,10 @@ public class PoolEndpoint
     public string ListenAddress { get; set; }
     public string Name { get; set; }
     public double Difficulty { get; set; }
+    /// <summary>Seconds to accept retired work at its issued difficulty (0–300).</summary>
+    [Range(0, 300)]
+    [DefaultValue(30)]
+    public int DifficultyGraceSeconds { get; set; } = 30;
     public TcpProxyProtocolConfig TcpProxyProtocol { get; set; }
     public VarDiffConfig VarDiff { get; set; }
 
@@ -1239,6 +1252,9 @@ public partial class PoolPaymentProcessingConfig
     public decimal MinimumPayment { get; set; } // in pool-base-currency (ie. Bitcoin, not Satoshis)
     public PayoutScheme PayoutScheme { get; set; }
     public JToken PayoutSchemeConfig { get; set; }
+
+    // Explicit UTC cutover, matching the immutable database transition. Null keeps legacy arithmetic.
+    public DateTime? PpsBinary64Activation { get; set; }
 
     /// <summary>
     /// Time-based statistical-share retention for PPS pools. PPS liabilities are journaled at
