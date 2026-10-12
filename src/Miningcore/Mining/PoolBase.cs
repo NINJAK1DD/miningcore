@@ -191,7 +191,8 @@ public abstract class PoolBase : StratumServer,
     internal Task UpdateIdleVarDiffAsync(StratumConnection connection, CancellationToken ct) =>
         Guard(() => UpdateVarDiffAsync(connection, true, ct), ex =>
         {
-            if(!connection.IsDisconnectRequested && (ex is not OperationCanceledException || !ct.IsCancellationRequested))
+            if(!assignmentFailureReports.TryGetValue(connection, out _) &&
+                (ex is not OperationCanceledException || !ct.IsCancellationRequested))
                 RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.RunVardiffIdleUpdaterAsync", failure: ex);
         });
 
@@ -240,6 +241,8 @@ public abstract class PoolBase : StratumServer,
 
     // Invoked while still owning the assignment gate. No later producer or
     // buffered submission may reuse a partially published assignment.
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<StratumConnection, object> assignmentFailureReports = new();
+
     protected void FailAssignmentPublication(StratumConnection connection, Exception failure, CancellationToken ct = default)
     {
         var first = connection.TryBeginDisconnect();
@@ -247,8 +250,11 @@ public abstract class PoolBase : StratumServer,
         // callbacks that already removed the context or closed the transport.
         Guard(() => connection.Context?.CloseDifficultyAssignments());
         if(first && !(failure is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            assignmentFailureReports.GetValue(connection, static _ => new());
             Guard(() => RpcConsumerDiagnostics.Write(logger, LogLevel.Error, "PoolBase.AssignmentPublication", failure: failure,
                 connectionId: connection.ConnectionId));
+        }
         Guard(() => Disconnect(connection));
     }
 
@@ -325,7 +331,7 @@ public abstract class PoolBase : StratumServer,
             }
             catch(Exception ex)
             {
-                if(!connection.IsDisconnectRequested)
+                if(!assignmentFailureReports.TryGetValue(connection, out _))
                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PoolBase.ForEachMinerAsync", failure: ex);
 
                 Disconnect(connection);
