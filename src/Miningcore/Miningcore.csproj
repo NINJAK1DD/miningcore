@@ -92,9 +92,9 @@
         <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.1" />
         <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
         <PackageReference Include="JetBrains.Annotations" Version="2026.2.0" />
-        <PackageReference Include="MailKit" Version="4.17.0" />
+        <PackageReference Include="MailKit" Version="4.18.1" />
         <PackageReference Include="McMaster.Extensions.CommandLineUtils" Version="5.1.0" />
-        <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.10" />
+        <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.12" />
         <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.10" />
         <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.10" />
         <PackageReference Include="NBitcoin" Version="7.0.42" />
@@ -116,9 +116,9 @@
         <PackageReference Include="prometheus-net" Version="8.2.1" />
         <PackageReference Include="protobuf-net" Version="3.2.30" />
         <PackageReference Include="System.Reactive" Version="6.0.0" />
-        <PackageReference Include="Grpc.AspNetCore" Version="2.83.0" />
+        <PackageReference Include="Grpc.AspNetCore" Version="2.84.0" />
         <PackageReference Include="Google.Protobuf" Version="3.36.2" />
-        <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
+        <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
         <PackageReference Include="Grpc.Tools" Version="2.84.0">
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
             <PrivateAssets>all</PrivateAssets>
