@@ -139,15 +139,14 @@ public class WorkerContextBase
 
     public bool HasPendingDifficulty => pendingDifficulty.HasValue;
 
-    public bool ApplyPendingDifficulty()
+    public virtual bool ApplyPendingDifficulty()
     {
         if(pendingDifficulty.HasValue)
         {
-            var previous = Difficulty;
             SetDifficulty(pendingDifficulty.Value);
             pendingDifficulty = null;
 
-            return Difficulty != previous;
+            return true;
         }
 
         return false;

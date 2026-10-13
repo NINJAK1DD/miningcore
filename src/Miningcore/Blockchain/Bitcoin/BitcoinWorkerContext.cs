@@ -75,6 +75,12 @@ public class BitcoinWorkerContext : WorkerContextBase
         }
     }
 
+    public override bool ApplyPendingDifficulty()
+    {
+        var previous = Difficulty;
+        return base.ApplyPendingDifficulty() && Difficulty != previous;
+    }
+
     public override void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock,
         TimeProvider timeProvider = null, int difficultyGraceSeconds = 30)
     {
