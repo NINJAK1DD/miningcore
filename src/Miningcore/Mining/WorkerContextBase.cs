@@ -143,10 +143,11 @@ public class WorkerContextBase
     {
         if(pendingDifficulty.HasValue)
         {
+            var previous = Difficulty;
             SetDifficulty(pendingDifficulty.Value);
             pendingDifficulty = null;
 
-            return true;
+            return Difficulty != previous;
         }
 
         return false;

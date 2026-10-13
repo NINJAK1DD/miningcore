@@ -357,6 +357,7 @@ public class BitcoinPool : PoolBase
     {
         if(connection.IsDisconnectRequested)
             throw new StratumConnectionClosedException();
+        WarnAboveCandidateDifficulty(connection);
 
         if(manager.DirectCoinbasePayoutEnabled &&
            Volatile.Read(ref directJobPipelineFailed) != 0)
@@ -613,14 +614,15 @@ public class BitcoinPool : PoolBase
         // Validate the envelope before conversion or any negotiation mutation.
         // Keep ignored trailing parameters compatible with existing firmware.
         // A response-parameter name cannot also be an extension result key.
-        if(!BitcoinConfigureRequest.TryParse(request.Params, out var extensionList, out var options))
+        var configure = BitcoinConfigureRequest.Parse(request);
+        if(!configure.IsValid)
         {
             await connection.RespondErrorAsync(StratumError.Other, "Invalid request parameters", request.Id, false);
             return;
         }
         var previousDifficulty = context.Difficulty;
-        var extensions = extensionList.Values<string>().Distinct(StringComparer.Ordinal);
-        var extensionParams = options.ToObject<Dictionary<string, JToken>>();
+        var extensions = configure.Extensions.Values<string>().Distinct(StringComparer.Ordinal);
+        var extensionParams = configure.Options.ToObject<Dictionary<string, JToken>>();
         var result = new Dictionary<string, object>();
 
         foreach(var extension in extensions)
@@ -820,7 +822,8 @@ public class BitcoinPool : PoolBase
         {
             context.SetMinimumDifficulty(requestedDiff.Value);
 
-            logger.Info(() => $"[{connection.ConnectionId}] Difficulty set to {requestedDiff} as requested by miner. VarDiff now disabled.");
+            WarnAboveCandidateDifficulty(connection);
+            logger.Info(() => $"[{connection.ConnectionId}] Minimum difficulty set to {requestedDiff}; assignment {context.Difficulty}, VarDiff {(context.VarDiff == null ? "disabled" : "retained")}.");
 
             // enabled
             result[BitcoinStratumExtensions.MinimumDiff] = true;
@@ -829,11 +832,8 @@ public class BitcoinPool : PoolBase
             result[BitcoinStratumExtensions.MinimumDiff] = "Minimum difficulty is below the configured port difficulty";
     }
 
-    private static bool IsValidDifficulty(BitcoinWorkerContext context, double difficulty)
-    {
-        try { context.ValidateRequestedDifficulty(difficulty); return true; }
-        catch(ArgumentOutOfRangeException) { return false; }
-    }
+    private static bool IsValidDifficulty(BitcoinWorkerContext context, double difficulty) =>
+        context.TryValidateRequestedDifficulty(difficulty, out _);
 
     protected static bool TryReadMinimumDifficulty(JToken value, out double difficulty)
     {
@@ -1020,7 +1020,28 @@ public class BitcoinPool : PoolBase
     protected virtual void ConfigureWorkerDifficultyContext(BitcoinWorkerContext context) =>
         context.ConfigureDifficultyPolicy(ShareMultiplier);
 
-    protected override double MaximumVarDiff => Math.Min(double.MaxValue, (double) BitcoinConstants.Diff1 * ShareMultiplier);
+    protected double CandidateDifficultyLimit => manager?.EasiestNetworkDifficulty is { } difficulty &&
+        double.IsFinite(difficulty) && difficulty > 0
+        ? Math.Min(double.MaxValue, difficulty * ShareMultiplier) : double.MaxValue;
+
+    protected override double MaximumVarDiff => Math.Min(CandidateDifficultyLimit,
+        Math.Min(double.MaxValue, (double) BitcoinConstants.Diff1 * ShareMultiplier));
+
+    protected void WarnAboveCandidateDifficulty(StratumConnection connection)
+    {
+        var context = connection.ContextAs<BitcoinWorkerContext>();
+        var limit = CandidateDifficultyLimit;
+        if(context.Difficulty <= limit)
+        {
+            context.CandidateCreditWarning = null;
+            return;
+        }
+        if(context.CandidateCreditWarning == (context.Difficulty, limit))
+            return;
+        context.CandidateCreditWarning = (context.Difficulty, limit);
+        logger.Warn(() => $"[{connection.ConnectionId}] Assignment difficulty {context.Difficulty} exceeds easiest chain difficulty {limit}. Candidate credit is capped; honest work can be under-credited and firmware can discard chain candidates. Lower the port/static/device floor.");
+        PublishTelemetry(TelemetryCategory.StratumAdmission, "assignment-above-network", TimeSpan.Zero);
+    }
 
     protected Task RunTerminalAssignmentAsync(StratumConnection connection, Func<Task> assignment, CancellationToken ct,
         bool responseAlreadyStarted = false) =>
@@ -1030,10 +1051,12 @@ public class BitcoinPool : PoolBase
             try { await assignment(); }
             catch(Exception ex)
             {
-                publicationFailures.GetValue(connection, static _ => new()).BeforeResponse =
+                var state = publicationFailures.GetValue(connection, static _ => new());
+                state.BeforeResponse =
                     !responseAlreadyStarted && connection.ResponseSequence == responseSequence;
-                CloseRequestPublicationFailure(connection, ex,
-                    !(ex is OperationCanceledException && ct.IsCancellationRequested));
+                try { CloseRequestPublicationFailure(connection, ex,
+                    !(ex is OperationCanceledException && ct.IsCancellationRequested)); }
+                finally { state.BeforeResponse = false; }
                 throw;
             }
         }, ct);
@@ -1054,16 +1077,16 @@ public class BitcoinPool : PoolBase
             }
             return;
         }
-        if(!connection.IsDisconnectRequested && tsRequest.Value.Method == BitcoinStratumMethods.MiningConfigure &&
-            !BitcoinConfigureRequest.TryParse(tsRequest.Value.Params, out _, out _))
+        var configure = tsRequest.Value.Method == BitcoinStratumMethods.MiningConfigure
+            ? BitcoinConfigureRequest.Parse(tsRequest.Value) : null;
+        if(!await AdmitDifficultyRequestCoreAsync(connection, tsRequest.Value, configure?.RequestsMinimum))
+            return;
+        if(!connection.IsDisconnectRequested && configure is { IsValid: false })
         {
             await RunTerminalAssignmentAsync(connection, () => connection.RespondErrorAsync(StratumError.Other,
                 "Invalid request parameters", tsRequest.Value.Id, false), ct);
             return;
         }
-        if(!await AdmitDifficultyRequestAsync(connection, tsRequest.Value))
-            return;
-
         if(connection.IsDisconnectRequested)
         {
             Guard(() => Disconnect(connection));
@@ -1159,13 +1182,14 @@ public class BitcoinPool : PoolBase
 
     protected override Task RespondDifficultyBudgetRefusalAsync(StratumConnection connection, JsonRpcRequest request)
     {
-        if(request.Method != BitcoinStratumMethods.MiningConfigure ||
-            !BitcoinConfigureRequest.TryParse(request.Params, out var extensions, out _))
-            return base.RespondDifficultyBudgetRefusalAsync(connection, request);
+        var configure = request.Method == BitcoinStratumMethods.MiningConfigure ? BitcoinConfigureRequest.Parse(request) : null;
+        if(configure is not { IsValid: true })
+            return RunTerminalAssignmentAsync(connection,
+                () => base.RespondDifficultyBudgetRefusalAsync(connection, request), CancellationToken.None);
         return RunTerminalAssignmentAsync(connection, () =>
         {
             var result = new Dictionary<string, object>();
-            foreach(var name in extensions.Values<string>().Distinct(StringComparer.Ordinal))
+            foreach(var name in configure.Extensions.Values<string>().Distinct(StringComparer.Ordinal))
                 result[name] = name is BitcoinStratumExtensions.MinimumDiff or BitcoinStratumExtensions.VersionRolling
                     ? "Too many difficulty requests; retry later" : false;
             var response = new JsonRpcResponse<object>(result, request.Id);

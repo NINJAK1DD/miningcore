@@ -30,7 +30,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     [InlineData(false, "host-cancellation")]
     public async Task VarDiffPublicationFailure_ClosesBeforeGateReleaseAndCannotResume(bool idle, string failure)
     {
-        var (config, manager, clock, bus) = Fixture();
+        var (config, manager, clock, bus) = Fixture("1e00ffff");
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
         await Subscribe(wire);
         using var logs = new NLog.LogFactory();
@@ -127,7 +127,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     [InlineData(true)]
     public async Task VarDiffCancellationBeforeAcquisition_PreservesSession(bool idle)
     {
-        var (config, manager, clock, bus) = Fixture();
+        var (config, manager, clock, bus) = Fixture("1e00ffff");
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
         await Subscribe(wire);
         var context = wire.Connection.ContextAs<BitcoinWorkerContext>();

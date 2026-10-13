@@ -188,15 +188,7 @@ public class PPLNSPaymentScheme : IPayoutScheme
                 else
                     shares[address] += shareDiffAdjusted;
 
-                if(!double.IsFinite(shareDiffAdjusted) || shareDiffAdjusted <= 0 ||
-                    !double.IsFinite(share.NetworkDifficulty) || share.NetworkDifficulty <= 0)
-                    throw new InvalidDataException("PPLNS requires finite positive share and network difficulty");
-                // Bound before decimal conversion: a finite legacy difficulty may
-                // overflow either the quotient or decimal, but cannot exceed the
-                // remaining window. Diagnostic share totals also remain doubles.
-                var ratio = shareDiffAdjusted / share.NetworkDifficulty;
-                var remaining = window - accumulatedScore;
-                var score = ratio >= (double) remaining ? remaining : (decimal) ratio;
+                var score = ShareRewardMath.WindowScore(shareDiffAdjusted, share.NetworkDifficulty, window - accumulatedScore);
 
                 // if accumulated score would cross threshold, cap it to the remaining value
                 if(accumulatedScore + score >= window)

@@ -18,7 +18,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     [Fact]
     public async Task NestedBlake2bBroadcast_ThroughProductionPipelineFaultsOnlyItsPoolAndReportsOnce()
     {
-        var (config, manager, clock, bus) = Fixture();
+        var (config, manager, clock, bus) = Fixture("1e00ffff");
         await using var owner = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
         await using var peer = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, owner);
         await Subscribe(owner);
@@ -64,7 +64,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     [Fact]
     public async Task NestedBlake2bBroadcast_FailsBeforeIterationAndPreservesBothMinersWork()
     {
-        var (config, manager, clock, bus) = Fixture();
+        var (config, manager, clock, bus) = Fixture("1e00ffff");
         await using var owner = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
         await using var peer = new BitcoinBlake2bWireSession(container, clock, config, manager, bus, owner);
         await Subscribe(owner);
@@ -117,7 +117,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     [InlineData(true)]
     public async Task ConcreteBlake2b_AuthorizationIdleAndBroadcastCompleteUnderContention(bool idleOwnsGate)
     {
-        var (config, manager, clock, bus) = Fixture();
+        var (config, manager, clock, bus) = Fixture("1e00ffff");
         var time = new ManualTimeProvider();
         var options = new VarDiffConfig { MinDiff = 1e-9, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
@@ -191,7 +191,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     [InlineData(true, true)]
     public async Task FixedDifficultyBeforeVarDiffAcquiresGate_PreventsCalculationAndPublication(bool idle, bool authorize)
     {
-        var (config, manager, clock, bus) = Fixture();
+        var (config, manager, clock, bus) = Fixture("1e00ffff");
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
         await Subscribe(wire);
         var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
@@ -238,7 +238,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     [InlineData(true, true)]
     public async Task CalculatedVarDiff_HoldsGateUntilPublicationBeforeFixedDifficulty(bool idle, bool authorize)
     {
-        var (config, manager, clock, bus) = Fixture();
+        var (config, manager, clock, bus) = Fixture("1e00ffff");
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
         await Subscribe(wire);
         var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
@@ -285,7 +285,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     [Fact]
     public async Task NoOpIdleSweep_DoesNotPublishFalseFastShareAssignment()
     {
-        var (config, manager, clock, bus) = Fixture();
+        var (config, manager, clock, bus) = Fixture("1e00ffff");
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus);
         await Subscribe(wire);
         var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
@@ -309,7 +309,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     [InlineData(true, 3600)]
     public async Task ServerVarDiff_WallClockCorrectionsPreserveAssignmentAndMonotonicRetarget(bool idle, int wallStep)
     {
-        var (config, manager, clock, bus) = Fixture();
+        var (config, manager, clock, bus) = Fixture("1e00ffff");
         var options = new VarDiffConfig { MinDiff = 1e-9, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
         var time = new ManualTimeProvider();
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
@@ -351,7 +351,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
     public async Task ServerVarDiff_ZeroIntervalsPublishRepresentableWorkWithoutChangingConfiguration(
         bool idle, bool limitDelta, bool explicitMaximum)
     {
-        var (config, manager, clock, bus) = Fixture();
+        var (config, manager, clock, bus) = Fixture("1e00ffff");
         await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
             budgetTimeProvider: new ManualTimeProvider());
         await Subscribe(wire);
@@ -380,8 +380,9 @@ public partial class BitcoinBlake2bDifficultyBudgetTests
         bus.DidNotReceive().SendMessage(Arg.Is<TelemetryEvent>(x =>
             x.Category == TelemetryCategory.StratumAdmission && x.Info == "publication-failure"), Arg.Any<string>());
         // Server retargeting consumes none of the connection's eight tokens.
+        var fixedBase = context.Difficulty;
         for(var i = 0; i < DifficultyRequestBudget.Capacity; i++)
-            await Accepted(wire, true, (i + 4) / 1e9);
+            await Accepted(wire, true, fixedBase + (i + 1) / 1e9);
         await Refused(wire, true);
     }
 }

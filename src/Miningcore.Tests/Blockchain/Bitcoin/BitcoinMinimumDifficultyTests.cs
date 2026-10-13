@@ -52,7 +52,7 @@ public class BitcoinMinimumDifficultyTests : TestBase
         internal JobManager(IComponentContext ctx, IMasterClock clock, IMessageBus bus) :
             base(ctx, clock, bus, new BitcoinExtraNonceProvider("minimum", null)) { }
         internal Action BeforeJob;
-        internal void Seed(bool merged)
+        internal void Seed(bool merged, string parentBits = "207fffff", string auxiliaryBits = "207fffff")
         {
             network = Network.RegTest;
             poolAddressDestination = new KeyId(new byte[20]);
@@ -60,14 +60,14 @@ public class BitcoinMinimumDifficultyTests : TestBase
             {
                 Height = 101, Version = 0x20000000, CurTime = 1_700_000_000,
                 PreviousBlockhash = new string('0', 64), CoinbaseValue = 5_000_000_000,
-                Bits = "207fffff", Target = "7" + new string('f', 63),
+                Bits = parentBits, Target = new Target(Convert.ToUInt32(parentBits, 16)).ToUInt256().ToString(),
                 Transactions = Array.Empty<BitcoinBlockTransaction>(),
             };
             if(merged)
             {
                 var job = new MergedMiningBitcoinJob();
                 job.InitMerged(template, new AuxBlockTemplate
-                    { Hash = new string('1', 64), Bits = "207fffff", Height = 101 },
+                    { Hash = new string('1', 64), Bits = auxiliaryBits, Height = 101 },
                     "template", poolConfig, extraPoolConfig, clusterConfig, clock,
                     poolAddressDestination, network, false, coin.ShareMultiplier,
                     coin.CoinbaseHasherValue, coin.HeaderHasherValue, coin.BlockHasherValue);
@@ -418,6 +418,141 @@ public class BitcoinMinimumDifficultyTests : TestBase
         await wire.SendRequestAsync("mining.configure", Enumerable.Range(0, 33).Select(i => "unknown-" + i).ToArray(), new { });
         Assert.NotNull((await wire.ReadAsync())["error"]);
         await Fence(wire);
+    }
+
+    [Theory]
+    [InlineData(false, "options")]
+    [InlineData(true, "options")]
+    [InlineData(false, "reserved")]
+    [InlineData(true, "reserved")]
+    [InlineData(false, "limit")]
+    [InlineData(true, "limit")]
+    public async Task MalformedMinimumEnvelope_ConsumesAdmissionAndEventuallyClosesSession(bool merged, string shape)
+    {
+        var (config, manager, clock, bus) = Fixture(merged);
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: !merged, merged: merged, difficulty: 1, varDiffTimeProvider: new ManualTimeProvider());
+        await Subscribe(wire);
+        var names = shape == "reserved" ? new[] { "minimum-difficulty", "version-rolling.mask" }
+            : shape == "limit" ? Enumerable.Repeat("minimum-difficulty", 33).ToArray() : new[] { "minimum-difficulty" };
+        object values = shape == "options" ? new JArray() : new JObject();
+        for(var i = 0; i < Miningcore.Blockchain.BitcoinBlake2b.DifficultyRequestBudget.Capacity; i++)
+        {
+            await wire.SendRequestAsync("mining.configure", names, values);
+            Assert.NotNull((await wire.ReadAsync())["error"]);
+        }
+        await wire.SendRequestAsync("mining.configure", Minimum(8));
+        Assert.Equal("Too many difficulty requests; retry later", (await wire.ReadAsync())["result"]["minimum-difficulty"].Value<string>());
+        for(var i = 1; i < Miningcore.Blockchain.BitcoinBlake2b.DifficultyRequestBudget.DisconnectAfterRefusals - 1; i++)
+        {
+            await wire.SendRequestAsync("mining.configure", names, values);
+            Assert.Contains("Too many", (await wire.ReadAsync())["error"]["message"].Value<string>());
+        }
+        await wire.SendRequestAsync("mining.configure", names, values);
+        await wire.AssertNoMoreMessagesAsync();
+        Assert.True(wire.Connection.Context.DifficultyRequests.IsClosed);
+        Assert.Null(wire.Connection.ContextAs<BitcoinWorkerContext>().NegotiatedMinimumDifficulty);
+        Assert.Equal(1, wire.Connection.Context.Difficulty);
+        Assert.Equal(1, wire.JobsCreated);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PortEqualMinimum_KeepsVarDiffAndRetargetsOnlyUpToEasiestCurrentChain(bool merged)
+    {
+        var (config, manager, clock, bus) = Fixture(merged);
+        manager.Seed(merged, "1c0ffff0", "1d00ffff"); // parent 16, aux 1
+        var time = new ManualTimeProvider();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: !merged, merged: merged, difficulty: 0.25, varDiffTimeProvider: time,
+            varDiff: new VarDiffConfig { MinDiff = 0.25, TargetTime = 1000, RetargetTime = 1, VariancePercent = 10 });
+        await Subscribe(wire, 0.25);
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var dynamic = context.VarDiff;
+        context.EnqueueNewDifficulty(0.5);
+        await wire.SendRequestAsync("mining.configure", Minimum(0.25));
+        Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+        await Fence(wire);
+        Assert.Same(dynamic, context.VarDiff);
+        Assert.False(context.HasPendingDifficulty);
+        Assert.Equal(1, wire.JobsCreated);
+        await wire.RetargetVarDiffAsync(false);
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(1));
+        await wire.RetargetVarDiffAsync(false);
+        var ceiling = manager.EasiestNetworkDifficulty.Value;
+        await Assignment(wire, ceiling);
+        Assert.Equal(ceiling, context.Difficulty);
+        await wire.SendRequestAsync("mining.configure", Minimum(0.5));
+        Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+        await Fence(wire);
+        Assert.Equal(ceiling, context.Difficulty);
+        Assert.Same(dynamic, context.VarDiff); // A satisfied floor does not pin a faster miner.
+        // Repeated retargets at the ceiling and floor do not republish work.
+        var count = wire.JobsCreated;
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(1));
+        await wire.RetargetVarDiffAsync(false);
+        await Fence(wire);
+        Assert.Equal(count, wire.JobsCreated);
+        await wire.UpdateVarDiffAsync(0.1);
+        await Assignment(wire, 0.5);
+        await wire.UpdateVarDiffAsync(0.1);
+        await Fence(wire);
+        Assert.Equal(count + 1, wire.JobsCreated);
+        Assert.Equal(0.5, context.NegotiatedMinimumDifficulty);
+        Assert.Same(dynamic, context.VarDiff);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AboveNetworkMinimum_WarnsOnceAndRetainsExplicitDeviceConstraint(bool merged)
+    {
+        var (config, manager, clock, bus) = Fixture(merged);
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: !merged, merged: merged, difficulty: 1);
+        await Subscribe(wire);
+        using var logs = new NLog.LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(NLog.LogLevel.Warn, NLog.LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        wire.SetLogger(logs.GetLogger("credit-warning"));
+        await wire.SendRequestAsync("mining.configure", Minimum(8));
+        Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+        await Assignment(wire, 8);
+        await wire.SendRequestAsync("mining.configure", Minimum(8));
+        Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+        await Fence(wire);
+        Assert.Single(target.Logs.Where(x => x.Contains("honest work can be under-credited")));
+        Assert.Equal(8, wire.Connection.Context.Difficulty);
+    }
+
+    [Fact]
+    public async Task SuppressedMutationCancellation_DoesNotMislabelLaterPublicationFailure()
+    {
+        var (config, manager, clock, bus) = Fixture(false);
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: true, difficulty: 1);
+        await Subscribe(wire);
+        using var logs = new NLog.LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(NLog.LogLevel.Info, NLog.LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        wire.SetLogger(logs.GetLogger("cancel-label"));
+        using var cancel = new CancellationTokenSource();
+        wire.Connection.ContextAs<BitcoinWorkerContext>().ConfigureDifficultyPolicy(1, _ =>
+        {
+            cancel.Cancel();
+            throw new OperationCanceledException(cancel.Token);
+        });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            wire.DispatchBufferedAsync(cancel.Token, "mining.configure", Minimum(8)));
+        Assert.DoesNotContain(target.Logs, x => x.Contains("AssignmentMutationFailure"));
+        wire.ClosePublicationFailure(new IOException("later-publication"));
+        Assert.Single(target.Logs.Where(x => x.Contains("AssignmentPublicationFailure")));
+        Assert.DoesNotContain(target.Logs, x => x.Contains("AssignmentMutationFailure"));
     }
 
     [Fact]

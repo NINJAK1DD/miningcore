@@ -22,6 +22,7 @@ public class BitcoinWorkerContext : WorkerContextBase
     private bool jobsClosed;
     private int duplicateSubscribeWarning;
     internal double? AnnouncedDifficulty { get; set; }
+    internal (double Difficulty, double Limit)? CandidateCreditWarning { get; set; }
     internal double? NegotiatedMinimumDifficulty { get; private set; }
     private double shareMultiplier = 1;
     private Func<double, double> difficultyValidator;
@@ -38,13 +39,26 @@ public class BitcoinWorkerContext : WorkerContextBase
 
     internal double ValidateRequestedDifficulty(double value)
     {
+        if(!TryValidateRequestedDifficulty(value, out var validated))
+            throw new ArgumentOutOfRangeException(nameof(value), "Difficulty produces an unrepresentable target or credit");
+        return validated;
+    }
+
+    internal bool TryValidateRequestedDifficulty(double value, out double validated)
+    {
+        validated = 0;
         var normalized = value / shareMultiplier;
         if(!double.IsFinite(value) || value <= 0 || !double.IsFinite(normalized) ||
             normalized <= 0 || normalized > (double) BitcoinConstants.Diff1)
-            throw new ArgumentOutOfRangeException(nameof(value), "Difficulty produces an unrepresentable target or credit");
-        return difficultyValidator?.Invoke(value) ?? value;
+            return false;
+        // Specialized target encoders may enforce additional network constraints.
+        try { validated = difficultyValidator?.Invoke(value) ?? value; }
+        catch(ArgumentOutOfRangeException) { return false; }
+        return true;
     }
 
+    // Trusted producers (including NiceHash and VarDiff) are clamped to the
+    // device floor; their requested value can differ from the effective assignment.
     protected override double ValidateDifficulty(double value) =>
         Math.Max(ValidateRequestedDifficulty(value), MinimumDifficulty);
 
@@ -52,8 +66,13 @@ public class BitcoinWorkerContext : WorkerContextBase
     {
         value = ValidateRequestedDifficulty(value);
         NegotiatedMinimumDifficulty = value;
-        VarDiff = null;
-        SetDifficulty(value);
+        if(VarDiff != null && value <= Difficulty)
+            SetDifficulty(Difficulty); // Keep dynamic retargeting; discard stale pending work.
+        else
+        {
+            VarDiff = null;
+            SetDifficulty(value);
+        }
     }
 
     public override void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock,
@@ -61,6 +80,7 @@ public class BitcoinWorkerContext : WorkerContextBase
     {
         NegotiatedMinimumDifficulty = null;
         AnnouncedDifficulty = null;
+        CandidateCreditWarning = null;
         base.Init(difficulty, varDiffConfig, clock, timeProvider, difficultyGraceSeconds);
     }
 

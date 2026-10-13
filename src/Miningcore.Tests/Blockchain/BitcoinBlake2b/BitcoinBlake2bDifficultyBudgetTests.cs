@@ -554,7 +554,7 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
         Assert.NotNull(job);
     }
 
-    private (PoolConfig, FixtureManager, IMasterClock, IMessageBus) Fixture()
+    private (PoolConfig, FixtureManager, IMasterClock, IMessageBus) Fixture(string bits = "207fffff")
     {
         var coin = (BitcoinBlake2bTemplate) ModuleInitializer.CoinTemplates["bitcoin-blake2b"];
         var clock = Substitute.For<IMasterClock>();
@@ -568,8 +568,8 @@ public partial class BitcoinBlake2bDifficultyBudgetTests : TestBase
         var job = new BitcoinBlake2bJob();
         job.InitBlake2b(new BlockTemplate
         {
-            Height = 21, Version = 0xa0000000, CurTime = 1700000000, Bits = "207fffff",
-            Target = BitcoinBlake2bHeader.DecodeCompactTarget(0x207fffff).ToString("x").PadLeft(64, '0'),
+            Height = 21, Version = 0xa0000000, CurTime = 1700000000, Bits = bits,
+            Target = BitcoinBlake2bHeader.DecodeCompactTarget(Convert.ToUInt32(bits, 16)).ToString("x").PadLeft(64, '0'),
             PreviousBlockhash = new string('0', 64), CoinbaseValue = 5000000000,
             Transactions = Array.Empty<BitcoinBlockTransaction>(), Rules = new[] { "!blake2b" },
         }, "budget", config, new BitcoinPoolConfigExtra(), new ClusterConfig(), clock,

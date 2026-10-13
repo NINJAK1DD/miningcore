@@ -8,11 +8,12 @@ an explicit result.
 
 The protocol reference is [BIP310](https://github.com/bitcoin/bips/blob/master/bip-0310.mediawiki).
 It defines the configure envelope, extension results and repeated minimum requests.
-The following admission decisions retain Miningcore's static-difficulty policy:
+The following admission decisions enforce the device floor:
 
 | Request | Result and state |
 | --- | --- |
-| Finite positive minimum at/above the configured port difficulty | Accept, retain a session minimum, disable VarDiff and cancel deferred difficulty. Assign this exact requested difficulty. |
+| Finite positive minimum at/above the configured port difficulty | Accept and retain the session minimum; cancel deferred work. Disable VarDiff only if this raises the current assignment. |
+| Minimum equal to the port/current difficulty, or below a current dynamic assignment | Keep VarDiff running above the retained floor; preserve the current assignment without publishing duplicate work. |
 | Same accepted minimum again | Return true and clear superseded pending work, without retiring the assignment or publishing another job. |
 | Minimum below the configured port difficulty | Return an extension error string without mutation. |
 | Zero | Return an explicit unsupported-disable error string. Reconnect to clear the session minimum and restore configured VarDiff. |
@@ -22,7 +23,7 @@ The following admission decisions retain Miningcore's static-difficulty policy:
 | Another valid minimum configure request | Explicitly replace the session minimum. Other difficulty producers cannot replace it. |
 | Unknown extension | Return false, without publishing work for that extension. |
 | Version rolling only | Retain the existing negotiated mask response, without republishing difficulty/work. |
-| Malformed envelope or missing request ID | Send one recoverable protocol error before mutation. Missing IDs never consume difficulty admission. |
+| Malformed envelope or missing request ID | Send one recoverable protocol error before mutation. Valid-ID envelopes requesting minimum difficulty consume admission even when malformed. Missing IDs never consume difficulty admission. |
 | Configure rate-limit refusal | Return a minimum-difficulty error string and an explicit result for each other extension, without negotiation or work publication. |
 
 JSON numeric strings remain supported for firmware compatibility. They use
@@ -43,12 +44,12 @@ assignment mutation. **Diff1 is a target representability limit, not an economic
 safety bound.** Candidate credit has a separate chain-target cap described below.
 BLAKE2b retains its network and compact/short-target bounds
 from [its immutable-target policy](bitcoin-blake2b.md). Configured VarDiff
-`MinDiff`/`MaxDiff` bound dynamic retargeting, not explicit static assignments:
-an accepted minimum still disables VarDiff, as before. The configured port
-difficulty remains the inclusive admission floor. Keeping an explicit static
-assignment and disabling VarDiff preserves the existing firmware contract; this
-change does not silently turn the extension into dynamic retargeting. Explicit
-configuration may lower a previous static assignment down to that port floor.
+`MinDiff`/`MaxDiff` bound dynamic retargeting. Automatic retargeting also stops at
+the easiest current parent/auxiliary chain difficulty times the share multiplier.
+The configured port difficulty remains the inclusive admission floor. A minimum
+that raises a dynamic assignment selects an exact static assignment and disables
+VarDiff; a minimum already satisfied by the dynamic assignment retains VarDiff.
+Explicit configuration may lower a previous static assignment down to that port floor.
 The separately retained minimum constrains subsequent producers until another
 accepted configure request or a new connection.
 
@@ -94,11 +95,22 @@ ownership, duplicate identity, settlement and original credit after acceptance
 remain unchanged by later difficulty or publication failures.
 
 This closes the candidate-only PPS/PPLNS inflation path across configure,
-suggestion, password and NiceHash assignments. Assignments above network difficulty
-remain representable and usable, but cannot purchase inflated candidate credit.
-PPLNS also bounds finite legacy ratios before decimal conversion and keeps
-diagnostic totals as doubles, preventing large retained shares from overflowing
-balance calculation. Already persisted liabilities are not rewritten; deployments
+suggestion, password and NiceHash assignments. Explicit assignments above the
+easiest chain difficulty remain representable, but honest miners can receive
+less credit than their actual work and firmware can discard candidates below
+the assigned target. The pool emits a warning and `assignment-above-network`
+telemetry once per changed assignment/chain limit. Lower port/static/device
+floors before operating a pooled reward scheme in that state. VarDiff cannot
+raise difficulty above the current chain limit; an incompatible configured
+minimum is not silently weakened and can prevent automatic retargeting.
+
+PPLNS and PPLNSBF bound finite legacy ratios before decimal conversion. PROP
+rescales all round weights together rather than capping individual shares,
+preserving relative allocations even when the quotient overflows or underflows
+a double. Relative weights below decimal precision round to zero. All three
+keep diagnostic totals as doubles with bounded unit formatting. These numeric
+protections do not determine whether old financial credits were legitimate.
+Already persisted liabilities are not rewritten; deployments
 that accepted shares on older code must audit historical credits before stable rollout.
 
 Configure, subscribe, suggestions, static authorization and direct job publication
@@ -115,6 +127,10 @@ envelopes and values, reserved-field collisions, deferred-work cancellation,
 broadcast serialization and terminal failures at all three enqueue stages.
 It also checks retained minima, explicit replacement, NiceHash overrides, direct
 SOLO authorization generations, extension limits and admission-refusal response maps.
+Malformed minimum envelopes exhaust admission and reach terminal refusal; port-equal
+minima retain VarDiff, retargets use the current easiest chain ceiling, and
+floor/ceiling no-ops do not republish work. Warnings and suppressed-failure labels
+have regressions, as do extreme PROP/PPLNSBF allocations and quantity formatting.
 `BitcoinBlake2bMinimumDifficultyTests` pins single publication and retained targets.
 Existing VarDiff/static-authorization contention, publication closure and
 accepted-credit tests exercise the shared gate and failure boundaries.
