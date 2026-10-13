@@ -4,6 +4,8 @@ using System.Reactive.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Miningcore.Mining;
+using Miningcore.Configuration;
+using Miningcore.Time;
 using NBitcoin;
 
 namespace Miningcore.Blockchain.Bitcoin;
@@ -20,6 +22,73 @@ public class BitcoinWorkerContext : WorkerContextBase
     private bool jobsClosed;
     private int duplicateSubscribeWarning;
     internal double? AnnouncedDifficulty { get; set; }
+    internal double? CandidateCreditWarning { get; set; }
+    internal double? NegotiatedMinimumDifficulty { get; private set; }
+    private double shareMultiplier = 1;
+    private Func<double, double> difficultyValidator;
+    internal override double MinimumDifficulty => NegotiatedMinimumDifficulty ?? 0;
+    internal override double MaximumDifficulty => Math.Min(double.MaxValue, (double) BitcoinConstants.Diff1 * shareMultiplier);
+
+    internal void ConfigureDifficultyPolicy(double multiplier, Func<double, double> validator = null)
+    {
+        if(!double.IsFinite(multiplier) || multiplier <= 0)
+            throw new ArgumentOutOfRangeException(nameof(multiplier));
+        shareMultiplier = multiplier;
+        difficultyValidator = validator;
+    }
+
+    internal double ValidateRequestedDifficulty(double value)
+    {
+        if(!TryValidateRequestedDifficulty(value, out var validated))
+            throw new ArgumentOutOfRangeException(nameof(value), "Difficulty produces an unrepresentable target or credit");
+        return validated;
+    }
+
+    internal bool TryValidateRequestedDifficulty(double value, out double validated)
+    {
+        validated = 0;
+        var normalized = value / shareMultiplier;
+        if(!double.IsFinite(value) || value <= 0 || !double.IsFinite(normalized) ||
+            normalized <= 0 || normalized > (double) BitcoinConstants.Diff1)
+            return false;
+        // Specialized target encoders may enforce additional network constraints.
+        try { validated = difficultyValidator?.Invoke(value) ?? value; }
+        catch(ArgumentOutOfRangeException) { return false; }
+        return true;
+    }
+
+    // Trusted producers (including NiceHash and VarDiff) are clamped to the
+    // device floor; their requested value can differ from the effective assignment.
+    protected override double ValidateDifficulty(double value) =>
+        Math.Max(ValidateRequestedDifficulty(value), MinimumDifficulty);
+
+    internal void SetMinimumDifficulty(double value)
+    {
+        value = ValidateRequestedDifficulty(value);
+        NegotiatedMinimumDifficulty = value;
+        if(VarDiff != null && value <= Difficulty)
+            SetDifficulty(Difficulty); // Keep dynamic retargeting; discard stale pending work.
+        else
+        {
+            VarDiff = null;
+            SetDifficulty(value);
+        }
+    }
+
+    public override bool ApplyPendingDifficulty()
+    {
+        var previous = Difficulty;
+        return base.ApplyPendingDifficulty() && Difficulty != previous;
+    }
+
+    public override void Init(double difficulty, VarDiffConfig varDiffConfig, IMasterClock clock,
+        TimeProvider timeProvider = null, int difficultyGraceSeconds = 30)
+    {
+        NegotiatedMinimumDifficulty = null;
+        AnnouncedDifficulty = null;
+        CandidateCreditWarning = null;
+        base.Init(difficulty, varDiffConfig, clock, timeProvider, difficultyGraceSeconds);
+    }
 
     // One recoverable duplicate per TCP session. Authorization, shares and
     // difficulty changes must never reset this allowance.

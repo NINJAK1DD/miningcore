@@ -253,7 +253,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
                         logger.Debug(() => $"Template update {blockTemplate?.Height}");
                 }
 
-                currentJob = job;
+                Volatile.Write(ref currentJob, job);
             }
 
             return (isNew, forceUpdate);
@@ -287,6 +287,18 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     {
         var job = currentJob;
         return job;
+    }
+
+    // Read the current template directly, without constructing worker work or
+    // using height-only stats (the aux target can change within a parent block).
+    internal double? EasiestNetworkDifficulty
+    {
+        get
+        {
+            var job = Volatile.Read(ref currentJob);
+            return job is MergedMining.MergedMiningBitcoinJob merged
+                ? Math.Min(merged.Difficulty, merged.AuxiliaryDifficulty) : job?.Difficulty;
+        }
     }
 
     protected override async Task PostStartInitAsync(CancellationToken ct)

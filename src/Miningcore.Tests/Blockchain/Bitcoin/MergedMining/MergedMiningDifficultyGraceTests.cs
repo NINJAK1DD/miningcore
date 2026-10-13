@@ -95,7 +95,9 @@ public class MergedMiningDifficultyGraceTests : TestBase
         MergedMiningShareResult Submit(MergedMiningBitcoinJob job, string nonce) => job.ProcessShareMerged(connection,
             "10000000000000", template.CurTime.ToStringHex8(), nonce, null);
         var accepted = Submit(old, "00000001");
-        Assert.Equal(10, accepted.Share.Difficulty);
+        var candidateLimit = Math.Min(parentCandidate ? source.Difficulty : double.PositiveInfinity,
+            auxiliaryCandidate ? source.AuxiliaryDifficulty : double.PositiveInfinity);
+        Assert.Equal(Math.Min(10, candidateLimit), accepted.Share.Difficulty);
         Assert.Equal(parentCandidate, accepted.Share.IsBlockCandidate);
         Assert.Equal(auxiliaryCandidate, accepted.AuxPowHex != null);
         foreach(var alias in new[] { "0g000000000000", "0x10000000000000", "10000000000000f", "10000000000000z" })
@@ -110,8 +112,8 @@ public class MergedMiningDifficultyGraceTests : TestBase
         time.AdvanceMonotonic(TimeSpan.FromSeconds(30));
         if(parentCandidate || auxiliaryCandidate)
         {
-            Assert.Equal(10, Submit(old, "00000002").Share.Difficulty);
-            Assert.Equal(40, Submit(current, "00000003").Share.Difficulty);
+            Assert.Equal(Math.Min(10, candidateLimit), Submit(old, "00000002").Share.Difficulty);
+            Assert.Equal(Math.Min(40, candidateLimit), Submit(current, "00000003").Share.Difficulty);
         }
         else
         {

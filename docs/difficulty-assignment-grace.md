@@ -23,8 +23,8 @@ retiring the assignment or allocating another job ID.
 | Current assignment | Its issued difficulty, including the existing 0.99 tolerance |
 | Retired assignment within grace | Its original issued difficulty, even if the proof also exceeds the new target |
 | Retired ordinary work at/after expiry | Accepted only if it satisfies the current target, credited at the current assignment |
-| Valid parent or auxiliary block candidate | Existing candidate exception; credit remains the original assignment, subject to normal job lookup/age and proof validation |
-| BLAKE2b header-v2 job | Existing exact immutable assigned target and credit; this separate contract does not acquire generic 30-second expiry |
+| Valid parent or auxiliary block candidate | Preserve candidate admission. Bitcoin/merged credit is the original assignment capped at the easiest qualifying chain target; normal job lookup/age and proof validation still apply. Other families retain their existing candidate policy, tracked for audit in [#218](https://github.com/NINJAK1DD/miningcore/issues/218). |
+| BLAKE2b header-v2 job | Exact immutable assigned target; candidate credit is capped at the job's network target. This separate contract does not acquire generic 30-second expiry. |
 | Custom/direct validator without issued metadata | Current target only; `PreviousDifficulty` cannot authorize fallback |
 
 This policy bounds the period during which a miner can deliberately keep computing

@@ -95,7 +95,7 @@ public class PROPPaymentScheme : IPayoutScheme
         }
 
         // diagnostics
-        var totalShareCount = shares.Values.ToList().Sum(x => new decimal(x));
+        var totalShareCount = shares.Values.Sum();
         var totalRewards = rewards.Values.ToList().Sum(x => x);
 
         if(totalRewards > 0)
@@ -159,10 +159,9 @@ public class PROPPaymentScheme : IPayoutScheme
         var inclusive = true;
         var pageSize = 100000;
         var currentPage = 0;
-        var accumulatedScore = 0.0m;
         var blockRewardRemaining = blockReward;
         DateTime? shareCutOffDate = null;
-        var scores = new Dictionary<string, decimal>();
+        var scores = new ProportionalRewardWeights();
 
         while(!done && !ct.IsCancellationRequested)
         {
@@ -179,6 +178,7 @@ public class PROPPaymentScheme : IPayoutScheme
                 var share = page[i];
                 var address = share.Miner;
                 var shareDiffAdjusted = payoutHandler.AdjustShareDifficulty(share.Difficulty);
+                ShareRewardMath.ValidateShare(share, shareDiffAdjusted, block.BlockHeight, logger);
 
                 // record attributed shares for diagnostic purposes
                 if(!shares.ContainsKey(address))
@@ -186,14 +186,7 @@ public class PROPPaymentScheme : IPayoutScheme
                 else
                     shares[address] += shareDiffAdjusted;
 
-                var score = (decimal) (shareDiffAdjusted / share.NetworkDifficulty);
-
-                if(!scores.ContainsKey(address))
-                    scores[address] = score;
-                else
-                    scores[address] += score;
-
-                accumulatedScore += score;
+                scores.Add(address, shareDiffAdjusted, share.NetworkDifficulty);
 
                 // set the cutoff date to clean up old shares after a successful payout
                 if(shareCutOffDate == null || share.Created > shareCutOffDate)
@@ -210,29 +203,16 @@ public class PROPPaymentScheme : IPayoutScheme
             done = page.Length <= 0;
         }
 
-        if(accumulatedScore > 0)
+        if(scores.Total > 0)
         {
-            var rewardPerScorePoint = blockReward / accumulatedScore;
-
             // build rewards for all addresses that contributed to the round
-            foreach(var address in scores.Select(x => x.Key).Distinct())
+            foreach(var fraction in scores.Fractions)
             {
-                // loop all scores for the current addres
-                foreach(var score in scores.Where(x => x.Key == address))
-                {
-                    var reward = score.Value * rewardPerScorePoint;
-
-                    if(reward > 0)
-                    {
-                        // accumulate miner reward
-                        if(!rewards.ContainsKey(address))
-                            rewards[address] = reward;
-                        else
-                            rewards[address] += reward;
-                    }
-
-                    blockRewardRemaining -= reward;
-                }
+                // Decimal fraction rounding must not allocate beyond the round.
+                var reward = Math.Min(fraction.Value * blockReward, blockRewardRemaining);
+                if(reward > 0)
+                    rewards[fraction.Key] = reward;
+                blockRewardRemaining -= reward;
             }
         }
 
@@ -240,7 +220,7 @@ public class PROPPaymentScheme : IPayoutScheme
         if(blockRewardRemaining <= 0 && !done)
             throw new OverflowException("blockRewardRemaining < 0");
 
-        logger.Info(() => $"Balance-calculation for pool {poolConfig.Id}, block {block.BlockHeight} completed with accumulated score {accumulatedScore:0.####} ({accumulatedScore * 100:0.#}%)");
+        logger.Info(() => $"Balance-calculation for pool {poolConfig.Id}, block {block.BlockHeight} completed with normalized work {scores.Total:0.####}");
 
         return shareCutOffDate;
     }

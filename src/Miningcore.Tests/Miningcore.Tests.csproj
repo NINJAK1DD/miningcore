@@ -105,6 +105,11 @@
   </ItemGroup>
 
   <!-- Do not let a previous source-built runtime mask the explicit managed-only opt-out. -->
+  <ItemGroup>
+    <None Include="../../scripts/release/audit-settlement-shares.sql" Link="Fixtures/audit-settlement-shares.sql"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <Target Name="RemoveOdoCryptFromManagedOnlyTestOutput" BeforeTargets="PrepareForBuild"
           Condition="'$(IsWindows)' == 'true' and '$(BuildOdoCryptWindows)' == 'false'">
     <Delete Files="$(TargetDir)libodocrypt.dll" />

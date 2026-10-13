@@ -22,6 +22,47 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## v0.3.0 pre-upgrade: settlement inputs and candidate credit
+
+PROP, PPLNS and PPLNSBF now fail closed on nonpositive or nonfinite stored,
+adjusted or network difficulty **across all coin families**. A bad legacy row or
+a handler adjustment returning zero stops settlement for that pool, including
+later blocks. Invalid-share diagnostics identify the pool, miner, timestamp and
+share/settlement heights without exposing IP/agent data. Rows are never silently
+ignored, removed or repriced.
+
+Back up shares and financial receipts, and run the
+[read-only pre-upgrade audit](../scripts/release/audit-settlement-shares.sql)
+before enabling affected pooled payouts. It explicitly checks PostgreSQL NaN
+and infinities as well as zero/negative values, and flags oversized finite
+credits for review, including PPS receipt-only liabilities after statistical
+share retention. It reports invalid PPS monetary inputs separately from finite
+receipt totals. The oversized sums cover flagged receipts only; the linear
+excess estimate is a screening amount, not exact financial reconciliation.
+Merged event pairing also flags otherwise nonoversized parent or auxiliary
+shares and PPS peers linked to oversized evidence by accounting ID, without
+counting a row again for each matching peer. Both directions deserve review;
+PPS role identification is not a prerequisite. Review both pools; missing/pruned peers
+or mixed payout schemes leave incomplete pairing coverage. Raw oversized comparisons apply only to identity difficulty
+adjustments; Alephium, Ergo and Kaspa require the deployed family/symbol scale.
+Positivity alone misses NaN. Audit and reconcile historical
+liabilities; one inflated retained PROP share can dominate a round. The query
+cannot validate custom `AdjustShareDifficulty` overrides or establish the
+legitimacy of old positive credits. PPS evidence retention also prunes PPS
+`balance_changes`; archive receipts/changes before that horizon. Applied balance
+changes alone cannot reconstruct exact per-share calculated liabilities. Run the
+multi-scan audit on a current replica or in a quiet maintenance period on large
+databases to avoid a long snapshot delaying vacuum. Missing receipt schemas or
+unarchived pruned evidence are incomplete coverage, not a clean audit. See the
+[settlement audit procedure](bitcoin-minimum-difficulty.md#pre-upgrade-settlement-audit--all-coin-families).
+
+Bitcoin/merged/BLAKE2b candidates now receive credit bounded by immutable
+qualifying chain targets. Automatic difficulty is bounded by the easiest current
+chain target, and falling ceilings lower compatible dynamic assignments on the
+next broadcast. Explicit static/device/configured floors stay enforced and warn
+when incompatible. Other-family candidate accounting remains tracked in
+[#218](https://github.com/NINJAK1DD/miningcore/issues/218).
+
 ## Unreleased: in-flight difficulty assignments
 
 Static/NiceHash and minimum-difficulty assignments preserve original credit for

@@ -123,6 +123,12 @@ public class MergedMiningBitcoinJob : BitcoinJob
         var isAuxiliaryBlockCandidate = headerValue <= auxiliaryTargetValue;
 
         var stratumDifficulty = context.ValidateShareDifficulty(shareDiff, isParentBlockCandidate || isAuxiliaryBlockCandidate, this);
+        if(isParentBlockCandidate || isAuxiliaryBlockCandidate)
+        {
+            var candidateDifficulty = Math.Min(isParentBlockCandidate ? Difficulty : double.PositiveInfinity,
+                isAuxiliaryBlockCandidate ? AuxiliaryDifficulty : double.PositiveInfinity);
+            stratumDifficulty = BitcoinShareCredit.ForCandidate(stratumDifficulty, candidateDifficulty * shareMultiplier);
+        }
 
         var share = new Share
         {

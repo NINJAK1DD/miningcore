@@ -175,6 +175,9 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     private BitcoinBlake2bJobManager Blake2bManager => manager as BitcoinBlake2bJobManager ??
         throw new InvalidOperationException("Bitcoin BLAKE2b requires its isolated job manager");
 
+    protected override void ConfigureWorkerDifficultyContext(BitcoinWorkerContext context) =>
+        context.ConfigureDifficultyPolicy(ShareMultiplier, value => Blake2bManager.ValidateWorkerDifficulty(value).Difficulty);
+
     protected override async Task OnSubmitAsync(StratumConnection connection,
         Timestamped<JsonRpcRequest> request, CancellationToken ct)
     {
@@ -291,6 +294,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 var context = connection.ContextAs<BitcoinWorkerContext>();
                 if(IsAdmissionClosed(connection) || !context.IsSubscribed)
                     return;
+                EnforceChainDifficultyCeiling(connection);
                 // Keep pending VarDiff, its announcement and the immutable target
                 // snapshot in the same critical section as miner-driven changes.
                 if(context.ApplyPendingDifficulty())
@@ -319,7 +323,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         await Guard(BroadcastAsync);
     }
 
-    protected override double MaximumVarDiff => BitcoinBlake2bDifficulty.Maximum;
+    protected override double MaximumVarDiff => Math.Min(CandidateDifficultyLimit, BitcoinBlake2bDifficulty.Maximum);
     protected override bool UsesSharedDifficultyRequestBudget => false;
 
     protected override async Task UpdateVarDiffAsync(StratumConnection connection, bool idle, CancellationToken ct)
@@ -398,12 +402,13 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         double? minimumDifficulty = null;
         var malformed = request.Value.Method switch
         {
-            BitcoinStratumMethods.MiningConfigure => !TryValidateConfigure(request.Value.Params, out extensions, out minimumDifficulty),
+            BitcoinStratumMethods.MiningConfigure => !TryValidateConfigure(request.Value, out extensions, out minimumDifficulty),
             BitcoinStratumMethods.Authorize => !IsValidAuthorization(request.Value.Params),
             BitcoinStratumMethods.Subscribe => !IsValidSubscribe(request.Value.Params),
             _ => false,
         };
-        var difficultyRequest = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty || minimumDifficulty.HasValue;
+        var difficultyRequest = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty ||
+            extensions?.Values<string>().Contains(BitcoinStratumExtensions.MinimumDiff) == true;
         if(malformed || difficultyRequest)
         {
             budget ??= difficultyBudgets.GetValue(connection, createDifficultyBudget);
@@ -463,7 +468,8 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                     var suggestedDifficulty = request.Value.Method == BitcoinStratumMethods.SuggestDifficulty
                         ? ReadSuggestedDifficulty(request.Value) : null;
                     var proposedDifficulty = minimumDifficulty ?? suggestedDifficulty;
-                    if(proposedDifficulty > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty &&
+                    if(request.Value.Method != BitcoinStratumMethods.MiningConfigure &&
+                       proposedDifficulty > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty &&
                        !await ValidateProposedDifficultyAsync(connection, request.Value, proposedDifficulty.Value))
                         return;
                     if(request.Value.Method == BitcoinStratumMethods.MiningConfigure)
@@ -682,26 +688,22 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     private static bool IsStringConvertibleScalar(JToken value) =>
         value.Type is JTokenType.String or JTokenType.Integer or JTokenType.Float or JTokenType.Boolean or JTokenType.Null or JTokenType.Date;
 
-    private static bool TryValidateConfigure(object parameters, out JArray extensions, out double? minimumDifficulty)
+    private static bool TryValidateConfigure(JsonRpcRequest request, out JArray extensions, out double? minimumDifficulty)
     {
         extensions = null;
         minimumDifficulty = null;
-        if(parameters is not JArray { Count: >= 2 } array || array[0] is not JArray requested ||
-            requested.Any(x => x.Type != JTokenType.String) || array[1] is not JObject values)
+        var configure = BitcoinConfigureRequest.Parse(request);
+        if(!configure.IsValid)
             return false;
+        var requested = configure.Extensions;
+        var values = configure.Options;
         if(requested.Any(x => x.Value<string>() == BitcoinStratumExtensions.MinimumDiff))
         {
             var value = values[BitcoinStratumExtensions.MinimumDiffValue];
-            if(value?.Type is not (JTokenType.Integer or JTokenType.Float or JTokenType.String))
-                return false;
             // Strings are an existing firmware compatibility case. Parse once
             // with invariant culture and pass this exact value to the base handler.
-            var text = value.Type == JTokenType.String ? value.Value<string>() : value.ToString(Formatting.None);
-            if(!double.TryParse(text, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var difficulty) ||
-                !double.IsFinite(difficulty) || difficulty <= 0)
-                return false;
-            minimumDifficulty = difficulty;
+            if(TryReadMinimumDifficulty(value, out var difficulty))
+                minimumDifficulty = difficulty;
         }
         extensions = requested;
         return true;
@@ -767,6 +769,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
             throw new StratumException(StratumError.JobNotFound,
                 "Bitcoin BLAKE2b work has been invalidated");
         var context = connection.ContextAs<BitcoinWorkerContext>();
+        WarnAboveCandidateDifficulty(connection);
         if(manager.GetJobForStratum() is not BitcoinBlake2bJob job)
             throw new StratumException(StratumError.JobNotFound,
                 "Bitcoin BLAKE2b job is unavailable");

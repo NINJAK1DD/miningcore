@@ -314,7 +314,13 @@ public class PoolFamilyAssignmentTests : TestBase
         Assert.Equal(1, worker.AssignmentGate.CurrentCount);
         Assert.False(worker.TryValidateShareDifficulty(double.PositiveInfinity, true, new object(), out _));
         Assert.False(worker.TryValidateShareDifficulty(double.PositiveInfinity, false, new object(), out _));
-        Assert.NotEmpty(fixture.Errors.Logs);
+        if(family == "Bitcoin")
+        {
+            Assert.Single(fixture.AssignmentDiagnostics.Logs.Where(x => x.Contains("AssignmentPublicationFailure")));
+            Assert.Empty(fixture.Errors.Logs); // Terminal cleanup must not duplicate the family diagnostic.
+        }
+        else
+            Assert.NotEmpty(fixture.Errors.Logs);
     }
 
     [Theory]
@@ -534,6 +540,7 @@ public class PoolFamilyAssignmentTests : TestBase
         internal readonly TimestampProvider Time = new();
         internal readonly NLog.Targets.MemoryTarget Errors = new() { Layout = "${level}|${message}" };
         internal readonly NLog.Targets.MemoryTarget Warnings = new() { Layout = "${level}|${message}" };
+        internal readonly NLog.Targets.MemoryTarget AssignmentDiagnostics = new() { Layout = "${level}|${message}" };
         internal readonly List<JObject> Messages = new();
         internal PoolBase Pool { get; private set; }
         internal StratumConnection Connection { get; private set; }
@@ -616,6 +623,7 @@ public class PoolFamilyAssignmentTests : TestBase
             var logConfig = new NLog.Config.LoggingConfiguration();
             logConfig.AddRule(LogLevel.Error, LogLevel.Fatal, Errors);
             logConfig.AddRule(LogLevel.Warn, LogLevel.Warn, Warnings);
+            logConfig.AddRule(LogLevel.Info, LogLevel.Info, AssignmentDiagnostics);
             logs.Configuration = logConfig;
             var logger = logs.GetLogger(config.Id);
             SetField(Pool, "logger", logger);

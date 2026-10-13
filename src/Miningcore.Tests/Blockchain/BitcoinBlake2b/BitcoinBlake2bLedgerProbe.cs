@@ -122,7 +122,7 @@ internal sealed class BitcoinBlake2bLedgerProbe : IAsyncDisposable
     }
 
     internal async Task AssertSchemeSettlementAsync(Miningcore.Blockchain.Share share, PoolConfig config,
-        Miningcore.Persistence.Model.Block block, IPayoutHandler handler)
+        Miningcore.Persistence.Model.Block block, IPayoutHandler handler, double expectedWork)
     {
         var mapper = AutoMapperFactory.CreateMapper();
         var shares = new ShareRepository(mapper);
@@ -156,7 +156,16 @@ internal sealed class BitcoinBlake2bLedgerProbe : IAsyncDisposable
             await transaction.CommitAsync();
         }
         var after = await balances.GetBalanceAsync(connection, config.Id, share.Miner);
-        Assert.Equal(payoutScheme == PayoutScheme.PPS ? before : 49m, after);
+        if(payoutScheme == PayoutScheme.PPLNS)
+        {
+            // One capped network candidate supplies one block of work, half of
+            // the default two-block PPLNS window. It cannot fill the window by
+            // carrying a miner-selected assignment above the chain target.
+            Assert.Equal(expectedWork, share.Difficulty / share.NetworkDifficulty, 12);
+            Assert.Equal(49m * (decimal) expectedWork / 2m, after);
+        }
+        else
+            Assert.Equal(payoutScheme == PayoutScheme.PPS ? before : 49m, after);
         if(payoutScheme == PayoutScheme.PPS)
         {
             Assert.True(before > 0);

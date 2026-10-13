@@ -97,7 +97,7 @@ public class PPLNSPaymentScheme : IPayoutScheme
         }
 
         // diagnostics
-        var totalShareCount = shares.Values.ToList().Sum(x => new decimal(x));
+        var totalShareCount = shares.Values.Sum();
         var totalRewards = rewards.Values.ToList().Sum(x => x);
 
         if(totalRewards > 0)
@@ -181,6 +181,7 @@ public class PPLNSPaymentScheme : IPayoutScheme
 
                 var address = share.Miner;
                 var shareDiffAdjusted = payoutHandler.AdjustShareDifficulty(share.Difficulty);
+                ShareRewardMath.ValidateShare(share, shareDiffAdjusted, block.BlockHeight, logger);
 
                 // record attributed shares for diagnostic purposes
                 if(!shares.ContainsKey(address))
@@ -188,7 +189,7 @@ public class PPLNSPaymentScheme : IPayoutScheme
                 else
                     shares[address] += shareDiffAdjusted;
 
-                var score = (decimal) (shareDiffAdjusted / share.NetworkDifficulty);
+                var score = ShareRewardMath.WindowScore(shareDiffAdjusted, share.NetworkDifficulty, window - accumulatedScore);
 
                 // if accumulated score would cross threshold, cap it to the remaining value
                 if(accumulatedScore + score >= window)

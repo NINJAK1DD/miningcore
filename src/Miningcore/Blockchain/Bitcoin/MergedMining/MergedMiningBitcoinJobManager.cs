@@ -506,7 +506,7 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
                         : $"Merged template update {blockTemplate.Height}");
                 }
 
-                currentJob = job;
+                Volatile.Write(ref currentJob, job);
                 PublishAuxiliaryTemplateState(
                     auxiliaryTemplateState.JobInstalled(auxiliaryTemplate,
                         previousJob == null));

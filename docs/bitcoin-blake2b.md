@@ -914,6 +914,14 @@ operator commissioning beyond isolated regtest.
 
 ## Immutable source provenance
 
+### Candidate accounting
+
+Header-v2 candidates remain admissible even when they miss the assigned share
+target. Their normalized credit is capped at the job's network difficulty,
+independently of actual proof strength, so a harder miner-selected assignment
+cannot inflate PPS liability or PPLNS weight. Ordinary shares retain their
+immutable issued credit. See [minimum-difficulty and candidate credit](bitcoin-minimum-difficulty.md#candidate-credit).
+
 Daemon/RPC/maturity baseline rechecked on 2026-10-05. Historical header vector provenance remains 29.4.1 because the header primitives, PoW and vectors did not change in 29.4.2:
 
 Loader constants enforce this reviewed compatibility boundary; they are not independent

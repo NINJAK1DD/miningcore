@@ -78,8 +78,11 @@ public class PPLNSBFPaymentScheme : IPayoutScheme
 
             if(amount > 0)
             {
-                logger.Info(() => $"Crediting {address} with {payoutHandler.FormatAmount(amount)} for {FormatUtil.FormatQuantity(shares[address])} ({shares[address]}) shares for block {block.BlockHeight}");
-                await balanceRepo.AddAmountAsync(con, tx, poolConfig.Id, address, amount, $"Reward for {FormatUtil.FormatQuantity(shares[address])} shares for block {block.BlockHeight}");
+                // A finder bonus is payable even when that miner has no work
+                // inside the retained window. Diagnostics must not block it.
+                var contributed = shares.GetValueOrDefault(address);
+                logger.Info(() => $"Crediting {address} with {payoutHandler.FormatAmount(amount)} for {FormatUtil.FormatQuantity(contributed)} ({contributed}) shares for block {block.BlockHeight}");
+                await balanceRepo.AddAmountAsync(con, tx, poolConfig.Id, address, amount, $"Reward for {FormatUtil.FormatQuantity(contributed)} shares for block {block.BlockHeight}");
             }
         }
 
@@ -98,7 +101,7 @@ public class PPLNSBFPaymentScheme : IPayoutScheme
         }
 
         // diagnostics
-        var totalShareCount = shares.Values.ToList().Sum(x => new decimal(x));
+        var totalShareCount = shares.Values.Sum();
         var totalRewards = rewards.Values.ToList().Sum(x => x);
 
         if(totalRewards > 0)
@@ -195,6 +198,7 @@ public class PPLNSBFPaymentScheme : IPayoutScheme
 
                 var address = share.Miner;
                 var shareDiffAdjusted = payoutHandler.AdjustShareDifficulty(share.Difficulty);
+                ShareRewardMath.ValidateShare(share, shareDiffAdjusted, block.BlockHeight, logger);
 
                 // record attributed shares for diagnostic purposes
                 if(!shares.ContainsKey(address))
@@ -202,7 +206,7 @@ public class PPLNSBFPaymentScheme : IPayoutScheme
                 else
                     shares[address] += shareDiffAdjusted;
 
-                var score = (decimal) (shareDiffAdjusted / share.NetworkDifficulty);
+                var score = ShareRewardMath.WindowScore(shareDiffAdjusted, share.NetworkDifficulty, window - accumulatedScore);
 
                 // if accumulated score would cross threshold, cap it to the remaining value
                 if(accumulatedScore + score >= window)

@@ -121,8 +121,9 @@ public class BitcoinBlake2bRegtestTests : TestBase
             Assert.Equal((uint) height, template.Height);
             Assert.Contains("!blake2b", template.Rules);
             var job = await manager.FetchJobAsync(managerStop.Token);
+            var budgetTime = new ManualTimeProvider();
             await using var wire = new BitcoinBlake2bWireSession(container, clock, pool, manager, bus,
-                budgetTimeProvider: new ManualTimeProvider());
+                budgetTimeProvider: budgetTime);
             var difficultyRequests = 0;
             async Task<JObject> RequestDifficultyAsync(string method, params object[] parameters)
             {
@@ -202,6 +203,24 @@ public class BitcoinBlake2bRegtestTests : TestBase
             Assert.Null(published);
             Assert.Equal(1, worker.ContextAs<BitcoinWorkerContext>().Stats.InvalidShares);
 
+            // Only explicit renegotiation can lower the retained device minimum.
+            // Spend exactly one refilled token, leaving the later exhaustion
+            // assertions intact before exercising server-driven VarDiff.
+            // Automatic-retarget cases start below the actual daemon target.
+            // Otherwise an oversized configured floor prevents any retarget,
+            // which is the intended network-ceiling policy, not publication failure.
+            var proofFloor = failPublication || zeroAverage || wallStep != 0
+                ? job.Difficulty * pool.Template.As<BitcoinTemplate>().ShareMultiplier * 0.75 : 1e-9;
+            pool.Ports[worker.LocalEndpoint.Port].Difficulty = proofFloor;
+            budgetTime.AdvanceMonotonic(TimeSpan.FromSeconds(10));
+            await wire.SendRequestAsync("mining.configure", new[] { "minimum-difficulty" },
+                new Dictionary<string, object> { ["minimum-difficulty.value"] = proofFloor });
+            Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+            Assert.Equal(proofFloor, (await wire.ReadAsync())["params"][0].Value<double>());
+            var proofJob = (JArray) (await wire.ReadAsync())["params"];
+            notify = proofJob.ToObject<object[]>();
+            notify[4] = proofJob[4].ToObject<string[]>();
+
             // VarDiff changes must update both the numeric notification and
             // the immutable compact target in notify, in that order.
             worker.ContextAs<BitcoinWorkerContext>().EnqueueNewDifficulty(2e-9);
@@ -211,9 +230,9 @@ public class BitcoinBlake2bRegtestTests : TestBase
             Assert.NotEqual(notify[0], harderJob[0].Value<string>());
             Assert.Equal(BitcoinBlake2bHeader.EncodeCompactTarget(
                 BitcoinBlake2bHeader.TargetForDifficulty(2e-9)).ToString("x8"), harderJob[6].Value<string>());
-            worker.ContextAs<BitcoinWorkerContext>().EnqueueNewDifficulty(1e-9);
+            worker.ContextAs<BitcoinWorkerContext>().EnqueueNewDifficulty(proofFloor);
             await wire.AnnounceJobAsync(job.GetJobParams(false));
-            Assert.Equal(1e-9, (await wire.ReadAsync())["params"][0].Value<double>());
+            Assert.Equal(proofFloor, (await wire.ReadAsync())["params"][0].Value<double>());
             Assert.Equal(notify[0], (await wire.ReadAsync())["params"][0].Value<string>());
             Assert.Equal(78, Assert.IsType<string>(notify[2]).Length);
             Assert.Empty(Assert.IsType<string[]>(notify[4]));
@@ -260,7 +279,7 @@ public class BitcoinBlake2bRegtestTests : TestBase
                         logs.Configuration = logging;
                         wire.SetLogger(logs.GetLogger("accepted-proof-publication"));
                         var context = worker.ContextAs<BitcoinWorkerContext>();
-                        var options = new VarDiffConfig { MinDiff = 1e-9, MaxDiff = 4e-9,
+                        var options = new VarDiffConfig { MinDiff = proofFloor, MaxDiff = 4e-9,
                             TargetTime = 10, RetargetTime = 1, VariancePercent = 0 };
                         pool.Ports[worker.LocalEndpoint.Port].VarDiff = options;
                         context.VarDiff = new VarDiffContext(new ManualTimeProvider()) { Config = options,
@@ -302,8 +321,8 @@ public class BitcoinBlake2bRegtestTests : TestBase
                         VarDiffConfig options = null;
                         if(zeroAverage || wallStep != 0)
                         {
-                            options = new VarDiffConfig { MinDiff = 1e-9, MaxDiff = null,
-                                MaxDelta = limitDelta ? 1e-9 : null, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
+                            options = new VarDiffConfig { MinDiff = proofFloor, MaxDiff = null,
+                                MaxDelta = limitDelta ? proofFloor / 10 : null, TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
                             pool.Ports[worker.LocalEndpoint.Port].VarDiff = options;
                             context.VarDiff = new VarDiffContext(new ManualTimeProvider()) { Config = options,
                                 LastShareTimestamp = wallStep == 0 ? 0 : -5 * TimeSpan.TicksPerSecond,
@@ -320,7 +339,8 @@ public class BitcoinBlake2bRegtestTests : TestBase
                         Assert.True(response["result"]?.Value<bool>() == true, response.ToString());
                         if(zeroAverage || wallStep != 0)
                         {
-                            var expected = wallStep != 0 || limitDelta ? 2e-9 : 1e-4;
+                            var expected = limitDelta ? proofFloor * 1.1 :
+                                job.Difficulty * pool.Template.As<BitcoinTemplate>().ShareMultiplier;
                             var update = await wire.ReadAsync();
                             Assert.Equal("mining.set_difficulty", update["method"].Value<string>());
                             Assert.InRange(context.Difficulty / expected, 0.99999999999999, 1.00000000000001);
@@ -348,7 +368,8 @@ public class BitcoinBlake2bRegtestTests : TestBase
                 catch(StratumException ex) when(ex.Code == StratumError.LowDifficultyShare) { }
             }
             Assert.True(candidate?.IsBlockCandidate);
-            Assert.Equal(1e-9, candidate.Difficulty);
+            Assert.Equal(Math.Min(proofFloor, candidate.NetworkDifficulty * pool.Template.As<BitcoinTemplate>().ShareMultiplier) /
+                pool.Template.As<BitcoinTemplate>().ShareMultiplier, candidate.Difficulty);
             // The valid mining.submit above traversed the wire dispatcher with
             // an exhausted bucket. No time elapsed on its injected monotonic
             // clock: prove it remains exhausted even after accepting the proof.
@@ -428,7 +449,8 @@ public class BitcoinBlake2bRegtestTests : TestBase
             Assert.Equal(50m, block.Reward);
             Assert.Equal(49m, await handler.UpdateBlockRewardBalancesAsync(con, tx, miningPool, block, CancellationToken.None));
             if(ledger != null)
-                await ledger.AssertSchemeSettlementAsync(acceptedShares[index], pool, block, handler);
+                await ledger.AssertSchemeSettlementAsync(acceptedShares[index], pool, block, handler,
+                    failPublication || zeroAverage || wallStep != 0 ? 0.75 : 1);
         }
         await balances.Received(4).AddAmountAsync(con, tx, Arg.Any<string>(), recipient.ToString(), 1m, Arg.Any<string>());
 

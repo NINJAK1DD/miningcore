@@ -260,6 +260,9 @@ public class BitcoinBlake2bJob : BitcoinJob
                 $"low difficulty share ({actual})");
         }
 
+        if(isBlockCandidate)
+            stratumDifficulty = BitcoinShareCredit.ForCandidate(stratumDifficulty, Difficulty * shareMultiplier);
+
         if(!RegisterSubmit(context.ExtraNonce1, extraNonce2, nTime, nonce,
                null))
             throw new StratumException(StratumError.DuplicateShare,

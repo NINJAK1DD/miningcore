@@ -260,7 +260,11 @@ public abstract class PoolBase : StratumServer,
 
     protected virtual bool UsesSharedDifficultyRequestBudget => true;
 
-    protected async Task<bool> AdmitDifficultyRequestAsync(StratumConnection connection, Miningcore.JsonRpc.JsonRpcRequest request)
+    protected Task<bool> AdmitDifficultyRequestAsync(StratumConnection connection, Miningcore.JsonRpc.JsonRpcRequest request) =>
+        AdmitDifficultyRequestCoreAsync(connection, request);
+
+    protected async Task<bool> AdmitDifficultyRequestCoreAsync(StratumConnection connection, Miningcore.JsonRpc.JsonRpcRequest request,
+        bool? configureRequestsMinimum = null)
     {
         if(!UsesSharedDifficultyRequestBudget)
             return true;
@@ -269,8 +273,8 @@ public abstract class PoolBase : StratumServer,
         if(request.Method is not ("mining.suggest_difficulty" or "mining.authorize" or "login" or "eth_submitLogin" or "mining.configure"))
             return true;
         var controlled = request.Method == "mining.suggest_difficulty";
-        var parameters = request.Method == "mining.suggest_difficulty" || request.Params == null ? null :
-            Newtonsoft.Json.Linq.JToken.FromObject(request.Params);
+        var parameters = request.Method == "mining.suggest_difficulty" || request.Params == null || configureRequestsMinimum.HasValue ? null :
+            request.Params as Newtonsoft.Json.Linq.JToken ?? Newtonsoft.Json.Linq.JToken.FromObject(request.Params);
         if(request.Method is "mining.authorize" or "login" or "eth_submitLogin")
         {
             // Authorization itself is not a difficulty producer. Inspect only
@@ -291,8 +295,8 @@ public abstract class PoolBase : StratumServer,
                 password?.Type == Newtonsoft.Json.Linq.JTokenType.String && regexStaticDiff.IsMatch(password.ToObject<string>());
         }
         if(request.Method == "mining.configure")
-            controlled = parameters is Newtonsoft.Json.Linq.JArray config && config.First is Newtonsoft.Json.Linq.JArray extensions &&
-                extensions.Any(x => x.Type == Newtonsoft.Json.Linq.JTokenType.String && x.ToObject<string>() == "minimum-difficulty");
+            controlled = configureRequestsMinimum ?? (parameters is Newtonsoft.Json.Linq.JArray config && config.First is Newtonsoft.Json.Linq.JArray extensions &&
+                extensions.Any(x => x.Type == Newtonsoft.Json.Linq.JTokenType.String && x.ToObject<string>() == "minimum-difficulty"));
         if(!controlled)
             return true;
         var budget = connection.Context.DifficultyRequests;
@@ -309,9 +313,13 @@ public abstract class PoolBase : StratumServer,
             return false;
         }
         PublishTelemetry(TelemetryCategory.StratumAdmission, "difficulty-refused", TimeSpan.Zero);
-        await connection.RespondErrorAsync(StratumError.Other, "Too many difficulty requests; retry later", request.Id, false);
+        await RespondDifficultyBudgetRefusalAsync(connection, request);
         return false;
     }
+
+    protected virtual Task RespondDifficultyBudgetRefusalAsync(StratumConnection connection,
+        Miningcore.JsonRpc.JsonRpcRequest request) =>
+        connection.RespondErrorAsync(StratumError.Other, "Too many difficulty requests; retry later", request.Id, false);
 
     protected Task ForEachMinerAssignmentAsync(Func<StratumConnection, CancellationToken, Task> func)
     {
