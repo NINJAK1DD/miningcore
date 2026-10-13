@@ -35,10 +35,19 @@ Back up shares and financial receipts, and run the
 [read-only pre-upgrade audit](../scripts/release/audit-settlement-shares.sql)
 before enabling affected pooled payouts. It explicitly checks PostgreSQL NaN
 and infinities as well as zero/negative values, and flags oversized finite
-credits for review. Positivity alone misses NaN. Audit and reconcile historical
+credits for review, including PPS receipt-only liabilities after statistical
+share retention. It reports invalid PPS monetary inputs separately from finite
+receipt totals. Raw oversized comparisons apply only to identity difficulty
+adjustments; Alephium, Ergo and Kaspa require the deployed family/symbol scale.
+Positivity alone misses NaN. Audit and reconcile historical
 liabilities; one inflated retained PROP share can dominate a round. The query
 cannot validate custom `AdjustShareDifficulty` overrides or establish the
-legitimacy of old positive credits. See the
+legitimacy of old positive credits. PPS evidence retention also prunes PPS
+`balance_changes`; archive receipts/changes before that horizon. Applied balance
+changes alone cannot reconstruct exact per-share calculated liabilities. Run the
+multi-scan audit on a current replica or in a quiet maintenance period on large
+databases to avoid a long snapshot delaying vacuum. Missing receipt schemas or
+unarchived pruned evidence are incomplete coverage, not a clean audit. See the
 [settlement audit procedure](bitcoin-minimum-difficulty.md#pre-upgrade-settlement-audit--all-coin-families).
 
 Bitcoin/merged/BLAKE2b candidates now receive credit bounded by immutable

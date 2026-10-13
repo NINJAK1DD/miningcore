@@ -52,6 +52,9 @@ public class BitcoinPool : PoolBase
     private BitcoinTemplate coin;
     private int directJobPipelineFailed;
     private readonly ConditionalWeakTable<StratumConnection, PublicationFailureState> publicationFailures = new();
+    // Port-level warning state assumes the shared port VarDiff configuration.
+    // Per-worker range policies would require warning keys scoped to that policy
+    // so parallel compatible/incompatible workers cannot reset one another.
     private readonly ConcurrentDictionary<int, byte> incompatibleVarDiffPorts = new();
 
     private sealed class PublicationFailureState

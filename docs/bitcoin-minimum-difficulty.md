@@ -110,6 +110,11 @@ when the miner's share rate is inside the target-time variance band. Static
 assignments and negotiated/configured minima remain enforced. A port `MinDiff`
 above the chain ceiling emits one warning and `vardiff-floor-above-network`
 telemetry per incompatibility episode per port; it is not silently lowered.
+On testnet4 minimum-difficulty templates, compatible VarDiff miners can drop to
+difficulty one. When ordinary templates return, difficulty rises under normal
+retarget timing and `MaxDelta`, rather than immediately restoring the earlier
+assignment. Expect temporarily increased share/block rates; a higher port floor
+instead pauses retargeting and warns. Monitor this during commissioning.
 
 PPLNS and PPLNSBF bound finite legacy ratios before decimal conversion. PROP
 rescales all round weights together rather than capping individual shares,
@@ -131,13 +136,23 @@ skipped or deleted, and this policy also applies to non-Bitcoin pools.
 
 Before upgrading to v0.3.0, back up retained shares and financial receipts, then
 run the [read-only audit](../scripts/release/audit-settlement-shares.sql) against
-each deployment database with a role allowed to read `shares`:
+each deployment database with a role allowed to read both `shares` and
+`pps_share_credits`. Both tables must exist; a missing schema makes the audit
+incomplete and the script fails rather than reporting a clean empty ledger.
+Use the [versioned database upgrade procedure](database.md#upgrade-an-existing-database)
+or an appropriately restored backup, not a newly created empty receipt table.
 
 ```sh
 psql "$MININGCORE_AUDIT_DSN" --set=ON_ERROR_STOP=1 --file=scripts/release/audit-settlement-shares.sql
 ```
 
-The script uses a repeatable-read, read-only transaction. Its invalid-row summary
+The script uses a repeatable-read, read-only transaction. On large deployments,
+run it on a suitably current replica or during a quiet maintenance period: its
+sequential scans hold a snapshot until completion and can delay vacuum cleanup.
+Record the replica's replay position/lag when interpreting its coverage; a lagging
+replica cannot clear newer primary receipts. See PostgreSQL's
+[vacuum guidance](https://www.postgresql.org/docs/current/routine-vacuuming.html).
+Its invalid-share summary
 uses this predicate, with explicit special-value checks:
 
 ```sql
@@ -152,13 +167,61 @@ GROUP BY poolid;
 
 PostgreSQL treats `NaN > 0` as true and considers NaNs equal, so positivity alone
 cannot validate these rows; see its [floating-point special-value rules](https://www.postgresql.org/docs/current/datatype-numeric.html#DATATYPE-FLOAT).
-The script also returns a bounded identifying sample and flags positive finite
-credits above their recorded network difficulty without dividing potentially
-overflowing values. Those oversized rows require economic review, not automatic
+The script also returns bounded identifying samples, checks invalid PPS receipt
+difficulties and monetary amounts, and reports positive finite raw difficulty
+above recorded network difficulty without dividing potentially overflowing
+values. PPS receipt counts, summed `calculatedamount` and summed `creditedamount`
+are independent of retained statistical shares, so pruned share rows cannot hide
+retained PPS liabilities. These are historical receipt totals, not the current
+unpaid balance or proven overpayment. Invalid receipts are excluded from those
+monetary sums and reported separately, so a numeric NaN cannot poison a total.
+Oversized rows require economic review, not automatic
 deletion: one inflated legacy share can dominate a PROP round. An empty invalid
 summary does not establish that historical credits or payouts were legitimate.
 The stored-value audit cannot detect an adjustment override rounding otherwise
 valid work to zero; review each deployed handler's adjustment policy as well.
+
+**Raw oversized comparisons only apply to common difficulty units**, where
+`AdjustShareDifficulty` is the identity. Pool IDs do not identify a coin family,
+so the script cannot infer the required scale. Its invalid/nonfinite checks apply
+to all families, but an empty `raw_oversized_rows` report cannot clear Alephium,
+Ergo, Kaspa or custom adjustment handlers. Current integrated Bitcoin-family PPS
+receipts use common units; imported/custom PPS contracts must verify this too.
+The current handler factors are:
+
+| Handler | Multiply stored share difficulty by |
+| --- | --- |
+| Alephium | `2^30 = 1073741824` |
+| Ergo | `256` |
+| Kaspa handler, symbol `SPR` | `2^7 × 1 = 128` |
+| Kaspa handler, other symbols | `2^31 × 2 = 4294967296` |
+
+Confirm the factors against the deployed version and any custom handler. For an
+Ergo pool, a diagnostic comparison can use numeric multiplication to avoid an
+overflowing binary64 quotient:
+
+```sql
+SELECT poolid, count(*) AS normalized_oversized_rows
+FROM shares
+WHERE poolid = 'your-ergo-pool'
+  AND difficulty > 0 AND difficulty < 'Infinity'::double precision
+  AND networkdifficulty > 0 AND networkdifficulty < 'Infinity'::double precision
+  AND difficulty::numeric * 256 > networkdifficulty::numeric
+GROUP BY poolid;
+```
+
+This is a review flag, not replacement payout arithmetic; compare boundary cases
+with the deployed handler and immutable receipts before reconciling anything.
+
+PPS evidence retention is separate from statistical-share retention. The
+[accounting retention policy](database.md#share-accounting-retention-and-sizing)
+prunes both `pps_share_credits` **and PPS `balance_changes`**. Archive receipts,
+changes and accounting groups before that horizon. If receipts have gone, retained
+or archived `balance_changes` with `usage = 'PPS share credit'` can establish applied
+credits, but do not reconstruct per-share difficulty or the full calculated
+fractional liability by themselves. Use receipt archives/backups and remainder
+evidence for reconciliation. If both receipts and changes were pruned without
+archives, current balances and an empty audit cannot establish historical safety.
 
 Invalid settlement logs and exceptions contain JSON-escaped pool/miner identity,
 the UTC creation timestamp, share and settlement block heights, and stored,
@@ -189,7 +252,9 @@ have regressions, as do extreme PROP/PPLNSBF allocations and quantity formatting
 Broadcast regressions cover falling parent/auxiliary/BLAKE2b ceilings, queued
 assignments, incompatible device/port floors and bounded warning frequency.
 The PostgreSQL audit fixture exercises zero, negative, NaN, both infinities and
-nullable imported fields, plus valid oversized credits, without changing rows.
+nullable imported fields in shares and PPS receipts, invalid numeric amounts,
+receipt-only liabilities, and a nonidentity Ergo scale. Complete row snapshots
+remain unchanged.
 `BitcoinBlake2bMinimumDifficultyTests` pins single publication and retained targets.
 Existing VarDiff/static-authorization contention, publication closure and
 accepted-credit tests exercise the shared gate and failure boundaries.
