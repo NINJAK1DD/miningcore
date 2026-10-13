@@ -137,7 +137,8 @@ skipped or deleted, and this policy also applies to non-Bitcoin pools.
 Before upgrading to v0.3.0, back up retained shares and financial receipts, then
 run the [read-only audit](../scripts/release/audit-settlement-shares.sql) against
 each deployment database with a role allowed to read both `shares` and
-`pps_share_credits`. Both tables must exist; a missing schema makes the audit
+`pps_share_credits`. Both tables and their accounting identity/role columns must
+exist; a missing schema makes the audit
 incomplete and the script fails rather than reporting a clean empty ledger.
 Use the [versioned database upgrade procedure](database.md#upgrade-an-existing-database)
 or an appropriately restored backup, not a newly created empty receipt table.
@@ -170,16 +171,50 @@ cannot validate these rows; see its [floating-point special-value rules](https:/
 The script also returns bounded identifying samples, checks invalid PPS receipt
 difficulties and monetary amounts, and reports positive finite raw difficulty
 above recorded network difficulty without dividing potentially overflowing
-values. PPS receipt counts, summed `calculatedamount` and summed `creditedamount`
-are independent of retained statistical shares, so pruned share rows cannot hide
-retained PPS liabilities. These are historical receipt totals, not the current
-unpaid balance or proven overpayment. Invalid receipts are excluded from those
+values. PPS receipt counts and the `oversized_calculated_amount` and
+`oversized_credited_amount` sums cover **only flagged oversized receipts**, not
+all retained PPS liabilities or credits. They are independent of retained
+statistical shares. These are historical receipt totals, not the current unpaid
+balance or proven overpayment. Invalid receipts are excluded from those
 monetary sums and reported separately, so a numeric NaN cannot poison a total.
 Oversized rows require economic review, not automatic
 deletion: one inflated legacy share can dominate a PROP round. An empty invalid
 summary does not establish that historical credits or payouts were legitimate.
 The stored-value audit cannot detect an adjustment override rounding otherwise
 valid work to zero; review each deployed handler's adjustment policy as well.
+
+The direct PPS report also provides `estimated_oversized_excess`: for each flagged
+receipt, `calculatedamount * (difficulty - networkdifficulty) / difficulty`,
+summed using numeric arithmetic and rounded to the receipt's 24-decimal precision.
+Under a linear PPS contract this estimates the
+calculated amount above a cap at that row's recorded network difficulty. It is
+a screening estimate with conversion/rounding limits, not proven overpayment,
+an exact migration amount or an upper bound for the complete ledger. Qualifying
+auxiliary targets can imply a lower cap; historical reward bases, fees, carry,
+applied credits and payouts still need reconciliation.
+
+**Merged pools must be reviewed as paired accounting events.** An auxiliary-only
+candidate can have `auxiliary network difficulty < credited difficulty <= parent
+network difficulty`. The oversized auxiliary projection makes its paired parent
+row suspect even though the parent's raw comparison is clean. The additional
+share reports link `accountingid` with parent role `2` and auxiliary role `3`,
+returning counts and a bounded identifying sample of otherwise nonoversized
+parents. The PPS reports independently link receipts across different pools by
+`accountingid`, returning `paired_nonoversized_receipts`, `paired_calculated_amount`,
+`paired_credited_amount` and a bounded sample. PPS receipts do not store roles;
+confirm parent/auxiliary direction from deployment configuration or archived
+share roles. Each parent/peer is counted once even if an import has several
+matching oversized peers. Rows already oversized remain in the direct report.
+The paired monetary sums are the full amounts of the flagged nonoversized peers,
+not their estimated excess and not totals of all retained receipts.
+
+Both sides must have valid inputs and common difficulty units for these raw
+pairing reports. Invalid peers are reported separately, not used in sums.
+Missing identities/roles, mismatched payout schemes, pruned counterparts or
+missing archives make pairing coverage incomplete. Review both ledgers and the
+configured pool relationships; an empty per-pool or paired report cannot clear
+the parent when the corresponding evidence is unavailable. No accounting ID or
+relationship is inferred from miner addresses or coincident timestamps.
 
 **Raw oversized comparisons only apply to common difficulty units**, where
 `AdjustShareDifficulty` is the identity. Pool IDs do not identify a coin family,
@@ -253,8 +288,10 @@ Broadcast regressions cover falling parent/auxiliary/BLAKE2b ceilings, queued
 assignments, incompatible device/port floors and bounded warning frequency.
 The PostgreSQL audit fixture exercises zero, negative, NaN, both infinities and
 nullable imported fields in shares and PPS receipts, invalid numeric amounts,
-receipt-only liabilities, and a nonidentity Ergo scale. Complete row snapshots
-remain unchanged.
+receipt-only liabilities, a nonidentity Ergo scale, linked parent/auxiliary
+events, duplicate-peer protection, invalid/unrelated/same-pool/role-mismatched
+exclusions, and numeric excess estimates including extreme ratios. Complete row
+snapshots remain unchanged.
 `BitcoinBlake2bMinimumDifficultyTests` pins single publication and retained targets.
 Existing VarDiff/static-authorization contention, publication closure and
 accepted-credit tests exercise the shared gate and failure boundaries.

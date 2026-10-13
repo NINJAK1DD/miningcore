@@ -37,7 +37,12 @@ before enabling affected pooled payouts. It explicitly checks PostgreSQL NaN
 and infinities as well as zero/negative values, and flags oversized finite
 credits for review, including PPS receipt-only liabilities after statistical
 share retention. It reports invalid PPS monetary inputs separately from finite
-receipt totals. Raw oversized comparisons apply only to identity difficulty
+receipt totals. The oversized sums cover flagged receipts only; the linear
+excess estimate is a screening amount, not exact financial reconciliation.
+Merged event pairing also flags otherwise nonoversized parent shares and PPS
+peers linked to oversized auxiliary evidence by accounting ID, without counting
+a parent again for each matching peer. Review both pools; missing/pruned peers
+or mixed payout schemes leave incomplete pairing coverage. Raw oversized comparisons apply only to identity difficulty
 adjustments; Alephium, Ergo and Kaspa require the deployed family/symbol scale.
 Positivity alone misses NaN. Audit and reconcile historical
 liabilities; one inflated retained PROP share can dominate a round. The query
