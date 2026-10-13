@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using System;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.BitcoinBlake2b;
 using Miningcore.Configuration;
@@ -10,6 +11,35 @@ namespace Miningcore.Tests.Blockchain.BitcoinBlake2b;
 
 public partial class BitcoinBlake2bDifficultyBudgetTests
 {
+    [Fact]
+    public async Task FallingChainCeiling_BroadcastPublishesLowerImmutableWorkForOnTargetMiner()
+    {
+        var (config, manager, clock, bus) = Fixture("1e00ffff");
+        var time = new ManualTimeProvider();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            difficulty: 0.001, varDiffTimeProvider: time,
+            varDiff: new VarDiffConfig { MinDiff = 1e-9, TargetTime = 10, RetargetTime = 1, VariancePercent = 10 });
+        await Subscribe(wire);
+        await wire.SendRequestAsync("mining.authorize", "test.worker", "x");
+        Assert.True((await wire.ReadAsync())["result"].Value<bool>());
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var old = Assert.Single(context.validJobs);
+        await wire.RetargetVarDiffAsync(false);
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(10));
+        await wire.RetargetVarDiffAsync(false);
+        await Fence(wire);
+        var (_, lower, _, _) = Fixture("1f00ffff");
+        var template = Assert.IsType<BitcoinBlake2bJob>(lower.GetJobForStratum());
+        manager.SetCurrentJob(template);
+        await wire.AnnounceJobAsync(template.GetJobParams(false));
+        await Assignment(wire, manager.EasiestNetworkDifficulty.Value);
+        await Fence(wire);
+        Assert.NotNull(context.VarDiff);
+        Assert.Contains(old, context.validJobs);
+        Assert.False(context.HasPendingDifficulty);
+        Assert.Equal(2, wire.JobsCreated);
+    }
+
     [Fact]
     public async Task PortEqualMinimum_RetainsVarDiffWithoutRepublishingClampedNoOp()
     {

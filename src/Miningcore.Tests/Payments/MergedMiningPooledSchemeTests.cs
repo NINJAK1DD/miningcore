@@ -225,6 +225,9 @@ public class MergedMiningPooledSchemeTests
     [InlineData(PayoutScheme.PROP, double.NaN, 1)]
     [InlineData(PayoutScheme.PPLNS, double.PositiveInfinity, 1)]
     [InlineData(PayoutScheme.PPLNSBF, 1, 0)]
+    [InlineData(PayoutScheme.PROP, 0, 1)]
+    [InlineData(PayoutScheme.PPLNS, -1, 1)]
+    [InlineData(PayoutScheme.PPLNSBF, double.NaN, 1)]
     public async Task InvalidSettlementInputs_CannotCommitRewardsOrConsumeRound(PayoutScheme kind, double difficulty, double network)
     {
         var fixture = CreateFixture();
@@ -234,15 +237,55 @@ public class MergedMiningPooledSchemeTests
         block.Miner = "finder";
         fixture.ShareRepository.ReadSharesBeforeAsync(fixture.ReadConnection, id, block.Created,
             true, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(new[]
-                { CreateShare(id, "miner", difficulty, network, block.Created) });
+                { CreateShare(id, "miner\"\n", difficulty, network, block.Created) with
+                    { BlockHeight = 77, IpAddress = "private-ip", UserAgent = "private-agent" } });
         IPayoutScheme scheme = kind switch
         {
             PayoutScheme.PROP => new PROPPaymentScheme(fixture.ConnectionFactory, fixture.ShareRepository, fixture.BlockRepository, fixture.BalanceRepository),
             PayoutScheme.PPLNS => new PPLNSPaymentScheme(fixture.ConnectionFactory, fixture.ShareRepository, fixture.BlockRepository, fixture.BalanceRepository),
             _ => new PPLNSBFPaymentScheme(fixture.ConnectionFactory, fixture.ShareRepository, fixture.BlockRepository, fixture.BalanceRepository),
         };
-        await Assert.ThrowsAsync<System.IO.InvalidDataException>(() => scheme.UpdateBalancesAsync(fixture.WriteConnection,
+        var error = await Assert.ThrowsAsync<System.IO.InvalidDataException>(() => scheme.UpdateBalancesAsync(fixture.WriteConnection,
             fixture.Transaction, pool, fixture.PayoutHandler, block, 50m, CancellationToken.None));
+        var identity = JObject.Parse(error.Message.Split("share=")[1]);
+        Assert.Equal(id, identity["poolId"].Value<string>());
+        Assert.Equal("miner\"\n", identity["miner"].Value<string>());
+        Assert.Equal(block.Created, identity["created"].Value<DateTime>());
+        Assert.Equal(77, identity["shareBlockHeight"].Value<int>());
+        Assert.Equal(100, identity["settlementBlockHeight"].Value<int>());
+        Assert.DoesNotContain('\n', error.Message);
+        Assert.DoesNotContain("private-ip", error.Message);
+        Assert.DoesNotContain("private-agent", error.Message);
+        await fixture.BalanceRepository.DidNotReceiveWithAnyArgs().AddAmountAsync(default, default, default, default, default, default);
+        await fixture.ShareRepository.DidNotReceiveWithAnyArgs().DeleteSharesBeforeInclusiveAsync(default, default, default, default, default);
+    }
+
+    [Theory]
+    [InlineData(PayoutScheme.PROP)]
+    [InlineData(PayoutScheme.PPLNS)]
+    [InlineData(PayoutScheme.PPLNSBF)]
+    public async Task AdjustedZeroDifficulty_IdentifiesHandlerFailureBeforeAnyRewardWrites(PayoutScheme kind)
+    {
+        var fixture = CreateFixture();
+        var pool = CreatePool("adjusted-zero", kind, 2m);
+        var id = pool.Config.Id;
+        var block = CreateBlock(id, 100);
+        block.Miner = "finder";
+        fixture.PayoutHandler.AdjustShareDifficulty(2).Returns(0d);
+        fixture.ShareRepository.ReadSharesBeforeAsync(fixture.ReadConnection, id, block.Created,
+            true, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(new[]
+                { CreateShare(id, "miner", 2, 1, block.Created) });
+        IPayoutScheme scheme = kind switch
+        {
+            PayoutScheme.PROP => new PROPPaymentScheme(fixture.ConnectionFactory, fixture.ShareRepository, fixture.BlockRepository, fixture.BalanceRepository),
+            PayoutScheme.PPLNS => new PPLNSPaymentScheme(fixture.ConnectionFactory, fixture.ShareRepository, fixture.BlockRepository, fixture.BalanceRepository),
+            _ => new PPLNSBFPaymentScheme(fixture.ConnectionFactory, fixture.ShareRepository, fixture.BlockRepository, fixture.BalanceRepository),
+        };
+        var error = await Assert.ThrowsAsync<System.IO.InvalidDataException>(() => scheme.UpdateBalancesAsync(
+            fixture.WriteConnection, fixture.Transaction, pool, fixture.PayoutHandler, block, 50m, CancellationToken.None));
+        var identity = JObject.Parse(error.Message.Split("share=")[1]);
+        Assert.Equal(2, identity["storedDifficulty"].Value<double>());
+        Assert.Equal(0, identity["adjustedDifficulty"].Value<double>());
         await fixture.BalanceRepository.DidNotReceiveWithAnyArgs().AddAmountAsync(default, default, default, default, default, default);
         await fixture.ShareRepository.DidNotReceiveWithAnyArgs().DeleteSharesBeforeInclusiveAsync(default, default, default, default, default);
     }

@@ -22,7 +22,7 @@ public class BitcoinWorkerContext : WorkerContextBase
     private bool jobsClosed;
     private int duplicateSubscribeWarning;
     internal double? AnnouncedDifficulty { get; set; }
-    internal (double Difficulty, double Limit)? CandidateCreditWarning { get; set; }
+    internal double? CandidateCreditWarning { get; set; }
     internal double? NegotiatedMinimumDifficulty { get; private set; }
     private double shareMultiplier = 1;
     private Func<double, double> difficultyValidator;

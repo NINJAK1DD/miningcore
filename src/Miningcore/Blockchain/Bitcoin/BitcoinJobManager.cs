@@ -253,7 +253,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
                         logger.Debug(() => $"Template update {blockTemplate?.Height}");
                 }
 
-                currentJob = job;
+                Volatile.Write(ref currentJob, job);
             }
 
             return (isNew, forceUpdate);
@@ -295,7 +295,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     {
         get
         {
-            var job = currentJob;
+            var job = Volatile.Read(ref currentJob);
             return job is MergedMining.MergedMiningBitcoinJob merged
                 ? Math.Min(merged.Difficulty, merged.AuxiliaryDifficulty) : job?.Difficulty;
         }

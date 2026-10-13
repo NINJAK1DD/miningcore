@@ -52,9 +52,11 @@ public class BitcoinMinimumDifficultyTests : TestBase
         internal JobManager(IComponentContext ctx, IMasterClock clock, IMessageBus bus) :
             base(ctx, clock, bus, new BitcoinExtraNonceProvider("minimum", null)) { }
         internal Action BeforeJob;
+        private int templates;
         internal void Seed(bool merged, string parentBits = "207fffff", string auxiliaryBits = "207fffff")
         {
             network = Network.RegTest;
+            var jobId = $"template-{++templates}";
             poolAddressDestination = new KeyId(new byte[20]);
             var template = new BlockTemplate
             {
@@ -68,7 +70,7 @@ public class BitcoinMinimumDifficultyTests : TestBase
                 var job = new MergedMiningBitcoinJob();
                 job.InitMerged(template, new AuxBlockTemplate
                     { Hash = new string('1', 64), Bits = auxiliaryBits, Height = 101 },
-                    "template", poolConfig, extraPoolConfig, clusterConfig, clock,
+                    jobId, poolConfig, extraPoolConfig, clusterConfig, clock,
                     poolAddressDestination, network, false, coin.ShareMultiplier,
                     coin.CoinbaseHasherValue, coin.HeaderHasherValue, coin.BlockHasherValue);
                 currentJob = job;
@@ -76,7 +78,7 @@ public class BitcoinMinimumDifficultyTests : TestBase
             else
             {
                 currentJob = new BitcoinJob();
-                currentJob.Init(template, "template", poolConfig, extraPoolConfig, clusterConfig, clock,
+                currentJob.Init(template, jobId, poolConfig, extraPoolConfig, clusterConfig, clock,
                     poolAddressDestination, network, false, coin.ShareMultiplier,
                     coin.CoinbaseHasherValue, coin.HeaderHasherValue, coin.BlockHasherValue);
             }
@@ -501,6 +503,79 @@ public class BitcoinMinimumDifficultyTests : TestBase
         Assert.Equal(count + 1, wire.JobsCreated);
         Assert.Equal(0.5, context.NegotiatedMinimumDifficulty);
         Assert.Same(dynamic, context.VarDiff);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task FallingChainCeiling_BroadcastLowersOnTargetVarDiffBeforeIssuingWork(bool merged, bool pending)
+    {
+        var (config, manager, clock, bus) = Fixture(merged);
+        manager.Seed(merged, "1c0ffff0", "1c0ffff0");
+        var time = new ManualTimeProvider();
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: !merged, merged: merged, difficulty: pending ? 0.25 : 8, varDiffTimeProvider: time,
+            varDiff: new VarDiffConfig { MinDiff = 0.25, TargetTime = 10, RetargetTime = 1, VariancePercent = 10 });
+        await Subscribe(wire, pending ? 0.25 : 8);
+        await wire.SendRequestAsync("mining.authorize", "miner.worker", "x");
+        Assert.True((await wire.ReadAsync())["result"].Value<bool>());
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        var old = Assert.Single(context.validJobs);
+        await wire.RetargetVarDiffAsync(false);
+        time.AdvanceMonotonic(TimeSpan.FromSeconds(10));
+        await wire.RetargetVarDiffAsync(false); // On-target: the periodic calculation does not retarget.
+        await Fence(wire);
+        if(pending) context.EnqueueNewDifficulty(8);
+        manager.Seed(merged, merged ? "1c0ffff0" : "1d00ffff", "1d00ffff");
+        await wire.AnnounceJobAsync(manager.GetJobForStratum().GetJobParams(false));
+        await Assignment(wire, 1);
+        await Fence(wire);
+        Assert.Equal(1, context.Difficulty);
+        Assert.False(context.HasPendingDifficulty);
+        Assert.NotNull(context.VarDiff);
+        Assert.Contains(old, context.validJobs);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task IncompatibleFloor_BroadcastKeepsPolicyAndBoundsWarningsAcrossMovingChainTargets(bool merged, bool deviceFloor)
+    {
+        var (config, manager, clock, bus) = Fixture(merged);
+        manager.Seed(merged, "1c0ffff0", "1c0ffff0");
+        await using var wire = new BitcoinBlake2bWireSession(container, clock, config, manager, bus,
+            canonical: !merged, merged: merged, difficulty: 8,
+            varDiff: new VarDiffConfig { MinDiff = deviceFloor ? 0.25 : 8, TargetTime = 10, RetargetTime = 1 });
+        await Subscribe(wire, 8);
+        await wire.SendRequestAsync("mining.authorize", "miner.worker", "x");
+        Assert.True((await wire.ReadAsync())["result"].Value<bool>());
+        var context = wire.Connection.ContextAs<BitcoinWorkerContext>();
+        if(deviceFloor)
+        {
+            await wire.SendRequestAsync("mining.configure", Minimum(8));
+            Assert.True((await wire.ReadAsync())["result"]["minimum-difficulty"].Value<bool>());
+        }
+        using var logs = new NLog.LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${message}" };
+        var logging = new NLog.Config.LoggingConfiguration();
+        logging.AddRule(NLog.LogLevel.Warn, NLog.LogLevel.Fatal, target);
+        logs.Configuration = logging;
+        wire.SetLogger(logs.GetLogger("incompatible-floor"));
+        foreach(var bits in new[] { "1d00ffff", "1d01fffe", "1d03fffc" })
+        {
+            manager.Seed(merged, merged ? "1c0ffff0" : bits, bits);
+            await wire.AnnounceJobAsync(manager.GetJobForStratum().GetJobParams(false));
+            Assert.Equal("mining.notify", (await wire.ReadAsync())["method"].Value<string>());
+            await Fence(wire);
+            Assert.Equal(8, context.Difficulty);
+        }
+        Assert.Single(target.Logs.Where(x => x.Contains("honest work can be under-credited")));
+        Assert.Equal(deviceFloor ? 0 : 1, target.Logs.Count(x => x.Contains("VarDiff MinDiff")));
+        Assert.NotNull(context.VarDiff);
     }
 
     [Theory]

@@ -22,6 +22,32 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## v0.3.0 pre-upgrade: settlement inputs and candidate credit
+
+PROP, PPLNS and PPLNSBF now fail closed on nonpositive or nonfinite stored,
+adjusted or network difficulty **across all coin families**. A bad legacy row or
+a handler adjustment returning zero stops settlement for that pool, including
+later blocks. Invalid-share diagnostics identify the pool, miner, timestamp and
+share/settlement heights without exposing IP/agent data. Rows are never silently
+ignored, removed or repriced.
+
+Back up shares and financial receipts, and run the
+[read-only pre-upgrade audit](../scripts/release/audit-settlement-shares.sql)
+before enabling affected pooled payouts. It explicitly checks PostgreSQL NaN
+and infinities as well as zero/negative values, and flags oversized finite
+credits for review. Positivity alone misses NaN. Audit and reconcile historical
+liabilities; one inflated retained PROP share can dominate a round. The query
+cannot validate custom `AdjustShareDifficulty` overrides or establish the
+legitimacy of old positive credits. See the
+[settlement audit procedure](bitcoin-minimum-difficulty.md#pre-upgrade-settlement-audit--all-coin-families).
+
+Bitcoin/merged/BLAKE2b candidates now receive credit bounded by immutable
+qualifying chain targets. Automatic difficulty is bounded by the easiest current
+chain target, and falling ceilings lower compatible dynamic assignments on the
+next broadcast. Explicit static/device/configured floors stay enforced and warn
+when incompatible. Other-family candidate accounting remains tracked in
+[#218](https://github.com/NINJAK1DD/miningcore/issues/218).
+
 ## Unreleased: in-flight difficulty assignments
 
 Static/NiceHash and minimum-difficulty assignments preserve original credit for

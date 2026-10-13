@@ -17,6 +17,7 @@ FRACTIONAL_PROOF = "NativeProof_FractionalAssignmentUsesRoundedCredit"
 FIXED_PROOF = "NativeProof_FixedIncreaseAfterDynamicAssignmentKeepsOriginalCredit"
 KASPA_CREDIT = "ProductionValidator_CreditsIssuedAssignmentAndExpiresOnlyRetiredWork"
 LIVE_FACTS = (
+    "SettlementAudit_DetectsSpecialAndInvalidLegacyRowsWithoutChangingData",
     "StaticDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit",
     "MinimumDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit",
     "NiceHashDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit",

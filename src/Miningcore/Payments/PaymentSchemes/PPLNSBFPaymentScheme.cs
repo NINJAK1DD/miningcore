@@ -198,6 +198,7 @@ public class PPLNSBFPaymentScheme : IPayoutScheme
 
                 var address = share.Miner;
                 var shareDiffAdjusted = payoutHandler.AdjustShareDifficulty(share.Difficulty);
+                ShareRewardMath.ValidateShare(share, shareDiffAdjusted, block.BlockHeight, logger);
 
                 // record attributed shares for diagnostic purposes
                 if(!shares.ContainsKey(address))

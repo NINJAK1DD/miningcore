@@ -1,5 +1,6 @@
 using Miningcore.Rpc;
 using System.Globalization;
+using System.Collections.Concurrent;
 using System.Reactive;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
@@ -51,6 +52,7 @@ public class BitcoinPool : PoolBase
     private BitcoinTemplate coin;
     private int directJobPipelineFailed;
     private readonly ConditionalWeakTable<StratumConnection, PublicationFailureState> publicationFailures = new();
+    private readonly ConcurrentDictionary<int, byte> incompatibleVarDiffPorts = new();
 
     private sealed class PublicationFailureState
     {
@@ -860,6 +862,7 @@ public class BitcoinPool : PoolBase
                 return;
             try
             {
+                EnforceChainDifficultyCeiling(connection);
                 // varDiff: if the client has a pending difficulty change, apply it now
                 if(context.ApplyPendingDifficulty() ||
                     context.AnnouncedDifficulty is { } announcedDifficulty && announcedDifficulty != context.Difficulty)
@@ -1027,18 +1030,51 @@ public class BitcoinPool : PoolBase
     protected override double MaximumVarDiff => Math.Min(CandidateDifficultyLimit,
         Math.Min(double.MaxValue, (double) BitcoinConstants.Diff1 * ShareMultiplier));
 
+    // Called under the assignment gate before a broadcast applies deferred work.
+    // A falling chain target must take effect even at an on-target share rate.
+    protected void EnforceChainDifficultyCeiling(StratumConnection connection)
+    {
+        var context = connection.ContextAs<BitcoinWorkerContext>();
+        if(context.VarDiff == null)
+            return;
+        var port = connection.LocalEndpoint.Port;
+        var options = context.VarDiff.Config ?? poolConfig.Ports[port].VarDiff;
+        if(options == null)
+            return;
+        var ceiling = Math.Min(MaximumVarDiff, context.MaximumDifficulty);
+        if(options.MinDiff > ceiling)
+        {
+            if(incompatibleVarDiffPorts.TryAdd(port, 0))
+            {
+                logger.Warn(() => $"Port {port} VarDiff MinDiff {options.MinDiff} exceeds the current chain ceiling {ceiling}; automatic retargeting is paused. Lower the configured floor.");
+                PublishTelemetry(TelemetryCategory.StratumAdmission, "vardiff-floor-above-network", TimeSpan.Zero);
+            }
+        }
+        else
+            incompatibleVarDiffPorts.TryRemove(port, out _);
+
+        ceiling = Math.Min(ceiling, options.MaxDiff ?? double.MaxValue);
+        // Keep configured and negotiated minima intact if there is no compatible
+        // range. Explicit static assignments are never silently weakened.
+        if(Math.Max(options.MinDiff, context.MinimumDifficulty) > ceiling)
+        {
+            WarnAboveCandidateDifficulty(connection);
+            return;
+        }
+        if((context.PendingDifficulty ?? context.Difficulty) > ceiling)
+            context.EnqueueNewDifficulty(ceiling);
+    }
+
     protected void WarnAboveCandidateDifficulty(StratumConnection connection)
     {
         var context = connection.ContextAs<BitcoinWorkerContext>();
         var limit = CandidateDifficultyLimit;
         if(context.Difficulty <= limit)
-        {
-            context.CandidateCreditWarning = null;
             return;
-        }
-        if(context.CandidateCreditWarning == (context.Difficulty, limit))
+        if(context.CandidateCreditWarning == context.Difficulty)
             return;
-        context.CandidateCreditWarning = (context.Difficulty, limit);
+        // A moving chain limit must not produce a warning per miner per block.
+        context.CandidateCreditWarning = context.Difficulty;
         logger.Warn(() => $"[{connection.ConnectionId}] Assignment difficulty {context.Difficulty} exceeds easiest chain difficulty {limit}. Candidate credit is capped; honest work can be under-credited and firmware can discard chain candidates. Lower the port/static/device floor.");
         PublishTelemetry(TelemetryCategory.StratumAdmission, "assignment-above-network", TimeSpan.Zero);
     }

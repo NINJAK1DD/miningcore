@@ -99,10 +99,17 @@ suggestion, password and NiceHash assignments. Explicit assignments above the
 easiest chain difficulty remain representable, but honest miners can receive
 less credit than their actual work and firmware can discard candidates below
 the assigned target. The pool emits a warning and `assignment-above-network`
-telemetry once per changed assignment/chain limit. Lower port/static/device
+telemetry once per changed oversized assignment difficulty, rather than on every
+chain-target movement. Lower port/static/device
 floors before operating a pooled reward scheme in that state. VarDiff cannot
 raise difficulty above the current chain limit; an incompatible configured
 minimum is not silently weakened and can prevent automatic retargeting.
+On a broadcast, compatible dynamic assignments (including queued work) are
+lowered to a falling chain ceiling before `set_difficulty` and `notify`, even
+when the miner's share rate is inside the target-time variance band. Static
+assignments and negotiated/configured minima remain enforced. A port `MinDiff`
+above the chain ceiling emits one warning and `vardiff-floor-above-network`
+telemetry per incompatibility episode per port; it is not silently lowered.
 
 PPLNS and PPLNSBF bound finite legacy ratios before decimal conversion. PROP
 rescales all round weights together rather than capping individual shares,
@@ -112,6 +119,54 @@ keep diagnostic totals as doubles with bounded unit formatting. These numeric
 protections do not determine whether old financial credits were legitimate.
 Already persisted liabilities are not rewritten; deployments
 that accepted shares on older code must audit historical credits before stable rollout.
+
+## Pre-upgrade settlement audit — all coin families
+
+The shared PROP, PPLNS and PPLNSBF calculations require **finite positive stored,
+adjusted and network difficulty**, for every coin family. A corrupt legacy row
+or an `AdjustShareDifficulty` override returning zero stops that pool's settlement
+cycle; later blocks stay unpaid until the cause is reconciled. Previously
+unvalidated zero/negative legacy share rows now fail closed. No row is silently
+skipped or deleted, and this policy also applies to non-Bitcoin pools.
+
+Before upgrading to v0.3.0, back up retained shares and financial receipts, then
+run the [read-only audit](../scripts/release/audit-settlement-shares.sql) against
+each deployment database with a role allowed to read `shares`:
+
+```sh
+psql "$MININGCORE_AUDIT_DSN" --set=ON_ERROR_STOP=1 --file=scripts/release/audit-settlement-shares.sql
+```
+
+The script uses a repeatable-read, read-only transaction. Its invalid-row summary
+uses this predicate, with explicit special-value checks:
+
+```sql
+SELECT poolid, count(*) AS invalid_rows
+FROM shares
+WHERE difficulty IS NULL OR networkdifficulty IS NULL
+   OR difficulty <= 0 OR networkdifficulty <= 0
+   OR difficulty IN ('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)
+   OR networkdifficulty IN ('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)
+GROUP BY poolid;
+```
+
+PostgreSQL treats `NaN > 0` as true and considers NaNs equal, so positivity alone
+cannot validate these rows; see its [floating-point special-value rules](https://www.postgresql.org/docs/current/datatype-numeric.html#DATATYPE-FLOAT).
+The script also returns a bounded identifying sample and flags positive finite
+credits above their recorded network difficulty without dividing potentially
+overflowing values. Those oversized rows require economic review, not automatic
+deletion: one inflated legacy share can dominate a PROP round. An empty invalid
+summary does not establish that historical credits or payouts were legitimate.
+The stored-value audit cannot detect an adjustment override rounding otherwise
+valid work to zero; review each deployed handler's adjustment policy as well.
+
+Invalid settlement logs and exceptions contain JSON-escaped pool/miner identity,
+the UTC creation timestamp, share and settlement block heights, and stored,
+adjusted and network difficulties. They omit IP/agent fields and exception
+stacks. Use those fields to locate the row or adjustment failure, reconcile the
+cause and historical liabilities under a reviewed plan, and retain an audit
+trail before resuming payouts. This change supplies no automatic repair or
+liability rewrite.
 
 Configure, subscribe, suggestions, static authorization and direct job publication
 share terminal assignment cleanup. A failure before a response attempt is logged
@@ -131,6 +186,10 @@ Malformed minimum envelopes exhaust admission and reach terminal refusal; port-e
 minima retain VarDiff, retargets use the current easiest chain ceiling, and
 floor/ceiling no-ops do not republish work. Warnings and suppressed-failure labels
 have regressions, as do extreme PROP/PPLNSBF allocations and quantity formatting.
+Broadcast regressions cover falling parent/auxiliary/BLAKE2b ceilings, queued
+assignments, incompatible device/port floors and bounded warning frequency.
+The PostgreSQL audit fixture exercises zero, negative, NaN, both infinities and
+nullable imported fields, plus valid oversized credits, without changing rows.
 `BitcoinBlake2bMinimumDifficultyTests` pins single publication and retained targets.
 Existing VarDiff/static-authorization contention, publication closure and
 accepted-credit tests exercise the shared gate and failure boundaries.

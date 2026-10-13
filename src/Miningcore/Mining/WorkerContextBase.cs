@@ -138,6 +138,8 @@ public class WorkerContextBase
     }
 
     public bool HasPendingDifficulty => pendingDifficulty.HasValue;
+    // Read only while owning the assignment gate, like ApplyPendingDifficulty.
+    internal double? PendingDifficulty => pendingDifficulty;
 
     public virtual bool ApplyPendingDifficulty()
     {

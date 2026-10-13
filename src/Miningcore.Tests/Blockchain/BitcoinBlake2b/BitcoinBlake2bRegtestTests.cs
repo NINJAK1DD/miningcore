@@ -449,7 +449,8 @@ public class BitcoinBlake2bRegtestTests : TestBase
             Assert.Equal(50m, block.Reward);
             Assert.Equal(49m, await handler.UpdateBlockRewardBalancesAsync(con, tx, miningPool, block, CancellationToken.None));
             if(ledger != null)
-                await ledger.AssertSchemeSettlementAsync(acceptedShares[index], pool, block, handler);
+                await ledger.AssertSchemeSettlementAsync(acceptedShares[index], pool, block, handler,
+                    failPublication || zeroAverage || wallStep != 0 ? 0.75 : 1);
         }
         await balances.Received(4).AddAmountAsync(con, tx, Arg.Any<string>(), recipient.ToString(), 1m, Arg.Any<string>());
 

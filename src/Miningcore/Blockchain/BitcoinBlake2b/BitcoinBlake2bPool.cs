@@ -294,6 +294,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
                 var context = connection.ContextAs<BitcoinWorkerContext>();
                 if(IsAdmissionClosed(connection) || !context.IsSubscribed)
                     return;
+                EnforceChainDifficultyCeiling(connection);
                 // Keep pending VarDiff, its announcement and the immutable target
                 // snapshot in the same critical section as miner-driven changes.
                 if(context.ApplyPendingDifficulty())
