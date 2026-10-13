@@ -93,38 +93,38 @@ WHERE difficulty > 0 AND difficulty < 'Infinity'::double precision
 GROUP BY poolid
 ORDER BY poolid;
 
--- Merged auxiliary-only candidates can inflate a parent row even when D <= its
--- parent network difficulty. Parent=2, Auxiliary=3 in ShareAccountingRole.
--- EXISTS counts each parent once, even if an imported event has multiple peers.
+-- Merged candidates can inflate either peer even when D <= its own network
+-- difficulty. Parent=2, Auxiliary=3 in ShareAccountingRole; require opposite roles.
+-- EXISTS counts each nonoversized row once even if an event has multiple peers.
 -- These raw comparisons require common difficulty units on both projections.
-SELECT p.poolid, count(*) AS paired_parent_rows,
+SELECT p.poolid, count(*) AS paired_nonoversized_rows,
        min(p.created) AS first_created, max(p.created) AS last_created
 FROM shares p
-WHERE p.accountingid IS NOT NULL AND p.accountingrole = 2
+WHERE p.accountingid IS NOT NULL AND p.accountingrole IN (2, 3)
   AND p.difficulty > 0 AND p.difficulty < 'Infinity'::double precision
   AND p.networkdifficulty > 0 AND p.networkdifficulty < 'Infinity'::double precision
   AND p.difficulty <= p.networkdifficulty
   AND EXISTS (
       SELECT 1 FROM shares a
       WHERE a.accountingid = p.accountingid AND a.poolid <> p.poolid
-        AND a.accountingrole = 3
+        AND a.accountingrole IN (2, 3) AND a.accountingrole <> p.accountingrole
         AND a.difficulty > 0 AND a.difficulty < 'Infinity'::double precision
         AND a.networkdifficulty > 0 AND a.networkdifficulty < 'Infinity'::double precision
         AND a.difficulty > a.networkdifficulty)
 GROUP BY p.poolid
 ORDER BY p.poolid;
 
-SELECT p.poolid, p.accountingid, p.miner, p.created, p.blockheight,
+SELECT p.poolid, p.accountingid, p.accountingrole, p.miner, p.created, p.blockheight,
        p.difficulty, p.networkdifficulty
 FROM shares p
-WHERE p.accountingid IS NOT NULL AND p.accountingrole = 2
+WHERE p.accountingid IS NOT NULL AND p.accountingrole IN (2, 3)
   AND p.difficulty > 0 AND p.difficulty < 'Infinity'::double precision
   AND p.networkdifficulty > 0 AND p.networkdifficulty < 'Infinity'::double precision
   AND p.difficulty <= p.networkdifficulty
   AND EXISTS (
       SELECT 1 FROM shares a
       WHERE a.accountingid = p.accountingid AND a.poolid <> p.poolid
-        AND a.accountingrole = 3
+        AND a.accountingrole IN (2, 3) AND a.accountingrole <> p.accountingrole
         AND a.difficulty > 0 AND a.difficulty < 'Infinity'::double precision
         AND a.networkdifficulty > 0 AND a.networkdifficulty < 'Infinity'::double precision
         AND a.difficulty > a.networkdifficulty)
@@ -133,7 +133,8 @@ LIMIT 100;
 
 -- PPS has no accountingrole column. Flag each valid nonoversized receipt once
 -- when another pool has a valid oversized receipt with the same accountingid.
--- Verify parent/auxiliary direction from deployed topology or archived roles.
+-- Both parent/auxiliary directions deserve review; roles are not needed to flag
+-- these receipts. Deployment topology/archives remain useful for reconciliation.
 -- No shares join: retained PPS evidence remains useful after statistical pruning.
 WITH valid_receipts AS (
     SELECT * FROM pps_share_credits

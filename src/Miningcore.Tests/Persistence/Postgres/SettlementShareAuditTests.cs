@@ -134,7 +134,23 @@ public class SettlementShareAuditTests
                 ('s-clean', 10, 100, '00000000-0000-0000-0000-000000000010', 2),
                 ('s-aux', 10, 20, '00000000-0000-0000-0000-000000000010', 3),
                 ('s-already-oversized', 100, 10, '00000000-0000-0000-0000-000000000011', 2),
-                ('s-aux', 100, 1, '00000000-0000-0000-0000-000000000011', 3);
+                ('s-aux', 100, 1, '00000000-0000-0000-0000-000000000011', 3),
+                ('s-reverse-parent', 10, 1, '00000000-0000-0000-0000-000000000014', 2),
+                ('s-reverse-parent-extra', 20, 2, '00000000-0000-0000-0000-000000000014', 2),
+                ('s-reverse-aux', 10, 100, '00000000-0000-0000-0000-000000000014', 3),
+                ('s-reverse-same-pool', 10, 1, '00000000-0000-0000-0000-000000000015', 2),
+                ('s-reverse-same-pool', 10, 100, '00000000-0000-0000-0000-000000000015', 3),
+                ('s-reverse-wrong-role', 10, 100, '00000000-0000-0000-0000-000000000016', 3),
+                ('s-reverse-parent', 10, 1, '00000000-0000-0000-0000-000000000016', 1),
+                ('s-reverse-invalid-peer', 10, 100, '00000000-0000-0000-0000-000000000017', 3),
+                ('s-reverse-parent', 10, 'NaN', '00000000-0000-0000-0000-000000000017', 2),
+                ('s-reverse-invalid-aux', 'NaN', 100, '00000000-0000-0000-0000-000000000018', 3),
+                ('s-reverse-parent', 10, 1, '00000000-0000-0000-0000-000000000018', 2),
+                ('s-aux-same-role', 10, 100, '00000000-0000-0000-0000-000000000019', 3),
+                ('s-aux', 10, 1, '00000000-0000-0000-0000-000000000019', 3),
+                ('s-parent-same-role', 10, 100, '00000000-0000-0000-0000-000000000020', 2),
+                ('s-parent', 10, 1, '00000000-0000-0000-0000-000000000020', 2),
+                ('s-reverse-null-id', 10, 100, NULL, 3), ('s-reverse-parent', 10, 1, NULL, 2);
             INSERT INTO pps_share_credits(poolid, difficulty, networkdifficulty, calculatedamount, creditedamount, accountingid) VALUES
                 ('pps-parent', 10, 100, 1000, 999, '00000000-0000-0000-0000-000000000001'),
                 ('pps-aux', 10, 1, 100, 99, '00000000-0000-0000-0000-000000000001'),
@@ -156,7 +172,10 @@ public class SettlementShareAuditTests
                 ('pps-aux', 100, 1, 1, 1, '00000000-0000-0000-0000-000000000011'),
                 ('pps-invalid-money-peer', 10, 100, 1, 1, '00000000-0000-0000-0000-000000000012'),
                 ('pps-aux', 10, 1, 'NaN', 1, '00000000-0000-0000-0000-000000000012'),
-                ('pps-extreme', 1e308, 1e-300, 100, 99, '00000000-0000-0000-0000-000000000013');
+                ('pps-extreme', 1e308, 1e-300, 100, 99, '00000000-0000-0000-0000-000000000013'),
+                ('pps-reverse-parent', 10, 1, 100, 99, '00000000-0000-0000-0000-000000000014'),
+                ('pps-reverse-parent-extra', 20, 2, 200, 199, '00000000-0000-0000-0000-000000000014'),
+                ('pps-reverse-aux', 10, 100, 3000, 2999, '00000000-0000-0000-0000-000000000014');
             """, connection))
             await setup.ExecuteNonQueryAsync();
 
@@ -182,15 +201,21 @@ public class SettlementShareAuditTests
             Assert.True(await reader.ReadAsync());
             Assert.Equal("s-parent", reader.GetString(0));
             Assert.Equal(2L, reader.GetInt64(1));
+            Assert.Equal("paired_nonoversized_rows", reader.GetName(1));
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("s-reverse-aux", reader.GetString(0));
+            Assert.Equal(1L, reader.GetInt64(1));
             Assert.False(await reader.ReadAsync());
             Assert.True(await reader.NextResultAsync());
-            var identified = 0;
-            while(await reader.ReadAsync())
+            foreach(var expected in new (string Pool, int Id, short Role)[]
+                { ("s-parent", 1, 2), ("s-parent", 2, 2), ("s-reverse-aux", 14, 3) })
             {
-                Assert.Equal("s-parent", reader.GetString(0));
-                Assert.Equal(Guid.Parse($"00000000-0000-0000-0000-{++identified:D12}"), reader.GetGuid(1));
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal(expected.Pool, reader.GetString(0));
+                Assert.Equal(Guid.Parse($"00000000-0000-0000-0000-{expected.Id:D12}"), reader.GetGuid(1));
+                Assert.Equal(expected.Role, reader.GetInt16(2));
             }
-            Assert.Equal(2, identified);
+            Assert.False(await reader.ReadAsync());
             Assert.True(await reader.NextResultAsync());
             Assert.True(await reader.ReadAsync());
             // PPS pairs are found without any corresponding pps-parent shares.
@@ -199,15 +224,21 @@ public class SettlementShareAuditTests
             Assert.Equal(2L, reader.GetInt64(1));
             Assert.Equal(3000m, reader.GetDecimal(2));
             Assert.Equal(2998m, reader.GetDecimal(3));
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("pps-reverse-aux", reader.GetString(0));
+            Assert.Equal(1L, reader.GetInt64(1));
+            Assert.Equal(3000m, reader.GetDecimal(2));
+            Assert.Equal(2999m, reader.GetDecimal(3));
             Assert.False(await reader.ReadAsync());
             Assert.True(await reader.NextResultAsync());
-            identified = 0;
-            while(await reader.ReadAsync())
+            foreach(var expected in new (string Pool, int Id)[]
+                { ("pps-parent", 1), ("pps-parent", 2), ("pps-reverse-aux", 14) })
             {
-                Assert.Equal("pps-parent", reader.GetString(0));
-                Assert.Equal(Guid.Parse($"00000000-0000-0000-0000-{++identified:D12}"), reader.GetGuid(1));
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal(expected.Pool, reader.GetString(0));
+                Assert.Equal(Guid.Parse($"00000000-0000-0000-0000-{expected.Id:D12}"), reader.GetGuid(1));
             }
-            Assert.Equal(2, identified);
+            Assert.False(await reader.ReadAsync());
         }
         Assert.Equal(before, await SnapshotAsync(connection));
     }

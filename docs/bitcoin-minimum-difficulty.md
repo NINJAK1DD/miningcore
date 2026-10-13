@@ -193,17 +193,19 @@ an exact migration amount or an upper bound for the complete ledger. Qualifying
 auxiliary targets can imply a lower cap; historical reward bases, fees, carry,
 applied credits and payouts still need reconciliation.
 
-**Merged pools must be reviewed as paired accounting events.** An auxiliary-only
-candidate can have `auxiliary network difficulty < credited difficulty <= parent
-network difficulty`. The oversized auxiliary projection makes its paired parent
-row suspect even though the parent's raw comparison is clean. The additional
-share reports link `accountingid` with parent role `2` and auxiliary role `3`,
-returning counts and a bounded identifying sample of otherwise nonoversized
-parents. The PPS reports independently link receipts across different pools by
+**Merged pools must be reviewed as paired accounting events in both directions.**
+An auxiliary-only candidate can have `auxiliary network difficulty < credited
+difficulty <= parent network difficulty`; a parent-only candidate can expose the
+reverse case when the auxiliary chain is harder. An oversized projection makes
+its paired peer suspect even though that peer's raw comparison is clean. The
+share reports link `accountingid` across opposite parent role `2` and auxiliary
+role `3`, returning `paired_nonoversized_rows` and a bounded identifying sample
+including the flagged row's role. The PPS reports independently link receipts across different pools by
 `accountingid`, returning `paired_nonoversized_receipts`, `paired_calculated_amount`,
-`paired_credited_amount` and a bounded sample. PPS receipts do not store roles;
-confirm parent/auxiliary direction from deployment configuration or archived
-share roles. Each parent/peer is counted once even if an import has several
+`paired_credited_amount` and a bounded sample. PPS receipts do not store roles,
+but either direction deserves review without a topology lookup. Deployment
+configuration and archived roles still inform financial reconciliation.
+Each nonoversized peer is counted once even if an import has several
 matching oversized peers. Rows already oversized remain in the direct report.
 The paired monetary sums are the full amounts of the flagged nonoversized peers,
 not their estimated excess and not totals of all retained receipts.
@@ -213,7 +215,7 @@ pairing reports. Invalid peers are reported separately, not used in sums.
 Missing identities/roles, mismatched payout schemes, pruned counterparts or
 missing archives make pairing coverage incomplete. Review both ledgers and the
 configured pool relationships; an empty per-pool or paired report cannot clear
-the parent when the corresponding evidence is unavailable. No accounting ID or
+either pool when the corresponding evidence is unavailable. No accounting ID or
 relationship is inferred from miner addresses or coincident timestamps.
 
 **Raw oversized comparisons only apply to common difficulty units**, where
