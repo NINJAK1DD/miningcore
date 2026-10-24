@@ -74,6 +74,47 @@ public class ExactCandidateTargetTests
     private sealed class Alph(byte[] digest) : AlephiumJob
     { protected override void HashProof(ReadOnlySpan<byte> input, Span<byte> output) => digest.CopyTo(output); }
 
+    [Fact]
+    public void AlephiumTargetPaddingDoesNotChangeValueAndOutOfRangeTargetsFailBeforeIssuance()
+    {
+        var value = "80abcd" + new string('0', 56);
+        var expected = (double) new BigRational(AlephiumConstants.Diff1Target,
+            new BigInteger(Convert.FromHexString(value), isUnsigned: true, isBigEndian: true));
+        foreach(var encoded in new[] { value, "00" + value, "0000" + value })
+        {
+            var source = new AlephiumJob();
+            source.Init(new AlephiumBlockTemplate { JobId = "padding", TargetBlob = encoded });
+            Assert.Equal(expected, CandidateShareCredit.Limit(source), 12);
+        }
+        foreach(var encoded in new[] { new string('0', 64), "01" + new string('0', 64) })
+            Assert.Throws<System.IO.InvalidDataException>(() => new AlephiumJob().Init(
+                new AlephiumBlockTemplate { JobId = "invalid", TargetBlob = encoded }));
+    }
+
+    [Theory]
+    [InlineData(-1)] [InlineData(0)] [InlineData(1)]
+    public void AlephiumUnsignedMantissaTargetIsPreservedWithoutBitcoinReencoding(int offset)
+    {
+        // Valid Alephium compact bits 20 80 ab cd expand to this full target.
+        var target = uint256.Parse("80abcd" + new string('0', 58));
+        var targetInteger = new BigInteger(target.ToBytes(), isUnsigned: true);
+        Assert.True(new Target(targetInteger).ToUInt256() < target);
+        var raw = (targetInteger + offset).ToByteArray(true, true);
+        var (from, to) = AlephiumUtils.BlockChainIndex(raw);
+        var source = new Alph(raw);
+        source.Init(new AlephiumBlockTemplate { JobId = "unsigned-mantissa", TargetBlob = target.ToString(), HeaderBlob = "00", FromGroup = from, ToGroup = to });
+        var limit = (double) new BigRational(AlephiumConstants.Diff1Target, targetInteger);
+        Assert.Equal(limit, CandidateShareCredit.Limit(source), 12);
+        var context = new AlephiumWorkerContext();
+        context.Init(offset <= 0 ? limit * 1000 : limit / 2, null, new MockMasterClock());
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(), new MockMasterClock(), "unsigned-mantissa", false);
+        worker.SetContext(context);
+        var issued = source.ForWorker(context);
+        var share = issued.ProcessShare(worker, new string('0', AlephiumConstants.NonceLength * 2));
+        Assert.Equal(offset <= 0, share.IsBlockCandidate);
+        Assert.Equal((offset <= 0 ? limit : limit / 2) / AlephiumConstants.ShareMultiplier, share.Difficulty, 8);
+    }
+
     [Theory]
     [InlineData(0)] [InlineData(1)] [InlineData(2)]
     public void AlephiumFullWidthProofAtAndJustAboveCompactTargetKeepsExactBoundary(int offset)

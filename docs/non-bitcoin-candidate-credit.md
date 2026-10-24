@@ -224,3 +224,9 @@ and cancel deferred automatic work, but acknowledge without republishing work.
 Zano applies deferred difficulty once per publication; V2 notifications use that
 single result and precede work when it changes. A deterministic template-update
 interleaving regression covers broadcast for both protocol versions and V1 get-work.
+
+Alephium's [target format](https://github.com/alephium/alephium/blob/master/protocol/src/main/scala/org/alephium/protocol/model/Target.scala)
+uses an unsigned 24-bit compact mantissa. The initializer preserves the supplied
+expanded target directly, rather than passing it through Bitcoin's signed
+compact representation. Tests exercise an `0x80abcd` mantissa below, at, and
+above the exact target, covering valid candidates that re-encoding would miss.

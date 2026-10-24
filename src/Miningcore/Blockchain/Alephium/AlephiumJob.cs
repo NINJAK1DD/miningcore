@@ -199,9 +199,15 @@ public class AlephiumJob : Miningcore.Mining.ICandidateCreditJob
         Contract.RequiresNonNull(blockTemplate);
         
         JobId = blockTemplate.JobId;
-        var target = new Target(blockTemplate.TargetBlob.HexToReverseByteArray().AsSpan().ToBigInteger());
-        Difficulty = (double) new BigRational(AlephiumConstants.Diff1Target * 1024, target.ToBigInteger() * 1024) * AlephiumConstants.Pow2xDiff1TargetNumZero;
-        blockTargetValue = target.ToUInt256();
+        // Alephium uses an unsigned 24-bit compact mantissa. Re-encoding its
+        // expanded target through Bitcoin's signed compact format loses bits.
+        var target = new BigInteger(blockTemplate.TargetBlob.HexToByteArray(), isUnsigned: true, isBigEndian: true);
+        if(target.Sign <= 0 || target.GetBitLength() > 256)
+            throw new InvalidDataException("Alephium target must be a positive 256-bit value");
+        var targetBytes = target.ToByteArray(isUnsigned: true, isBigEndian: false);
+        Array.Resize(ref targetBytes, 32);
+        blockTargetValue = new uint256(targetBytes);
+        Difficulty = (double) new BigRational(AlephiumConstants.Diff1Target, target) * AlephiumConstants.Pow2xDiff1TargetNumZero;
         BlockTemplate = blockTemplate;
 
         jobParams = new AlephiumJobParams
