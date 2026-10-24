@@ -32,8 +32,8 @@ public class DifficultyReviewHardeningTests
         var time = new ManualTimeProvider();
         var worker = new WorkerContextBase();
         worker.Init(10, null, new MockMasterClock(), time, grace);
-        var source = new object();
-        var old = worker.JobForDifficulty(source, (_, _) => new object(), "job");
+        var source = new IssuedDifficultyTests.PolicyJob();
+        var old = worker.JobForDifficulty(source, (_, _) => new IssuedDifficultyTests.PolicyJob(), "job");
         Assert.Same(source, old); // First issuance needs no worker copy.
         worker.SetDifficulty(40);
         time.AdvanceMonotonic(TimeSpan.FromSeconds(grace));
@@ -123,6 +123,7 @@ public class DifficultyReviewHardeningTests
         var worker = new WorkerContextBase();
         worker.Init(10, null, new MockMasterClock());
         var source = new Miningcore.Blockchain.Progpow.ProgpowJob();
+        NonBitcoinCandidateCreditTests.ConfigurePolicy(source);
         typeof(Miningcore.Blockchain.Bitcoin.BitcoinJob).GetProperty("JobId").SetValue(source, "backing");
         var old = source.ForWorker(worker, () => throw new InvalidOperationException("unused"), preserveId: true);
         worker.SetDifficulty(40);
@@ -138,6 +139,7 @@ public class DifficultyReviewHardeningTests
         var hash = new Sha256D();
         var job = new KaspaJob(hash, hash, hash);
         typeof(KaspaJob).GetProperty("JobId").SetValue(job, id);
+        NonBitcoinCandidateCreditTests.ConfigurePolicy(job);
         return job;
     }
 
@@ -179,6 +181,7 @@ public class DifficultyReviewHardeningTests
             var result = new AlephiumJob();
             typeof(AlephiumJob).GetProperty("JobId").SetValue(result, counter.NextWorkerJobId("X"));
             typeof(AlephiumJob).GetProperty("BlockTemplate").SetValue(result, new AlephiumBlockTemplate { FromGroup = 0, ToGroup = 1 });
+            NonBitcoinCandidateCreditTests.ConfigurePolicy(result);
             return result;
         }
         var source = Source();
@@ -228,6 +231,7 @@ public class DifficultyReviewHardeningTests
             typeof(AlephiumJob).GetProperty("JobId").SetValue(result, id);
             typeof(AlephiumJob).GetProperty("BlockTemplate").SetValue(result,
                 new AlephiumBlockTemplate { FromGroup = group, ToGroup = 3 });
+            NonBitcoinCandidateCreditTests.ConfigurePolicy(result);
             return result;
         }
         var source = Template("A", 0);
@@ -300,6 +304,7 @@ public class DifficultyReviewHardeningTests
         var worker = new BeamWorkerContext();
         worker.Init(10, null, new MockMasterClock());
         var template = new BeamJob();
+        NonBitcoinCandidateCreditTests.ConfigurePolicy(template);
         typeof(BeamJob).GetProperty("JobId").SetValue(template, "12345");
         var old = template.ForWorker(worker);
         worker.AddJob(old, 4);

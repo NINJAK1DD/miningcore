@@ -49,6 +49,7 @@ public class ProgpowSubmissionBoundaryTests
         var context = new ProgpowWorkerContext { ExtraNonce1 = "abcdef01" };
         context.Init(10, null, clock);
         var source = new Proof();
+        NonBitcoinCandidateCreditTests.ConfigurePolicy(source);
         var job = (Proof) source.ForWorker(context, preserveId: true);
         context.AddJob(new ProgpowWorkerJob("1", context.ExtraNonce1) { Job = job }, 4);
         var worker = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(), clock, "prefix", true);
