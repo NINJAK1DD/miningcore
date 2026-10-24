@@ -119,8 +119,8 @@ public class IssuedDifficultyTests
     {
         var worker = new WorkerContextBase();
         worker.Init(10, null, new MockMasterClock());
-        var oldTemplate = new object();
-        var newTemplate = new object();
+        object oldTemplate = new PolicyJob();
+        object newTemplate = new PolicyJob();
         worker.RegisterBlobDifficulty(oldTemplate, 1);
         worker.SetDifficulty(40);
         worker.RegisterBlobDifficulty(newTemplate, 1);
@@ -136,7 +136,7 @@ public class IssuedDifficultyTests
         var worker = new WorkerContextBase();
         var time = new ManualTimeProvider();
         worker.Init(10, null, new MockMasterClock(), time);
-        var old = Issue(worker, new object());
+        var old = Issue(worker, new PolicyJob());
         worker.SetDifficulty(40);
         worker.PreviousDifficulty = 1;
         worker.VarDiff = new VarDiffContext { LastUpdate = DateTime.MaxValue };

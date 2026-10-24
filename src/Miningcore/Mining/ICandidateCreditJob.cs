@@ -20,8 +20,7 @@ internal static class CandidateShareCredit
             return;
         var difficulty = candidate.CandidateDifficulty;
         Cap(1, difficulty);
-        policies.Remove(job);
-        policies.Add(job, new(difficulty));
+        policies.AddOrUpdate(job, new(difficulty));
     }
 
     private static Policy Read(object job) => policies.GetValue(job, static value =>
@@ -41,11 +40,7 @@ internal static class CandidateShareCredit
     internal static double Limit(object job) => job is ValueTuple<object, uint> blob
         ? Limit(blob.Item1) : Read(job).Difficulty;
 
-    internal static void Prepare(object job)
-    {
-        if(job is ICandidateCreditJob)
-            _ = Read(job);
-    }
+    internal static void Prepare(object job) => _ = Read(job);
 
     internal static void Copy(object template, object snapshot)
     {

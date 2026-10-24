@@ -20,7 +20,7 @@ candidate exceptions, including inherited custom validators.
 
 | Family and exception paths | Candidate ceiling in validator units | Stored credit and settlement normalization |
 | --- | --- | --- |
-| Equihash; Veruscoin; inherited Bitcoin Gold and other Equihash jobs | job `Difficulty`, using that network's `Diff1BValue / T` | Stored directly; identity adjustment |
+| Equihash; Veruscoin; inherited Bitcoin Gold and other Equihash jobs | network `Diff1BValue / T`, using the exact selected candidate target | Stored directly; identity adjustment |
 | ProgPoW; Firo, Kiiro, Realichain, Telestai; inherited variants | concrete validator's `Diff1 / T * m` | Divide by `m`; identity adjustment |
 | Kaspa; Astrix, Karlsen, Spectre, WagLayla; inherited variants | `KaspaConstants.Diff1b / T * m` (Spectre uses the same numerator) | Divide by `m`; Kaspa payout adjustment uses `2^31 * MinHash`; Spectre uses `2^7 * MinHash` |
 | Ergo | `Target(B).Difficulty`, in the same units as the Autolykos proof validator | Divide by `ErgoConstants.ShareMultiplier`; payout handler multiplies it back |
@@ -206,3 +206,21 @@ and [Xelis difficulty verification](https://github.com/xelis-project/xelis-block
 interpret the full big-endian hash as an integer and compare it directly with
 the decoded target. Compact target conversion must not round the proof hash.
 Xelis also retains the full computed block target when constructing the job.
+
+Kaspa and its custom verifiers interpret the full proof digest as a little-endian
+integer; Alephium interprets the full digest as big-endian. Neither proof is
+rounded through the compact-target representation, matching
+[Kaspa proof verification](https://github.com/kaspanet/kaspad/blob/master/domain/consensus/utils/pow/pow.go)
+and [Alephium proof verification](https://github.com/alephium/alephium/blob/master/protocol/src/main/scala/org/alephium/protocol/mining/PoW.scala). Boundary regressions cover
+the exact decoded target and the next integer above it, including accepted-proof
+duplicate ownership. Equihash policies derive from the selected `blockTargetValue`
+and network numerator, including Verus `MergedBits`/`MergeMineBits`, independently
+of the separately reported parent difficulty.
+
+Unknown policy types are rejected at issuance, for both snapshots and blobs.
+Validated template-cache replacement uses an atomic weak-table update. Repeated
+identical Nexa/Satoshicash suggestions still establish their persistent floor
+and cancel deferred automatic work, but acknowledge without republishing work.
+Zano applies deferred difficulty once per publication; V2 notifications use that
+single result and precede work when it changes. A deterministic template-update
+interleaving regression covers broadcast for both protocol versions and V1 get-work.

@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using Miningcore.Blockchain.Alephium;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Ethereum;
+using Miningcore.Blockchain.Equihash;
 using Miningcore.Blockchain.Kaspa;
 using Miningcore.Blockchain.Progpow;
 using Miningcore.Blockchain.Warthog;
@@ -81,6 +82,17 @@ public class NonBitcoinCandidateCreditTests
         {
             Set(job, "shareMultiplier", 1d);
             var numerator = job is Miningcore.Blockchain.Xelis.XelisJob ? Miningcore.Blockchain.Xelis.XelisConstants.Diff1Target : BitcoinConstants.Diff1;
+            var bytes = (numerator / (BigInteger) ceiling).ToByteArray(true, false);
+            Array.Resize(ref bytes, 32);
+            Set(job, "blockTargetValue", new uint256(bytes));
+            Set(job, "Difficulty", ceiling);
+            CandidateShareCredit.Initialize(job);
+            return;
+        }
+        if(job is Miningcore.Blockchain.Equihash.EquihashJob)
+        {
+            var numerator = EquihashConstants.ZCashDiff1b;
+            Set(job, "networkParams", new EquihashCoinTemplate.EquihashNetworkParams { Diff1 = numerator.ToString("x") });
             var bytes = (numerator / (BigInteger) ceiling).ToByteArray(true, false);
             Array.Resize(ref bytes, 32);
             Set(job, "blockTargetValue", new uint256(bytes));

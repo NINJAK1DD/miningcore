@@ -314,10 +314,15 @@ public class SatoshicashPool : PoolBase
             await connection.RespondAsync(response);
             if(requestedDiff > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty)
             {
+                var previousDifficulty = context.Difficulty;
                 context.SetDifficulty(requestedDiff, DifficultyOrigin.Device);
-                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-                if(context.IsSubscribed)
-                    await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
+                WarnAboveCandidateTarget(connection);
+                if(context.Difficulty != previousDifficulty)
+                {
+                    await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                    if(context.IsSubscribed)
+                        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
+                }
             }
         }, ct);
     }

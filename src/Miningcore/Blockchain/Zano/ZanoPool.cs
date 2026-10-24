@@ -555,8 +555,7 @@ public class ZanoPool : PoolBase
             if(!context.IsAuthorized)
                 throw new StratumException(StratumError.MinusOne, "unauthorized");
 
-            var changedDifficulty = context.ApplyPendingDifficulty();
-            var job = CreateWorkerJob(connection);
+            var job = CreateWorkerJob(connection, out var changedDifficulty);
             if(changedDifficulty && context.ProtocolVersion == 2)
                 await connection.NotifyAsync(ZanoStratumMethods.SetDifficulty, new object[] { context.Difficulty });
 
@@ -684,10 +683,19 @@ public class ZanoPool : PoolBase
 
     #endregion // Protocol V1 handlers
 
-    private object[] CreateWorkerJob(StratumConnection connection)
+    private object[] CreateWorkerJob(StratumConnection connection) => CreateWorkerJob(connection, out _);
+
+    private object[] CreateWorkerJob(StratumConnection connection, out bool changedDifficulty)
+    {
+        changedDifficulty = connection.Context.ApplyPendingDifficulty();
+        return CreateWorkerJobForCurrentAssignment(connection);
+    }
+
+    // The caller owns the assignment gate and has already applied its deferred
+    // assignment once. Template updates cannot silently apply another retarget.
+    private object[] CreateWorkerJobForCurrentAssignment(StratumConnection connection)
     {
         var context = connection.ContextAs<ZanoWorkerContext>();
-        context.ApplyPendingDifficulty();
         WarnAboveCandidateTarget(connection);
         var job = manager.PrepareWorkerJob(context.Difficulty);
 
@@ -727,8 +735,7 @@ public class ZanoPool : PoolBase
         {
             var context = connection.ContextAs<ZanoWorkerContext>();
 
-            var changedDifficulty = context.ApplyPendingDifficulty();
-            var job = CreateWorkerJob(connection);
+            var job = CreateWorkerJob(connection, out var changedDifficulty);
 
             switch(context.ProtocolVersion)
             {
@@ -989,7 +996,7 @@ public class ZanoPool : PoolBase
         {
             var context = connection.ContextAs<ZanoWorkerContext>();
 
-            var job = CreateWorkerJob(connection);
+            var job = CreateWorkerJobForCurrentAssignment(connection);
 
             switch(context.ProtocolVersion)
             {

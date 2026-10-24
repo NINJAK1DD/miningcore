@@ -13,11 +13,10 @@ public class ShareStats
     public int InvalidShares { get; set; }
 }
 
-internal enum DifficultyOrigin { Endpoint, Automatic, MinerRequested, Static, Device }
+internal enum DifficultyOrigin { Automatic, Static, Device }
 
 public class WorkerContextBase
 {
-    internal DifficultyOrigin ActiveDifficultyOrigin { get; private set; } = DifficultyOrigin.Endpoint;
     internal DifficultyOrigin PendingDifficultyOrigin { get; private set; } = DifficultyOrigin.Automatic;
     internal double? ExplicitDifficultyFloor { get; private set; }
     internal double MinimumVarDiffDifficulty => Math.Max(MinimumDifficulty, ExplicitDifficultyFloor ?? 0);
@@ -129,7 +128,6 @@ public class WorkerContextBase
         blobDifficulties.Clear();
         pendingDifficulty = null;
         this.difficulty = difficulty;
-        ActiveDifficultyOrigin = DifficultyOrigin.Endpoint;
         ExplicitDifficultyFloor = null;
         PendingDifficultyOrigin = DifficultyOrigin.Automatic;
         LastActivity = clock.Now;
@@ -189,8 +187,7 @@ public class WorkerContextBase
             // Record provenance even for a no-op: accepting a device floor can
             // constrain future automatic assignments without retiring current work.
             pendingDifficulty = null;
-            ActiveDifficultyOrigin = origin;
-            if(origin is DifficultyOrigin.MinerRequested or DifficultyOrigin.Static or DifficultyOrigin.Device)
+            if(origin is DifficultyOrigin.Static or DifficultyOrigin.Device)
                 ExplicitDifficultyFloor = difficulty;
             if(difficulty == Difficulty)
                 return;

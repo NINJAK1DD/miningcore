@@ -56,7 +56,7 @@ public class StratumConnectionTests : TestBase
         var time = new ManualTimeProvider();
         var worker = new WorkerContextBase();
         worker.Init(10, null, clock, time);
-        var old = worker.JobForDifficulty(new object(), (_, _) => new object(), "1");
+        var old = worker.JobForDifficulty(new Miningcore.Tests.Mining.IssuedDifficultyTests.PolicyJob(), (_, _) => new Miningcore.Tests.Mining.IssuedDifficultyTests.PolicyJob(), "1");
         worker.SetDifficulty(40);
         var connection = new StratumConnection(logger, rmsm, clock, "receipt-test", false);
         connection.SetContext(worker);

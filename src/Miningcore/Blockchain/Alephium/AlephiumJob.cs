@@ -110,6 +110,8 @@ public class AlephiumJob : Miningcore.Mining.ICandidateCreditJob
         }
     }
 
+    protected virtual void HashProof(ReadOnlySpan<byte> data, Span<byte> hash) => hasher.Digest(data, hash);
+
     protected virtual Share ProcessShareInternal(StratumConnection worker, string nonce)
     {
         var context = worker.ContextAs<AlephiumWorkerContext>();
@@ -130,20 +132,20 @@ public class AlephiumJob : Miningcore.Mining.ICandidateCreditJob
         
         // I know, the following looks weird but it's Alephium blockHash calculation method: https://wiki.alephium.org/mining/integration/#calculating-the-blockhash
         Span<byte> tmpHashBytes = stackalloc byte[32];
-        hasher.Digest(headerNonceBytes, tmpHashBytes);
+        HashProof(headerNonceBytes, tmpHashBytes);
         Span<byte> hashBytes = stackalloc byte[32];
-        hasher.Digest(tmpHashBytes, hashBytes);
+        HashProof(tmpHashBytes, hashBytes);
         
         var (fromGroup, toGroup) = AlephiumUtils.BlockChainIndex(hashBytes);
         // validate blockchainIndex
         if (fromGroup != BlockTemplate.FromGroup || toGroup != BlockTemplate.ToGroup)
             throw new AlephiumStratumException(AlephiumStratumError.InvalidBlockChainIndex, $"invalid block chain index, expected: ['fromGroup': {BlockTemplate.FromGroup}, 'toGroup': {BlockTemplate.ToGroup}], received['fromGroup': {fromGroup}, 'toGroup': {toGroup}]");
         
-        var targetHashBytes = new Target(new BigInteger(hashBytes, true, true));
-        var hashBytesValue = targetHashBytes.ToUInt256();
+        var hashInteger = new BigInteger(hashBytes, isUnsigned: true, isBigEndian: true);
+        var hashBytesValue = new uint256(hashBytes.ToNewReverseArray());
         
         // calc share-diff
-        var shareDiff = (double) new BigRational(AlephiumConstants.Diff1Target * 1024, targetHashBytes.ToBigInteger()) / 1024;
+        var shareDiff = (double) new BigRational(AlephiumConstants.Diff1Target * 1024, hashInteger) / 1024;
         // diff check
 
         // check if the share meets the much harder block difficulty (block candidate)

@@ -93,7 +93,6 @@
         <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
         <PackageReference Include="JetBrains.Annotations" Version="2026.2.0" />
         <PackageReference Include="MailKit" Version="4.18.1" />
-        <!-- Pin the patched transitive CMS dependency; NuGet audit fails closed otherwise. -->
         <!-- Pin the patched transitive dependency until all upstream packages resolve
              Pkcs >= 10.0.13; remove only after restore/audit confirms that floor. -->
         <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />

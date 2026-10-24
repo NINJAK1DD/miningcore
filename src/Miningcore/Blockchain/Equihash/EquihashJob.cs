@@ -20,7 +20,8 @@ namespace Miningcore.Blockchain.Equihash;
 
 public class EquihashJob : Miningcore.Mining.ICandidateCreditJob
 {
-    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => Difficulty;
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty =>
+        (double) new BigRational(networkParams.Diff1BValue, new System.Numerics.BigInteger(blockTargetValue.ToBytes(), isUnsigned: true));
 
     internal EquihashJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>

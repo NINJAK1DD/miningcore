@@ -18,7 +18,7 @@ public class CandidatePolicyHardeningTests
     {
         internal int Reads;
         internal double Target = 10;
-        public double CandidateDifficulty { get { Reads++; return Target; } }
+        public double CandidateDifficulty { get { System.Threading.Interlocked.Increment(ref Reads); return Target; } }
     }
 
     [Fact]
@@ -55,6 +55,31 @@ public class CandidatePolicyHardeningTests
         }
         Assert.Throws<InvalidDataException>(() => CandidateShareCredit.Limit(new object()));
         Assert.Equal(double.MaxValue, CandidateShareCredit.Limit(new BitcoinJob()));
+    }
+
+    [Fact]
+    public void UnknownPoliciesFailBeforeAnySnapshotOrBlobIssuance()
+    {
+        var worker = new WorkerContextBase();
+        worker.Init(100, null, new MockMasterClock());
+        var copied = false;
+        Assert.Throws<InvalidDataException>(() => worker.JobForDifficulty(new object(), (_, _) => { copied = true; return new object(); }, "unknown"));
+        Assert.False(copied);
+        Assert.Throws<InvalidDataException>(() => worker.RegisterBlobDifficulty(new object(), 1));
+        var bitcoin = worker.JobForDifficulty(new BitcoinJob(), (_, _) => throw new Exception(), "bitcoin");
+        Assert.Equal(100, worker.ValidateShareDifficulty(200, true, bitcoin));
+    }
+
+    [Fact]
+    public void ConcurrentInitializationAndReadsReplacePolicyAtomically()
+    {
+        var job = new Policy();
+        CandidateShareCredit.Initialize(job);
+        System.Threading.Tasks.Parallel.For(0, 1000, i =>
+        {
+            if(i % 2 == 0) CandidateShareCredit.Initialize(job);
+            Assert.Equal(10, CandidateShareCredit.Limit(job));
+        });
     }
 
     [Fact]

@@ -70,7 +70,10 @@ on a network decline. If a configured/device floor exceeds the ceiling, queued
 automatic increases are discarded and oversized work drops to the least
 excessive legal floor; the floor stays enforced and ordinary VarDiff resumes
 when the range becomes compatible. Explicit miner/device/static assignments
-remain intact across broadcasts and later automatic updates. Kaspa password
+remain intact across broadcasts and later automatic updates.
+`mining.suggest_difficulty` and `mining.suggest_target` now establish persistent
+VarDiff minimums: miners using suggests as a starting hint will no longer see
+automatic retargets below their last accepted suggestion. Kaspa password
 hints with `EnableStaticDifficulty=false` remain automatic initial seeds and
 are capped before first publication. Embedded target protocols, including Zano,
 apply pending assignments before capturing work. Bitcoin policy hooks remain
@@ -87,8 +90,14 @@ shared by snapshots. Historical credit is not repriced. Audit affected rows
 and retained financial evidence using the family-specific scaling documented
 in [non-Bitcoin candidate accounting](non-bitcoin-candidate-credit.md).
 
-Handshake and Xelis compare full proof hashes directly, avoiding lossy compact-target
-rounding at the candidate boundary.
+Handshake, Xelis, Kaspa and its variants, and Alephium compare full proof hashes
+directly, avoiding lossy compact-target rounding in candidate detection and proof
+difficulty. Equihash/Verus candidate ceilings use the exact selected block target,
+including Verus merged-target overrides, independently of displayed parent
+difficulty. Unknown policies fail before work issuance. Repeated identical Nexa
+and Satoshicash suggestions establish the floor without republishing work. Zano
+applies deferred difficulty once per publication so template updates cannot
+silently change the issued difficulty after the notification decision.
 
 New `miningcore_difficulty_assignment_total{pool,outcome}` events distinguish
 assignment compatibility from Stratum admission. Outcomes are fixed labels:

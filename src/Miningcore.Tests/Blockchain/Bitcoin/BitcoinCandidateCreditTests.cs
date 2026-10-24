@@ -105,7 +105,7 @@ public class BitcoinCandidateCreditTests : TestBase
         context.EnqueueNewDifficulty(2);
         context.ApplyPendingDifficulty();
         Assert.Equal(8, context.Difficulty);
-        var old = context.JobForDifficulty(new object(), (_, _) => new object(), "policy");
+        var old = context.JobForDifficulty(new Miningcore.Tests.Mining.IssuedDifficultyTests.PolicyJob(), (_, _) => new Miningcore.Tests.Mining.IssuedDifficultyTests.PolicyJob(), "policy");
         context.Init(1, null, clock);
         Assert.Null(context.NegotiatedMinimumDifficulty);
         Assert.Equal(1, context.Difficulty);
