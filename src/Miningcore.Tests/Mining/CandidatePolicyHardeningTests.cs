@@ -86,6 +86,21 @@ public class CandidatePolicyHardeningTests
         Assert.True(worker.Difficulty > 30);
     }
 
+    [Fact]
+    public void ExplicitFloorCannotMaskInvalidAutomaticAssignments()
+    {
+        var worker = new WorkerContextBase();
+        worker.Init(10, null, new MockMasterClock());
+        worker.SetDifficulty(100, DifficultyOrigin.Device);
+        foreach(var invalid in new[] { 0d, -1, double.NaN, double.PositiveInfinity, double.NegativeInfinity })
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => worker.SetDifficulty(invalid));
+            Assert.Throws<ArgumentOutOfRangeException>(() => worker.EnqueueNewDifficulty(invalid));
+            Assert.Equal(100, worker.Difficulty);
+            Assert.False(worker.HasPendingDifficulty);
+        }
+    }
+
     // Inspect actual compiled calls, including async state machines and derived
     // custom verifiers. A newly introduced consumer must explicitly choose policy.
     [Fact]

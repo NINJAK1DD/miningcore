@@ -146,6 +146,7 @@ public class WorkerContextBase
 
     internal void EnqueueNewDifficulty(double difficulty, DifficultyOrigin origin)
     {
+        difficulty = ValidateAssignment(difficulty);
         pendingDifficulty = ValidateAssignment(origin == DifficultyOrigin.Automatic
             ? Math.Max(difficulty, ExplicitDifficultyFloor ?? 0) : difficulty);
         PendingDifficultyOrigin = origin;
@@ -180,6 +181,7 @@ public class WorkerContextBase
 
     internal void SetDifficulty(double difficulty, DifficultyOrigin origin)
     {
+        difficulty = ValidateAssignment(difficulty);
         difficulty = ValidateAssignment(origin == DifficultyOrigin.Automatic
             ? Math.Max(difficulty, ExplicitDifficultyFloor ?? 0) : difficulty);
         lock(assignmentSync)

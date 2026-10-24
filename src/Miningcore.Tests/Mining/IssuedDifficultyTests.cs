@@ -30,7 +30,7 @@ public class IssuedDifficultyTests
         worker.Init(10, config, wall, time);
         worker.SetDifficulty(20); // Dynamic assignment already occurred.
         worker.VarDiff.LastUpdate = wall.Now;
-        var template = new PolicyJob();
+        object template = new PolicyJob();
         var old = Issue(worker, template);
         if(mode == "nicehash") worker.UserAgent = "NiceHash";
         worker.VarDiff = null;
@@ -62,7 +62,7 @@ public class IssuedDifficultyTests
         var worker = new WorkerContextBase();
         var time = new ManualTimeProvider();
         worker.Init(10, null, new MockMasterClock(), time);
-        var template = new PolicyJob();
+        object template = new PolicyJob();
         var a = Issue(worker, template);
         worker.SetDifficulty(20);
         var b = Issue(worker, template);
@@ -102,7 +102,7 @@ public class IssuedDifficultyTests
         var worker = new WorkerContextBase();
         var time = new ManualTimeProvider();
         worker.Init(10, null, new MockMasterClock(), time);
-        var template = new PolicyJob();
+        object template = new PolicyJob();
         worker.RegisterBlobDifficulty(template, 1);
         worker.SetDifficulty(20);
         worker.RegisterBlobDifficulty(template, 2);
