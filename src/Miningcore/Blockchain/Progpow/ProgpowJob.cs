@@ -24,8 +24,12 @@ public class ProgpowJobParams
     public bool CleanJobs { get; set; }
 }
 
-public class ProgpowJob : BitcoinJob
+public class ProgpowJob : BitcoinJob, Miningcore.Mining.ICandidateCreditJob
 {
+    protected virtual System.Numerics.BigInteger CandidateDiff1 => RavencoinConstants.Diff1;
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty =>
+        (double) new BigRational(CandidateDiff1, new System.Numerics.BigInteger(blockTargetValue.ToBytes(), isUnsigned: true)) * shareMultiplier;
+
     protected IProgpowCache progpowHasher;
     private ProgpowJobParams notificationTemplate;
 

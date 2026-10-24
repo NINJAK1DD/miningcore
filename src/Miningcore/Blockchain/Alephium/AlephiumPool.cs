@@ -237,6 +237,8 @@ public class AlephiumPool : PoolBase
     private AlephiumJobParams CreateWorkerJob(StratumConnection connection)
     {
         var context = connection.ContextAs<AlephiumWorkerContext>();
+        context.ApplyPendingDifficulty();
+        WarnAboveCandidateTarget(connection);
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
         var job = (AlephiumJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId("X"));
 
@@ -369,6 +371,8 @@ public class AlephiumPool : PoolBase
 
         return result;
     }
+
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => AlephiumConstants.ShareMultiplier;
 

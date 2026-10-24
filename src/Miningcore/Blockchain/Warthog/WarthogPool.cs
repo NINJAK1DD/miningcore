@@ -211,6 +211,7 @@ public class WarthogPool : PoolBase
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
+        WarnAboveCandidateTarget(connection);
         var context = connection.ContextAs<WarthogWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 4;
         var job = (WarthogJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
@@ -338,6 +339,8 @@ public class WarthogPool : PoolBase
 
         return result;
     }
+
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => 1;
 

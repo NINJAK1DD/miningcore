@@ -214,6 +214,7 @@ public class XelisPool : PoolBase
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
+        WarnAboveCandidateTarget(connection);
         var context = connection.ContextAs<XelisWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
         var job = (XelisJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
@@ -330,6 +331,8 @@ public class XelisPool : PoolBase
         return result;
     }
 
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
+
     public override double ShareMultiplier => coin.ShareMultiplier;
 
     #region Overrides
@@ -337,6 +340,8 @@ public class XelisPool : PoolBase
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         coin = pc.Template.As<XelisCoinTemplate>();
+        if(coin.ShareMultiplier != 1d)
+            throw new PoolStartupException("Xelis requires shareMultiplier=1 for coherent wire targets and accounting", pc.Id);
         extraPoolConfig = pc.Extra.SafeExtensionDataAs<XelisPoolConfigExtra>();
 
         base.Configure(pc, cc);

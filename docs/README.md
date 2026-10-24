@@ -77,3 +77,5 @@ The machine-readable configuration reference is
 starting configuration is [`config.example.json`](../config.example.json). Release-specific changes
 that affect operators are recorded after the installation and upgrade procedures in the
 [release guide](releases.md).
+
+- [Non-Bitcoin candidate accounting credit](non-bitcoin-candidate-credit.md)

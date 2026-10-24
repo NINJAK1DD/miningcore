@@ -15,8 +15,10 @@ using Contract = Miningcore.Contracts.Contract;
 
 namespace Miningcore.Blockchain.Nexa;
 
-public class NexaJob
+public class NexaJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => Difficulty * shareMultiplier;
+
     internal NexaJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {

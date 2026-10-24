@@ -683,6 +683,7 @@ public class ZanoPool : PoolBase
 
     private object[] CreateWorkerJob(StratumConnection connection)
     {
+        WarnAboveCandidateTarget(connection);
         var context = connection.ContextAs<ZanoWorkerContext>();
         var job = manager.PrepareWorkerJob(context.Difficulty);
 
@@ -761,6 +762,8 @@ public class ZanoPool : PoolBase
     {
         Cryptonote.CryptonoteDifficulty.ValidateFullTargetPool(pc);
         coin = pc.Template.As<ZanoCoinTemplate>();
+        if(coin.ShareMultiplier != 1d)
+            throw new PoolStartupException("Zano requires shareMultiplier=1 for coherent wire targets and accounting", pc.Id);
 
         base.Configure(pc, cc);
     }
@@ -968,6 +971,8 @@ public class ZanoPool : PoolBase
 
         return result;
     }
+
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => coin.ShareMultiplier;
 

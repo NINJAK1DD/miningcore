@@ -12,8 +12,10 @@ using Contract = Miningcore.Contracts.Contract;
 
 namespace Miningcore.Blockchain.Zano;
 
-public class ZanoJob
+public class ZanoJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => BlockTemplate.Difficulty;
+
     public ZanoJob(GetBlockTemplateResponse blockTemplate, byte[] instanceId,
         ZanoCoinTemplate coin, PoolConfig poolConfig, ClusterConfig clusterConfig, string prevHash, IProgpowCache progpowHasher)
     {
@@ -35,6 +37,8 @@ public class ZanoJob
         bytes.CopyTo(heightBytes[4..]);
 
         Height = heightBytes.ToHexString(true);
+        if(coin.ShareMultiplier != 1d)
+            throw new ArgumentOutOfRangeException(nameof(shareMultiplier), "Zano requires shareMultiplier=1");
         shareMultiplier = coin.ShareMultiplier;
 
         blobType = coin.BlobType;

@@ -175,6 +175,8 @@ public class BeamPool : PoolBase
     private object[] CreateWorkerJob(StratumConnection connection)
     {
         var context = connection.ContextAs<BeamWorkerContext>();
+        context.ApplyPendingDifficulty();
+        WarnAboveCandidateTarget(connection);
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 4;
         var job = (BeamJob) manager.GetJobForStratum().ForWorker(context);
 
@@ -484,6 +486,8 @@ public class BeamPool : PoolBase
         var result = shares / interval;
         return result;
     }
+
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => 1;
     

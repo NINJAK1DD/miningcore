@@ -18,6 +18,8 @@ namespace Miningcore.Blockchain.Progpow.Custom.Telestai;
 
 public class TelestaiJob : ProgpowJob
 {
+    protected override System.Numerics.BigInteger CandidateDiff1 => TelestaiConstants.Diff1;
+
     public override (Share Share, string BlockHex) ProcessShareInternal(ILogger logger,
         StratumConnection worker, ulong nonce, string inputHeaderHash, string mixHash)
     {

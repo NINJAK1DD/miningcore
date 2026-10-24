@@ -211,6 +211,7 @@ public class HandshakePool : PoolBase
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
+        WarnAboveCandidateTarget(connection);
         var context = connection.ContextAs<HandshakeWorkerContext>();
         var job = (HandshakeJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
 
@@ -375,6 +376,8 @@ public class HandshakePool : PoolBase
 
         return result;
     }
+
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => coin.ShareMultiplier;
 

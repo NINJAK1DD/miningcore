@@ -238,6 +238,7 @@ public class KaspaPool : PoolBase
 
     private object[] CreateWorkerJob(StratumConnection connection)
     {
+        WarnAboveCandidateTarget(connection);
         var context = connection.ContextAs<KaspaWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
         var job = (KaspaJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId("D"));
@@ -377,6 +378,8 @@ public class KaspaPool : PoolBase
 
         return result;
     }
+
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => coin.ShareMultiplier;
 

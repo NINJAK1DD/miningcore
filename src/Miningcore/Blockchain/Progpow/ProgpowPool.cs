@@ -212,6 +212,7 @@ public class ProgpowPool : PoolBase
 
     private object CreateWorkerJob(StratumConnection connection, bool update)
     {
+        WarnAboveCandidateTarget(connection);
         var context = connection.ContextAs<ProgpowWorkerContext>();
         var job = new ProgpowWorkerJob(NextJobId(), context.ExtraNonce1);
 
@@ -352,6 +353,8 @@ public class ProgpowPool : PoolBase
 
         return result;
     }
+
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => coin.ShareMultiplier;
     

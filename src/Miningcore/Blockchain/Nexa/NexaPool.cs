@@ -199,6 +199,7 @@ public class NexaPool : PoolBase
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
+        WarnAboveCandidateTarget(connection);
         var context = connection.ContextAs<NexaWorkerContext>();
         var job = (NexaJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
 
@@ -348,6 +349,8 @@ public class NexaPool : PoolBase
 
         return result;
     }
+
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => coin.ShareMultiplier;
 

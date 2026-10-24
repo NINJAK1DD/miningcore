@@ -51,8 +51,10 @@ public class KaspaXoShiRo256PlusPlus
     }
 }
 
-public class KaspaJob
+public class KaspaJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => (double) new BigRational(KaspaConstants.Diff1b, new System.Numerics.BigInteger(blockTargetValue.ToBytes(), isUnsigned: true)) * shareMultiplier;
+
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Share, Kaspad.RpcBlock> candidateBlocks = new();
     internal Kaspad.RpcBlock GetBlockCandidate(Share share) => candidateBlocks.TryGetValue(share, out var block) ? block :
         throw new InvalidOperationException("No validated block candidate");

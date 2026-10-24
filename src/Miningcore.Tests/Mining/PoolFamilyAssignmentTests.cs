@@ -491,6 +491,52 @@ public class PoolFamilyAssignmentTests : TestBase
         Assert.Equal(55, worker.Difficulty);
     }
 
+    public static IEnumerable<object[]> CandidateManagedFamilies => Families.Where(f => f != "Bitcoin" && !NeedsNative(f)).Select(f => new object[] { f });
+    public static IEnumerable<object[]> CandidateNativeFamilies => Families.Where(NeedsNative).Select(f => new object[] { f });
+
+    [Theory]
+    [MemberData(nameof(CandidateManagedFamilies))]
+    public Task CandidateCeilingsBoundQueuedAndFallingAssignmentsOnTcp(string family) => CandidateCeilingPublication(family);
+
+    [LinuxNativeTheory]
+    [MemberData(nameof(CandidateNativeFamilies))]
+    public Task NativeCandidateCeilingsBoundQueuedAndFallingAssignmentsOnTcp(string family) => CandidateCeilingPublication(family);
+
+    [Fact]
+    public Task EthereumV1_CandidateCeilingsBoundEmbeddedTargetsOnTcp() => CandidateCeilingPublication("Ethereum", 1);
+
+    private async Task CandidateCeilingPublication(string family, int protocol = 2)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        var worker = fixture.Connection.Context;
+        if(worker is EthereumWorkerContext ethereum) ethereum.ProtocolVersion = protocol;
+        worker.EnqueueNewDifficulty(80);
+        fixture.SetCandidateCeiling(20);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.InRange(worker.Difficulty, 19.99, 20.01);
+        Assert.False(worker.HasPendingDifficulty);
+        fixture.SetCandidateCeiling(5);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.InRange(worker.Difficulty, 4.99, 5.01);
+        worker.VarDiff = null;
+        worker.SetDifficulty(100);
+        fixture.SetCandidateCeiling(3);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.Equal(100, worker.Difficulty);
+        var warnings = fixture.Warnings.Logs.Count(x => x.Contains("Assignment ", StringComparison.Ordinal));
+        Assert.Equal(1, warnings);
+        fixture.SetCandidateCeiling(2);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.Equal(warnings, fixture.Warnings.Logs.Count(x => x.Contains("Assignment ", StringComparison.Ordinal)));
+        Assert.Equal(100, worker.Difficulty);
+        Assert.True(fixture.Connection.IsAlive);
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
     private sealed class LinuxNativeTheoryAttribute : TheoryAttribute
     {
         public LinuxNativeTheoryAttribute()
@@ -648,6 +694,7 @@ public class PoolFamilyAssignmentTests : TestBase
             else if(family is not ("Ethereum" or "Kaspa" or "Conceal" or "Cryptonote" or "Zano"))
                 SetField(manager, "rpc", rpc);
             job = ReadyJob(family, config, cluster);
+            NonBitcoinCandidateCreditTests.ConfigurePolicy(job);
             SetField(manager, "currentJob", job);
             if(family == "Equihash")
                 SetProperty(manager, "ChainConfig", ((EquihashCoinTemplate) coin).GetNetwork(NBitcoin.ChainName.Mainnet));
@@ -683,6 +730,13 @@ public class PoolFamilyAssignmentTests : TestBase
         }
 
         internal Task Idle() => (Task) Invoke(Pool, "UpdateVarDiffAsync", Connection, true, stop.Token);
+        internal void SetCandidateCeiling(double ceiling)
+        {
+            job = ReadyJob(family, Pool.Config, cluster);
+            NonBitcoinCandidateCreditTests.ConfigurePolicy(job, ceiling);
+            SetField(manager, "currentJob", job);
+        }
+
         internal void RemoveTemplateForFault() => SetField(manager, "currentJob", null);
         internal Task SuggestDifficulty() => DispatchRequest(new JsonRpcRequest("mining.suggest_difficulty",
             family == "Nexa" ? (object) 55d : new object[] { 55d }, 2));

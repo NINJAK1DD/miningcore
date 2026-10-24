@@ -19,8 +19,10 @@ using Contract = Miningcore.Contracts.Contract;
 
 namespace Miningcore.Blockchain.Satoshicash;
 
-public class SatoshicashJob : BitcoinJob
+public class SatoshicashJob : BitcoinJob, Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => Difficulty * shareMultiplier;
+
     protected virtual byte[] SerializeHeader(Span<byte> coinbaseHash, uint nTime, uint nonce, byte[] hashRandomXSCash)
     {
         // build merkle-root

@@ -200,6 +200,7 @@ public class SatoshicashPool : PoolBase
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
+        WarnAboveCandidateTarget(connection);
         var context = connection.ContextAs<SatoshicashWorkerContext>();
         var job = (SatoshicashJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
 
@@ -349,6 +350,8 @@ public class SatoshicashPool : PoolBase
 
         return result;
     }
+
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => coin.ShareMultiplier;
 

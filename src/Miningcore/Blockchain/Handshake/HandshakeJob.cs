@@ -29,8 +29,10 @@ public class HandshakeTransactionOutput
     public uint Type;
 }
 
-public class HandshakeJob
+public class HandshakeJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => Difficulty * shareMultiplier;
+
     internal HandshakeJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {

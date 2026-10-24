@@ -17,8 +17,10 @@ using NBitcoin;
 
 namespace Miningcore.Blockchain.Xelis;
 
-public class XelisJob
+public class XelisJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => Difficulty * shareMultiplier;
+
     internal XelisJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
@@ -175,6 +177,8 @@ public class XelisJob
         BlockHeader = blockHeader;
         BlockTemplate = blockTemplate;
         JobId = jobId;
+        if(shareMultiplier != 1d)
+            throw new ArgumentOutOfRangeException(nameof(shareMultiplier), "Xelis requires shareMultiplier=1");
         this.shareMultiplier = shareMultiplier;
 
         this.network = network;

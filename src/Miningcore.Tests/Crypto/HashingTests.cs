@@ -236,7 +236,7 @@ public class HashingTests : TestBase
     public void Zanonote_LoadsReviewedNativeEntryPoints()
     {
         var handle = NativeLibrary.Load("libzanonote.so", typeof(HashingTests).Assembly,
-            DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.SafeDirectories);
+            DllImportSearchPath.AssemblyDirectory | DllImportSearchPath.SafeDirectories);
 
         try
         {

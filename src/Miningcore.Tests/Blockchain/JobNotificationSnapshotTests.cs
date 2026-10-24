@@ -179,6 +179,7 @@ public class JobNotificationSnapshotTests : TestBase
         // Exercise actual pool issuance and queueing with a ready manager job,
         // including the interval before the pool has received its first broadcast.
         var (_, template, flagIndex, job) = CreateArrayJob(family);
+        Miningcore.Tests.Mining.NonBitcoinCandidateCreditTests.ConfigurePolicy(job);
         var (poolType, managerType, contextType) = family switch
         {
             "equihash" or "verus" => (typeof(EquihashPool), typeof(EquihashJobManager), typeof(EquihashWorkerContext)),

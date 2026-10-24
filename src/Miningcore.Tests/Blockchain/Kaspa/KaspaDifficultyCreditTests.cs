@@ -225,4 +225,29 @@ public class KaspaDifficultyCreditTests
             (KaspaConstants.Diff1b * 4 / (long) Difficulty).ToByteArray(true, false).CopyTo(result);
         }
     }
+
+    [LinuxNativeTheory]
+    [MemberData(nameof(Validators))]
+    public void CandidateCreditUsesHashTargetAndMultiplierForEveryValidator(string validator, double proofDifficulty)
+    {
+        var clock = new MockMasterClock();
+        var context = new KaspaWorkerContext { ExtraNonce1 = "00000001" };
+        context.Init(4000, null, clock);
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(), clock, "candidate", false);
+        worker.SetContext(context);
+        var source = (KaspaJob) Activator.CreateInstance(JobTypes.Single(type => type.Name == validator), new Sha256D(), new Sha256D(), new FixedProof { Difficulty = proofDifficulty * 4 });
+        typeof(KaspaJob).GetProperty("JobId").SetValue(source, "1");
+        typeof(KaspaJob).GetProperty("BlockTemplate").SetValue(source, new Kaspad.RpcBlock { Header = new Kaspad.RpcBlockHeader { DaaScore = 101, Timestamp = 123 } });
+        typeof(KaspaJob).GetProperty("prePowHashBytes").SetValue(source, Enumerable.Range(1, 32).Select(x => (byte) x).ToArray());
+        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(source, new Target(KaspaConstants.Diff1b).ToUInt256());
+        typeof(KaspaJob).GetField("shareMultiplier", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(source, 4d);
+        var old = source.ForWorker(context);
+        context.SetDifficulty(8000);
+        var accepted = old.ProcessShare(worker, "0000000000000001");
+        Assert.True(accepted.IsBlockCandidate);
+        Assert.Equal(1, accepted.Difficulty);
+        Assert.Equal(1ul, source.GetBlockCandidate(accepted).Header.Nonce);
+        var current = source.ForWorker(context);
+        Assert.Equal(StratumError.DuplicateShare, Assert.Throws<StratumException>(() => current.ProcessShare(worker, "0000000000000001")).Code);
+    }
 }

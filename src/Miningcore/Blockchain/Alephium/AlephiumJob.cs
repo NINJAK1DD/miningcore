@@ -23,8 +23,10 @@ public class AlephiumJobParams
     public string TargetBlob { get; set; }
 }
 
-public class AlephiumJob
+public class AlephiumJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => Difficulty / AlephiumConstants.Pow2xDiff1TargetNumZero;
+
     private AlephiumJob sourceTemplate;
     internal AlephiumJob SourceTemplate => sourceTemplate ?? this;
     internal AlephiumJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>

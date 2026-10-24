@@ -212,6 +212,8 @@ public class CryptonotePool : PoolBase
     private CryptonoteJobParams CreateWorkerJob(StratumConnection connection)
     {
         var context = connection.ContextAs<CryptonoteWorkerContext>();
+        context.ApplyPendingDifficulty();
+        WarnAboveCandidateTarget(connection);
         var job = new CryptonoteWorkerJob(NextJobId(), context.Difficulty);
 
         manager.PrepareWorkerJob(job, out var blob, out var target);
@@ -481,6 +483,8 @@ public class CryptonotePool : PoolBase
         var result = shares / interval;
         return result;
     }
+
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => 1;
 

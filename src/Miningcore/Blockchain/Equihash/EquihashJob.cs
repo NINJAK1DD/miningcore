@@ -18,8 +18,10 @@ using NBitcoin.Zcash;
 
 namespace Miningcore.Blockchain.Equihash;
 
-public class EquihashJob
+public class EquihashJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => Difficulty;
+
     internal EquihashJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {

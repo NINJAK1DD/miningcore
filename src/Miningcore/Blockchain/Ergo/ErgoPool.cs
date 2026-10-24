@@ -192,6 +192,8 @@ public class ErgoPool : PoolBase
     private object[] CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
         var context = connection.ContextAs<ErgoWorkerContext>();
+        context.ApplyPendingDifficulty();
+        WarnAboveCandidateTarget(connection);
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 4;
         var job = (ErgoJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
 
@@ -322,6 +324,8 @@ public class ErgoPool : PoolBase
 
         return result;
     }
+
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => ErgoConstants.ShareMultiplier;
 

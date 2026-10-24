@@ -86,4 +86,32 @@ public class BeamGpuProofTests
         Assert.Equal(BeamConstants.BeamRpcDuplicateShare, job.ProcessShare(worker, nonce, solution).stratumError);
         Assert.Equal(BeamConstants.BeamRpcDuplicateShare, job.ProcessShare(worker, nonce.ToUpperInvariant(), solution.ToUpperInvariant()).stratumError);
     }
+
+    [LinuxNativeTheory]
+    [InlineData(2)]
+    [InlineData(1000000000)]
+    public void PhysicalProofCandidateCapsCreditAndKeepsDuplicateOwnership(double assignment)
+    {
+        using var stream = typeof(BeamGpuProofTests).Assembly.GetManifestResourceStream("Miningcore.Tests.Fixtures.Beam.gpu-beamhash3.json");
+        using var reader = new StreamReader(stream);
+        var proof = JObject.Parse(reader.ReadToEnd())["proofs"][0];
+        var clock = new MockMasterClock();
+        var context = new BeamWorkerContext();
+        context.Init(assignment, null, clock);
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(), clock, "beam-candidate", true);
+        worker.SetContext(context);
+        var source = new BeamJob();
+        source.Init(new BeamBlockTemplate { JobId = "candidate", Height = 1000000, Input = new string('0', 64), PowType = 2,
+            PackedDifficulty = BeamUtils.PackedDifficulty(1) }, "candidate", new PoolConfig { Template = new BeamCoinTemplate() },
+            new ClusterConfig(), clock, new BeamHash());
+        var old = source.ForWorker(context);
+        context.SetDifficulty(assignment * 2);
+        var nonce = proof.Value<string>("nonce");
+        var solution = proof.Value<string>("solution");
+        var accepted = old.ProcessShare(worker, nonce, solution);
+        Assert.Equal(BeamConstants.BeamRpcShareAccepted, accepted.stratumError);
+        Assert.True(accepted.Share.IsBlockCandidate);
+        Assert.Equal(1, accepted.Share.Difficulty);
+        Assert.Equal(BeamConstants.BeamRpcDuplicateShare, source.ForWorker(context).ProcessShare(worker, nonce, solution).stratumError);
+    }
 }

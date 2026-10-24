@@ -8,8 +8,10 @@ using NLog;
 
 namespace Miningcore.Blockchain.Ethereum;
 
-public class EthereumJob
+public class EthereumJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => (double) new Miningcore.Util.BigRational(EthereumConstants.BigMaxValue, new System.Numerics.BigInteger(blockTarget.ToBytes(), isUnsigned: true)) / EthereumConstants.Pow2x32;
+
     internal EthereumJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {

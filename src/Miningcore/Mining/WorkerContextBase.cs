@@ -141,8 +141,11 @@ public class WorkerContextBase
     // Read only while owning the assignment gate, like ApplyPendingDifficulty.
     internal double? PendingDifficulty => pendingDifficulty;
 
+    internal Action BeforeApplyPendingDifficulty { get; set; }
+
     public virtual bool ApplyPendingDifficulty()
     {
+        BeforeApplyPendingDifficulty?.Invoke();
         if(pendingDifficulty.HasValue)
         {
             SetDifficulty(pendingDifficulty.Value);
@@ -230,11 +233,13 @@ public class WorkerContextBase
             if(issued != null && !ReferenceEquals(issued.Session, assignmentSession))
                 return false;
             issued ??= assignment ?? new IssuedDifficulty(Difficulty, assignmentTimeProvider, assignmentSession, difficultyGrace);
-            if(issued.TryValidate(proofDifficulty, blockCandidate, out credit, shareReceipt.Value))
-                return true;
+            var accepted = issued.TryValidate(proofDifficulty, blockCandidate, out credit, shareReceipt.Value);
             // Retired work may still satisfy the currently issued target. This never
             // grants old easier credit after expiry, or revives another session.
-            return assignment != null && assignment.TryValidate(proofDifficulty, blockCandidate, out credit);
+            accepted = accepted || assignment != null && assignment.TryValidate(proofDifficulty, blockCandidate, out credit);
+            if(accepted && blockCandidate)
+                credit = CandidateShareCredit.Cap(credit, CandidateShareCredit.Limit(job));
+            return accepted;
         }
     }
 

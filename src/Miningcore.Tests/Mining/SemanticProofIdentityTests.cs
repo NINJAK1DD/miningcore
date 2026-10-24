@@ -119,15 +119,18 @@ public class SemanticProofIdentityTests
         var ethash = Substitute.For<IEthashLight>();
         ethash.GetCacheAsync(Arg.Any<ILogger>(), Arg.Any<ulong>(), Arg.Any<CancellationToken>()).Returns(cache);
         var source = new EthereumJob("1", new EthereumBlockTemplate
-            { Header = new string('0', 64), Target = new string('0', 64), Height = 1 }, LogManager.GetCurrentClassLogger(), ethash);
+            { Header = new string('0', 64), Height = 1, Difficulty = 1_000_000_000_000_000_000,
+                Target = (EthereumConstants.BigMaxValue / new BigInteger(1_000_000_000_000_000_000)).ToByteArray(true, true).PadFront(0, 32).ToHexString() }, LogManager.GetCurrentClassLogger(), ethash);
         var old = source.ForWorker(context);
         context.AddJob(old, 8);
         var manager = new Manager(Substitute.For<IComponentContext>());
         manager.Initialize();
+        manager.BlockchainStats.NetworkDifficulty = 1; // New network state cannot reprice old issued work.
         Task<Share> Submit(StratumConnection worker, string nonce) => manager.SubmitShareV1Async(worker,
             new[] { nonce, source.BlockTemplate.Header }, "worker", CancellationToken.None);
         var accepted = await Submit(connection, first);
         Assert.False(accepted.IsBlockCandidate);
+        Assert.Equal(1_000_000_000_000_000_000d, accepted.NetworkDifficulty);
         Assert.Equal(10 * EthereumConstants.Pow2x32, accepted.Difficulty);
         Assert.Equal(StratumError.MinusOne, (await Assert.ThrowsAsync<StratumException>(() => Submit(connection, second))).Code);
         var other = new EthereumWorkerContext();
@@ -154,5 +157,50 @@ public class SemanticProofIdentityTests
         Assert.Equal(31, failures.Count);
         Assert.All(failures, code => Assert.Equal(StratumError.MinusOne, code));
         Assert.Equal(10 * EthereumConstants.Pow2x32, credits.Sum());
+    }
+
+    [Theory]
+    [InlineData(20)] [InlineData(2000)]
+    public async Task EthereumCandidatesPreserveAdmissionButBoundPersistedWork(double proof)
+    {
+        var context = new EthereumWorkerContext();
+        context.Init(1000, null, new MockMasterClock());
+        var worker = Connect(context, "eth-candidate");
+        var cache = new Cache { Difficulty = proof };
+        var ethash = Substitute.For<IEthashLight>();
+        ethash.GetCacheAsync(Arg.Any<ILogger>(), Arg.Any<ulong>(), Arg.Any<CancellationToken>()).Returns(cache);
+        var source = new EthereumJob("candidate", new EthereumBlockTemplate
+        {
+            Header = new string('0', 64), Height = 1,
+            Target = (EthereumConstants.BigMaxValue / new BigInteger(EthereumConstants.Pow2x32)).ToByteArray(true, true).PadFront(0, 32).ToHexString()
+        }, LogManager.GetCurrentClassLogger(), ethash);
+        var old = source.ForWorker(context);
+        context.SetDifficulty(4000);
+        var accepted = (await old.ProcessShareAsync(worker, "worker", "1", null, CancellationToken.None)).Share;
+        Assert.True(accepted.IsBlockCandidate);
+        Assert.Equal(EthereumConstants.Pow2x32, accepted.Difficulty);
+        Assert.Equal("duplicate share", (await Assert.ThrowsAsync<StratumException>(() =>
+            source.ForWorker(context).ProcessShareAsync(worker, "worker", "0001", null, CancellationToken.None))).Message);
+    }
+
+    [LinuxNativeFact]
+    public void NativeAutolykosCandidatesRetainExactIssuedCreditAndCapOversizedAssignments()
+    {
+        foreach(var assignment in new[] { 1e-12, 1e12 })
+        {
+            var context = new ErgoWorkerContext { ExtraNonce1 = "abcdef01" };
+            context.Init(assignment, null, new MockMasterClock());
+            var worker = Connect(context, "ergo-candidate");
+            var source = new ErgoJob();
+            source.Init(new WorkMessage { Msg = new string('0', 64), Height = 1, B = BigInteger.Pow(2, 256) - 1 }, 2, 4, "candidate");
+            var old = source.ForWorker(context);
+            var expected = Math.Min(assignment, source.Difficulty) / ErgoConstants.ShareMultiplier;
+            context.SetDifficulty(assignment * 2);
+            var accepted = old.ProcessShare(worker, "unused", "1", "abcdef0100000001");
+            Assert.True(accepted.IsBlockCandidate);
+            Assert.Equal(expected, accepted.Difficulty);
+            Assert.Equal(StratumError.DuplicateShare, Assert.Throws<StratumException>(() =>
+                source.ForWorker(context).ProcessShare(worker, "unused", "2", "ABCDEF0100000001")).Code);
+        }
     }
 }
