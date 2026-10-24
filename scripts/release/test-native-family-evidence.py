@@ -16,6 +16,9 @@ FRACTIONAL = "NativePool_DispatchedFractionalHintPublishesIntegerCredit"
 FRACTIONAL_PROOF = "NativeProof_FractionalAssignmentUsesRoundedCredit"
 FIXED_PROOF = "NativeProof_FixedIncreaseAfterDynamicAssignmentKeepsOriginalCredit"
 KASPA_CREDIT = "ProductionValidator_CreditsIssuedAssignmentAndExpiresOnlyRetiredWork"
+KASPA_PRECISION = "FullWidthProofJustAboveCompactTargetRemainsOrdinary"
+ZANO_PUBLICATION = "ZanoTemplateUpdateBetweenApplyAndSnapshotCannotSilentlyRetarget"
+KASPA_VALIDATORS = ("KaspaJob", "AstrixJob", "KarlsencoinJob", "SpectreJob", "WagLaylaJob", "PyrinJob")
 LIVE_FACTS = (
     "SettlementAudit_DetectsSpecialAndInvalidLegacyRowsWithoutChangingData",
     "StaticDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit",
@@ -48,8 +51,9 @@ EXPECTED |= {(FRACTIONAL_PROOF, family, hint) for family in ("Conceal", "Crypton
              for hint in ("1.5", "1.99", "2.5")}
 EXPECTED |= {(FIXED_PROOF, family, nicehash) for family in ("Conceal", "Cryptonote") for nicehash in ("False", "True")}
 EXPECTED |= {(method, None, None) for method in LIVE_FACTS}
-EXPECTED |= {(KASPA_CREDIT, validator, proof) for validator in
-             ("KaspaJob", "AstrixJob", "KarlsencoinJob", "SpectreJob", "WagLaylaJob") for proof in ("2.0", "2000.0")}
+EXPECTED |= {(KASPA_CREDIT, validator, proof) for validator in KASPA_VALIDATORS for proof in ("2.0", "2000.0")}
+EXPECTED |= {(KASPA_PRECISION, validator, None) for validator in KASPA_VALIDATORS}
+EXPECTED |= {(ZANO_PUBLICATION, None, case) for case in (("1", "False"), ("1", "True"), ("2", "False"))}
 
 
 def validate(root):
@@ -57,16 +61,20 @@ def validate(root):
     for result in root.iter(f"{{{NAMESPACE}}}UnitTestResult"):
         name = result.get("testName", "")
         method = name.split("(", 1)[0]
-        if method not in (CONTENTION, CANCELLATION, REQUEST, PROOF, HINT, WAIT, FRACTIONAL, FRACTIONAL_PROOF, FIXED_PROOF, KASPA_CREDIT, *LIVE_FACTS):
+        if method not in (CONTENTION, CANCELLATION, REQUEST, PROOF, HINT, WAIT, FRACTIONAL, FRACTIONAL_PROOF, FIXED_PROOF, KASPA_CREDIT, KASPA_PRECISION, ZANO_PUBLICATION, *LIVE_FACTS):
             continue
         family = re.search(r'\bfamily:\s*"([^"\r\n]+)"', name)
         ordering = re.search(r"\binvalid:\s*([0-9.]+)\b", name) if method in (REQUEST, PROOF) else \
             re.search(r"\bidleOwnsGate:\s*(True|False)\b", name)
         value = ordering.group(1) if ordering else None
-        if method == KASPA_CREDIT:
+        if method in (KASPA_CREDIT, KASPA_PRECISION):
             family = re.search(r'\bvalidator:\s*"([^"\r\n]+)"', name)
             proof = re.search(r"\bproofDifficulty:\s*([0-9.]+)\b", name)
             value = str(float(proof.group(1))) if proof else None
+        if method == ZANO_PUBLICATION:
+            protocol = re.search(r"\bprotocol:\s*([12])\b", name)
+            get_job = re.search(r"\bgetJob:\s*(True|False)\b", name)
+            value = (protocol.group(1) if protocol else None, get_job.group(1) if get_job else None)
         if method == FIXED_PROOF:
             nicehash = re.search(r"\bnicehash:\s*(True|False)\b", name)
             value = nicehash.group(1) if nicehash else None
@@ -102,9 +110,15 @@ def fixture():
         if method in LIVE_FACTS:
             ET.SubElement(root, f"{{{NAMESPACE}}}UnitTestResult", testName=method, outcome="Passed")
             continue
-        if method == KASPA_CREDIT:
+        if method in (KASPA_CREDIT, KASPA_PRECISION):
+            proof = f", proofDifficulty: {ordering}" if method == KASPA_CREDIT else ""
             ET.SubElement(root, f"{{{NAMESPACE}}}UnitTestResult",
-                          testName=f'{method}(validator: "{family}", proofDifficulty: {ordering})', outcome="Passed")
+                          testName=f'{method}(validator: "{family}"{proof})', outcome="Passed")
+            continue
+        if method == ZANO_PUBLICATION:
+            protocol, get_job = ordering
+            ET.SubElement(root, f"{{{NAMESPACE}}}UnitTestResult",
+                          testName=f"{method}(protocol: {protocol}, getJob: {get_job})", outcome="Passed")
             continue
         name = f'{method}(family: "{family}"'
         if method == HINT:
@@ -147,6 +161,15 @@ def self_test():
     renamed.set("testName", renamed.get("testName").replace("Conceal", "RenamedFamily"))
     invalid.append(root)
     invalid.append(ET.Element("TestRun"))
+    for marker in ("PyrinJob", KASPA_PRECISION, ZANO_PUBLICATION):
+        for outcome in (None, "NotExecuted", "Failed"):
+            root = fixture()
+            result = next(item for item in root if marker in item.get("testName"))
+            if outcome is None:
+                root.remove(result)
+            else:
+                result.set("outcome", outcome)
+            invalid.append(root)
     for root in invalid:
         try:
             validate(root)
