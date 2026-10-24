@@ -21,7 +21,8 @@ namespace Miningcore.Blockchain.Satoshicash;
 
 public class SatoshicashJob : BitcoinJob, Miningcore.Mining.ICandidateCreditJob
 {
-    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => Difficulty * shareMultiplier;
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty =>
+        (double) new BigRational(BitcoinConstants.Diff1, new System.Numerics.BigInteger(blockTargetValue.ToBytes(), isUnsigned: true)) * shareMultiplier;
 
     protected virtual byte[] SerializeHeader(Span<byte> coinbaseHash, uint nTime, uint nonce, byte[] hashRandomXSCash)
     {
@@ -56,13 +57,10 @@ public class SatoshicashJob : BitcoinJob, Miningcore.Mining.ICandidateCreditJob
         // serialize clean block-header
         var cleanHeaderBytes = SerializeHeader(coinbaseHash, nTime, nonce, sha256Empty);
 
-        // hash RandomXSCash
+        // Hash RandomXSCash and its commitment.
         Span<byte> hashRandomXSCashBytes = stackalloc byte[32];
-        RandomXSCash.CalculateHash(RandomXSCashRealm, SeedHash, cleanHeaderBytes, hashRandomXSCashBytes);
-
-        // hash Commitment
         Span<byte> commitmentRandomXSCashBytes = stackalloc byte[32];
-        RandomXSCash.CalculateCommitment(cleanHeaderBytes, hashRandomXSCashBytes, commitmentRandomXSCashBytes);
+        ComputeProof(cleanHeaderBytes, hashRandomXSCashBytes, commitmentRandomXSCashBytes);
         var commitmentRandomXSCashValue = new uint256(commitmentRandomXSCashBytes);
 
         // calc share-diff
@@ -99,6 +97,12 @@ public class SatoshicashJob : BitcoinJob, Miningcore.Mining.ICandidateCreditJob
         }
 
         return (result, null);
+    }
+
+    protected virtual void ComputeProof(byte[] header, Span<byte> hash, Span<byte> commitment)
+    {
+        RandomXSCash.CalculateHash(RandomXSCashRealm, SeedHash, header, hash);
+        RandomXSCash.CalculateCommitment(header, hash, commitment);
     }
 
     #region RandomXSCash
@@ -190,6 +194,7 @@ public class SatoshicashJob : BitcoinJob, Miningcore.Mining.ICandidateCreditJob
             BlockTemplate.CurTime.ToStringHex8(),
             false
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     public virtual (Share Share, string BlockHex) ProcessShare(StratumConnection worker,

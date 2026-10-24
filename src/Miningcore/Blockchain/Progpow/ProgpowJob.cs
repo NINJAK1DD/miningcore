@@ -247,6 +247,7 @@ public class ProgpowJob : BitcoinJob, Miningcore.Mining.ICandidateCreditJob
             Height = BlockTemplate.Height,
             CleanJobs = false
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     public override object GetJobParams(bool isNew)

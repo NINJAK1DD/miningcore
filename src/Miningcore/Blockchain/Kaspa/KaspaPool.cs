@@ -199,7 +199,8 @@ public class KaspaPool : PoolBase
                     if(extraPoolConfig.EnableStaticDifficulty)
                         context.VarDiff = null; // disable vardiff
 
-                    context.SetDifficulty(staticDiff.Value);
+                    context.SetDifficulty(staticDiff.Value, extraPoolConfig.EnableStaticDifficulty ? DifficultyOrigin.Static : DifficultyOrigin.Automatic);
+                    context.ApplyPendingDifficulty();
 
                     if(extraPoolConfig.EnableStaticDifficulty)
                         logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
@@ -379,6 +380,7 @@ public class KaspaPool : PoolBase
         return result;
     }
 
+    protected override bool UsesCandidateDifficultyPolicy => true;
     protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => coin.ShareMultiplier;

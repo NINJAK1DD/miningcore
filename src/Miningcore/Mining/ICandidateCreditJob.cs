@@ -8,12 +8,52 @@ internal interface ICandidateCreditJob
 
 internal static class CandidateShareCredit
 {
-    internal static double Limit(object job) => job switch
+    private sealed record Policy(double Difficulty);
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, Policy> policies = new();
+
+    // Validate at template construction, before managers replace their current work.
+    // Derived initializers may refine the target before publication. Each completed
+    // initializer caches its final value; worker snapshots share the same record.
+    internal static void Initialize(object job)
     {
-        ICandidateCreditJob candidate => candidate.CandidateDifficulty,
-        ValueTuple<object, uint> blob => Limit(blob.Item1),
-        _ => double.MaxValue
-    };
+        if(job is not ICandidateCreditJob candidate)
+            return;
+        var difficulty = candidate.CandidateDifficulty;
+        Cap(1, difficulty);
+        policies.Remove(job);
+        policies.Add(job, new(difficulty));
+    }
+
+    private static Policy Read(object job) => policies.GetValue(job, static value =>
+    {
+        if(value is ICandidateCreditJob candidate)
+        {
+            var difficulty = candidate.CandidateDifficulty;
+            Cap(1, difficulty);
+            return new(difficulty);
+        }
+        // Bitcoin, merged Bitcoin and BLAKE2b have their own audited chain policy.
+        if(value is Miningcore.Blockchain.Bitcoin.BitcoinJob)
+            return new(double.MaxValue);
+        throw new InvalidDataException($"No reviewed candidate-credit policy for {value.GetType().FullName}");
+    });
+
+    internal static double Limit(object job) => job is ValueTuple<object, uint> blob
+        ? Limit(blob.Item1) : Read(job).Difficulty;
+
+    internal static void Prepare(object job)
+    {
+        if(job is ICandidateCreditJob)
+            _ = Read(job);
+    }
+
+    internal static void Copy(object template, object snapshot)
+    {
+        if(template is not ICandidateCreditJob || ReferenceEquals(template, snapshot))
+            return;
+        var policy = Read(template);
+        policies.Add(snapshot, policy);
+    }
 
     // Keep negotiated/static assignments intact. A configured floor above the
     // chain target has no compatible automatic range and must be operator-fixed.
@@ -23,8 +63,13 @@ internal static class CandidateShareCredit
         var options = context.VarDiff?.Config;
         if(options == null)
             return true;
+        // A miner request is not a deferred VarDiff retarget. Its floor is
+        // committed atomically with the requested assignment by ApplyPendingDifficulty.
+        if(context.HasPendingDifficulty && context.PendingDifficultyOrigin != DifficultyOrigin.Automatic)
+            return true;
+        var maximum = Math.Min(context.MaximumDifficulty, options.MaxDiff ?? double.MaxValue);
         var ceiling = Math.Min(limit, Math.Min(context.MaximumDifficulty, options.MaxDiff ?? double.MaxValue));
-        var floor = Math.Max(context.MinimumDifficulty, options.MinDiff);
+        var floor = Math.Max(context.MinimumVarDiffDifficulty, options.MinDiff);
         if(context.RequiresIntegerDifficulty)
         {
             floor = Math.Ceiling(floor);
@@ -34,7 +79,12 @@ internal static class CandidateShareCredit
         {
             // A queued automatic increase is no longer eligible. Preserve the
             // active assignment/floor, but do not publish deferred oversized work.
-            context.SetDifficulty(context.Difficulty);
+            context.DiscardPendingDifficulty();
+            // The chain ceiling overrides MaxDelta smoothing, never the floor.
+            // Select the least excessive legal assignment instead of freezing a
+            // worker far above both the floor and the new network threshold.
+            if(context.Difficulty > floor && floor > 0 && floor <= maximum)
+                context.EnqueueNewDifficulty(floor);
             return false;
         }
         if((context.PendingDifficulty ?? context.Difficulty) > ceiling)

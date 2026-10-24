@@ -111,6 +111,7 @@ public class IssuedJobSnapshotTests
         context.Init(10, null, new MockMasterClock());
         var hash = new Miningcore.Crypto.Hashing.Algorithms.Sha256D();
         var template = new KaspaJob(hash, hash, hash);
+        NonBitcoinCandidateCreditTests.ConfigurePolicy(template);
         typeof(KaspaJob).GetProperty("JobId", Members).SetValue(template, "1");
         var old = template.ForWorker(context);
         context.SetDifficulty(40);
@@ -164,6 +165,7 @@ public class IssuedJobSnapshotTests
         var context = new WorkerContextBase();
         context.Init(10, null, new MockMasterClock());
         var template = new ProgpowJob();
+        NonBitcoinCandidateCreditTests.ConfigurePolicy(template);
         var old = (ProgpowJob) template.ForWorker(context);
         context.SetDifficulty(20);
         var current = (ProgpowJob) template.ForWorker(context);

@@ -60,8 +60,48 @@ Bitcoin/merged/BLAKE2b candidates now receive credit bounded by immutable
 qualifying chain targets. Automatic difficulty is bounded by the easiest current
 chain target, and falling ceilings lower compatible dynamic assignments on the
 next broadcast. Explicit static/device/configured floors stay enforced and warn
-when incompatible. Other-family candidate accounting remains tracked in
-[#218](https://github.com/NINJAK1DD/miningcore/issues/218).
+when incompatible.
+
+Non-Bitcoin families now cap **every** accepted candidate, including exceptionally
+strong proofs, at its issued template's validated immutable threshold in that
+validator's difficulty units. Automatic assignments respect current network
+ceilings. This hard ceiling deliberately overrides VarDiff `MaxDelta` smoothing
+on a network decline. If a configured/device floor exceeds the ceiling, queued
+automatic increases are discarded and oversized work drops to the least
+excessive legal floor; the floor stays enforced and ordinary VarDiff resumes
+when the range becomes compatible. Explicit miner/device/static assignments
+remain intact across broadcasts and later automatic updates. Kaspa password
+hints with `EnableStaticDifficulty=false` remain automatic initial seeds and
+are capped before first publication. Embedded target protocols, including Zano,
+apply pending assignments before capturing work. Bitcoin policy hooks remain
+scoped to their existing implementations.
+
+Xelis and Zano now reject `shareMultiplier` values other than 1 at startup:
+their previous mixed-unit contracts cannot safely price candidates. Warthog
+legacy mainnet uses conservative **unit candidate credit and an automatic unit
+assignment ceiling** until its SHA256d and Janus share domains are aligned;
+higher explicit/configured floors still warn. Warthog testnet requires Janus
+mode, matching its verifier. Invalid candidate targets are rejected during job
+initialization, retaining previous valid work; issued policies are cached and
+shared by snapshots. Historical credit is not repriced. Audit affected rows
+and retained financial evidence using the family-specific scaling documented
+in [non-Bitcoin candidate accounting](non-bitcoin-candidate-credit.md).
+
+Handshake and Xelis compare full proof hashes directly, avoiding lossy compact-target
+rounding at the candidate boundary.
+
+New `miningcore_difficulty_assignment_total{pool,outcome}` events distinguish
+assignment compatibility from Stratum admission. Outcomes are fixed labels:
+`assignment-above-network`, `vardiff-floor-above-network`, and
+`vardiff-floor-incompatible`. Compatible intervals reset warning deduplication.
+Alephium applies the latest published chain's ceiling; differing chain-pair
+targets can cause assignment churn (see the deployment notes).
+
+The dependency graph explicitly pins the patched
+`System.Security.Cryptography.Pkcs` 10.0.13 transitive dependency. Remove the pin
+only when upstream packages resolve that version or later and restore/audit
+checks pass. The native export regression probe now searches the test assembly
+directory, matching VSTest's native-library deployment layout.
 
 ## Unreleased: in-flight difficulty assignments
 

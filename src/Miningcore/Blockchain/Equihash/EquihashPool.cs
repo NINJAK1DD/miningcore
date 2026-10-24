@@ -219,7 +219,7 @@ public class EquihashPool : PoolBase
                        context.VarDiff == null && staticDiff.Value > context.Difficulty))
                 {
                     context.VarDiff = null; // disable vardiff
-                    context.SetDifficulty(staticDiff.Value);
+                    context.SetDifficulty(staticDiff.Value, DifficultyOrigin.Static);
 
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
@@ -373,7 +373,7 @@ public class EquihashPool : PoolBase
 
                     if(newDiff >= poolEndpoint.Difficulty)
                     {
-                        context.EnqueueNewDifficulty(newDiff);
+                        context.EnqueueNewDifficulty(newDiff, DifficultyOrigin.Device);
                         context.ApplyPendingDifficulty();
 
                         await connection.NotifyAsync(EquihashStratumMethods.SetTarget, new object[] { EncodeTarget(context.Difficulty) });
@@ -484,6 +484,7 @@ public class EquihashPool : PoolBase
         return result;
     }
 
+    protected override bool UsesCandidateDifficultyPolicy => true;
     protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => 1;

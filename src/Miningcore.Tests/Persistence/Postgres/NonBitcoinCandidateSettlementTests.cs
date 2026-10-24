@@ -61,12 +61,23 @@ public class NonBitcoinCandidateSettlementTests
                 NonBitcoinCandidateCreditTests.ConfigurePolicy(job);
                 var ceiling = CandidateShareCredit.Limit(job);
                 var context = new WorkerContextBase();
-                context.Init(ceiling * 100, null, new MockMasterClock());
+                context.Init(ceiling * 200, null, new MockMasterClock());
                 context.JobForDifficulty(job, (_, _) => throw new InvalidOperationException(), "settlement");
-                context.SetDifficulty(ceiling * 200);
+
                 var credit = context.ValidateShareDifficulty(ceiling * 2, true, job);
+                var peer = new WorkerContextBase();
+                peer.Init(ceiling, null, new MockMasterClock());
+                peer.JobForDifficulty(job, (_, _) => throw new InvalidOperationException(), "ordinary-peer");
+                var peerCredit = peer.ValidateShareDifficulty(ceiling, false, job);
+                Assert.Equal(ceiling, credit);
+                Assert.Equal(ceiling, peerCredit);
+                Assert.InRange((context.Difficulty / peerCredit), 199.999, 200.001);
+                // Without the cap this candidate would receive 200 ordinary shares'
+                // weight. The independently admitted peer must still receive half.
+                Assert.InRange(context.Difficulty / (context.Difficulty + peerCredit), .995, .996);
                 var scale = job is ErgoJob ? ErgoConstants.ShareMultiplier : 1d;
                 var stored = job is EthereumJob ? credit * EthereumConstants.Pow2x32 : credit / scale;
+                var peerStored = job is EthereumJob ? peerCredit * EthereumConstants.Pow2x32 : peerCredit / scale;
                 IPayoutHandler normalization = job switch
                 {
                     AlephiumJob => (IPayoutHandler) RuntimeHelpers.GetUninitializedObject(typeof(AlephiumPayoutHandler)),
@@ -87,7 +98,7 @@ public class NonBitcoinCandidateSettlementTests
                     {
                         var accountingId = Guid.NewGuid();
                         var share = new Share { PoolId = id, BlockHeight = 100, Miner = i == 0 ? "candidate" : "peer",
-                            Difficulty = stored, NetworkDifficulty = stored * adjustment, IpAddress = "127.0.0.1",
+                            Difficulty = i == 0 ? stored : peerStored, NetworkDifficulty = stored * adjustment, IpAddress = "127.0.0.1",
                             AccountingId = accountingId, AccountingRole = 1, RewardBasisSatoshis = 5_000_000_000, Created = created.AddSeconds(-i) };
                         batches[i] = new ShareAccountingBatch { AccountingId = accountingId, Created = share.Created,
                             Shares = new[] { share }, PpsCredits = Array.Empty<PpsShareCredit>(),

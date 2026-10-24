@@ -30,6 +30,7 @@ public class CryptonoteJob : Miningcore.Mining.ICandidateCreditJob
 
         hashFunc = hashFuncs[coin.Hash];
         blobType = coin.BlobType;
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     protected delegate void HashFunc(string realm, string seedHex, ReadOnlySpan<byte> data, Span<byte> result, ulong height);

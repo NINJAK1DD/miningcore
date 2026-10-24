@@ -238,5 +238,6 @@ public class ErgoJob : Miningcore.Mining.ICandidateCreditJob
             string.Empty,
             false
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 }

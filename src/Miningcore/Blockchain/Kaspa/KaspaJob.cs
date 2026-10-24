@@ -404,5 +404,6 @@ public class KaspaJob : Miningcore.Mining.ICandidateCreditJob
             regularJob,
             blockTemplate.Header.Timestamp,
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 }

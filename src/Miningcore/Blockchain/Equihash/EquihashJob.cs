@@ -367,6 +367,9 @@ public class EquihashJob : Miningcore.Mining.ICandidateCreditJob
         }
     }
 
+    protected virtual void HashProof(ReadOnlySpan<byte> header, Span<byte> hash, uint nTime) =>
+        headerHasher.Digest(header, hash, (ulong) nTime);
+
     protected virtual (Share Share, string BlockHex) ProcessShareInternal(StratumConnection worker, string nonce,
         uint nTime, string solution)
     {
@@ -387,7 +390,7 @@ public class EquihashJob : Miningcore.Mining.ICandidateCreditJob
 
         // hash block-header
         Span<byte> headerHash = stackalloc byte[32];
-        headerHasher.Digest(headerSolutionBytes, headerHash, (ulong) nTime);
+        HashProof(headerSolutionBytes, headerHash, nTime);
         var headerValue = new uint256(headerHash);
 
         // calc share-diff
@@ -556,6 +559,7 @@ public class EquihashJob : Miningcore.Mining.ICandidateCreditJob
             BlockTemplate.Bits.HexToReverseByteArray().ToHexString(),
             false
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     public EquihashBlockTemplate BlockTemplate { get; protected set; }

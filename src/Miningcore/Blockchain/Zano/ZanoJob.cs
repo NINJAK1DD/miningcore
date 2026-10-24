@@ -42,6 +42,7 @@ public class ZanoJob : Miningcore.Mining.ICandidateCreditJob
         shareMultiplier = coin.ShareMultiplier;
 
         blobType = coin.BlobType;
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     protected double shareMultiplier;
@@ -96,6 +97,11 @@ public class ZanoJob : Miningcore.Mining.ICandidateCreditJob
         return padded.ToHexString(true);
     }
 
+    protected virtual byte[] SerializeSubmittedBlock(ulong nonce) =>
+        ZanonoteBindings.ConvertBlock(blobTemplate, blobTemplate.Length, nonce);
+
+    protected virtual void ComputeBlockId(byte[] block, byte[] hash) => ZanonoteBindings.GetBlockId(block, hash);
+
     #region API-Surface
 
     public string PrevHash { get; }
@@ -134,7 +140,7 @@ public class ZanoJob : Miningcore.Mining.ICandidateCreditJob
         if(!ulong.TryParse(nonce, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var fullNonce))
             throw new StratumException(StratumError.MinusOne, "bad nonce " + nonce);
 
-        var blobBytes = ZanonoteBindings.ConvertBlock(blobTemplate, blobTemplate.Length, fullNonce);
+        var blobBytes = SerializeSubmittedBlock(fullNonce);
 
         // compute
         if(!progpowHasher.Compute(logger, (int) BlockTemplate.Height, EncodeBlob(workerExtraNonce), fullNonce, out var _, out var resultBytes))
@@ -160,7 +166,7 @@ public class ZanoJob : Miningcore.Mining.ICandidateCreditJob
         {
             byte[] blockHash = new byte[32];
             // compute blob hash
-            ZanonoteBindings.GetBlockId(blobBytes, blockHash);
+            ComputeBlockId(blobBytes, blockHash);
 
             // Fill in block-relevant fields
             result.IsBlockCandidate = true;

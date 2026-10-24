@@ -51,17 +51,20 @@ public class NonBitcoinCandidateCreditTests
             var difficulty = property.PropertyType.GetProperty("Difficulty");
             difficulty.SetValue(template, Convert.ChangeType(ceiling, difficulty.PropertyType));
             Set(job, "BlockTemplate", template);
+            CandidateShareCredit.Initialize(job);
             return;
         }
         if(job is EthereumJob)
         {
             Set(job, "blockTarget", new Target(EthereumConstants.BigMaxValue / new BigInteger(ceiling * EthereumConstants.Pow2x32)).ToUInt256());
+            CandidateShareCredit.Initialize(job);
             return;
         }
         if(job is KaspaJob)
         {
             Set(job, "shareMultiplier", 1d);
             Set(job, "blockTargetValue", new Target(KaspaConstants.Diff1b / (BigInteger) ceiling).ToUInt256());
+            CandidateShareCredit.Initialize(job);
             return;
         }
         if(job is ProgpowJob)
@@ -70,6 +73,19 @@ public class NonBitcoinCandidateCreditTests
             var numerator = (BigInteger) job.GetType().GetProperty("CandidateDiff1", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(job);
             Set(job, "blockTargetValue", new Target(numerator / (BigInteger) ceiling).ToUInt256());
             Set(job, "Difficulty", ceiling);
+            CandidateShareCredit.Initialize(job);
+            return;
+        }
+        if(job is Miningcore.Blockchain.Nexa.NexaJob or Miningcore.Blockchain.Handshake.HandshakeJob or
+            Miningcore.Blockchain.Satoshicash.SatoshicashJob or Miningcore.Blockchain.Xelis.XelisJob)
+        {
+            Set(job, "shareMultiplier", 1d);
+            var numerator = job is Miningcore.Blockchain.Xelis.XelisJob ? Miningcore.Blockchain.Xelis.XelisConstants.Diff1Target : BitcoinConstants.Diff1;
+            var bytes = (numerator / (BigInteger) ceiling).ToByteArray(true, false);
+            Array.Resize(ref bytes, 32);
+            Set(job, "blockTargetValue", new uint256(bytes));
+            Set(job, "Difficulty", ceiling);
+            CandidateShareCredit.Initialize(job);
             return;
         }
         if(job is WarthogJob)
@@ -78,11 +94,13 @@ public class NonBitcoinCandidateCreditTests
             Set(job, "network", WarthogNetworkType.Testnet);
             Set(job, "blockTargetValue", new WarthogTarget(ceiling));
             Set(job, "Difficulty", ceiling);
+            CandidateShareCredit.Initialize(job);
             return;
         }
         Set(job, "Difficulty", job is AlephiumJob ? ceiling * AlephiumConstants.Pow2xDiff1TargetNumZero : ceiling);
         for(var type = job.GetType(); type != null; type = type.BaseType)
             if(type.GetField("shareMultiplier", Members) is { } field) { field.SetValue(job, 1d); break; }
+        CandidateShareCredit.Initialize(job);
     }
 
     [Theory]

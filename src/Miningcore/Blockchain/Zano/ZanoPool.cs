@@ -555,7 +555,10 @@ public class ZanoPool : PoolBase
             if(!context.IsAuthorized)
                 throw new StratumException(StratumError.MinusOne, "unauthorized");
 
+            var changedDifficulty = context.ApplyPendingDifficulty();
             var job = CreateWorkerJob(connection);
+            if(changedDifficulty && context.ProtocolVersion == 2)
+                await connection.NotifyAsync(ZanoStratumMethods.SetDifficulty, new object[] { context.Difficulty });
 
             // Nicehash's stupid validator insists on "error" property present
             // in successful responses which is a violation of the JSON-RPC spec
@@ -683,8 +686,9 @@ public class ZanoPool : PoolBase
 
     private object[] CreateWorkerJob(StratumConnection connection)
     {
-        WarnAboveCandidateTarget(connection);
         var context = connection.ContextAs<ZanoWorkerContext>();
+        context.ApplyPendingDifficulty();
+        WarnAboveCandidateTarget(connection);
         var job = manager.PrepareWorkerJob(context.Difficulty);
 
         logger.Debug(() => $"JobId: {job.Id} - Target: {job.Target} - Height: {job.Height} - SeedHash: {job.SeedHash}");
@@ -972,6 +976,7 @@ public class ZanoPool : PoolBase
         return result;
     }
 
+    protected override bool UsesCandidateDifficultyPolicy => true;
     protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => coin.ShareMultiplier;

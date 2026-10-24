@@ -131,6 +131,8 @@ public class ProgpowProductionVerifierTests : TestBase
     }
 
     [Theory]
+    [InlineData("Progpow", 1)] [InlineData("Firo", 1)] [InlineData("Kiiro", 1)]
+    [InlineData("Realichain", 1)] [InlineData("Telestai", 1)]
     [InlineData("Progpow", 20)] [InlineData("Progpow", 2000)]
     [InlineData("Firo", 20)] [InlineData("Firo", 2000)]
     [InlineData("Kiiro", 20)] [InlineData("Kiiro", 2000)]

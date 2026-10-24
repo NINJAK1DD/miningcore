@@ -117,5 +117,6 @@ public class SpectreJob : KaspaJob
             regularJob,
             blockTemplate.Header.Timestamp,
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 }

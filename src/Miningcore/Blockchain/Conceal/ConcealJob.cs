@@ -29,6 +29,7 @@ public class ConcealJob : Miningcore.Mining.ICandidateCreditJob
 
         hashFunc = hashFuncs[coin.Hash];
         blobType = coin.BlobType;
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     protected delegate void HashFunc(ReadOnlySpan<byte> data, Span<byte> result, ulong height);

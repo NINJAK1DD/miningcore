@@ -57,7 +57,7 @@ public class KaspaDifficultyCreditTests
         Set("JobId", "template");
         Set("BlockTemplate", new Kaspad.RpcBlock { Header = new Kaspad.RpcBlockHeader { DaaScore = 101, Timestamp = 123 } });
         Set("prePowHashBytes", Enumerable.Range(1, 32).Select(x => (byte) x).ToArray());
-        Set("blockTargetValue", uint256.Zero); // Every vector is an ordinary, non-block proof.
+        Set("blockTargetValue", uint256.One); // Every vector is an ordinary, non-block proof.
         typeof(KaspaJob).GetField("shareMultiplier", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(source, multiplier);
         var retired = source.ForWorker(context);
         context.SetDifficulty(1000);
@@ -102,7 +102,7 @@ public class KaspaDifficultyCreditTests
         typeof(KaspaJob).GetProperty("BlockTemplate").SetValue(source,
             new Kaspad.RpcBlock { Header = new Kaspad.RpcBlockHeader { DaaScore = 101, Timestamp = 123 } });
         typeof(KaspaJob).GetProperty("prePowHashBytes").SetValue(source, Enumerable.Range(1, 32).Select(x => (byte) x).ToArray());
-        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(source, uint256.Zero);
+        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(source, uint256.One);
         typeof(KaspaJob).GetField("shareMultiplier", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(source, 4d);
         var old = source.ForWorker(context);
         Assert.Equal(StratumError.LowDifficultyShare,
@@ -128,8 +128,13 @@ public class KaspaDifficultyCreditTests
         // Simultaneous distinct candidates must carry their own exact nonce,
         // including custom validators, without mutating the shared template.
         var candidateTarget = uint256.Parse(new string('f', 64));
-        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(old, candidateTarget);
-        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(current, candidateTarget);
+        // A fresh template owns the new target; never mutate already issued work.
+        var fresh = (KaspaJob) typeof(object).GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(source, null);
+        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(fresh, candidateTarget);
+        Miningcore.Mining.CandidateShareCredit.Initialize(fresh);
+        old = fresh.ForWorker(context, () => "3");
+        context.SetDifficulty(11);
+        current = fresh.ForWorker(context, () => "4");
         Parallel.For(100, 116, value =>
         {
             var candidate = (value % 2 == 0 ? old : current).ProcessShare(connection, value.ToString("x16"));
@@ -162,7 +167,7 @@ public class KaspaDifficultyCreditTests
         typeof(KaspaJob).GetProperty("BlockTemplate").SetValue(source,
             new Kaspad.RpcBlock { Header = new Kaspad.RpcBlockHeader { DaaScore = 101, Timestamp = 123 } });
         typeof(KaspaJob).GetProperty("prePowHashBytes").SetValue(source, Enumerable.Range(1, 32).Select(x => (byte) x).ToArray());
-        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(source, uint256.Zero);
+        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(source, uint256.One);
         typeof(KaspaJob).GetField("shareMultiplier", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(source, 4d);
         var old = source.ForWorker(context);
         Assert.Equal(StratumError.LowDifficultyShare,

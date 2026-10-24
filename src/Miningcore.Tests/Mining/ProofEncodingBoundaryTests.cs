@@ -148,6 +148,7 @@ public class ProofEncodingBoundaryTests
         Set(source, "BlockTemplate", new Miningcore.Blockchain.Equihash.DaemonResponses.EquihashBlockTemplate { CurTime = 1700000000, Nonce = Hex(64) });
         Set(source, "networkParams", new EquihashCoinTemplate.EquihashNetworkParams { SolutionSize = 1344, SolutionPreambleSize = 3 });
         var solution = Hex(2694 - 30) + context.ExtraNonce1 + new string('0', 22);
+        NonBitcoinCandidateCreditTests.ConfigurePolicy(source);
         var hard = source.ForWorker(context);
         Assert.Equal(StratumError.LowDifficultyShare, Assert.Throws<StratumException>(() => hard.ProcessShare(worker, Hex(56), "00f15365", solution)).Code);
         context.SetDifficulty(10);
@@ -179,6 +180,7 @@ public class ProofEncodingBoundaryTests
         var template = Activator.CreateInstance(source.GetType().BaseType.GetProperty("BlockTemplate").PropertyType);
         Set(template, "CurTime", 1700000000u);
         Set(source, "BlockTemplate", template);
+        NonBitcoinCandidateCreditTests.ConfigurePolicy(source);
         var job = context.JobForDifficulty(source, (_, _) => typeof(object).GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(source, null), "layout");
         var worker = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(), Clock, "layout", true);
         worker.SetContext(context);
@@ -231,6 +233,7 @@ public class ProofEncodingBoundaryTests
             Set(source, "BlockTemplate", new Miningcore.Blockchain.Equihash.DaemonResponses.EquihashBlockTemplate { CurTime = 1700000000 });
             Set(source, "networkParams", new EquihashCoinTemplate.EquihashNetworkParams { SolutionSize = 1344, SolutionPreambleSize = 3 });
         }
+        NonBitcoinCandidateCreditTests.ConfigurePolicy(source);
         var original = context.JobForDifficulty(source, (_, _) => typeof(object).GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(source, null), "1");
         context.SetDifficulty(15);
         var current = context.JobForDifficulty(source, (_, _) => typeof(object).GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(source, null), "1", () => "2");

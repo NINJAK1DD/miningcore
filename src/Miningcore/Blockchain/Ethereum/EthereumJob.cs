@@ -32,6 +32,7 @@ public class EthereumJob : Miningcore.Mining.ICandidateCreditJob
             target = target.Substring(2);
 
         blockTarget = new uint256(target.HexToReverseByteArray());
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     // A nonce identifies work for this template, independent of its spelling or

@@ -13,8 +13,15 @@ public class ShareStats
     public int InvalidShares { get; set; }
 }
 
+internal enum DifficultyOrigin { Endpoint, Automatic, MinerRequested, Static, Device }
+
 public class WorkerContextBase
 {
+    internal DifficultyOrigin ActiveDifficultyOrigin { get; private set; } = DifficultyOrigin.Endpoint;
+    internal DifficultyOrigin PendingDifficultyOrigin { get; private set; } = DifficultyOrigin.Automatic;
+    internal double? ExplicitDifficultyFloor { get; private set; }
+    internal double MinimumVarDiffDifficulty => Math.Max(MinimumDifficulty, ExplicitDifficultyFloor ?? 0);
+
     private double? pendingDifficulty;
     private string userAgent;
     private VarDiffContext varDiff;
@@ -122,6 +129,9 @@ public class WorkerContextBase
         blobDifficulties.Clear();
         pendingDifficulty = null;
         this.difficulty = difficulty;
+        ActiveDifficultyOrigin = DifficultyOrigin.Endpoint;
+        ExplicitDifficultyFloor = null;
+        PendingDifficultyOrigin = DifficultyOrigin.Automatic;
         LastActivity = clock.Now;
         Created = clock.Now;
         Stats = new ShareStats();
@@ -132,38 +142,54 @@ public class WorkerContextBase
         };
     }
 
-    public void EnqueueNewDifficulty(double difficulty)
+    public void EnqueueNewDifficulty(double difficulty) => EnqueueNewDifficulty(difficulty, DifficultyOrigin.Automatic);
+
+    internal void EnqueueNewDifficulty(double difficulty, DifficultyOrigin origin)
     {
-        pendingDifficulty = ValidateAssignment(difficulty);
+        pendingDifficulty = ValidateAssignment(origin == DifficultyOrigin.Automatic
+            ? Math.Max(difficulty, ExplicitDifficultyFloor ?? 0) : difficulty);
+        PendingDifficultyOrigin = origin;
     }
+
+    internal void DiscardPendingDifficulty() => pendingDifficulty = null;
 
     public bool HasPendingDifficulty => pendingDifficulty.HasValue;
     // Read only while owning the assignment gate, like ApplyPendingDifficulty.
     internal double? PendingDifficulty => pendingDifficulty;
 
     internal Action BeforeApplyPendingDifficulty { get; set; }
+    internal Action AfterApplyPendingDifficulty { get; set; }
 
     public virtual bool ApplyPendingDifficulty()
     {
         BeforeApplyPendingDifficulty?.Invoke();
         if(pendingDifficulty.HasValue)
         {
-            SetDifficulty(pendingDifficulty.Value);
+            SetDifficulty(pendingDifficulty.Value, PendingDifficultyOrigin);
             pendingDifficulty = null;
+            AfterApplyPendingDifficulty?.Invoke();
 
             return true;
         }
 
+        AfterApplyPendingDifficulty?.Invoke();
         return false;
     }
 
-    public void SetDifficulty(double difficulty)
+    public void SetDifficulty(double difficulty) => SetDifficulty(difficulty, DifficultyOrigin.Automatic);
+
+    internal void SetDifficulty(double difficulty, DifficultyOrigin origin)
     {
-        difficulty = ValidateAssignment(difficulty);
+        difficulty = ValidateAssignment(origin == DifficultyOrigin.Automatic
+            ? Math.Max(difficulty, ExplicitDifficultyFloor ?? 0) : difficulty);
         lock(assignmentSync)
         {
-            // An explicit assignment supersedes any deferred dynamic assignment.
+            // Record provenance even for a no-op: accepting a device floor can
+            // constrain future automatic assignments without retiring current work.
             pendingDifficulty = null;
+            ActiveDifficultyOrigin = origin;
+            if(origin is DifficultyOrigin.MinerRequested or DifficultyOrigin.Static or DifficultyOrigin.Device)
+                ExplicitDifficultyFloor = difficulty;
             if(difficulty == Difficulty)
                 return;
             var nextGeneration = checked(assignmentGeneration + 1);
@@ -181,6 +207,7 @@ public class WorkerContextBase
         Func<string> nextJobId = null, bool preserveId = false) where T : class
     {
         ArgumentNullException.ThrowIfNull(template);
+        CandidateShareCredit.Prepare(template);
         lock(assignmentSync)
         {
             assignment ??= new IssuedDifficulty(ValidateAssignment(Difficulty), assignmentTimeProvider, assignmentSession, difficultyGrace);
@@ -191,6 +218,7 @@ public class WorkerContextBase
             var id = cached == null || preserveId ? jobId :
                 (nextJobId?.Invoke() ?? $"{jobId}-d{assignmentGeneration:x}");
             var job = cached == null && !issuedDifficulties.TryGetValue(template, out _) ? template : copy(template, id);
+            CandidateShareCredit.Copy(template, job);
             issuedDifficulties.Add(job, assignment);
             jobSnapshots.Remove(template);
             jobSnapshots.Add(template, new JobSnapshot(assignment, job));
@@ -200,6 +228,7 @@ public class WorkerContextBase
 
     internal void RegisterBlobDifficulty(object template, uint extraNonce)
     {
+        CandidateShareCredit.Prepare(template);
         lock(assignmentSync)
         {
             assignment ??= new IssuedDifficulty(ValidateAssignment(Difficulty), assignmentTimeProvider, assignmentSession, difficultyGrace);

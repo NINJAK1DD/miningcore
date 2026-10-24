@@ -70,6 +70,7 @@ wallet balances or recovery files.
 | Maintain payout retry-contention coverage | [Payout persistence tests](payout-persistence-tests.md) |
 | Review Bitcoin-family notification ownership and regression coverage | [Job notification snapshots](bitcoin-job-notifications.md) |
 | Review Bitcoin-family response failures and reconnect behavior | [Response publication policy](bitcoin-response-publication.md) |
+| Review non-Bitcoin candidate credit and assignment ceilings | [Non-Bitcoin candidate accounting](non-bitcoin-candidate-credit.md) |
 | Review Bitcoin minimum-difficulty negotiation and work publication | [Minimum-difficulty configuration](bitcoin-minimum-difficulty.md) |
 
 The machine-readable configuration reference is
@@ -77,5 +78,3 @@ The machine-readable configuration reference is
 starting configuration is [`config.example.json`](../config.example.json). Release-specific changes
 that affect operators are recorded after the installation and upgrade procedures in the
 [release guide](releases.md).
-
-- [Non-Bitcoin candidate accounting credit](non-bitcoin-candidate-credit.md)

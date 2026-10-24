@@ -101,7 +101,7 @@ public class XelisPool : PoolBase
                 logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
 
                 context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(nicehashDiff.Value);
+                context.SetDifficulty(nicehashDiff.Value, DifficultyOrigin.Static);
             }
         }
         catch(Exception ex)
@@ -178,7 +178,7 @@ public class XelisPool : PoolBase
                        context.VarDiff == null && staticDiff.Value > context.Difficulty))
                 {
                     context.VarDiff = null; // disable vardiff
-                    context.SetDifficulty(staticDiff.Value);
+                    context.SetDifficulty(staticDiff.Value, DifficultyOrigin.Static);
 
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
                 }
@@ -331,6 +331,7 @@ public class XelisPool : PoolBase
         return result;
     }
 
+    protected override bool UsesCandidateDifficultyPolicy => true;
     protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => coin.ShareMultiplier;

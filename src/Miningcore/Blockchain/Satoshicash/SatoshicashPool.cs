@@ -93,7 +93,7 @@ public class SatoshicashPool : PoolBase
                 logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
 
                 context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(nicehashDiff.Value);
+                context.SetDifficulty(nicehashDiff.Value, DifficultyOrigin.Static);
             }
 
             var minerJobParams = CreateWorkerJob(connection, context.IsSubscribed);
@@ -166,7 +166,7 @@ public class SatoshicashPool : PoolBase
                        context.VarDiff == null && staticDiff.Value > context.Difficulty))
                 {
                     context.VarDiff = null; // disable vardiff
-                    context.SetDifficulty(staticDiff.Value);
+                    context.SetDifficulty(staticDiff.Value, DifficultyOrigin.Static);
 
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
@@ -312,9 +312,9 @@ public class SatoshicashPool : PoolBase
             if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
                 response.Extra = new Dictionary<string, object> { ["error"] = null };
             await connection.RespondAsync(response);
-            if(requestedDiff > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty && requestedDiff != context.Difficulty)
+            if(requestedDiff > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty)
             {
-                context.SetDifficulty(requestedDiff);
+                context.SetDifficulty(requestedDiff, DifficultyOrigin.Device);
                 await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
                 if(context.IsSubscribed)
                     await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
@@ -351,6 +351,7 @@ public class SatoshicashPool : PoolBase
         return result;
     }
 
+    protected override bool UsesCandidateDifficultyPolicy => true;
     protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => coin.ShareMultiplier;

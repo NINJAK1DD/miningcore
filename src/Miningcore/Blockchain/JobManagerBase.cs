@@ -29,7 +29,7 @@ public abstract class JobManagerBase<TJob>
     protected ClusterConfig clusterConfig;
 
     protected TJob currentJob;
-    internal double CandidateDifficultyLimit => CandidateShareCredit.Limit(currentJob);
+    internal double CandidateDifficultyLimit => currentJob == null ? double.MaxValue : CandidateShareCredit.Limit(currentJob);
     private int jobId;
     protected readonly object jobLock = new();
     protected ILogger logger;

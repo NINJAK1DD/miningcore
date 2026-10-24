@@ -123,6 +123,7 @@ public class BeamJob : Miningcore.Mining.ICandidateCreditJob
 
         // Misc
         this.solver = solver;
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     public BeamBlockTemplate BlockTemplate { get; protected set; }

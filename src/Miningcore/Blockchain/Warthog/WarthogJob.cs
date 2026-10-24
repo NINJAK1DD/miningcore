@@ -257,6 +257,8 @@ public class WarthogJob : Miningcore.Mining.ICandidateCreditJob
         BlockTemplate = blockTemplate;
         JobId = jobId;
         
+        if(network == WarthogNetworkType.Testnet && !isJanusHash)
+            throw new InvalidDataException("Warthog testnet requires the Janus proof domain");
         this.network = network;
         IsJanusHash = isJanusHash;
 
@@ -286,6 +288,7 @@ public class WarthogJob : Miningcore.Mining.ICandidateCreditJob
             nTimeBytes.ToHexString(),
             false
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     public virtual object GetJobParams(bool isNew)

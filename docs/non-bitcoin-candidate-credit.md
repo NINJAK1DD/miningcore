@@ -27,9 +27,9 @@ candidate exceptions, including inherited custom validators.
 | Ethereum and Cortex | `BigMaxValue / T / 2^32` | Multiply by `2^32`; identity adjustment |
 | CryptoNote and Conceal | template difficulty used by candidate admission | Whole issued difficulty; identity adjustment |
 | Zano | template difficulty used by candidate admission | Unit multiplier required; identity adjustment |
-| Handshake | job difficulty times `m` | Divide by `m`; identity adjustment |
-| Nexa and Satoshicash | job difficulty times `m` | Divide by `m`; identity adjustment |
-| Xelis | job difficulty (unit multiplier required) | Stored directly; identity adjustment |
+| Handshake | `HandshakeConstants.Diff1 / T * m` | Divide by `m`; identity adjustment |
+| Nexa and Satoshicash | `BitcoinConstants.Diff1 / T * m` | Divide by `m`; identity adjustment |
+| Xelis | `Diff1Target / T` (unit multiplier required) | Stored directly; identity adjustment |
 | Alephium | job difficulty divided by `Pow2xDiff1TargetNumZero` | Existing stored conversion; payout handler multiplies by that power of two |
 | Warthog Janus score candidates | minimum of job difficulty and immutable encoded `WarthogTarget.Difficulty()` | Existing Janus-number share units; identity adjustment |
 | Warthog legacy SHA256d candidates | conservative ceiling of 1 | Legacy admission has a different hash domain from share scoring; unit credit avoids assigning a Janus-score ceiling to a SHA256d exception |
@@ -59,8 +59,8 @@ it does not claim that every historical Janus epoch has a new linear hash-rate m
 
 All families use the shared endpoint initialization, deferred VarDiff and worker
 assignment gate. All 15 affected handlers read static password and NiceHash hints. Nexa and
-Satoshicash additionally implement `mining.suggest_difficulty`; the other affected
-handlers do not implement that producer. None implements BIP310
+Satoshicash additionally implement `mining.suggest_difficulty`; Equihash implements
+`mining.suggest_target`. None implements BIP310
 `minimum-difficulty` configure negotiation; Bitcoin's negotiation remains separate.
 Those explicit constraints keep their existing eligibility and representability
 rules. Difficulty validation, short-target quantization, monotonic grace timing,
@@ -70,7 +70,7 @@ Each affected pool obtains its automatic ceiling from its current job's policy.
 VarDiff retargets cannot exceed it. Before deferred assignments are applied, the
 pool also handles falling chain ceilings, even without a share-rate retarget.
 Endpoint dynamic seeds are bounded before the connection is published. Embedded
-target protocols (CryptoNote, Conceal, Beam, Ergo, Alephium and Ethereum V1) apply compatible
+target protocols (CryptoNote, Conceal, Beam, Ergo, Alephium, Zano and Ethereum V1) apply compatible
 changes before snapshot construction and target projection. Other protocols keep
 their existing difficulty-before-job publication boundary.
 
@@ -155,3 +155,54 @@ for every affected family. The documented Ubuntu WSL lab supplies PostgreSQL and
 source-built native libraries. There are no documented live non-Bitcoin daemon
 labs; no non-Bitcoin mainnet payout or external wallet submission is claimed.
 The final PR records the executed build/test counts and any skips.
+
+## Assignment provenance and policy validation
+
+Automatic retargets have separate provenance from accepted miner/device/static
+requests, including pending requests. An explicit floor survives later automatic
+updates; automatic assignments can increase above it while respecting the
+current network maximum. A pending explicit request is committed before this
+floor constrains subsequent automatic work. The chain ceiling overrides
+`MaxDelta` smoothing on a decline. An incompatible floor is never weakened:
+automatic increases are cleared and an assignment above that floor moves down
+to the floor when it remains within configured/protocol maxima. A compatible
+range later resumes ordinary VarDiff. An unchanged explicit request still
+records its floor. Kaspa's disabled-static password option is an automatic seed,
+not an explicit floor.
+
+Each initialized non-Bitcoin template validates and caches its positive finite
+candidate threshold before a job manager replaces current work. All worker
+copies share that immutable policy; neither later template metadata mutations
+nor current chain statistics reprice issued credit. Target arithmetic runs per
+template rather than per connected worker/broadcast. A malformed replacement
+is rejected before publication while already issued valid candidates remain
+creditable. There is no fallback to full issued credit for an invalid policy.
+Unknown candidate policy consumers fail closed; a compiled call-site regression
+guard requires every production difficulty verifier to select a reviewed policy.
+Bitcoin and merged Bitcoin use their existing audited accounting path.
+
+Legacy Warthog's conservative unit policy also imposes an automatic assignment
+ceiling of 1. A higher protocol/configured/device floor follows the incompatible
+floor behavior above. Testnet always validates in the Janus domain and rejects
+non-Janus configuration rather than accepting an incoherent unit policy.
+
+Alephium intentionally applies the latest published chain-pair template's
+ceiling, rather than a retained minimum over all 16 pairs. Unequal pair targets
+can lower and raise the available automatic range as templates rotate; lower
+ceilings take effect at publication, and ordinary VarDiff controls increases.
+Operators should account for this churn when selecting floors. Every issued
+pair retains its own immutable candidate policy regardless of later changes.
+
+Assignment warnings use `TelemetryCategory.DifficultyAssignment` and the
+`miningcore_difficulty_assignment_total` counter, with fixed outcomes
+`assignment-above-network`, `vardiff-floor-above-network`, and
+`vardiff-floor-incompatible`. No miner-controlled labels are admitted. A
+compatible interval resets suppression, so recurrence at the same difficulty
+warns again. Pools outside this policy do not install its assignment hooks.
+
+Full-width proof comparisons follow the primary node implementations:
+[Handshake `verifyPOW`](https://github.com/handshake-org/hsd/blob/master/lib/protocol/consensus.js)
+and [Xelis difficulty verification](https://github.com/xelis-project/xelis-blockchain/blob/master/xelis_common/src/difficulty.rs)
+interpret the full big-endian hash as an integer and compare it directly with
+the decoded target. Compact target conversion must not round the proof hash.
+Xelis also retains the full computed block target when constructing the job.

@@ -211,5 +211,6 @@ public class AlephiumJob : Miningcore.Mining.ICandidateCreditJob
             TxsBlob = string.Empty,
             TargetBlob = string.Empty,
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 }
