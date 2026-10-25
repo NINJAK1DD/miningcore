@@ -230,27 +230,58 @@ public class XelisLifecycleTests
     }
 
     [Fact]
-    public async Task SuspendedOutageRemindsAtTenMinutesAndCountsAllFailuresOnRecovery()
+    public async Task SuspendedOutageUsesMonotonicTenMinutesDespiteWallClockJumpsAndCountsRecovery()
     {
         await using var fixture = await Fixture.Start();
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var clock = (Miningcore.Tests.Util.MockMasterClock) typeof(XelisJobManager)
             .GetField("clock", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(fixture.Manager);
         clock.CurrentTime = DateTime.UnixEpoch;
+        var time = new ManualTimeProvider();
+        fixture.Manager.SuspensionTimeProvider = time;
         Assert.True(await fixture.Manager.Refresh(deadline.Token));
         fixture.HeaderAlgorithm = "xel/v3";
         Assert.False(await fixture.Manager.Refresh(deadline.Token));
         for(var i = 0; i < 3; i++) Assert.False(await fixture.Manager.Refresh(deadline.Token));
         Assert.Single(fixture.Diagnostics);
-        clock.CurrentTime += TimeSpan.FromMinutes(10);
+        clock.CurrentTime += TimeSpan.FromDays(365);
+        time.MoveWallClock(TimeSpan.FromDays(365));
         Assert.False(await fixture.Manager.Refresh(deadline.Token));
-        Assert.Equal(5, fixture.Diagnostics[1]["failedCount"].Value<int>());
+        clock.CurrentTime -= TimeSpan.FromDays(730);
+        time.MoveWallClock(-TimeSpan.FromDays(730));
+        Assert.False(await fixture.Manager.Refresh(deadline.Token));
+        Assert.Single(fixture.Diagnostics);
+        time.AdvanceMonotonic(TimeSpan.FromMinutes(10));
+        Assert.False(await fixture.Manager.Refresh(deadline.Token));
+        Assert.Equal(7, fixture.Diagnostics[1]["failedCount"].Value<int>());
         Assert.False(await fixture.Manager.Refresh(deadline.Token));
         Assert.Equal(2, fixture.Diagnostics.Length);
         fixture.HeaderAlgorithm = "xel/v1";
         Assert.True(await fixture.Manager.Refresh(deadline.Token));
         Assert.Equal("Recovered", fixture.Diagnostics[2]["stage"].Value<string>());
-        Assert.Equal(6, fixture.Diagnostics[2]["failedCount"].Value<int>());
+        Assert.Equal(8, fixture.Diagnostics[2]["failedCount"].Value<int>());
+    }
+
+    [Fact]
+    public async Task FirstIncompatibleResponseSuspendsOnceAndRecoveryAllowsANewTransition()
+    {
+        await using var fixture = await Fixture.Start();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var suspensions = 0;
+        fixture.Manager.WorkSuspended += () => suspensions++;
+        Assert.True(await fixture.Manager.Refresh(deadline.Token));
+        var old = fixture.Manager.CurrentJob;
+        fixture.WorkAlgorithm = "xel/v2";
+        Assert.False(await fixture.Manager.Refresh(deadline.Token));
+        Assert.True(old.IsRetired);
+        Assert.Equal(1, suspensions);
+        Assert.False(await fixture.Manager.Refresh(deadline.Token));
+        Assert.Equal(1, suspensions);
+        fixture.WorkAlgorithm = "xel/v1";
+        Assert.True(await fixture.Manager.Refresh(deadline.Token));
+        fixture.HeaderAlgorithm = "xel/v3";
+        Assert.False(await fixture.Manager.Refresh(deadline.Token));
+        Assert.Equal(2, suspensions);
     }
 
     [Fact]

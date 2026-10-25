@@ -44,6 +44,17 @@ public class XelisPool : PoolBase
     private XelisPoolConfigExtra extraPoolConfig;
     private XelisCoinTemplate coin;
 
+    protected override bool IsConnectionAdmissionOpen =>
+        base.IsConnectionAdmissionOpen && manager is { IsWorkSuspended: false };
+
+    protected override void OnConnect(StratumConnection connection, System.Net.IPEndPoint endpoint)
+    {
+        // Accept checks admission before registering; close the race if suspension
+        // began before registration made this connection visible to the sweep.
+        if(!IsConnectionAdmissionOpen) throw new XelisWorkUnavailableException();
+        base.OnConnect(connection, endpoint);
+    }
+
     internal void ObserveWorkSuspension()
     {
         var observedManager = manager;
@@ -198,6 +209,8 @@ public class XelisPool : PoolBase
             {
                 assignmentGate.Activate();
                 ct.ThrowIfCancellationRequested();
+                if(manager.IsWorkSuspended || connection.IsDisconnectRequested)
+                    throw new XelisWorkUnavailableException();
                 // Static diff
                 if(staticDiff.HasValue &&
                    (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
@@ -216,6 +229,14 @@ public class XelisPool : PoolBase
                 // send intial update
                 await connection.NotifyAsync(XelisStratumMethods.SetDifficulty, new object[] { context.Difficulty });
                 await connection.NotifyAsync(XelisStratumMethods.MiningNotify, minerJobParams);
+            }
+            catch(XelisWorkUnavailableException)
+            {
+                // Expected retirement can race the last check or assignment
+                // creation after authorization succeeded. Close quietly while
+                // retaining the same terminal assignment cleanup and gate release.
+                Guard(() => context.CloseDifficultyAssignments());
+                Guard(() => Disconnect(connection));
             }
             catch(Exception ex)
             {

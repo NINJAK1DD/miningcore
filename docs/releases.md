@@ -52,12 +52,19 @@ consensus fields now retires all prior assignments, hides old work from new
 authorizations, and rejects obsolete submissions before proof processing or
 admission. The transition disconnects active sessions without IP bans so miners
 can fail over; new subscribe/authorize attempts disconnect before address RPCs.
+Suspended listener admission now closes new TCP sockets before Stratum/TLS setup;
+it reopens automatically after supported recovery. Miners without failover may
+reconnect repeatedly during suspension; that expected churn alone does not imply
+an attack. The first consensus mismatch still suspends immediately, with no
+second-response delay. Authorization racing retirement closes quietly without
+an assignment Error diagnostic.
 Retired-job rejections do not affect invalid-share counts or trigger bans,
 including after recovery. Supported recovery creates fresh assignments and never reactivates
 the retired jobs. Temporary RPC outages retain compatible work; caller-requested
 cancellation stays silent. Refresh failures log once per outage, with an Info
 recovery diagnostic carrying the consecutive failure count. Suspended refresh
-failures also emit a reminder at most once every ten minutes. Shares and block
+failures also emit a reminder at most once every ten minutes of monotonic elapsed
+time, unaffected by wall-clock changes. Shares and block
 RPCs admitted before retirement retain their subsequent accounting/acceptance
 results.
 

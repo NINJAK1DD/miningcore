@@ -58,7 +58,8 @@ public class XelisJobManager : JobManagerBase<XelisJob>
     private XelisWorkEpoch workEpoch = new();
     private readonly SemaphoreSlim refreshGate = new(1, 1);
     private int refreshFailures;
-    private DateTime lastSuspensionDiagnostic;
+    private long? lastSuspensionDiagnostic;
+    internal TimeProvider SuspensionTimeProvider { get; set; } = TimeProvider.System;
     internal bool IsWorkSuspended => Volatile.Read(ref workEpoch).IsRetired;
     internal event Action WorkSuspended;
 
@@ -83,12 +84,14 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         RpcConsumerDiagnostics.Stage stage = RpcConsumerDiagnostics.Stage.Response, bool force = false)
     {
         if(refreshFailures < int.MaxValue) refreshFailures++;
-        var reminder = IsWorkSuspended && clock.Now - lastSuspensionDiagnostic >= TimeSpan.FromMinutes(10);
+        var now = SuspensionTimeProvider.GetTimestamp();
+        var reminder = IsWorkSuspended && lastSuspensionDiagnostic.HasValue &&
+            SuspensionTimeProvider.GetElapsedTime(lastSuspensionDiagnostic.Value, now) >= TimeSpan.FromMinutes(10);
         if(refreshFailures == 1 || force || reminder)
         {
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "XelisJobManager.UpdateJob",
                 failure: failure, code: code, failedCount: refreshFailures, stage: stage);
-            if(IsWorkSuspended) lastSuspensionDiagnostic = clock.Now;
+            if(IsWorkSuspended) lastSuspensionDiagnostic = now;
         }
     }
 
@@ -98,6 +101,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "XelisJobManager.UpdateJob",
             failedCount: refreshFailures, stage: RpcConsumerDiagnostics.Stage.Recovered);
         refreshFailures = 0;
+        lastSuspensionDiagnostic = null;
     }
 
     private async Task<(RpcResponse<GetBlockHeaderResponse>, RpcResponse<GetBlockTemplateResponse>)> GetBlockTemplateAsync(CancellationToken ct)

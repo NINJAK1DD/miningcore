@@ -61,6 +61,83 @@ public class PoolFamilyAssignmentTests : TestBase
         "Equihash", "Ergo", "Ethereum", "Handshake", "Kaspa", "Nexa", "Progpow", "Satoshicash", "Warthog", "Xelis", "Zano" };
     private static bool NeedsNative(string family) => family is "Conceal" or "Cryptonote" or "Zano";
 
+    [Fact]
+    public async Task XelisAuthorizationRetirementRaceClosesQuietlyAndReleasesAssignmentGate()
+    {
+        await using var fixture = await Fixture.Create(this, "Xelis");
+        fixture.Time.Block = true;
+        var authorization = Task.Run(() => fixture.Authorize());
+        try
+        {
+            // Static difficulty processing is inside the assignment gate after
+            // the final suspension check, immediately before job creation.
+            await fixture.Time.Entered.Task.WaitAsync(Timeout);
+            fixture.SuspendXelisWork();
+        }
+        finally
+        {
+            fixture.Time.Block = false;
+            fixture.Time.Release.Set();
+        }
+        await authorization.WaitAsync(Timeout);
+        await fixture.WaitDisconnected();
+        Assert.True(fixture.Connection.IsDisconnectRequested);
+        Assert.False(fixture.Connection.Context.IsAuthorized);
+        Assert.Equal(1, fixture.Connection.Context.AssignmentGate.CurrentCount);
+        Assert.DoesNotContain(fixture.Messages, m => m["method"]?.Value<string>() == "mining.notify");
+        Assert.Empty(fixture.Errors.Logs);
+        fixture.AssertNoBan();
+    }
+
+    [Fact]
+    public async Task XelisListenerRefusesSuspendedTcpBeforeDispatchAndReopensAfterRecovery()
+    {
+        await using var fixture = await Fixture.Create(this, "Xelis");
+        var endpoint = await fixture.StartXelisListener();
+        fixture.SuspendXelisWork();
+        var calls = fixture.DaemonCalls;
+        using(var rejected = new TcpClient(AddressFamily.InterNetwork))
+        {
+            var rejectedDuringConnect = false;
+            try { await rejected.ConnectAsync(endpoint.Address, endpoint.Port).WaitAsync(Timeout); }
+            catch(SocketException ex) when(ex.SocketErrorCode is SocketError.ConnectionReset or
+                SocketError.ConnectionAborted or SocketError.Shutdown)
+            {
+                // Fast abort can win ConnectAsync completion (EPIPE on Linux).
+                // Refusal and timeout remain failures; no unrelated error is accepted.
+                rejectedDuringConnect = true;
+            }
+            try
+            {
+                if(!rejectedDuringConnect)
+                {
+                    var received = await rejected.GetStream().ReadAsync(new byte[1]).AsTask().WaitAsync(Timeout);
+                    Assert.Equal(0, received);
+                }
+            }
+            catch(SocketException ex) when(ex.SocketErrorCode is SocketError.ConnectionReset or SocketError.ConnectionAborted) { }
+            catch(System.IO.IOException ex) when(ex.InnerException is SocketException socket &&
+                socket.SocketErrorCode is SocketError.ConnectionReset or SocketError.ConnectionAborted) { }
+        }
+        Assert.Equal((0, 0), fixture.Pool.ConnectionAdmission.Snapshot);
+        Assert.Equal(0, fixture.Pool.TrackedConnectionTaskCount);
+        Assert.Equal(calls, fixture.DaemonCalls);
+        fixture.AssertNoBan();
+        await fixture.RefreshXelis("xel/v1");
+        using var recovered = new TcpClient(AddressFamily.InterNetwork);
+        await recovered.ConnectAsync(endpoint.Address, endpoint.Port).WaitAsync(Timeout);
+        await recovered.GetStream().WriteAsync(Encoding.UTF8.GetBytes(
+            "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"fixture\"]}\n"));
+        using var reader = new System.IO.StreamReader(recovered.GetStream());
+        var response = JObject.Parse(await reader.ReadLineAsync().WaitAsync(Timeout));
+        Assert.Equal(1, response["id"].Value<int>());
+        Assert.NotNull(response["result"]);
+        Assert.True(response["error"] == null || response["error"].Type == JTokenType.Null);
+        Assert.Equal(1, fixture.Pool.ConnectionAdmission.Snapshot.Active);
+        Assert.Empty(fixture.Errors.Logs);
+        fixture.AssertNoBan();
+    }
+
     [Theory]
     [InlineData("mining.subscribe")] [InlineData("mining.authorize")]
     public async Task XelisSuspensionDisconnectsNewRequestsWithoutAddressRpcsOrBan(string method)
@@ -771,6 +848,7 @@ public class PoolFamilyAssignmentTests : TestBase
         private TcpClient client = new(AddressFamily.InterNetwork);
         private Task dispatch;
         private Task wireRead;
+        private Task listenerLifetime;
         private readonly DaemonStub daemon = new();
         private readonly LogFactory logs = new();
         private readonly RecyclableMemoryStreamManager streams = new();
@@ -956,6 +1034,19 @@ public class PoolFamilyAssignmentTests : TestBase
         }
 
         internal Task WaitDisconnected() => dispatch.WaitAsync(Timeout);
+        internal async Task<IPEndPoint> StartXelisListener()
+        {
+            Connection.Disconnect();
+            await WaitDisconnected();
+            Invoke(Pool, "UnregisterConnection", Connection);
+            var port = Pool.Config.Ports.Single();
+            var endpoint = new StratumEndpoint(new IPEndPoint(IPAddress.Loopback, port.Key), port.Value);
+            var reservation = new StratumListenerReservation(Pool.Config.Id, endpoint,
+                StratumServer.CreateBoundSocket(endpoint.IPEndPoint));
+            reservation.Activate();
+            listenerLifetime = ((StratumServer) Pool).RunAsync(stop.Token, reservation);
+            return endpoint.IPEndPoint;
+        }
         internal void UseWire()
         {
             Connection.SendMessageOverride = null;
@@ -1195,6 +1286,8 @@ public class PoolFamilyAssignmentTests : TestBase
                     await dispatch.WaitAsync(Timeout);
                 if(wireRead != null)
                     await wireRead.WaitAsync(Timeout);
+                if(listenerLifetime != null)
+                    await listenerLifetime.WaitAsync(Timeout);
             }
             finally
             {

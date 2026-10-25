@@ -42,7 +42,8 @@ produces a redacted Error-level `XelisJobManager.UpdateJob` diagnostic, includin
 the safe failure category and numeric RPC code without remote error text. Caller
 cancellation is silent. Repeated failures in one outage are counted without
 repeating Error logs for transient outages; suspended refresh failures emit a
-reminder at most once every ten minutes. Successful recovery reports `stage: Recovered` at Info with
+reminder at most once every ten minutes of monotonic elapsed time, independent
+of system wall-clock corrections. Successful recovery reports `stage: Recovered` at Info with
 the consecutive failure count. A newly confirmed incompatibility always emits
 its own rejection diagnostic, even during an existing outage.
 
@@ -51,7 +52,13 @@ job and worker snapshot, clears the manager's current job and rejects new use of
 retired jobs before hashing. Proofs whose verification overlaps retirement are
 also rejected before returning a share. The suspension transition disconnects
 all existing sessions **without an IP ban**, allowing configured miner failover.
-New subscribe/authorize attempts are disconnected before address RPCs. Late
+While suspended, the listener closes newly accepted TCP sockets before creating
+a Stratum connection, acquiring admission capacity, or doing TLS/Stratum work.
+Registration and subscribe/authorize guards close concurrent transition windows
+before address RPCs. The listener remains bound and admits sessions again when
+supported work recovers. Miners without a failover pool can repeatedly reconnect
+and be refused throughout a long suspension; this expected churn is not by
+itself evidence of an attack. Late
 retired-job submissions carry a dedicated rejection marker and do not increment
 invalid-share counts or trigger bans, including the tail after supported recovery.
 Unknown jobs and ordinary invalid proofs retain their normal rejection policies.
@@ -60,9 +67,20 @@ reissue retired work. A subsequent fully validated, supported response opens a
 fresh epoch. Old queues may retain references for bounded cleanup, but those jobs
 remain retired permanently, including after recovery.
 
+The **first** confirmed unsupported algorithm or header/work consensus mismatch
+retires work and initiates failover immediately. There is deliberately no
+second-response delay: the pinned daemon derives both consensus fields from the
+same header, so an inconsistent response cannot establish usable mining work.
+Repeated incompatibilities in that epoch do not repeat the disconnect sweep.
+An authorization overlapping retirement closes quietly with normal assignment
+cleanup and gate release; this expected transition produces no assignment Error.
+
 Transient HTTP/RPC outages and caller cancellation do not retire compatible
 assignments or reopen an already suspended epoch. Refresh requests are serialized
 to prevent older responses from racing past a newer incompatibility decision.
+Operators should monitor daemon health and time since the last successful work
+refresh during a prolonged RPC outage; preserving compatible cached work does
+not establish that daemon work is fresh.
 Block RPCs already admitted before retirement can complete and retain an accepted
 network receipt; retirement does not erase an already submitted block outcome.
 Likewise, shares admitted at the final epoch check may finish publication and
@@ -349,3 +367,22 @@ tests. Documentation guards, all 47 Markdown link/anchor checks and Stratum
 diagnostic source guards pass. Current-head automatic and manual live CI evidence
 is recorded in PR #221 when complete. Earlier full-lab baseline limitations above
 remain applicable; they are not represented as successful financial validation.
+
+## Final operational review hardening
+
+| Finding | Resolution and regression evidence |
+| --- | --- |
+| N1 authorization overlapping suspension logs Error | Catch the dedicated retirement marker in authorization, perform terminal assignment cleanup quietly, and release the gate; a deterministic barrier retires work between the last check and job creation |
+| N2 first anomalous consensus response disconnects sessions | Retain immediate fail-closed suspension; document the pinned-daemon rationale and verify one sweep per epoch, with a new sweep possible only after supported recovery |
+| N3 repeated reconnects during long suspension | Document expected reconnect churn and miner failover; suspended listener admission closes TCP before Stratum setup or admission capacity acquisition |
+| P3 listener admission | Actual listener/TCP test verifies rejection without a request, zero admission occupancy/identities or dispatch tasks, no daemon calls/ban/Error, and subscription success on the same listener after recovery |
+| P3 wall-clock diagnostic timing | Use monotonic `TimeProvider` timestamps; controlled forward/backward wall-clock jumps neither trigger early reminders nor prevent the ten-minute reminder and counted recovery |
+
+Local verification: **781 passed, zero failed, zero skipped** across the expanded
+Xelis, RPC, snapshot, concrete assignment, Stratum diagnostic and listener tests,
+with the real disposable daemon enabled. Windows startup/RPC and all Xelis pool
+operational tests: **12 passed, zero failed, zero skipped**. Documentation and
+Stratum source guards pass. Final current-head automatic and manual live CI run
+links and results are recorded in PR #221 after completion. Existing #120
+modernization/certification limits and the historical local database-fixture
+baseline remain documented above.
