@@ -430,3 +430,21 @@ Windows run also exercised the PFX certificate-identity case already excluded
 from Windows CI; that case failed its certificate thumbprint assertion. The
 filtered result does not certify that excluded case. Current-head automatic and
 manual real-daemon CI evidence is recorded in PR #221 after completion.
+
+### CI installer availability
+
+The first CI run of the admission-classification revision failed before
+compilation: floating `10.0.x` setup selected SDK `10.0.403` and its LTS runtime
+probe selected `10.0.14`, whose download endpoints returned HTTP 409. The
+[official published release metadata](https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json)
+still listed SDK `10.0.402` / runtime `10.0.13`; these were used by the preceding
+green runs, and Linux x64, Windows x64 and macOS ARM64 SDK assets returned HTTP
+200 during verification. The setup steps in .NET, Release and Stratum portability
+workflows now request that published SDK explicitly. Advance these installer pins
+together when new servicing binaries are published and available; the application's
+SDK minimum and roll-forward policy are unchanged.
+
+The pinned `setup-dotnet` action probes the latest LTS runtime before installing
+the requested SDK. Its own implementation treats failure of that optional probe
+as a warning: the explicitly requested SDK includes its runtime and must still
+install successfully. Current-head CI validates the resulting toolchain.

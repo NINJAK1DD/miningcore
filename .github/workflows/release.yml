@@ -111,7 +111,7 @@ jobs:
       - name: Setup .NET for container runtime tests
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.402 # Keep aligned with the other CI workflows.
 
       - name: Publish ZeroMQ runtime probe
         run: >-
@@ -537,7 +537,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.402 # Keep aligned with the other CI workflows.
 
       - name: Test source-build identity resolution
         run: bash scripts/release/test-source-build-identity.sh
@@ -762,7 +762,7 @@ jobs:
       - name: Setup .NET for container runtime test
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.402 # Keep aligned with the other CI workflows.
 
       - name: Publish ZeroMQ runtime probe
         run: >-
