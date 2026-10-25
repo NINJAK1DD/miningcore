@@ -85,7 +85,7 @@ Linux test copy. Obtain the official v1.25.0
 and verify its SHA-256 against the upstream release checksums before extraction:
 
 ```text
-424ac65de320a835b4cbe2c2a8b9140b12e8bab86cf5ebda89ffee024947135e
+SHA-256: 424ac65de320a835b4cbe2c2a8b9140b12e8bab86cf5ebda89ffee024947135e
 ```
 
 From the Linux checkout, after a normal native build:
