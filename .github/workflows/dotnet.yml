@@ -4,6 +4,13 @@ name: .NET
 # Dependabot proposes updates for the github-actions ecosystem.
 
 on:
+  workflow_dispatch:
+    inputs:
+      xelis_live:
+        description: 'Run checksum-pinned disposable Xelis stagenet validation'
+        required: false
+        type: boolean
+        default: false
   push:
     branches: [ master, dev, ravencoin-rollback ]
   pull_request:
@@ -398,6 +405,20 @@ jobs:
         --filter "FullyQualifiedName~Miningcore.Tests.Mining.ShareReceiverTests"
         src/Miningcore.Tests/Miningcore.Tests.csproj
 
+    - name: Install optional pinned Xelis live-test daemon
+      if: github.event_name == 'workflow_dispatch' && inputs.xelis_live
+      shell: bash
+      run: |
+        set -euo pipefail
+        xelis_root="$RUNNER_TEMP/xelis-v1.25.0"
+        mkdir -p "$xelis_root"
+        curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
+          https://github.com/xelis-project/xelis-blockchain/releases/download/v1.25.0/x86_64-unknown-linux-gnu.tar.gz \
+          --output "$xelis_root/archive.tar.gz"
+        printf '%s  %s\n' 424ac65de320a835b4cbe2c2a8b9140b12e8bab86cf5ebda89ffee024947135e "$xelis_root/archive.tar.gz" | sha256sum --check --strict
+        tar -xzf "$xelis_root/archive.tar.gz" -C "$xelis_root"
+        echo "MININGCORE_TEST_XELISD=$xelis_root/x86_64-unknown-linux-gnu/xelis_daemon" >> "$GITHUB_ENV"
+
     - name: Test
       shell: bash
       env:
@@ -552,6 +573,10 @@ jobs:
         if(Test-Path 'libs\runtimes\win-x64\libodocrypt.dll') {
           throw 'Windows Odocrypt must be built from reviewed source, not checked in'
         }
+
+    - name: Test source-built Windows Xelis v1 vectors
+      shell: pwsh
+      run: scripts/release/test-xelis-windows.ps1
 
     - name: Test source-built Windows Odocrypt runtime
       shell: pwsh

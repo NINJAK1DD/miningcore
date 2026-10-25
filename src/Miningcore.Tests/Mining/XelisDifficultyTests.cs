@@ -38,16 +38,7 @@ public class XelisDifficultyTests
         var job = Init(value);
         Assert.Equal(expected, job.blockTargetBytes);
         Assert.Equal(new BigInteger(expected, true, true), new BigInteger(job.blockTargetValue.ToBytes(), true));
-        if(value <= 9007199254740991L)
-            Assert.Equal(expected, XelisUtils.DifficultyToTarget((double) value));
     }
-
-    [Theory]
-    [InlineData(0)] [InlineData(-1)] [InlineData(0.5)] [InlineData(1.5)]
-    [InlineData(double.NaN)] [InlineData(double.PositiveInfinity)] [InlineData(double.NegativeInfinity)]
-    [InlineData(double.Epsilon)] [InlineData(double.MaxValue)] [InlineData(9007199254740992d)]
-    public void InvalidDoubleDifficultyFailsDeliberately(double difficulty) =>
-        Assert.Throws<ArgumentOutOfRangeException>(() => XelisUtils.DifficultyToTarget(difficulty));
 
     [Fact]
     public void InvalidIntegerDifficultyFailsBeforeTemplatePublication()
@@ -62,6 +53,7 @@ public class XelisDifficultyTests
     [Theory]
     [InlineData("0")] [InlineData("-1")] [InlineData("1.5")] [InlineData("1e3")]
     [InlineData("null")] [InlineData("true")] [InlineData("[]")] [InlineData("{}")]
+    [InlineData("NaN")] [InlineData("Infinity")] [InlineData("-Infinity")] [InlineData("1e309")]
     [InlineData("\"NaN\"")] [InlineData("\"Infinity\"")] [InlineData("\"+1\"")]
     [InlineData("\" 1\"")] [InlineData("\"1e3\"")] [InlineData("\"1.0\"")]
     [InlineData("\"115792089237316195423570985008687907853269984665640564039457584007913129639936\"")]
@@ -83,24 +75,28 @@ public class XelisDifficultyTests
         Assert.Throws<JsonSerializationException>(() => JsonConvert.DeserializeObject<GetBlockTemplateResponse>("{}"));
     }
 
-    [Fact]
-    public void ComparisonsAreInclusiveBigEndianAndRequireExactWidths()
-    {
-        var target = XelisUtils.DifficultyToTarget(new BigInteger(257));
-        var value = new BigInteger(target, true, true);
-        foreach(var offset in new[] { -1, 0, 1 })
-            Assert.Equal(offset <= 0, XelisUtils.CheckDiff(Bytes(value + offset), target));
-        Assert.True(XelisUtils.CheckDiff(Convert.FromHexString(new string('f', 64)), 1d));
-        Assert.Throws<ArgumentException>(() => XelisUtils.CheckDiff(new byte[31], target));
-        Assert.Throws<ArgumentException>(() => XelisUtils.CheckDiff(new byte[33], target));
-        Assert.Throws<ArgumentException>(() => XelisUtils.CheckDiff(new byte[32], new byte[31]));
-        Assert.Throws<ArgumentException>(() => XelisUtils.CheckDiff(new byte[32], new byte[33]));
-        Assert.Throws<ArgumentNullException>(() => XelisUtils.CheckDiff(new byte[32], null));
-    }
-
     private sealed class FixedHash(byte[] proof) : IHashAlgorithm
     {
         public void Digest(ReadOnlySpan<byte> data, Span<byte> result, params object[] extra) => proof.CopyTo(result);
+    }
+
+    [Theory]
+    [InlineData(null)] [InlineData("")] [InlineData("xel/v3")] [InlineData("unknown")]
+    public void InitRejectsUnsupportedAlgorithmsBeforeIssuance(string algorithm)
+    {
+        var source = Init(1);
+        source.BlockTemplate.Algorithm = algorithm;
+        Assert.Throws<System.IO.InvalidDataException>(() => new XelisJob().Init(source.BlockHeader, source.BlockTemplate,
+            "invalid", new MockMasterClock(), "stagenet", 1, source.PrevHash));
+    }
+
+    [Fact]
+    public void InitRejectsInconsistentExactDifficulty()
+    {
+        var source = Init(1);
+        source.BlockHeader.Difficulty = 2;
+        Assert.Throws<System.IO.InvalidDataException>(() => new XelisJob().Init(source.BlockHeader, source.BlockTemplate,
+            "invalid", new MockMasterClock(), "stagenet", 1, source.PrevHash));
     }
 
     // Control the digest only; run production initialization, issuance, validation and accounting.
@@ -113,13 +109,14 @@ public class XelisDifficultyTests
         {
             if(target + offset > XelisConstants.Diff1Target) continue;
             var job = Init(difficulty);
+            job.BlockTemplate.Algorithm = "xel/v3"; // Published jobs retain their validated algorithm snapshot.
             NonBitcoinCandidateCreditTests.Set(job, "xelisHash", new FixedHash(Bytes(target + offset)));
             NonBitcoinCandidateCreditTests.Set(job, "blake3Hasher", new FixedHash(new byte[32]));
             var worker = Worker(difficulty * 100d);
             var issued = job.ForWorker(worker.ContextAs<XelisWorkerContext>());
             if(offset <= 0)
             {
-                var result = issued.ProcessShare(worker, "0000000000000001");
+                var result = issued.ProcessShare(worker, "0000000000000001").Share;
                 Assert.True(result.IsBlockCandidate);
                 Assert.InRange(result.Difficulty, difficulty * .999999999, difficulty * 1.000000001);
                 Assert.Equal((double) difficulty, result.NetworkDifficulty);
@@ -133,7 +130,7 @@ public class XelisDifficultyTests
             var job = Init(difficulty);
             NonBitcoinCandidateCreditTests.Set(job, "xelisHash", new FixedHash(Bytes(target + 1)));
             var worker = Worker(difficulty / 2d);
-            var result = job.ForWorker(worker.ContextAs<XelisWorkerContext>()).ProcessShare(worker, "0000000000000002");
+            var result = job.ForWorker(worker.ContextAs<XelisWorkerContext>()).ProcessShare(worker, "0000000000000002").Share;
             Assert.False(result.IsBlockCandidate);
             Assert.Equal(difficulty / 2d, result.Difficulty);
         }
@@ -150,7 +147,7 @@ public class XelisDifficultyTests
     internal static XelisJob Init(BigInteger difficulty)
     {
         var job = new XelisJob();
-        job.Init(new GetBlockHeaderResponse { Template = new string('0', 256), TopoHeight = 1 },
+        job.Init(new GetBlockHeaderResponse { Template = new string('0', 256), TopoHeight = 1, Difficulty = difficulty },
             new GetBlockTemplateResponse { Template = new string('0', 224), Difficulty = difficulty, Algorithm = "xel/v1" },
             "test", new MockMasterClock(), "stagenet", 1d, new string('0', 64));
         return job;

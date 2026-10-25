@@ -63,15 +63,20 @@ public class XelisJobManager : JobManagerBase<XelisJob>
             Address = poolConfig.Address
         };
 
-        var getBlockHeaderResponse = await rpc.ExecuteAsync<GetBlockHeaderResponse>(logger, XelisCommands.GetBlockHeader, ct, getBlockHeaderRequest);
+        var getBlockHeaderResponse = await rpc.ExecuteAsync<GetBlockHeaderResponse>(logger, XelisCommands.GetBlockHeader, ct, getBlockHeaderRequest,
+            responseLimits: new RpcResponseLimits(8 * 1024 * 1024, 78));
+
+        if(getBlockHeaderResponse.Error != null || getBlockHeaderResponse.Response == null)
+            return (getBlockHeaderResponse, null);
 
         var getBlockTemplateRequest = new GetBlockTemplateRequest
         {
-            BlockHeader = getBlockHeaderResponse?.Response.Template,
+            BlockHeader = getBlockHeaderResponse.Response.Template,
             Address = poolConfig.Address
         };
 
-        var getBlockTemplateResponse = await rpc.ExecuteAsync<GetBlockTemplateResponse>(logger, XelisCommands.GetBlockTemplate, ct, getBlockTemplateRequest);
+        var getBlockTemplateResponse = await rpc.ExecuteAsync<GetBlockTemplateResponse>(logger, XelisCommands.GetBlockTemplate, ct, getBlockTemplateRequest,
+            responseLimits: new RpcResponseLimits(4096, 78));
 
         return (getBlockHeaderResponse, getBlockTemplateResponse);
     }
@@ -81,8 +86,15 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         try
         {
             var (responseBlockHeader, responseBlockTemplate) = await GetBlockTemplateAsync(ct);
-            if(responseBlockHeader.Error != null || responseBlockTemplate.Error != null)
+            if(responseBlockHeader?.Error != null || responseBlockHeader?.Response == null ||
+                responseBlockTemplate?.Error != null || responseBlockTemplate?.Response == null)
+            {
+                var error = responseBlockHeader?.Error ?? responseBlockTemplate?.Error;
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "XelisJobManager.UpdateJob",
+                    failure: error?.InnerException ?? (error == null ? new InvalidDataException("Missing Xelis work response") : null),
+                    code: error?.Code, stage: RpcConsumerDiagnostics.Stage.Response);
                 return false;
+            }
 
             var blockHeader = responseBlockHeader.Response;
             var blockTemplate = responseBlockTemplate.Response;
@@ -101,10 +113,15 @@ public class XelisJobManager : JobManagerBase<XelisJob>
             // and public key after the initial header-work hash.
             if(workBytes.Length != XelisConstants.BlockWorkSize)
                 throw new FormatException("Miner work has an invalid length");
+            if(blockHeader.Difficulty != blockTemplate.Difficulty)
+                throw new InvalidDataException("Inconsistent Xelis difficulty responses");
+            if(blockTemplate.Algorithm is not (XelisConstants.AlgorithmXelisHashV1 or XelisConstants.AlgorithmXelisHashV2))
+                throw new InvalidDataException("Unsupported Xelis proof algorithm");
             var newHash = workBytes.AsSpan().Slice(XelisConstants.BlockTemplateOffsetBlockHeaderWork,
                 XelisConstants.BlockTemplateOffsetTimestamp - XelisConstants.BlockTemplateOffsetBlockHeaderWork).ToHexString();
             var isNew = currentJob == null ||
-                (newHash != job?.PrevHash);
+                newHash != job.PrevHash || blockTemplate.Difficulty != job.ExactDifficulty ||
+                blockTemplate.Algorithm != job.Algorithm;
 
             if(isNew)
             {
@@ -126,8 +143,8 @@ public class XelisJobManager : JobManagerBase<XelisJob>
                 {
                     BlockchainStats.LastNetworkBlockTime = clock.Now;
                     BlockchainStats.BlockHeight = job.BlockHeader.TopoHeight; // Miningpolstats seems to track "TopoHeight" not "Height" :/
-                    BlockchainStats.NetworkDifficulty = job.Difficulty;
                 }
+                BlockchainStats.NetworkDifficulty = job.Difficulty;
 
                 currentJob = job;
             }
@@ -178,13 +195,13 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         }
     }
 
-    protected async Task<bool> SubmitBlockAsync(Share share, GetBlockHeaderResponse blockHeader, CancellationToken ct)
+    protected virtual async Task<bool> SubmitBlockAsync(Share share, string blockTemplate, CancellationToken ct)
     {
-        Contract.RequiresNonNull(blockHeader);
+        Contract.RequiresNonNull(blockTemplate);
 
         var block = new SubmitBlockRequest
         {
-            BlockTemplate = blockHeader.Template
+            BlockTemplate = blockTemplate
         };
 
         var response = await rpc.ExecuteAsync<object>(logger, XelisCommands.SubmitBlock, ct, block);
@@ -314,7 +331,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
             throw new StratumException(StratumError.JobNotFound, "job not found");
 
         // validate & process
-        var share = job.ProcessShare(worker, nonce);
+        var (share, blockTemplate) = job.ProcessShare(worker, nonce);
 
         // enrich share with common data
         share.PoolId = poolConfig.Id;
@@ -328,9 +345,9 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         // if block candidate, submit & check if accepted by network
         if(share.IsBlockCandidate)
         {
-            logger.Info(() => $"Submitting block {share.BlockHeight} [{share.BlockHash}][{job.BlockHeader.Template}]");
+            logger.Info(() => $"Submitting block {share.BlockHeight} [{RpcConsumerDiagnostics.BlockHash(share.BlockHash)}]");
 
-            var acceptResponse = await SubmitBlockAsync(share, job.BlockHeader, ct);
+            var acceptResponse = await SubmitBlockAsync(share, blockTemplate, ct);
 
             // is it still a block candidate?
             share.IsBlockCandidate = acceptResponse;

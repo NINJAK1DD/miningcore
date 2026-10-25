@@ -117,7 +117,7 @@ public class ProofEncodingBoundaryTests
     }
     private sealed class Xelis : XelisJob
     {
-        protected override Share ProcessShareInternal(StratumConnection worker, string nonce) => Credit(worker, this);
+        protected override (Share Share, string BlockTemplate) ProcessShareInternal(StratumConnection worker, string nonce) => (Credit(worker, this), null);
     }
     private sealed class Alephium : AlephiumJob
     {
@@ -257,7 +257,7 @@ public class ProofEncodingBoundaryTests
                 "Satoshicash" => ((SatoshicashJob) job).ProcessShare(worker, e, t, n).Share,
                 "Warthog" => ((WarthogJob) job).ProcessShare(worker, e, t, n).Share,
                 "Nexa" => ((NexaJob) job).ProcessShare(worker, n, "10000001").Share,
-                "Xelis" => ((XelisJob) job).ProcessShare(worker, n),
+                "Xelis" => ((XelisJob) job).ProcessShare(worker, n).Share,
                 "Alephium" => ((AlephiumJob) job).ProcessShare(worker, n),
                 "Equihash" or "Veruscoin" => ((EquihashJob) job).ProcessShare(worker, e, t, s).Share,
                 _ => new ProgpowWorkerJob("worker", "10000001") { Job = (ProgpowJob) job }.ProcessShare(LogManager.GetCurrentClassLogger(), worker, n, h, s).Share

@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -9,10 +10,17 @@ using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
 using Miningcore.Blockchain.Xelis;
+using Miningcore.Blockchain;
 using Miningcore.Blockchain.Xelis.DaemonResponses;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Stratum;
 using Miningcore.Tests.Util;
+using Autofac;
+using Miningcore.Configuration;
+using Miningcore.Messaging;
+using Miningcore.Rpc;
+using Miningcore.Tests.Rpc;
+using NSubstitute;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -33,7 +41,7 @@ public class XelisDaemonTests
     [DaemonFact]
     public async Task DisposableStagenetAcceptsPoolProofAndRejectsLowDifficulty()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(10));
         var root = Path.Combine(Path.GetTempPath(), "miningcore-xelis-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -52,18 +60,21 @@ public class XelisDaemonTests
         using var daemon = Process.Start(start);
         var stdout = daemon.StandardOutput.ReadToEndAsync();
         var stderr = daemon.StandardError.ReadToEndAsync();
+        Exception bodyFailure = null;
         try
         {
-            using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/"), Timeout = TimeSpan.FromSeconds(10) };
+            var builder = new ContainerBuilder();
+            builder.RegisterModule<AutofacModule>();
+            using var container = builder.Build();
+            using var logs = new RpcDiagnosticTests.CapturedLogs();
+            var bus = Substitute.For<IMessageBus>();
+            var client = new RpcClient(new DaemonEndpointConfig { Host = "127.0.0.1", Port = port, HttpPath = "json_rpc" },
+                container.Resolve<JsonSerializerSettings>(), bus, "test");
             async Task<JToken> Rpc(string method, object parameters = null)
             {
-                using var content = new StringContent(JsonConvert.SerializeObject(new { jsonrpc = "2.0", id = 1, method, @params = parameters }),
-                    System.Text.Encoding.UTF8, "application/json");
-                using var response = await http.PostAsync("json_rpc", content, deadline.Token);
-                response.EnsureSuccessStatusCode();
-                var envelope = JObject.Parse(await response.Content.ReadAsStringAsync(deadline.Token));
-                Assert.True(envelope["error"] == null || envelope["error"].Type == JTokenType.Null, envelope.ToString());
-                return envelope["result"];
+                var response = await client.ExecuteAsync<JToken>(logs.Logger, method, deadline.Token, parameters);
+                if(response.Error != null) throw response.Error.InnerException ?? new InvalidDataException("Daemon RPC failed");
+                return response.Response;
             }
             for(var attempt = 0; ; attempt++)
             {
@@ -73,67 +84,109 @@ public class XelisDaemonTests
             }
             // Published upstream test address; no wallet, keys, funds or public peers.
             const string address = "xet:06t6uhz9gxk08fpm64ufhmdy2krw9rzzwvenw0ukctwz8l9yvafsqdltctp";
-            var header = (await Rpc("get_block_template", new { address })).ToObject<GetBlockHeaderResponse>();
-            var template = (await Rpc("get_miner_work", new { template = header.Template, address })).ToObject<GetBlockTemplateResponse>();
-            Assert.Equal("xel/v1", template.Algorithm);
-            Assert.Equal(new BigInteger(30000), template.Difficulty);
-            var work = Convert.FromHexString(template.Template);
-            var job = new XelisJob();
-            job.Init(header, template, "live", new MockMasterClock(), "stagenet", 1, Convert.ToHexString(work.AsSpan(0, 32)));
-            var target = XelisConstants.Diff1Target / template.Difficulty;
+            var consumer = new RpcConsumerDiagnosticTests.XelisConsumer(container, bus, client, logs.Logger, address, "stagenet");
+            Assert.True(await consumer.Refresh(deadline.Token), string.Join("\n", logs.Messages));
+            var job = consumer.CurrentJob;
+            Assert.Equal("xel/v1", job.Algorithm);
+            Assert.Equal(new BigInteger(30000), job.ExactDifficulty);
+            var work = Convert.FromHexString(job.BlockTemplate.Template);
+            var originalHeader = job.BlockHeader.Template;
+            var target = XelisConstants.Diff1Target / job.ExactDifficulty;
             Assert.Equal(target, new BigInteger(job.blockTargetBytes, true, true));
-            var worker = XelisDifficultyTests.Worker((double) template.Difficulty * 100);
+            var worker = XelisDifficultyTests.Worker((double) job.ExactDifficulty * 100);
+            NonBitcoinCandidateCreditTests.Set(worker, "RemoteEndpoint", new IPEndPoint(IPAddress.Loopback, 12345));
             var issued = job.ForWorker(worker.ContextAs<XelisWorkerContext>());
+            worker.ContextAs<XelisWorkerContext>().AddJob(issued, 8);
+            Task<Share> Submit(string nonce) => consumer.SubmitShareAsync(worker,
+                new object[] { "test", issued.JobId, nonce }, deadline.Token).AsTask();
             Array.Clear(work, 48, 32); // worker extranonce
             var hasher = new XelisHash();
             var digest = new byte[32];
             string solvedNonce = null;
             var rejected = false;
-            for(ulong nonce = 0; nonce < 2000000; nonce++)
+            for(ulong nonce = 0; nonce < 128 && !rejected; nonce++)
             {
                 deadline.Token.ThrowIfCancellationRequested();
                 BinaryPrimitives.WriteUInt64BigEndian(work.AsSpan(40, 8), nonce);
                 hasher.Digest(work, digest);
                 var proof = new BigInteger(digest, true, true);
                 var nonceHex = Convert.ToHexString(work.AsSpan(40, 8));
-                if(!rejected && proof > target)
+                if(proof > target)
                 {
-                    Assert.Equal(StratumError.LowDifficultyShare, Assert.Throws<StratumException>(() => issued.ProcessShare(worker, nonceHex)).Code);
+                    Assert.Equal(StratumError.LowDifficultyShare, (await Assert.ThrowsAsync<StratumException>(() => Submit(nonceHex))).Code);
                     rejected = true;
-                }
-                if(proof <= target)
-                {
-                    solvedNonce = nonceHex;
-                    break;
                 }
             }
             Assert.True(rejected);
+            // Real PoW is probabilistic. Search disjoint nonce ranges on a bounded
+            // number of cores instead of making CI reliability depend on one core.
+            var threads = Math.Clamp(Environment.ProcessorCount, 1, 4);
+            Parallel.For(0, threads, new ParallelOptions { MaxDegreeOfParallelism = threads, CancellationToken = deadline.Token }, (index, loop) =>
+            {
+                var input = (byte[]) work.Clone();
+                var proofBytes = new byte[32];
+                for(ulong nonce = (ulong) index; nonce < 2000000 && !loop.IsStopped; nonce += (ulong) threads)
+                {
+                    deadline.Token.ThrowIfCancellationRequested();
+                    BinaryPrimitives.WriteUInt64BigEndian(input.AsSpan(40, 8), nonce);
+                    hasher.Digest(input, proofBytes);
+                    if(new BigInteger(proofBytes, true, true) <= target)
+                    {
+                        Interlocked.CompareExchange(ref solvedNonce, Convert.ToHexString(input.AsSpan(40, 8)), null);
+                        loop.Stop();
+                    }
+                }
+            });
             Assert.NotNull(solvedNonce);
-            var share = issued.ProcessShare(worker, solvedNonce);
+            var share = await Submit(solvedNonce);
             Assert.True(share.IsBlockCandidate);
             Assert.InRange(share.Difficulty, 29999.999, 30000.001);
-            Assert.Equal(StratumError.DuplicateShare, Assert.Throws<StratumException>(() => issued.ProcessShare(worker, solvedNonce)).Code);
-            Assert.True((bool) await Rpc("submit_block", new { block_template = issued.BlockHeader.Template }));
+            Assert.Equal(StratumError.DuplicateShare, (await Assert.ThrowsAsync<StratumException>(() => Submit(solvedNonce))).Code);
+            Assert.Equal(originalHeader, job.BlockHeader.Template);
             var info = await Rpc("get_info");
             Assert.Equal(1UL, (ulong) info["height"]);
             Assert.Equal(1UL, (ulong) info["topoheight"]);
+            Assert.Equal(share.BlockHash, (string) info["top_block_hash"]);
         }
+        catch(Exception ex) { bodyFailure = ex; throw; }
         finally
         {
-            if(!daemon.HasExited)
+            await CleanupAsync(bodyFailure, async () =>
             {
-                var stop = new ProcessStartInfo("/bin/kill") { UseShellExecute = false };
-                stop.ArgumentList.Add("-INT");
-                stop.ArgumentList.Add(daemon.Id.ToString());
-                using var signal = Process.Start(stop);
-                await signal.WaitForExitAsync();
-                using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-                try { await daemon.WaitForExitAsync(shutdown.Token); }
-                catch(OperationCanceledException) { daemon.Kill(true); await daemon.WaitForExitAsync(); }
-            }
-            var output = await stdout + await stderr;
-            Directory.Delete(root, true);
-            Assert.True(daemon.ExitCode == 0, output);
+                if(!daemon.HasExited)
+                {
+                    var stop = new ProcessStartInfo("/bin/kill") { UseShellExecute = false };
+                    stop.ArgumentList.Add("-INT");
+                    stop.ArgumentList.Add(daemon.Id.ToString());
+                    using var signal = Process.Start(stop);
+                    await signal.WaitForExitAsync();
+                    using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                    try { await daemon.WaitForExitAsync(shutdown.Token); }
+                    catch(OperationCanceledException) { daemon.Kill(true); await daemon.WaitForExitAsync(); }
+                }
+                var output = await stdout + await stderr;
+                if(bodyFailure == null) Assert.True(daemon.ExitCode == 0, output);
+            }, () => Directory.Delete(root, true));
         }
+    }
+
+    internal static async Task CleanupAsync(Exception bodyFailure, Func<Task> stop, Action delete)
+    {
+        var failures = new List<Exception>();
+        try { await stop(); } catch(Exception ex) { failures.Add(ex); }
+        try { delete(); } catch(Exception ex) { failures.Add(ex); }
+        if(bodyFailure == null && failures.Count != 0) throw new AggregateException("Daemon cleanup failed", failures);
+    }
+
+    [Fact]
+    public async Task CleanupNeverReplacesTheOriginalFailureAndStillAttemptsBothActions()
+    {
+        var deleted = false;
+        Func<Task> stop = () => throw new IOException("stop failed");
+        Action delete = () => { deleted = true; throw new IOException("delete failed"); };
+        await CleanupAsync(new InvalidOperationException("body failed"), stop, delete);
+        Assert.True(deleted);
+        var error = await Assert.ThrowsAsync<AggregateException>(() => CleanupAsync(null, stop, delete));
+        Assert.Equal(2, error.InnerExceptions.Count);
     }
 }

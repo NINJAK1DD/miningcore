@@ -33,6 +33,20 @@ credit ceiling now follow the corrected target. No database migration is needed.
 Restart to replace cached jobs. See [validation and compatibility notes](xelis-target-validation.md)
 for pinned daemon/miner sources, live tests and the separate v3 modernization limit.
 
+The v1 native wrapper also fixes an 88-byte overrun beyond 112-byte MinerWork:
+the native function reads and mutates a 200-byte state. Previously, unrelated
+heap contents could affect proof hashes, and hashing could corrupt caller work
+before block identity was calculated. Historical v1 acceptance/rejection results
+cannot be certified from that validator alone; this release does not reconstruct
+or reprice historical shares. The corrected wrapper uses a private, aligned,
+zero-padded state and passes pinned upstream known-answer tests.
+
+Solved headers are now returned per share instead of overwriting shared job
+state. Difficulty/algorithm changes refresh work even with an unchanged work
+prefix. Unsupported algorithms (including v3), missing/inconsistent difficulty
+and malformed RPC responses fail before publication and produce redacted Error
+diagnostics. Only canonical `xel/v1` and `xel/v2` work is accepted.
+
 ## Unreleased (after v0.3.0): Ergo exact proof and network difficulty
 
 Ergo now derives proof difficulty, candidate credit limits and accepted-share

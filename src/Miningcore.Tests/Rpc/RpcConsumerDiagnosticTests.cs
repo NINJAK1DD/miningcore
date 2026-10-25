@@ -109,7 +109,7 @@ public class RpcConsumerDiagnosticTests
                 ["id"] = request["id"],
                 // Keep the rest of the template valid so only MinerWork is rejected.
                 ["result"] = new JObject { ["template"] = new string('0', 256), ["topoheight"] = 123,
-                    ["difficulty"] = 1024, ["miner_work"] = minerWork },
+                    ["difficulty"] = 1024, ["algorithm"] = "xel/v1", ["miner_work"] = minerWork },
                 ["error"] = null,
             }.ToString(Formatting.None));
         });
@@ -186,7 +186,7 @@ public class RpcConsumerDiagnosticTests
             {
                 ["id"] = request["id"],
                 ["result"] = new JObject { ["template"] = new string('0', 256),
-                    ["topoheight"] = 123, ["difficulty"] = quoted ? new JValue(difficulty.ToString(System.Globalization.CultureInfo.InvariantCulture)) : new JValue(difficulty), ["miner_work"] = minerWork },
+                    ["topoheight"] = 123, ["algorithm"] = "xel/v1", ["difficulty"] = quoted ? new JValue(difficulty.ToString(System.Globalization.CultureInfo.InvariantCulture)) : new JValue(difficulty), ["miner_work"] = minerWork },
                 ["error"] = null,
             }.ToString(Formatting.None));
         });
@@ -203,24 +203,29 @@ public class RpcConsumerDiagnosticTests
         Assert.DoesNotContain(logs.Messages, x => x.Contains(minerWork, StringComparison.Ordinal));
     }
 
+    public static IEnumerable<object[]> InvalidXelisDifficulties()
+    {
+        foreach(var header in new[] { false, true })
+        foreach(var difficulty in new[] { null, "0", "-1", "1.5", "\"NaN\"", "Infinity", "-Infinity", "1e309",
+            JsonConvert.SerializeObject(Malicious), "\"115792089237316195423570985008687907853269984665640564039457584007913129639936\"" })
+            yield return new object[] { difficulty, header };
+    }
+
     [Theory]
-    [InlineData(null)]
-    [InlineData("0")]
-    [InlineData("-1")]
-    [InlineData("1.5")]
-    [InlineData("\"NaN\"")]
-    [InlineData("\"115792089237316195423570985008687907853269984665640564039457584007913129639936\"")]
-    public async Task XelisMinerWork_InvalidDifficultyIsNotPublished(string difficulty)
+    [MemberData(nameof(InvalidXelisDifficulties))]
+    public async Task XelisMinerWork_InvalidDifficultyIsNotPublished(string difficulty, bool headerFailure)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        using var logs = new RpcDiagnosticTests.CapturedLogs();
+        using var logs = new RpcDiagnosticTests.CapturedLogs(LogLevel.Error);
+        var calls = 0;
         await using var server = await RpcDiagnosticTests.Server.Start(async context =>
         {
             using var reader = new StreamReader(context.Request.Body);
             var request = JObject.Parse(await reader.ReadToEndAsync());
+            Interlocked.Increment(ref calls);
             var result = new JObject { ["template"] = new string('0', 256),
-                ["topoheight"] = 123, ["difficulty"] = 1, ["miner_work"] = new string('a', 224) };
-            if((string) request["method"] == XelisCommands.GetBlockTemplate)
+                ["topoheight"] = 123, ["difficulty"] = 1, ["algorithm"] = "xel/v1", ["miner_work"] = new string('a', 224) };
+            if((string) request["method"] == (headerFailure ? XelisCommands.GetBlockHeader : XelisCommands.GetBlockTemplate))
             {
                 if(difficulty == null) result.Remove("difficulty");
                 else result["difficulty"] = JToken.Parse(difficulty);
@@ -235,6 +240,11 @@ public class RpcConsumerDiagnosticTests
         Assert.False(await consumer.Refresh(deadline.Token));
         Assert.Null(consumer.CurrentJob);
         Assert.DoesNotContain(bus.ReceivedCalls(), call => call.GetArguments().OfType<NewChainHeightNotification>().Any());
+        Assert.Equal(headerFailure ? 1 : 2, calls);
+        var diagnostic = Assert.Single(logs.Messages);
+        Assert.Contains("\"operation\":\"XelisJobManager.UpdateJob\"", diagnostic);
+        Assert.Contains("\"failure\":\"json\"", diagnostic);
+        AssertSafe(logs.Messages);
     }
 
     [Theory]
@@ -669,14 +679,15 @@ public class RpcConsumerDiagnosticTests
         internal Task<bool> Connected() => AreDaemonsConnectedAsync(CancellationToken.None);
     }
 
-    private sealed class XelisConsumer : XelisJobManager
+    internal class XelisConsumer : XelisJobManager
     {
-        internal XelisConsumer(IComponentContext container, IMessageBus bus, RpcClient client, ILogger log)
-            : base(container, Substitute.For<IMasterClock>(), bus, Substitute.For<IExtraNonceProvider>())
+        internal XelisConsumer(IComponentContext container, IMessageBus bus, RpcClient client, ILogger log, string address = "test-address", string networkName = "mainnet")
+            : base(container, new MockMasterClock(), bus, Substitute.For<IExtraNonceProvider>())
         {
-            logger = log; poolConfig = new PoolConfig { Id = "test", Address = "test-address", Template = new XelisCoinTemplate { Symbol = "XEL" } };
+            logger = log; poolConfig = new PoolConfig { Id = "test", Address = address, Template = new XelisCoinTemplate { Symbol = "XEL" } };
+            clusterConfig = new ClusterConfig { ClusterName = "test" };
             typeof(XelisJobManager).GetField("rpc", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(this, client);
-            typeof(XelisJobManager).GetField("network", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(this, "mainnet");
+            typeof(XelisJobManager).GetField("network", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(this, networkName);
             typeof(XelisJobManager).GetField("coin", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(this, poolConfig.Template);
         }
         internal XelisJob CurrentJob => currentJob;

@@ -6,6 +6,7 @@ namespace Miningcore.Blockchain.Xelis.DaemonResponses;
 public class GetBlockHeaderResponse
 {
     public string Algorithm { get; set; }
+    [JsonProperty(Required = Required.Always)]
     [JsonConverter(typeof(XelisDifficultyJsonConverter))]
     public BigInteger Difficulty { get; set; }
     public ulong Height { get; set; }

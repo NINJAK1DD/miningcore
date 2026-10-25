@@ -37,6 +37,7 @@ public static class XelisConstants
     public const int HashSize = 32;
     public const int BlockWorkSize = 112;
 
+    public const string AlgorithmXelisHashV1 = "xel/v1";
     public const string AlgorithmXelisHashV2 = "xel/v2";
 
     // Amount in ATOMIC (per KB)
