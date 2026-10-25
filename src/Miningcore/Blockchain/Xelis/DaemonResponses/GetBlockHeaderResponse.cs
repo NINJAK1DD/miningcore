@@ -1,9 +1,13 @@
+using System.Numerics;
+using Newtonsoft.Json;
+
 namespace Miningcore.Blockchain.Xelis.DaemonResponses;
 
 public class GetBlockHeaderResponse
 {
     public string Algorithm { get; set; }
-    public double Difficulty { get; set; }
+    [JsonConverter(typeof(XelisDifficultyJsonConverter))]
+    public BigInteger Difficulty { get; set; }
     public ulong Height { get; set; }
 
     /*

@@ -1,11 +1,14 @@
 using Newtonsoft.Json;
+using System.Numerics;
 
 namespace Miningcore.Blockchain.Xelis.DaemonResponses;
 
 public class GetBlockTemplateResponse
 {
     public string Algorithm { get; set; }
-    public double Difficulty { get; set; }
+    [JsonProperty(Required = Required.Always)]
+    [JsonConverter(typeof(XelisDifficultyJsonConverter))]
+    public BigInteger Difficulty { get; set; }
     public ulong Height { get; set; }
 
     /*

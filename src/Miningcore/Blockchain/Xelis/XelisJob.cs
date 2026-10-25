@@ -184,7 +184,7 @@ public class XelisJob : Miningcore.Mining.ICandidateCreditJob
 
         this.network = network;
 
-        Difficulty = BlockTemplate.Difficulty;
+        Difficulty = (double) BlockTemplate.Difficulty;
         blockTargetBytes = XelisUtils.DifficultyToTarget(BlockTemplate.Difficulty);
         blockTargetValue = new uint256(blockTargetBytes.ToNewReverseArray());
 

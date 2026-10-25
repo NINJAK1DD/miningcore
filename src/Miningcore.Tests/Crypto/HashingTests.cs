@@ -29,6 +29,31 @@ internal sealed class LinuxNativeFactAttribute : FactAttribute
 
 public class HashingTests : TestBase
 {
+    // xelis-project/xelis-hash f48262b931438fdbf2932711613e020c02f1ea04, src/v1.rs.
+    [LinuxNativeFact]
+    public void XelisV1PadsPrivateStateAndPreservesCallerWork()
+    {
+        var hasher = new XelisHash();
+        var output = new byte[32];
+        foreach(var length in new[] { 0, 112, 200 })
+        {
+            var input = new byte[length];
+            hasher.Digest(input, output);
+            Assert.Equal("0ebbbd8a31edadfe098f2d770d84b719588675ab88a0a17067d00a8f36182265", Convert.ToHexString(output).ToLowerInvariant());
+            Assert.Equal(new byte[length], input);
+        }
+        var work = new byte[112];
+        Encoding.ASCII.GetBytes("xelis-hashing-algorithm").CopyTo(work, 0);
+        var original = (byte[]) work.Clone();
+        for(var repeat = 0; repeat < 2; repeat++)
+        {
+            hasher.Digest(work, output);
+            Assert.Equal("6a6aad08cf3b766cb0c4097cfac3033d1e92eeb6585373518b38031cb0564415", Convert.ToHexString(output).ToLowerInvariant());
+            Assert.Equal(original, work);
+        }
+        Assert.Throws<ArgumentException>(() => hasher.Digest(new byte[201], output));
+    }
+
     private static readonly byte[] testValue = Enumerable.Repeat((byte) 0x80, 32).ToArray();
 
     // some algos need 80 byte input buffers

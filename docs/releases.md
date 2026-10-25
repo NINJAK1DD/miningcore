@@ -22,6 +22,17 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased (after v0.3.0): Xelis difficulty targets
+
+Xelis block targets now follow the daemon's exact unsigned 256-bit integer
+division and big-endian byte order, including difficulty 1 and full-width
+targets. RPC difficulty remains exact even beyond double precision. Malformed
+or out-of-range values fail before new work is announced. Existing share and
+payout policies are retained; candidate classification and its target-derived
+credit ceiling now follow the corrected target. No database migration is needed.
+Restart to replace cached jobs. See [validation and compatibility notes](xelis-target-validation.md)
+for pinned daemon/miner sources, live tests and the separate v3 modernization limit.
+
 ## Unreleased (after v0.3.0): Ergo exact proof and network difficulty
 
 Ergo now derives proof difficulty, candidate credit limits and accepted-share

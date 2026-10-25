@@ -167,9 +167,13 @@ public class RpcConsumerDiagnosticTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task XelisMinerWork_ValidHexStillPublishes(bool prefixed)
+    [InlineData(false, 1, false)]
+    [InlineData(true, 1, true)]
+    [InlineData(false, 1024, true)]
+    [InlineData(true, 1024, false)]
+    [InlineData(false, 9007199254740993L, true)]
+    [InlineData(true, 9007199254740993L, false)]
+    public async Task XelisMinerWork_ValidHexStillPublishes(bool prefixed, long difficulty, bool quoted)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         using var logs = new RpcDiagnosticTests.CapturedLogs();
@@ -182,7 +186,7 @@ public class RpcConsumerDiagnosticTests
             {
                 ["id"] = request["id"],
                 ["result"] = new JObject { ["template"] = new string('0', 256),
-                    ["topoheight"] = 123, ["difficulty"] = 1024, ["miner_work"] = minerWork },
+                    ["topoheight"] = 123, ["difficulty"] = quoted ? new JValue(difficulty.ToString(System.Globalization.CultureInfo.InvariantCulture)) : new JValue(difficulty), ["miner_work"] = minerWork },
                 ["error"] = null,
             }.ToString(Formatting.None));
         });
@@ -193,8 +197,44 @@ public class RpcConsumerDiagnosticTests
         Assert.True(await consumer.Refresh(deadline.Token), string.Join("\n", logs.Messages));
         Assert.Equal(new string('a', 64), consumer.CurrentJob.PrevHash);
         Assert.Equal(minerWork, consumer.CurrentJob.BlockTemplate.Template);
+        Assert.Equal(new System.Numerics.BigInteger(difficulty), consumer.CurrentJob.BlockTemplate.Difficulty);
+        Assert.Equal(XelisUtils.DifficultyToTarget(new System.Numerics.BigInteger(difficulty)), consumer.CurrentJob.blockTargetBytes);
         Assert.Contains(bus.ReceivedCalls(), call => call.GetArguments().OfType<NewChainHeightNotification>().Any());
         Assert.DoesNotContain(logs.Messages, x => x.Contains(minerWork, StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("1.5")]
+    [InlineData("\"NaN\"")]
+    [InlineData("\"115792089237316195423570985008687907853269984665640564039457584007913129639936\"")]
+    public async Task XelisMinerWork_InvalidDifficultyIsNotPublished(string difficulty)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var logs = new RpcDiagnosticTests.CapturedLogs();
+        await using var server = await RpcDiagnosticTests.Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JObject.Parse(await reader.ReadToEndAsync());
+            var result = new JObject { ["template"] = new string('0', 256),
+                ["topoheight"] = 123, ["difficulty"] = 1, ["miner_work"] = new string('a', 224) };
+            if((string) request["method"] == XelisCommands.GetBlockTemplate)
+            {
+                if(difficulty == null) result.Remove("difficulty");
+                else result["difficulty"] = JToken.Parse(difficulty);
+            }
+            await context.Response.WriteAsync(new JObject { ["id"] = request["id"],
+                ["result"] = result, ["error"] = null }.ToString(Formatting.None));
+        });
+        using var container = new ContainerBuilder().Build();
+        var bus = Substitute.For<IMessageBus>();
+        var rpc = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), bus, "test");
+        var consumer = new XelisConsumer(container, bus, rpc, logs.Logger);
+        Assert.False(await consumer.Refresh(deadline.Token));
+        Assert.Null(consumer.CurrentJob);
+        Assert.DoesNotContain(bus.ReceivedCalls(), call => call.GetArguments().OfType<NewChainHeightNotification>().Any());
     }
 
     [Theory]

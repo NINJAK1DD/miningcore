@@ -16,7 +16,7 @@ public static class XelisConstants
 
     public const int TargetPaddingLength = 32;
     public static readonly double Pow2x32 = Math.Pow(2, 32);
-    public static BigInteger Diff1Target = BigInteger.Pow(2, 256) - 1;
+    public static readonly BigInteger Diff1Target = BigInteger.Pow(2, 256) - 1;
 
     public const int BlockHeaderOffsetVersion = 0;
     public const int BlockHeaderOffsetHeight = 1;

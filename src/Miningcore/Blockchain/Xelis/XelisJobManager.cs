@@ -108,11 +108,11 @@ public class XelisJobManager : JobManagerBase<XelisJob>
 
             if(isNew)
             {
-                messageBus.NotifyChainHeight(poolConfig.Id, blockTemplate.Height, poolConfig.Template);
-
                 // update job
                 job = new XelisJob();
                 job.Init(blockHeader, blockTemplate, NextJobId(), clock, network, ShareMultiplier, newHash);
+
+                messageBus.NotifyChainHeight(poolConfig.Id, blockTemplate.Height, poolConfig.Template);
 
                 logger.Debug(() => $"blockTargetValue: {job.blockTargetValue}");
 
