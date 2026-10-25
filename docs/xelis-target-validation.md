@@ -448,3 +448,31 @@ The pinned `setup-dotnet` action probes the latest LTS runtime before installing
 the requested SDK. Its own implementation treats failure of that optional probe
 as a warning: the explicitly requested SDK includes its runtime and must still
 install successfully. Current-head CI validates the resulting toolchain.
+
+### Independent SDK maintenance and explicit refusal markers
+
+The shared SDK installer repair is maintained independently in
+[PR #222](https://github.com/NINJAK1DD/miningcore/pull/222), based directly on `dev`
+and changing only the three workflows. Each workflow now declares one
+`CI_DOTNET_SDK` value; all its setup steps reference that value, so future
+servicing updates change three version declarations. Dependabot action-SHA
+updates do not update these inputs. Advance the declarations together after
+checking published servicing binaries; keep this CI-only change separate from
+the Xelis runtime correction.
+
+The admission exception comment clarifies that only the accept handler
+interprets its base marker: a subtype may also be used by share submission or
+authorization without implying that the current listener is closed. The
+remaining generic `StratumException` fallback is removed. Both known local
+refusal producers (Xelis suspension and Bitcoin BLAKE2b isolation at connection
+setup) now use explicit markers. Ordinary setup exceptions, including a generic
+`StratumException` while admission is closed, remain Error diagnostics.
+
+Local verification: **784 passed, zero failed, zero skipped** in the expanded
+live Xelis/RPC/assignment/listener suite. Separate Bitcoin BLAKE2b
+startup/isolation/difficulty-budget/connection-churn coverage: **261 passed,
+zero failed, one skipped** (the optional daemon commissioning fixture was not
+enabled in this local run). Windows checks using the existing CI exclusions:
+**34 passed, zero failed, one skipped**. Workflow/action-pin, YAML structure,
+documentation and diagnostic-source checks pass. Independent SDK and final Xelis
+CI evidence are recorded on their respective PRs after completion.

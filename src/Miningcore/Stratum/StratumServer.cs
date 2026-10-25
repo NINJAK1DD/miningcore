@@ -516,7 +516,7 @@ public abstract class StratumServer
                     UnregisterConnection(connection);
             }
 
-            if(ex is StratumAdmissionClosedException || (!IsConnectionAdmissionOpen && ex is StratumException))
+            if(ex is StratumAdmissionClosedException)
                 logger.Debug("Connection refused because local pool admission is closed");
             else
                 StratumDiagnostics.Write(logger, LogLevel.Error, StratumDiagnostics.Event.AcceptError,

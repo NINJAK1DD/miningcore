@@ -160,7 +160,7 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
     protected override void OnConnect(StratumConnection connection, System.Net.IPEndPoint endpoint)
     {
         if(operations.IsClosed)
-            throw new StratumException(StratumError.JobNotFound, "Bitcoin BLAKE2b pool is faulted");
+            throw new StratumAdmissionClosedException(StratumError.JobNotFound, "Bitcoin BLAKE2b pool is faulted");
         base.OnConnect(connection, endpoint);
     }
 

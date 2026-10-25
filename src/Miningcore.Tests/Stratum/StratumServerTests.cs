@@ -373,7 +373,7 @@ public class StratumServerTests
         {
             connected = true;
             server.AdmissionOpen = false;
-            throw new StratumException(StratumError.JobNotFound, "local admission closed");
+            throw new StratumAdmissionClosedException(StratumError.JobNotFound, "local admission closed");
         };
         using var stop = new CancellationTokenSource();
         var endpoint = new StratumEndpoint(new IPEndPoint(IPAddress.Loopback, GetFreePort()), new PoolEndpoint());
@@ -393,8 +393,8 @@ public class StratumServerTests
     }
 
     [Theory]
-    [InlineData(true)] [InlineData(false)]
-    public async Task RunAsync_RecoveryBeforeRefusalCleanupKeepsExpectedRefusalQuietAndUnexpectedFailureVisible(bool expected)
+    [InlineData(true, true)] [InlineData(false, true)] [InlineData(false, false)]
+    public async Task RunAsync_RefusalClassificationPreservesUnrelatedFailuresWithAdmissionOpenOrClosed(bool expected, bool reopen)
     {
         using var logs = new LogFactory();
         var target = new NLog.Targets.MemoryTarget { Layout = "${level}|${message}" };
@@ -407,8 +407,9 @@ public class StratumServerTests
         {
             server.AdmissionOpen = false;
             // Reproduce recovery in the gap before the outer accept handler.
-            server.AdmissionOpen = true;
+            server.AdmissionOpen = reopen;
             if(expected) throw new StratumAdmissionClosedException(StratumError.JobNotFound, "local admission closed");
+            if(!reopen) throw new StratumException(StratumError.Other, "unrelated setup rejection");
             throw new InvalidOperationException("unrelated setup failure");
         };
         using var stop = new CancellationTokenSource();

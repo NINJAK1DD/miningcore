@@ -60,6 +60,9 @@ second-response delay. Authorization racing retirement closes quietly without
 an assignment Error diagnostic.
 Expected local admission refusals now retain their Debug classification even if
 recovery reopens admission during cleanup; unrelated setup failures remain Error.
+Only explicit local-refusal markers receive that Debug classification. Generic
+Stratum setup errors stay visible at Error even while admission is closed;
+Bitcoin BLAKE2b's expected isolation refusal uses the explicit marker too.
 Retired-job rejections do not affect invalid-share counts or trigger bans,
 including after recovery. Supported recovery creates fresh assignments and never reactivates
 the retired jobs. Temporary RPC outages retain compatible work; caller-requested
