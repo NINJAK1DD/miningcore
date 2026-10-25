@@ -105,6 +105,28 @@ reinsert statistical shares after a PROP round consumes them. Transaction failur
 must roll back balance changes and consumed shares together. This patch does not
 change payout-manager settlement leases or transaction ownership.
 
+## Merge and release prerequisites
+
+The candidate-credit rollout spans [PR #219](https://github.com/NINJAK1DD/miningcore/pull/219)
+and the separate [Ergo correction, PR #220](https://github.com/NINJAK1DD/miningcore/pull/220).
+The production release must include both changes. Keep this sequence:
+
+1. Merge #219 into `dev` with a normal merge commit, preserving its ancestry.
+2. Retarget #220 to `dev` and confirm that the diff contains only its six intended
+   Ergo implementation, regression-test, evidence-guard and documentation files.
+3. Run the normal GitHub checks on that retargeted PR, including all four new
+   required Ergo native/settlement evidence cases. Merge #220 only after they pass.
+4. Audit deployed floors and historical suspect shares, then stage daemon/miner
+   commissioning before enabling public pooled configurations.
+
+If #219 is squash-merged instead, rebuild the follow-up from the resulting `dev`
+and cherry-pick the standalone Ergo implementation commit `d32cb9e93`, then apply
+any subsequent Ergo review fixes. Do not retarget the old merge-heavy stack and
+reintroduce #219's original commits into the diff. Recheck the diff and require
+full CI on the rebuilt branch. Passing local lab tests is not a substitute for
+that post-retarget CI gate. These instructions document the required merge path;
+the PRs remain separate review artifacts until maintainers land them.
+
 ## Deployment and historical reconciliation
 
 Before upgrading a public pool, record the deployed commit, pool family, payout

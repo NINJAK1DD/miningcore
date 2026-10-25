@@ -22,7 +22,7 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
-## v0.3.0 pre-upgrade: settlement inputs and candidate credit
+## Unreleased (after v0.3.0): settlement inputs and candidate credit
 
 PROP, PPLNS and PPLNSBF now fail closed on nonpositive or nonfinite stored,
 adjusted or network difficulty **across all coin families**. A bad legacy row or
