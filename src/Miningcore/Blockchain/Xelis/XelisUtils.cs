@@ -5,6 +5,12 @@ namespace Miningcore.Blockchain.Xelis;
 
 public static class XelisUtils
 {
+    internal static bool IsSupportedAlgorithm(string algorithm) =>
+        algorithm is XelisConstants.AlgorithmXelisHashV1 or XelisConstants.AlgorithmXelisHashV2;
+
+    internal static bool HasCompatibleConsensus(DaemonResponses.GetBlockHeaderResponse header, DaemonResponses.GetBlockTemplateResponse work) =>
+        IsSupportedAlgorithm(header.Algorithm) && header.Algorithm == work.Algorithm && header.Difficulty == work.Difficulty;
+
     public static byte[] DifficultyToTarget(BigInteger difficulty)
     {
         if(difficulty < BigInteger.One || difficulty > XelisConstants.Diff1Target)

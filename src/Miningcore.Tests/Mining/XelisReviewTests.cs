@@ -63,7 +63,7 @@ public class XelisReviewTests
     [Theory]
     [InlineData(null, false)] [InlineData("", false)] [InlineData("xel/v3", false)]
     [InlineData("xel/v3", true)] [InlineData("unknown\r\nhttps://user:secret@host", true)]
-    public async Task UnsupportedWorkNeverPublishesOrReplacesIssuedWork(string algorithm, bool afterValidWork)
+    public async Task UnsupportedWorkRetiresIssuedWorkWithoutPublishingReplacement(string algorithm, bool afterValidWork)
     {
         var current = afterValidWork ? "xel/v1" : algorithm;
         using var logs = new RpcDiagnosticTests.CapturedLogs(LogLevel.Error);
@@ -83,7 +83,8 @@ public class XelisReviewTests
         bus.ClearReceivedCalls();
         current = algorithm;
         Assert.False(await consumer.Refresh(deadline.Token));
-        Assert.Same(original, consumer.CurrentJob);
+        Assert.Null(consumer.CurrentJob);
+        if(original != null) Assert.True(original.IsRetired);
         Assert.DoesNotContain(bus.ReceivedCalls(), x => x.GetArguments().OfType<NewChainHeightNotification>().Any());
         Assert.Contains("\"failure\":\"invalid-data\"", Assert.Single(logs.Messages));
         Assert.DoesNotContain("secret", string.Join("", logs.Messages));
@@ -163,7 +164,7 @@ public class XelisReviewTests
         });
         var client = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var response = await client.ExecuteAsync<Miningcore.Blockchain.Xelis.DaemonResponses.GetBlockTemplateResponse>(
+        var response = await client.ExecuteBoundedAsync<Miningcore.Blockchain.Xelis.DaemonResponses.GetBlockTemplateResponse>(
             logs.Logger, XelisCommands.GetBlockTemplate, deadline.Token, responseLimits: new RpcResponseLimits(4096, 78));
         Assert.Null(response.Error);
         Assert.Equal(XelisConstants.Diff1Target, response.Response.Difficulty);
@@ -184,7 +185,7 @@ public class XelisReviewTests
         using var logs = new RpcDiagnosticTests.CapturedLogs();
         var client = new RpcClient(server.Endpoint(), new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
         using var cancellation = new CancellationTokenSource();
-        var pending = client.ExecuteAsync<JToken>(logs.Logger, XelisCommands.GetBlockTemplate, cancellation.Token,
+        var pending = client.ExecuteBoundedAsync<JToken>(logs.Logger, XelisCommands.GetBlockTemplate, cancellation.Token,
             responseLimits: new RpcResponseLimits(4096, 78));
         await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         cancellation.Cancel();

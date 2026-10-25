@@ -147,7 +147,7 @@ public class XelisDifficultyTests
     internal static XelisJob Init(BigInteger difficulty)
     {
         var job = new XelisJob();
-        job.Init(new GetBlockHeaderResponse { Template = new string('0', 256), TopoHeight = 1, Difficulty = difficulty },
+        job.Init(new GetBlockHeaderResponse { Template = new string('0', 256), TopoHeight = 1, Difficulty = difficulty, Algorithm = "xel/v1" },
             new GetBlockTemplateResponse { Template = new string('0', 224), Difficulty = difficulty, Algorithm = "xel/v1" },
             "test", new MockMasterClock(), "stagenet", 1d, new string('0', 64));
         return job;

@@ -587,6 +587,13 @@ jobs:
           --framework net10.0 `
           --filter "FullyQualifiedName~Miningcore.Tests.Crypto.HashingTests.OdoCrypt_"
 
+    - name: Test Windows Xelis startup and RPC contracts
+      shell: pwsh
+      run: |
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj `
+          --no-build --no-restore --configuration Release --framework net10.0 `
+          --filter "FullyQualifiedName~XelisLifecycleTests.NativeCapability|FullyQualifiedName~RpcCompatibilityTests"
+
     - name: Test Windows Odocrypt toolset override boundary
       shell: pwsh
       run: |

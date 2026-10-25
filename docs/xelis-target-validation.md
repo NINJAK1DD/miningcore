@@ -15,6 +15,10 @@ The following source files define the contract:
   the maintained miner calls those same target-construction and comparison functions.
 - [`xelis_common/src/crypto/hash.rs`](https://github.com/xelis-project/xelis-blockchain/blob/db59b5c246ab0e40386d6c241dcd77f0aea84b10/xelis_common/src/crypto/hash.rs):
   v1 copies work into a private, zero-filled 200-byte aligned state before hashing.
+- [`xelis_daemon/src/rpc/rpc.rs`](https://github.com/xelis-project/xelis-blockchain/blob/db59b5c246ab0e40386d6c241dcd77f0aea84b10/xelis_daemon/src/rpc/rpc.rs):
+  `get_block_template` derives its algorithm from the header version and difficulty
+  from its tips; `get_miner_work` decodes that header and derives the same fields
+  from its version/tips. Algorithm and difficulty must therefore agree.
 
 Miningcore now preserves RPC difficulty as `BigInteger` and divides before
 serializing the positive target to exactly 32 bytes, in big-endian order with
@@ -30,12 +34,39 @@ their existing response policies. The unused floating-point target overload and
 duplicate `CheckDiff` helpers are removed; production uses the full-width
 `uint256 <=` candidate comparison.
 
-Both RPC difficulty fields are required and must agree. Canonical `xel/v1` and
+Both RPC difficulty fields are required; both algorithm and difficulty must agree. Canonical `xel/v1` and
 `xel/v2` are explicitly allowed; missing, unknown and v3 algorithms are rejected.
 Unsupported work never silently falls back to a different hasher. Failed header
 requests stop before requesting miner work, and either failed/null response
 produces a redacted Error-level `XelisJobManager.UpdateJob` diagnostic, including
-the safe failure category and numeric RPC code without remote error text.
+the safe failure category and numeric RPC code without remote error text. Caller
+cancellation is silent. Repeated failures in one outage are counted without
+repeating Error logs; successful recovery reports `stage: Recovered` at Info with
+the consecutive failure count. A newly confirmed incompatibility always emits
+its own rejection diagnostic, even during an existing outage.
+
+Confirmed incompatibility retires a shared work epoch covering **every** recent
+job and worker snapshot, clears the manager's current job and rejects new use of
+retired jobs before hashing. Proofs whose verification overlaps retirement are
+also rejected before returning a share. New authorizations receive a bounded
+work-unavailable response instead of old assignments; broadcasting/VarDiff cannot
+reissue retired work. A subsequent fully validated, supported response opens a
+fresh epoch. Old queues may retain references for bounded cleanup, but those jobs
+remain retired permanently, including after recovery.
+
+Transient HTTP/RPC outages and caller cancellation do not retire compatible
+assignments or reopen an already suspended epoch. Refresh requests are serialized
+to prevent older responses from racing past a newer incompatibility decision.
+Block RPCs already admitted before retirement can complete and retain an accepted
+network receipt; retirement does not erase an already submitted block outcome.
+
+The original generic `ExecuteAsync` CLR signature (logger, method, token, payload,
+throwOnError) and public constructor remain available. Bounded responses use
+`ExecuteBoundedAsync`, avoiding source-overload ambiguity and binary breakage for
+previously compiled consumers. Dedicated regressions invoke the original method
+signature and exercise an elapsed HTTP timeout after headers, separately from
+caller-triggered cancellation. Non-2xx error bodies retain HTTP status attribution
+while still enforcing the numeric bound; runs of dashes alone are not numbers.
 
 ## Operator compatibility
 
@@ -158,6 +189,10 @@ the scalar stage with unchanged hash math. The existing bundled Windows
 `libmultihash.dll` lacks `xelis_hash_export`, so the managed known-answer test
 remains Linux-only. Source-vector success does not certify that bundled Windows
 pool runtime; updating and packaging its Xelis ABI remains #120 work.
+The job manager now refuses startup unless the process is x64 and the native
+library exports both `xelis_hash_export` and `xelis_hash_v2_export`. The ARM v1
+stub is never invoked by a configured Xelis pool. Windows CI includes managed
+startup/ABI and RPC timeout/compatibility tests alongside the source-built vectors.
 
 ## Initial lab results, 25 October 2026 (before review hardening)
 
@@ -211,7 +246,7 @@ The fixture now searches disjoint nonce ranges on at most four cores under a
 ten-minute deadline, keeping actual daemon proof verification enabled. The timeout
 also exercised the cleanup path: its original cancellation exception was retained.
 
-Review-hardening validation on 25 October 2026:
+First-review hardening validation on 25 October 2026:
 
 - Managed build: zero warnings and zero errors. Rebuilt Linux multihash and
   portable/AES-NI equivalence checks passed their warning audits.
@@ -225,3 +260,28 @@ Review-hardening validation on 25 October 2026:
   fixture passed in that run, including block identity and clean shutdown.
 - Documentation guards, all 47 local Markdown link/anchor checks, workflow YAML
   structure, ShellCheck and the checksum-pinned optional CI provisioning step passed.
+
+## Second-review lifecycle and compatibility hardening
+
+| Finding | Resolution and regression evidence |
+| --- | --- |
+| P1 previously issued work survives unsupported transitions | Permanent epoch retirement for all recent jobs, new authorization denial, rejection before hashing, overlap-with-verification test, and supported recovery without reviving old jobs |
+| P2 / N1 header/work algorithm consistency | Pinned daemon RPC contract checked; both fields compared at initialization and refresh; deliberate mismatch fixtures retire work |
+| P3 RPC CLR signature compatibility | Original generic method preserved; separate bounded API; reflection/runtime invocation of the original signature |
+| R1 graceful cancellation logged as Error | Token checked before diagnostics; cancellation during either RPC is silent and does not increment outage counts |
+| R2 outage logging volume | First failure plus counted recovery, with a forced diagnostic on a new incompatibility transition |
+| R3 runtimes unable to hash announce work | x64 and both-export startup guard, with unsupported architecture/missing-export and actual Windows startup rejection coverage |
+| Elapsed HTTP timeout | Short-lived instance transport stalls after headers; deadline is observed as timeout rather than caller cancellation |
+| N2 non-JSON HTTP error page classification | Non-2xx status preserved without bypassing numeric bounds; dashes-only and oversized-numeric fixtures |
+| N3 Windows v143 and opt-in live CI | Current-head Windows and manual live CI evidence is recorded in PR #221 |
+
+Local verification before the final CI gate: **593 passed, zero failed, zero
+skipped** across Xelis, RPC, snapshot and assignment/authorization regressions
+with the real daemon enabled. Windows startup and RPC compatibility/timeout
+regressions: **5 passed, zero failed, zero skipped**. Managed builds produced zero
+warnings and zero errors. Full local baseline limitations remain disclosed above.
+
+The complete second-review lab run finished with **5,154 passed, 20 failed,
+16 skipped** (5,190 total). Its failing-test names exactly match the 20 failures
+reproduced on clean `dev`; no new failures appeared. The real-daemon Xelis test
+passed in this run.

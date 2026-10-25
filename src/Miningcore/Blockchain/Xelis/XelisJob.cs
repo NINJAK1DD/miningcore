@@ -19,11 +19,17 @@ namespace Miningcore.Blockchain.Xelis;
 
 public class XelisJob : Miningcore.Mining.ICandidateCreditJob
 {
+    private XelisWorkEpoch epoch = new();
+    internal bool IsRetired => epoch.IsRetired;
+    internal void BindEpoch(XelisWorkEpoch value) => epoch = value;
+    internal void EnsureActive() => epoch.EnsureActive();
     double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty =>
         (double) new BigRational(XelisConstants.Diff1Target, new System.Numerics.BigInteger(blockTargetValue.ToBytes(), isUnsigned: true)) * shareMultiplier;
 
-    internal XelisJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
-        context.JobForDifficulty(this, (_, id) =>
+    internal XelisJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null)
+    {
+        EnsureActive();
+        return context.JobForDifficulty(this, (_, id) =>
         {
             var result = (XelisJob) MemberwiseClone();
             result.JobId = id;
@@ -34,6 +40,7 @@ public class XelisJob : Miningcore.Mining.ICandidateCreditJob
             }
             return result;
         }, JobId, nextJobId);
+    }
 
     protected IMasterClock clock;
     protected double shareMultiplier;
@@ -175,10 +182,8 @@ public class XelisJob : Miningcore.Mining.ICandidateCreditJob
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(jobId));
         Contract.RequiresNonNull(shareMultiplier);
 
-        if(blockTemplate.Algorithm is not (XelisConstants.AlgorithmXelisHashV1 or XelisConstants.AlgorithmXelisHashV2))
-            throw new InvalidDataException("Unsupported Xelis proof algorithm");
-        if(blockHeader.Difficulty != blockTemplate.Difficulty)
-            throw new InvalidDataException("Inconsistent Xelis difficulty responses");
+        if(!XelisUtils.HasCompatibleConsensus(blockHeader, blockTemplate))
+            throw new InvalidDataException("Incompatible Xelis consensus parameters");
         Algorithm = blockTemplate.Algorithm;
         ExactDifficulty = blockTemplate.Difficulty;
 
@@ -235,6 +240,7 @@ public class XelisJob : Miningcore.Mining.ICandidateCreditJob
 
     public virtual object GetJobParams(bool isNew)
     {
+        EnsureActive();
         var result = (object[]) jobParams.Clone();
         result[^1] = isNew;
         return result;
@@ -263,6 +269,7 @@ public class XelisJob : Miningcore.Mining.ICandidateCreditJob
     public virtual (Share Share, string BlockTemplate) ProcessShare(StratumConnection worker,
         string nonce)
     {
+        EnsureActive();
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(nonce));
 
         var context = worker.ContextAs<XelisWorkerContext>();
@@ -276,6 +283,7 @@ public class XelisJob : Miningcore.Mining.ICandidateCreditJob
         if(IsDuplicateSubmit(context.ExtraNonce1, nonce))
             throw new StratumException(StratumError.DuplicateShare, "duplicate share");
         var result = ProcessShareInternal(worker, nonce);
+        EnsureActive();
         if(!RegisterSubmit(context.ExtraNonce1, nonce))
             throw new StratumException(StratumError.DuplicateShare, "duplicate");
 

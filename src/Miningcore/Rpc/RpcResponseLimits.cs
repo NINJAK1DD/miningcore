@@ -17,7 +17,7 @@ public sealed record RpcResponseLimits(int MaxBytes, int MaxNumericTokenChars)
                 else if(c == '"') quoted = false;
             }
             else if(c == '"') quoted = true;
-            else if(c == '-' || c is >= '0' and <= '9')
+            else if(c is >= '0' and <= '9' || c == '-' && i + 1 < json.Length && json[i + 1] is >= '0' and <= '9')
             {
                 var start = i;
                 while(i < json.Length && (json[i] is >= '0' and <= '9' or '-' or '+' or '.' or 'e' or 'E'))

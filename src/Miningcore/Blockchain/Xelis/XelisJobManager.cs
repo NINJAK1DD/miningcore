@@ -55,6 +55,43 @@ public class XelisJobManager : JobManagerBase<XelisJob>
     private XelisPoolConfigExtra extraPoolConfig;
     protected int maxActiveJobs;
     public string poolPublicKey { get; protected set; }
+    private XelisWorkEpoch workEpoch = new();
+    private readonly SemaphoreSlim refreshGate = new(1, 1);
+    private int refreshFailures;
+    internal bool IsWorkSuspended => Volatile.Read(ref workEpoch).IsRetired;
+
+    private sealed class IncompatibleWorkException(bool transition) : Exception
+    {
+        internal bool Transition { get; } = transition;
+    }
+
+    private void RejectIncompatibleWork()
+    {
+        bool transition;
+        lock(jobLock)
+        {
+            transition = workEpoch.Retire();
+            currentJob = null;
+        }
+        throw new IncompatibleWorkException(transition);
+    }
+
+    private void ReportRefreshFailure(Exception failure, int? code = null,
+        RpcConsumerDiagnostics.Stage stage = RpcConsumerDiagnostics.Stage.Response, bool force = false)
+    {
+        if(refreshFailures < int.MaxValue) refreshFailures++;
+        if(refreshFailures == 1 || force)
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "XelisJobManager.UpdateJob",
+                failure: failure, code: code, failedCount: refreshFailures, stage: stage);
+    }
+
+    private void ReportRefreshRecovery()
+    {
+        if(refreshFailures == 0) return;
+        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Info, "XelisJobManager.UpdateJob",
+            failedCount: refreshFailures, stage: RpcConsumerDiagnostics.Stage.Recovered);
+        refreshFailures = 0;
+    }
 
     private async Task<(RpcResponse<GetBlockHeaderResponse>, RpcResponse<GetBlockTemplateResponse>)> GetBlockTemplateAsync(CancellationToken ct)
     {
@@ -63,11 +100,14 @@ public class XelisJobManager : JobManagerBase<XelisJob>
             Address = poolConfig.Address
         };
 
-        var getBlockHeaderResponse = await rpc.ExecuteAsync<GetBlockHeaderResponse>(logger, XelisCommands.GetBlockHeader, ct, getBlockHeaderRequest,
+        var getBlockHeaderResponse = await rpc.ExecuteBoundedAsync<GetBlockHeaderResponse>(logger, XelisCommands.GetBlockHeader, ct, payload: getBlockHeaderRequest,
             responseLimits: new RpcResponseLimits(8 * 1024 * 1024, 78));
+        ct.ThrowIfCancellationRequested();
 
         if(getBlockHeaderResponse.Error != null || getBlockHeaderResponse.Response == null)
             return (getBlockHeaderResponse, null);
+        if(!XelisUtils.IsSupportedAlgorithm(getBlockHeaderResponse.Response.Algorithm))
+            RejectIncompatibleWork();
 
         var getBlockTemplateRequest = new GetBlockTemplateRequest
         {
@@ -75,7 +115,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
             Address = poolConfig.Address
         };
 
-        var getBlockTemplateResponse = await rpc.ExecuteAsync<GetBlockTemplateResponse>(logger, XelisCommands.GetBlockTemplate, ct, getBlockTemplateRequest,
+        var getBlockTemplateResponse = await rpc.ExecuteBoundedAsync<GetBlockTemplateResponse>(logger, XelisCommands.GetBlockTemplate, ct, payload: getBlockTemplateRequest,
             responseLimits: new RpcResponseLimits(4096, 78));
 
         return (getBlockHeaderResponse, getBlockTemplateResponse);
@@ -83,22 +123,26 @@ public class XelisJobManager : JobManagerBase<XelisJob>
 
     protected async Task<bool> UpdateJob(CancellationToken ct, string via = null)
     {
+        var entered = false;
         try
         {
+            await refreshGate.WaitAsync(ct);
+            entered = true;
             var (responseBlockHeader, responseBlockTemplate) = await GetBlockTemplateAsync(ct);
+            ct.ThrowIfCancellationRequested();
             if(responseBlockHeader?.Error != null || responseBlockHeader?.Response == null ||
                 responseBlockTemplate?.Error != null || responseBlockTemplate?.Response == null)
             {
                 var error = responseBlockHeader?.Error ?? responseBlockTemplate?.Error;
-                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "XelisJobManager.UpdateJob",
-                    failure: error?.InnerException ?? (error == null ? new InvalidDataException("Missing Xelis work response") : null),
-                    code: error?.Code, stage: RpcConsumerDiagnostics.Stage.Response);
+                ReportRefreshFailure(error?.InnerException ?? (error == null ? new InvalidDataException("Missing Xelis work response") : null), error?.Code);
                 return false;
             }
 
             var blockHeader = responseBlockHeader.Response;
             var blockTemplate = responseBlockTemplate.Response;
-            var job = currentJob;
+            if(!XelisUtils.HasCompatibleConsensus(blockHeader, blockTemplate))
+                RejectIncompatibleWork();
+            var job = GetJobForStratum();
 
             logger.Debug(() => $"blockHeader.TopoHeight [{blockHeader.TopoHeight}] || blockTemplate.Difficulty [{blockTemplate.Difficulty}]");
 
@@ -113,13 +157,9 @@ public class XelisJobManager : JobManagerBase<XelisJob>
             // and public key after the initial header-work hash.
             if(workBytes.Length != XelisConstants.BlockWorkSize)
                 throw new FormatException("Miner work has an invalid length");
-            if(blockHeader.Difficulty != blockTemplate.Difficulty)
-                throw new InvalidDataException("Inconsistent Xelis difficulty responses");
-            if(blockTemplate.Algorithm is not (XelisConstants.AlgorithmXelisHashV1 or XelisConstants.AlgorithmXelisHashV2))
-                throw new InvalidDataException("Unsupported Xelis proof algorithm");
             var newHash = workBytes.AsSpan().Slice(XelisConstants.BlockTemplateOffsetBlockHeaderWork,
                 XelisConstants.BlockTemplateOffsetTimestamp - XelisConstants.BlockTemplateOffsetBlockHeaderWork).ToHexString();
-            var isNew = currentJob == null ||
+            var isNew = job == null ||
                 newHash != job.PrevHash || blockTemplate.Difficulty != job.ExactDifficulty ||
                 blockTemplate.Algorithm != job.Algorithm;
 
@@ -146,7 +186,12 @@ public class XelisJobManager : JobManagerBase<XelisJob>
                 }
                 BlockchainStats.NetworkDifficulty = job.Difficulty;
 
-                currentJob = job;
+                lock(jobLock)
+                {
+                    if(workEpoch.IsRetired) Volatile.Write(ref workEpoch, new XelisWorkEpoch());
+                    job.BindEpoch(workEpoch);
+                    currentJob = job;
+                }
             }
 
             else
@@ -157,18 +202,22 @@ public class XelisJobManager : JobManagerBase<XelisJob>
                     logger.Debug(() => $"Template update {blockHeader.TopoHeight}");
             }
 
+            ReportRefreshRecovery();
             return isNew;
         }
 
-        catch(OperationCanceledException)
+        catch(Exception) when(ct.IsCancellationRequested)
         {
             // ignored
         }
 
-        catch(Exception ex)
+        catch(IncompatibleWorkException ex)
         {
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "XelisJobManager.UpdateJob", failure: ex);
+            ReportRefreshFailure(new InvalidDataException("Incompatible Xelis consensus parameters"),
+                stage: RpcConsumerDiagnostics.Stage.Rejected, force: ex.Transition);
         }
+        catch(Exception ex) { ReportRefreshFailure(ex); }
+        finally { if(entered) refreshGate.Release(); }
 
         return false;
     }
@@ -219,14 +268,13 @@ public class XelisJobManager : JobManagerBase<XelisJob>
 
     protected object GetJobParamsForStratum(bool isNew)
     {
-        var job = currentJob;
+        var job = GetJobForStratum();
         return job?.GetJobParams(isNew);
     }
 
     public override XelisJob GetJobForStratum()
     {
-        var job = currentJob;
-        return job;
+        lock(jobLock) return workEpoch.IsRetired ? null : currentJob;
     }
 
     #region API-Surface
@@ -239,6 +287,8 @@ public class XelisJobManager : JobManagerBase<XelisJob>
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
+        if(!XelisNativeCapability.IsAvailable())
+            throw new TrustedPoolStartupException("Xelis requires an x64 native runtime with both v1 and v2 hash exports", pc.Id);
         coin = pc.Template.As<XelisCoinTemplate>();
 
         extraPoolConfig = pc.Extra.SafeExtensionDataAs<XelisPoolConfigExtra>();
@@ -307,6 +357,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
     {
         Contract.RequiresNonNull(worker);
         Contract.RequiresNonNull(submission);
+        Volatile.Read(ref workEpoch).EnsureActive();
 
         if(submission is not object[] submitParams)
             throw new StratumException(StratumError.Other, "invalid params");
@@ -332,6 +383,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
 
         // validate & process
         var (share, blockTemplate) = job.ProcessShare(worker, nonce);
+        job.EnsureActive();
 
         // enrich share with common data
         share.PoolId = poolConfig.Id;

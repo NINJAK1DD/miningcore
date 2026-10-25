@@ -145,6 +145,13 @@ public class XelisPool : PoolBase
         context.Miner = minerName;
         context.Worker = workerName;
 
+        if(context.IsAuthorized && manager.IsWorkSuspended)
+        {
+            context.IsAuthorized = false;
+            await connection.RespondErrorAsync(StratumError.JobNotFound, "mining work unavailable", request.Id, false);
+            return;
+        }
+
         if(context.IsAuthorized)
         {
             // Nicehash's stupid validator insists on "error" property present
@@ -184,6 +191,8 @@ public class XelisPool : PoolBase
                 }
 
                 var minerJobParams = CreateWorkerJob(connection, context.IsAuthorized);
+                if(minerJobParams == null)
+                    throw new StratumException(StratumError.JobNotFound, "mining work unavailable");
 
                 // send intial update
                 await connection.NotifyAsync(XelisStratumMethods.SetDifficulty, new object[] { context.Difficulty });
@@ -214,18 +223,28 @@ public class XelisPool : PoolBase
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
-        WarnAboveCandidateTarget(connection);
-        var context = connection.ContextAs<XelisWorkerContext>();
-        var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
-        var job = (XelisJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
-
-        // update context
-        lock(context)
+        var source = manager.GetJobForStratum();
+        if(source == null)
         {
-            context.AddJob(job, maxActiveJobs);
+            if(manager.IsWorkSuspended) return null;
+            throw new InvalidOperationException("No Xelis work is available");
         }
+        try
+        {
+            WarnAboveCandidateTarget(connection);
+            var context = connection.ContextAs<XelisWorkerContext>();
+            var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
+            var job = source.ForWorker(context, () => manager.NextWorkerJobId());
 
-        return job.GetJobParams(cleanJob);
+            // update context
+            lock(context)
+            {
+                context.AddJob(job, maxActiveJobs);
+            }
+
+            return job.GetJobParams(cleanJob);
+        }
+        catch(StratumException ex) when(ex.Code == StratumError.JobNotFound) { return null; }
     }
 
     protected virtual async Task OnSubmitAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -318,6 +337,7 @@ public class XelisPool : PoolBase
                 await connection.NotifyAsync(XelisStratumMethods.SetDifficulty, new object[] { context.Difficulty });
 
             var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
+            if(minerJobParams == null) return;
 
             // send job
             await connection.NotifyAsync(XelisStratumMethods.MiningNotify, minerJobParams);
@@ -454,6 +474,7 @@ public class XelisPool : PoolBase
 
             // send varDiff update
             await connection.NotifyAsync(XelisStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
+            if(minerJobParams == null) return;
             await connection.NotifyAsync(XelisStratumMethods.MiningNotify, minerJobParams);
         }
     }

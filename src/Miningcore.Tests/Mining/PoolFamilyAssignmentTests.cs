@@ -58,6 +58,21 @@ public class PoolFamilyAssignmentTests : TestBase
     private static readonly string[] Families = { "Alephium", "Beam", "Bitcoin", "Conceal", "Cryptonote",
         "Equihash", "Ergo", "Ethereum", "Handshake", "Kaspa", "Nexa", "Progpow", "Satoshicash", "Warthog", "Xelis", "Zano" };
     private static bool NeedsNative(string family) => family is "Conceal" or "Cryptonote" or "Zano";
+
+    [Fact]
+    public async Task XelisSuspensionRejectsNewAuthorizationWithoutIssuingOldWorkOrBanningClient()
+    {
+        await using var fixture = await Fixture.Create(this, "Xelis");
+        fixture.SuspendXelisWork();
+        await fixture.Authorize();
+        await fixture.Flush();
+        fixture.AssertError(1, StratumError.JobNotFound, "mining work unavailable");
+        Assert.False(fixture.Connection.Context.IsAuthorized);
+        Assert.True(fixture.Connection.IsAlive);
+        Assert.False(fixture.Connection.IsDisconnectRequested);
+        Assert.DoesNotContain(fixture.Messages, x => x["method"]?.Value<string>() is "mining.notify" or "mining.set_difficulty");
+        Assert.Empty(fixture.Errors.Logs);
+    }
     public static IEnumerable<object[]> ManagedFamilies => Cases(false);
     public static IEnumerable<object[]> NativeFamilies => Cases(true);
     private static IEnumerable<object[]> Cases(bool native) => Families.Where(f => NeedsNative(f) == native)
@@ -860,6 +875,13 @@ public class PoolFamilyAssignmentTests : TestBase
         }
 
         internal void RemoveTemplateForFault() => SetField(manager, "currentJob", null);
+        internal void SuspendXelisWork()
+        {
+            var epoch = (Miningcore.Blockchain.Xelis.XelisWorkEpoch) typeof(Miningcore.Blockchain.Xelis.XelisJobManager)
+                .GetField("workEpoch", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(manager);
+            ((Miningcore.Blockchain.Xelis.XelisJob) job).BindEpoch(epoch);
+            epoch.Retire();
+        }
         internal void ConfigureKaspaStatic(bool enabled) => SetField(Pool, "extraPoolConfig",
             new Miningcore.Blockchain.Kaspa.Configuration.KaspaPoolConfigExtra { EnableStaticDifficulty = enabled });
         internal Task DeviceRequest(double difficulty, int id = 2) => DispatchRequest(new JsonRpcRequest(

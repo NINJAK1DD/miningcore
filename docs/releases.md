@@ -47,6 +47,20 @@ prefix. Unsupported algorithms (including v3), missing/inconsistent difficulty
 and malformed RPC responses fail before publication and produce redacted Error
 diagnostics. Only canonical `xel/v1` and `xel/v2` work is accepted.
 
+A confirmed unsupported algorithm or disagreement between header and miner-work
+consensus fields now retires all prior assignments, hides old work from new
+authorizations, and rejects obsolete submissions before proof processing or
+accounting. Supported recovery creates fresh assignments and never reactivates
+the retired jobs. Temporary RPC outages retain compatible work; caller-requested
+cancellation stays silent. Refresh failures log once per outage, with an Info
+recovery diagnostic carrying the consecutive failure count.
+
+Xelis startup now requires an x64 native library exporting both v1 and v2 hash
+functions. Unsupported architectures and the uncertified bundled Windows ABI
+fail pool startup instead of allowing miners to receive unusable work. The
+original five-argument generic `RpcClient.ExecuteAsync` CLR signature is retained;
+bounded calls use the separate `ExecuteBoundedAsync` API.
+
 ## Unreleased (after v0.3.0): Ergo exact proof and network difficulty
 
 Ergo now derives proof difficulty, candidate credit limits and accepted-share

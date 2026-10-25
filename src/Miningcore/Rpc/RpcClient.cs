@@ -25,7 +25,14 @@ namespace Miningcore.Rpc;
 public class RpcClient
 {
     public RpcClient(DaemonEndpointConfig endPoint, JsonSerializerSettings serializerSettings, IMessageBus messageBus, string poolId)
+        : this(endPoint, serializerSettings, messageBus, poolId, sharedHttpClient)
     {
+    }
+
+    internal RpcClient(DaemonEndpointConfig endPoint, JsonSerializerSettings serializerSettings, IMessageBus messageBus, string poolId, HttpClient transport)
+    {
+        Contract.RequiresNonNull(transport);
+        httpClient = transport;
         Contract.RequiresNonNull(serializerSettings);
         Contract.RequiresNonNull(messageBus);
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(poolId));
@@ -47,7 +54,8 @@ public class RpcClient
     private readonly IMessageBus messageBus;
     private readonly string poolId;
 
-    private static readonly HttpClient httpClient = new(new HttpClientHandler
+    private readonly HttpClient httpClient;
+    private static readonly HttpClient sharedHttpClient = new(new HttpClientHandler
     {
         AutomaticDecompression = DecompressionMethods.All,
 
@@ -56,8 +64,20 @@ public class RpcClient
 
     #region API-Surface
 
-    public async Task<RpcResponse<TResponse>> ExecuteAsync<TResponse>(ILogger logger, string method, CancellationToken ct,
-        object payload = null, bool throwOnError = false, RpcResponseLimits responseLimits = null)
+    // Preserve the original CLR signature for separately compiled consumers.
+    public Task<RpcResponse<TResponse>> ExecuteAsync<TResponse>(ILogger logger, string method, CancellationToken ct,
+        object payload = null, bool throwOnError = false) where TResponse : class =>
+        ExecuteCoreAsync<TResponse>(logger, method, ct, payload, throwOnError, null);
+
+    public Task<RpcResponse<TResponse>> ExecuteBoundedAsync<TResponse>(ILogger logger, string method, CancellationToken ct,
+        RpcResponseLimits responseLimits, object payload = null, bool throwOnError = false) where TResponse : class
+    {
+        ArgumentNullException.ThrowIfNull(responseLimits);
+        return ExecuteCoreAsync<TResponse>(logger, method, ct, payload, throwOnError, responseLimits);
+    }
+
+    private async Task<RpcResponse<TResponse>> ExecuteCoreAsync<TResponse>(ILogger logger, string method, CancellationToken ct,
+        object payload, bool throwOnError, RpcResponseLimits responseLimits)
         where TResponse : class
     {
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(method));
@@ -218,7 +238,12 @@ public class RpcClient
                 var responseContent = responseLimits == null
                     ? await response.Content.ReadAsStringAsync(ct)
                     : await ReadBoundedResponseAsync(response.Content, responseLimits.MaxBytes, token);
-                responseLimits?.ValidateNumbers(responseContent);
+                try { responseLimits?.ValidateNumbers(responseContent); }
+                catch(JsonReaderException ex) when(!response.IsSuccessStatusCode)
+                {
+                    // Preserve HTTP attribution without letting error bodies bypass numeric limits.
+                    throw new HttpRequestException("JSON-RPC HTTP response could not be decoded", ex, response.StatusCode);
+                }
 
                 RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
                     RpcDiagnostics.Stage.Response, method, status: (int) response.StatusCode,
