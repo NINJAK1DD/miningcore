@@ -107,8 +107,8 @@ in [non-Bitcoin candidate accounting](non-bitcoin-candidate-credit.md).
 Handshake, Xelis, Kaspa and its variants, and Alephium compare full proof hashes
 directly, avoiding lossy compact-target rounding in candidate detection and proof
 difficulty. Alephium also preserves its unsigned 24-bit mantissa target during
-job initialization, avoiding missed candidates caused by Bitcoin target
-re-encoding. Equihash/Verus candidate ceilings use the exact selected block target,
+job initialization, eliminating false-positive candidates above the exact
+target. Equihash/Verus candidate ceilings use the exact selected block target,
 including Verus merged-target overrides, independently of displayed parent
 difficulty. Unknown policies fail before work issuance. Repeated identical Nexa
 and Satoshicash suggestions establish the floor without republishing work. Zano
