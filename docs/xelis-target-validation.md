@@ -285,3 +285,8 @@ The complete second-review lab run finished with **5,154 passed, 20 failed,
 16 skipped** (5,190 total). Its failing-test names exactly match the 20 failures
 reproduced on clean `dev`; no new failures appeared. The real-daemon Xelis test
 passed in this run.
+
+The first updated PR run exposed a separate Stratum diagnostic fixture race:
+it checked successful authorization after disposing TCP, when disconnect cleanup
+may already have cleared authorization. The assertion now runs before disposal;
+all **92** Stratum diagnostic tests pass locally. CI is rerun on that correction.

@@ -542,8 +542,10 @@ public class StratumDiagnosticTests
                 if(!authorized)
                     Assert.Equal((int) StratumError.UnauthorizedWorker, response["error"]["code"].Value<int>());
             }
+            // Disconnect cleanup clears authorization. Check the handler's result
+            // while the successful session is still open, before disposing TCP.
+            Assert.Equal(authorized, worker.IsAuthorized);
         }
-        Assert.Equal(authorized, worker.IsAuthorized);
         Assert.Equal(Secret, worker.Miner);
         Assert.Equal(Hostile.Trim(), worker.Worker);
         Assert.Equal(Hostile, pool.Password);
