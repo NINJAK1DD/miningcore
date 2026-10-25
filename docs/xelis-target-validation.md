@@ -41,15 +41,21 @@ requests stop before requesting miner work, and either failed/null response
 produces a redacted Error-level `XelisJobManager.UpdateJob` diagnostic, including
 the safe failure category and numeric RPC code without remote error text. Caller
 cancellation is silent. Repeated failures in one outage are counted without
-repeating Error logs; successful recovery reports `stage: Recovered` at Info with
+repeating Error logs for transient outages; suspended refresh failures emit a
+reminder at most once every ten minutes. Successful recovery reports `stage: Recovered` at Info with
 the consecutive failure count. A newly confirmed incompatibility always emits
 its own rejection diagnostic, even during an existing outage.
 
 Confirmed incompatibility retires a shared work epoch covering **every** recent
 job and worker snapshot, clears the manager's current job and rejects new use of
 retired jobs before hashing. Proofs whose verification overlaps retirement are
-also rejected before returning a share. New authorizations receive a bounded
-work-unavailable response instead of old assignments; broadcasting/VarDiff cannot
+also rejected before returning a share. The suspension transition disconnects
+all existing sessions **without an IP ban**, allowing configured miner failover.
+New subscribe/authorize attempts are disconnected before address RPCs. Late
+retired-job submissions carry a dedicated rejection marker and do not increment
+invalid-share counts or trigger bans, including the tail after supported recovery.
+Unknown jobs and ordinary invalid proofs retain their normal rejection policies.
+Broadcasting/VarDiff cannot
 reissue retired work. A subsequent fully validated, supported response opens a
 fresh epoch. Old queues may retain references for bounded cleanup, but those jobs
 remain retired permanently, including after recovery.
@@ -59,6 +65,15 @@ assignments or reopen an already suspended epoch. Refresh requests are serialize
 to prevent older responses from racing past a newer incompatibility decision.
 Block RPCs already admitted before retirement can complete and retain an accepted
 network receipt; retirement does not erase an already submitted block outcome.
+Likewise, shares admitted at the final epoch check may finish publication and
+accounting after retirement. This check is the admission boundary, not a global
+transaction with later Share Recorder processing. A deterministic test holds an
+admitted block RPC open through retirement, preserves acceptance, and rejects an
+unrelated obsolete submission without hashing it.
+
+While suspended, the null current job gives the existing candidate/VarDiff
+ceiling an unbounded sentinel. This cannot admit work or increase VarDiff through
+accepted shares; fresh supported work restores the target-derived ceiling.
 
 The original generic `ExecuteAsync` CLR signature (logger, method, token, payload,
 throwOnError) and public constructor remain available. Bounded responses use
@@ -69,6 +84,27 @@ caller-triggered cancellation. Non-2xx error bodies retain HTTP status attributi
 while still enforcing the numeric bound; runs of dashes alone are not numbers.
 
 ## Operator compatibility
+
+### Xelis extension API changes
+
+This correction changes these public/protected Xelis extension contracts.
+Downstream extensions must update and rebuild against the new assembly:
+
+| Previous contract | Current contract / migration |
+| --- | --- |
+| `XelisJob.ProcessShare` returns `Share` | Returns `(Share Share, string BlockTemplate)`; carry the candidate's own immutable template into submission |
+| Protected virtual `XelisJob.ProcessShareInternal` returns `Share` | Overrides return the same tuple and retain epoch validation in the public entry point |
+| `XelisUtils.DifficultyToTarget(double)` | Use the exact `BigInteger` overload with a positive integral value within U256; no floating-point target approximation |
+| Protected `XelisJobManager.SubmitBlockAsync(Share, GetBlockHeaderResponse, CancellationToken)` | Virtual `SubmitBlockAsync(Share, string, CancellationToken)` takes the per-share serialized header |
+
+These are source/binary breaking changes for separately compiled Xelis callers
+and subclasses, even though repository callers are migrated. No wrapper restores
+shared mutable solved headers or imprecise target conversion. The general RPC
+client's original method and constructor contracts remain compatible as described
+above. Rebuild custom Xelis extensions together with the application on upgrade
+or rollback.
+
+### Mining compatibility
 
 Difficulty 1 produces `ff` repeated 32 times. Difficulty 2 produces `7f` followed
 by 31 `ff` bytes. The 31/32-byte transition is between difficulties 255 and 256;
@@ -290,3 +326,26 @@ The first updated PR run exposed a separate Stratum diagnostic fixture race:
 it checked successful authorization after disposing TCP, when disconnect cleanup
 may already have cleared authorization. The assertion now runs before disposal;
 all **92** Stratum diagnostic tests pass locally. CI is rerun on that correction.
+
+## Miner-facing suspension review
+
+| Finding | Resolution and regression evidence |
+| --- | --- |
+| M1 retired-work rejection bans honest miners | Dedicated internal Stratum exception, preserved during retained-job lookup after recovery; five submissions past a ban threshold leave valid/invalid counters unchanged and never call the ban manager; an unknown job still counts as invalid |
+| L1 / observation A miners remain stranded | First suspension disconnects all registered sessions without IP bans; real TCP authorization, suspension, closure, supported recovery and reauthorization are covered |
+| L2 address RPC load during suspension | Subscribe and authorize disconnect before daemon calls; TCP fixtures assert no additional daemon requests |
+| N1 long suspension is easy to miss | At most one reminder per ten minutes of suspended refresh failures; controlled-clock test verifies suppression, reminder count and counted recovery |
+| N2 share accounting admission boundary | Final epoch check documented as the admission point; already admitted shares/blocks retain outcomes after retirement |
+| N3 suspended VarDiff sentinel | Pool comment and operator notes explain why the null-job unbounded sentinel cannot admit work |
+| N4 unrelated Stratum fixture change | Earlier standalone test commit only moves the assertion ahead of disconnect cleanup; it changes no runtime behavior |
+| Observation B downstream Xelis APIs | Explicit source/binary breaking-change and migration table above and release-note notice |
+| In-flight accepted block receipt | Submission RPC barrier spans retirement; accepted receipt retained, unrelated obsolete share rejected before hashing |
+
+Local verification: **757 passed, zero failed, zero skipped**, covering Xelis,
+RPC, snapshots, concrete pool assignments and Stratum diagnostics with the real
+daemon enabled. Windows startup, RPC and all miner-suspension pool tests:
+**10 passed, zero failed, zero skipped**. Windows CI includes those same pool
+tests. Documentation guards, all 47 Markdown link/anchor checks and Stratum
+diagnostic source guards pass. Current-head automatic and manual live CI evidence
+is recorded in PR #221 when complete. Earlier full-lab baseline limitations above
+remain applicable; they are not represented as successful financial validation.

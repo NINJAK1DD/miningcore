@@ -50,16 +50,28 @@ diagnostics. Only canonical `xel/v1` and `xel/v2` work is accepted.
 A confirmed unsupported algorithm or disagreement between header and miner-work
 consensus fields now retires all prior assignments, hides old work from new
 authorizations, and rejects obsolete submissions before proof processing or
-accounting. Supported recovery creates fresh assignments and never reactivates
+admission. The transition disconnects active sessions without IP bans so miners
+can fail over; new subscribe/authorize attempts disconnect before address RPCs.
+Retired-job rejections do not affect invalid-share counts or trigger bans,
+including after recovery. Supported recovery creates fresh assignments and never reactivates
 the retired jobs. Temporary RPC outages retain compatible work; caller-requested
 cancellation stays silent. Refresh failures log once per outage, with an Info
-recovery diagnostic carrying the consecutive failure count.
+recovery diagnostic carrying the consecutive failure count. Suspended refresh
+failures also emit a reminder at most once every ten minutes. Shares and block
+RPCs admitted before retirement retain their subsequent accounting/acceptance
+results.
 
 Xelis startup now requires an x64 native library exporting both v1 and v2 hash
 functions. Unsupported architectures and the uncertified bundled Windows ABI
 fail pool startup instead of allowing miners to receive unusable work. The
 original five-argument generic `RpcClient.ExecuteAsync` CLR signature is retained;
 bounded calls use the separate `ExecuteBoundedAsync` API.
+
+**Xelis extension compatibility:** custom callers/subclasses must update and
+rebuild. `ProcessShare` and `ProcessShareInternal` return a share/template tuple;
+`SubmitBlockAsync` takes that serialized template instead of the shared header;
+`DifficultyToTarget(double)` is replaced by the exact `BigInteger` API. See the
+[extension migration table](xelis-target-validation.md#xelis-extension-api-changes).
 
 ## Unreleased (after v0.3.0): Ergo exact proof and network difficulty
 

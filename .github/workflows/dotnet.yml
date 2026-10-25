@@ -592,7 +592,7 @@ jobs:
       run: |
         dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj `
           --no-build --no-restore --configuration Release --framework net10.0 `
-          --filter "FullyQualifiedName~XelisLifecycleTests.NativeCapability|FullyQualifiedName~RpcCompatibilityTests"
+          --filter "FullyQualifiedName~XelisLifecycleTests.NativeCapability|FullyQualifiedName~RpcCompatibilityTests|FullyQualifiedName~PoolFamilyAssignmentTests.Xelis"
 
     - name: Test Windows Odocrypt toolset override boundary
       shell: pwsh

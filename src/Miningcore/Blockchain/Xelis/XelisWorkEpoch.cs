@@ -1,5 +1,3 @@
-using Miningcore.Stratum;
-
 namespace Miningcore.Blockchain.Xelis;
 
 // Shared by every job and worker snapshot issued during a compatible chain era.
@@ -11,6 +9,6 @@ internal sealed class XelisWorkEpoch
     internal bool Retire() => Interlocked.Exchange(ref retired, 1) == 0;
     internal void EnsureActive()
     {
-        if(IsRetired) throw new StratumException(StratumError.JobNotFound, "mining work unavailable");
+        if(IsRetired) throw new XelisWorkUnavailableException();
     }
 }

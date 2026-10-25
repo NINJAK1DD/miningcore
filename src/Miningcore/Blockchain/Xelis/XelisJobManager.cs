@@ -58,7 +58,9 @@ public class XelisJobManager : JobManagerBase<XelisJob>
     private XelisWorkEpoch workEpoch = new();
     private readonly SemaphoreSlim refreshGate = new(1, 1);
     private int refreshFailures;
+    private DateTime lastSuspensionDiagnostic;
     internal bool IsWorkSuspended => Volatile.Read(ref workEpoch).IsRetired;
+    internal event Action WorkSuspended;
 
     private sealed class IncompatibleWorkException(bool transition) : Exception
     {
@@ -73,6 +75,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
             transition = workEpoch.Retire();
             currentJob = null;
         }
+        if(transition) WorkSuspended?.Invoke();
         throw new IncompatibleWorkException(transition);
     }
 
@@ -80,9 +83,13 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         RpcConsumerDiagnostics.Stage stage = RpcConsumerDiagnostics.Stage.Response, bool force = false)
     {
         if(refreshFailures < int.MaxValue) refreshFailures++;
-        if(refreshFailures == 1 || force)
+        var reminder = IsWorkSuspended && clock.Now - lastSuspensionDiagnostic >= TimeSpan.FromMinutes(10);
+        if(refreshFailures == 1 || force || reminder)
+        {
             RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "XelisJobManager.UpdateJob",
                 failure: failure, code: code, failedCount: refreshFailures, stage: stage);
+            if(IsWorkSuspended) lastSuspensionDiagnostic = clock.Now;
+        }
     }
 
     private void ReportRefreshRecovery()
@@ -372,7 +379,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
 
         lock(context)
         {
-            job = context.GetJob(jobId);
+            job = context.GetJobForSubmission(jobId);
 
             if(job == null)
                 logger.Warn(() => $"[{worker.ConnectionId}] Share rejected: job-not-found");
@@ -383,6 +390,8 @@ public class XelisJobManager : JobManagerBase<XelisJob>
 
         // validate & process
         var (share, blockTemplate) = job.ProcessShare(worker, nonce);
+        // Admission point: a valid share may finish publication/accounting after
+        // retirement, just as an already admitted block RPC retains its receipt.
         job.EnsureActive();
 
         // enrich share with common data

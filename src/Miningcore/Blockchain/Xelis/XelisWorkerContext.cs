@@ -41,4 +41,11 @@ public class XelisWorkerContext : WorkerContextBase
     {
         return validJobs.ToArray().FirstOrDefault(x => x.JobId == jobId && !x.IsRetired);
     }
+
+    internal XelisJob GetJobForSubmission(string jobId)
+    {
+        var job = validJobs.ToArray().FirstOrDefault(x => x.JobId == jobId);
+        job?.EnsureActive(); // Preserve the retirement reason, including after recovery.
+        return job;
+    }
 }

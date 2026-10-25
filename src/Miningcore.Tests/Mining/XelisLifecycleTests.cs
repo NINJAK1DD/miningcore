@@ -43,7 +43,9 @@ public class XelisLifecycleTests
         internal string HeaderAlgorithm = "xel/v1", WorkAlgorithm = "xel/v1";
         internal int Difficulty = 1;
         internal int? WorkDifficulty;
-        internal bool Fail, PauseHeader, PauseWork;
+        internal bool Fail, PauseHeader, PauseWork, PauseSubmission;
+        internal readonly TaskCompletionSource SubmissionEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal readonly TaskCompletionSource ReleaseSubmission = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal int Submissions;
         internal readonly TaskCompletionSource Paused = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal readonly RpcDiagnosticTests.CapturedLogs Logs = new(LogLevel.Info);
@@ -66,7 +68,15 @@ public class XelisLifecycleTests
             using var reader = new StreamReader(context.Request.Body);
             var request = JObject.Parse(await reader.ReadToEndAsync());
             var method = (string) request["method"];
-            if(method == XelisCommands.SubmitBlock) Interlocked.Increment(ref Submissions);
+            if(method == XelisCommands.SubmitBlock)
+            {
+                Interlocked.Increment(ref Submissions);
+                if(PauseSubmission)
+                {
+                    SubmissionEntered.TrySetResult();
+                    await ReleaseSubmission.Task.WaitAsync(context.RequestAborted);
+                }
+            }
             if(PauseHeader && method == XelisCommands.GetBlockHeader || PauseWork && method == XelisCommands.GetBlockTemplate)
             {
                 await context.Response.WriteAsync("{\"result\":");
@@ -138,9 +148,9 @@ public class XelisLifecycleTests
         {
             Assert.True(pair.Job.IsRetired);
             Assert.Null(pair.Worker.ContextAs<XelisWorkerContext>().GetJob(pair.Job.JobId));
-            Assert.Equal(StratumError.JobNotFound, Assert.Throws<StratumException>(() => pair.Job.ForWorker(pair.Worker.Context)).Code);
-            Assert.Equal(StratumError.JobNotFound, Assert.Throws<StratumException>(() => pair.Job.GetJobParams(true)).Code);
-            Assert.Equal(StratumError.JobNotFound, (await Assert.ThrowsAsync<StratumException>(() => Submit(fixture, pair.Worker, pair.Job.JobId, deadline.Token))).Code);
+            Assert.Equal(StratumError.JobNotFound, Assert.Throws<XelisWorkUnavailableException>(() => pair.Job.ForWorker(pair.Worker.Context)).Code);
+            Assert.Equal(StratumError.JobNotFound, Assert.Throws<XelisWorkUnavailableException>(() => pair.Job.GetJobParams(true)).Code);
+            Assert.Equal(StratumError.JobNotFound, (await Assert.ThrowsAsync<XelisWorkUnavailableException>(() => Submit(fixture, pair.Worker, pair.Job.JobId, deadline.Token))).Code);
         }
 
         // A new authorization cannot obtain an old job, including through the pool's issuer.
@@ -159,7 +169,7 @@ public class XelisLifecycleTests
         Assert.NotEqual(previous.JobId, recovered.JobId);
         Assert.True(oldest.IsRetired);
         Assert.True(previous.IsRetired);
-        Assert.Equal(StratumError.JobNotFound, (await Assert.ThrowsAsync<StratumException>(() => Submit(fixture, a, oldest.JobId, deadline.Token))).Code);
+        Assert.Equal(StratumError.JobNotFound, (await Assert.ThrowsAsync<XelisWorkUnavailableException>(() => Submit(fixture, a, oldest.JobId, deadline.Token))).Code);
         var c = Issue(recovered, proof);
         var accepted = await Submit(fixture, c, recovered.JobId, deadline.Token);
         Assert.False(accepted.IsBlockCandidate);
@@ -188,8 +198,59 @@ public class XelisLifecycleTests
             Assert.False(await fixture.Manager.Refresh(deadline.Token));
         }
         finally { release.Set(); }
-        Assert.Equal(StratumError.JobNotFound, (await Assert.ThrowsAsync<StratumException>(() => pending)).Code);
+        Assert.Equal(StratumError.JobNotFound, (await Assert.ThrowsAsync<XelisWorkUnavailableException>(() => pending)).Code);
         Assert.Equal(0, fixture.Submissions);
+    }
+
+    [Fact]
+    public async Task AdmittedBlockReceiptSurvivesRetirementWhileUnrelatedOldSharesAreRejected()
+    {
+        await using var fixture = await Fixture.Start();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        Assert.True(await fixture.Manager.Refresh(deadline.Token));
+        var job = fixture.Manager.CurrentJob;
+        var proof = new Proof(); // All-ff hash equals the difficulty-1 target.
+        var a = Issue(job, proof);
+        var b = Issue(job, proof);
+        fixture.PauseSubmission = true;
+        var pending = Submit(fixture, a, job.JobId, deadline.Token);
+        try
+        {
+            await fixture.SubmissionEntered.Task.WaitAsync(deadline.Token);
+            fixture.HeaderAlgorithm = "xel/v3";
+            Assert.False(await fixture.Manager.Refresh(deadline.Token));
+            await Assert.ThrowsAsync<XelisWorkUnavailableException>(() => Submit(fixture, b, job.JobId, deadline.Token));
+            Assert.Equal(1, proof.Calls);
+        }
+        finally { fixture.ReleaseSubmission.TrySetResult(); }
+        var accepted = await pending.WaitAsync(deadline.Token);
+        Assert.True(accepted.IsBlockCandidate);
+        Assert.Equal("0000000000000001", accepted.TransactionConfirmationData);
+        Assert.Equal(1, fixture.Submissions);
+    }
+
+    [Fact]
+    public async Task SuspendedOutageRemindsAtTenMinutesAndCountsAllFailuresOnRecovery()
+    {
+        await using var fixture = await Fixture.Start();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var clock = (Miningcore.Tests.Util.MockMasterClock) typeof(XelisJobManager)
+            .GetField("clock", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(fixture.Manager);
+        clock.CurrentTime = DateTime.UnixEpoch;
+        Assert.True(await fixture.Manager.Refresh(deadline.Token));
+        fixture.HeaderAlgorithm = "xel/v3";
+        Assert.False(await fixture.Manager.Refresh(deadline.Token));
+        for(var i = 0; i < 3; i++) Assert.False(await fixture.Manager.Refresh(deadline.Token));
+        Assert.Single(fixture.Diagnostics);
+        clock.CurrentTime += TimeSpan.FromMinutes(10);
+        Assert.False(await fixture.Manager.Refresh(deadline.Token));
+        Assert.Equal(5, fixture.Diagnostics[1]["failedCount"].Value<int>());
+        Assert.False(await fixture.Manager.Refresh(deadline.Token));
+        Assert.Equal(2, fixture.Diagnostics.Length);
+        fixture.HeaderAlgorithm = "xel/v1";
+        Assert.True(await fixture.Manager.Refresh(deadline.Token));
+        Assert.Equal("Recovered", fixture.Diagnostics[2]["stage"].Value<string>());
+        Assert.Equal(6, fixture.Diagnostics[2]["failedCount"].Value<int>());
     }
 
     [Fact]
