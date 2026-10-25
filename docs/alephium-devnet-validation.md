@@ -16,7 +16,7 @@ The final repeatable run found a proof after 49,763 attempts (nonce counter
 49,762), for chain 0 to 0 at height 1:
 
 - Nonce: `00000000000000000000000000000000000000000000c262`.
-- Block hash: `ffffc7c46221dec1eda6c59f6db598b9707b45d617b2edfa8b864e984d993f60`.
+- BLAKE3 block hash: `ffffc7c46221dec1...b864e984d993f60` (full value in the receipt).
 - Issued difficulty: 200 times the candidate ceiling.
 - Credited difficulty and candidate ceiling: both `9.31322630126633e-10`.
 - The version-1 mining API acknowledged this exact hash as accepted.
@@ -45,7 +45,7 @@ MININGCORE_OUTPUT=/absolute/path/to/Miningcore/bin/Debug/net10.0 \
 ```
 
 The [runner](../scripts/tests/alephium-devnet-smoke.sh) pins the official node
-image to `sha256:c8bc624a166f7328c244f975d9fe5581609fe5a66f09533ff7115b39ffa80351`
+image SHA-256: `c8bc624a166f7328c244f975d9fe5581609fe5a66f09533ff7115b39ffa80351`
 and checks its reported version. It creates a fresh internal Docker network with
 no published ports, bootstrap peers, UPnP or wallet service. Private host access
 is used, and network ID 4 is checked before any submission. CPU and memory are
