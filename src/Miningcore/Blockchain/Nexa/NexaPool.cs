@@ -92,7 +92,7 @@ public class NexaPool : PoolBase
                 logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
 
                 context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(nicehashDiff.Value);
+                context.SetDifficulty(nicehashDiff.Value, DifficultyOrigin.Static);
             }
 
             var minerJobParams = CreateWorkerJob(connection, context.IsSubscribed);
@@ -165,7 +165,7 @@ public class NexaPool : PoolBase
                        context.VarDiff == null && staticDiff.Value > context.Difficulty))
                 {
                     context.VarDiff = null; // disable vardiff
-                    context.SetDifficulty(staticDiff.Value);
+                    context.SetDifficulty(staticDiff.Value, DifficultyOrigin.Static);
 
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
 
@@ -199,6 +199,7 @@ public class NexaPool : PoolBase
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
+        WarnAboveCandidateTarget(connection);
         var context = connection.ContextAs<NexaWorkerContext>();
         var job = (NexaJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
 
@@ -310,12 +311,17 @@ public class NexaPool : PoolBase
             if(context.IsNicehash || poolConfig.EnableAsicBoost == true)
                 response.Extra = new Dictionary<string, object> { ["error"] = null };
             await connection.RespondAsync(response);
-            if(requestedDiff > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty && requestedDiff != context.Difficulty)
+            if(requestedDiff > poolConfig.Ports[connection.LocalEndpoint.Port].Difficulty)
             {
-                context.SetDifficulty(requestedDiff);
-                await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
-                if(context.IsSubscribed)
-                    await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
+                var previousDifficulty = context.Difficulty;
+                context.SetDifficulty(requestedDiff, DifficultyOrigin.Device);
+                WarnAboveCandidateTarget(connection);
+                if(context.Difficulty != previousDifficulty)
+                {
+                    await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+                    if(context.IsSubscribed)
+                        await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, CreateWorkerJob(connection, false));
+                }
             }
         }, ct);
     }
@@ -348,6 +354,9 @@ public class NexaPool : PoolBase
 
         return result;
     }
+
+    protected override bool UsesCandidateDifficultyPolicy => true;
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => coin.ShareMultiplier;
 

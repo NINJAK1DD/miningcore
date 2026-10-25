@@ -10,8 +10,10 @@ using Contract = Miningcore.Contracts.Contract;
 
 namespace Miningcore.Blockchain.Conceal;
 
-public class ConcealJob
+public class ConcealJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => BlockTemplate.Difficulty;
+
     public ConcealJob(GetBlockTemplateResponse blockTemplate, byte[] instanceId, string jobId,
         ConcealCoinTemplate coin, PoolConfig poolConfig, ClusterConfig clusterConfig, string prevHash)
     {
@@ -27,6 +29,7 @@ public class ConcealJob
 
         hashFunc = hashFuncs[coin.Hash];
         blobType = coin.BlobType;
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     protected delegate void HashFunc(ReadOnlySpan<byte> data, Span<byte> result, ulong height);

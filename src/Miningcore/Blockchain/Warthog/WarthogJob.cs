@@ -15,8 +15,14 @@ using Miningcore.Time;
 
 namespace Miningcore.Blockchain.Warthog;
 
-public class WarthogJob
+public class WarthogJob : Miningcore.Mining.ICandidateCreditJob
 {
+    // Legacy mainnet candidates use a different SHA256d acceptance domain.
+    // Until that domain is aligned with share credit, assign conservative unit credit.
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty =>
+        IsJanusHash && (network == WarthogNetworkType.Testnet || BlockTemplate.Data.Height > WarthogConstants.JanusHashRetargetBlockHeight)
+            ? Math.Min(Difficulty, blockTargetValue.Difficulty()) : 1d;
+
     internal WarthogJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
@@ -251,6 +257,8 @@ public class WarthogJob
         BlockTemplate = blockTemplate;
         JobId = jobId;
         
+        if(network == WarthogNetworkType.Testnet && !isJanusHash)
+            throw new InvalidDataException("Warthog testnet requires the Janus proof domain");
         this.network = network;
         IsJanusHash = isJanusHash;
 
@@ -280,6 +288,7 @@ public class WarthogJob
             nTimeBytes.ToHexString(),
             false
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     public virtual object GetJobParams(bool isNew)

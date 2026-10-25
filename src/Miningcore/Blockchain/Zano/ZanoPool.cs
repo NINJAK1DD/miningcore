@@ -555,7 +555,9 @@ public class ZanoPool : PoolBase
             if(!context.IsAuthorized)
                 throw new StratumException(StratumError.MinusOne, "unauthorized");
 
-            var job = CreateWorkerJob(connection);
+            var job = CreateWorkerJob(connection, out var changedDifficulty);
+            if(changedDifficulty && context.ProtocolVersion == 2)
+                await connection.NotifyAsync(ZanoStratumMethods.SetDifficulty, new object[] { context.Difficulty });
 
             // Nicehash's stupid validator insists on "error" property present
             // in successful responses which is a violation of the JSON-RPC spec
@@ -681,9 +683,20 @@ public class ZanoPool : PoolBase
 
     #endregion // Protocol V1 handlers
 
-    private object[] CreateWorkerJob(StratumConnection connection)
+    private object[] CreateWorkerJob(StratumConnection connection) => CreateWorkerJob(connection, out _);
+
+    private object[] CreateWorkerJob(StratumConnection connection, out bool changedDifficulty)
+    {
+        changedDifficulty = connection.Context.ApplyPendingDifficulty();
+        return CreateWorkerJobForCurrentAssignment(connection);
+    }
+
+    // The caller owns the assignment gate and has already applied its deferred
+    // assignment once. Template updates cannot silently apply another retarget.
+    private object[] CreateWorkerJobForCurrentAssignment(StratumConnection connection)
     {
         var context = connection.ContextAs<ZanoWorkerContext>();
+        WarnAboveCandidateTarget(connection);
         var job = manager.PrepareWorkerJob(context.Difficulty);
 
         logger.Debug(() => $"JobId: {job.Id} - Target: {job.Target} - Height: {job.Height} - SeedHash: {job.SeedHash}");
@@ -722,8 +735,7 @@ public class ZanoPool : PoolBase
         {
             var context = connection.ContextAs<ZanoWorkerContext>();
 
-            var changedDifficulty = context.ApplyPendingDifficulty();
-            var job = CreateWorkerJob(connection);
+            var job = CreateWorkerJob(connection, out var changedDifficulty);
 
             switch(context.ProtocolVersion)
             {
@@ -761,6 +773,8 @@ public class ZanoPool : PoolBase
     {
         Cryptonote.CryptonoteDifficulty.ValidateFullTargetPool(pc);
         coin = pc.Template.As<ZanoCoinTemplate>();
+        if(coin.ShareMultiplier != 1d)
+            throw new PoolStartupException("Zano requires shareMultiplier=1 for coherent wire targets and accounting", pc.Id);
 
         base.Configure(pc, cc);
     }
@@ -969,6 +983,9 @@ public class ZanoPool : PoolBase
         return result;
     }
 
+    protected override bool UsesCandidateDifficultyPolicy => true;
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
+
     public override double ShareMultiplier => coin.ShareMultiplier;
 
     protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken ct)
@@ -979,7 +996,7 @@ public class ZanoPool : PoolBase
         {
             var context = connection.ContextAs<ZanoWorkerContext>();
 
-            var job = CreateWorkerJob(connection);
+            var job = CreateWorkerJobForCurrentAssignment(connection);
 
             switch(context.ProtocolVersion)
             {

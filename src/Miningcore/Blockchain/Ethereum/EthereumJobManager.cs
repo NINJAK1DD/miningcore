@@ -442,7 +442,8 @@ public class EthereumJobManager : JobManagerBase<EthereumJob>
         var (share, fullNonceHex, headerHash, mixHash) = await job.ProcessShareAsync(worker, workerName, nonce, solution, ct);
         
         share.PoolId = poolConfig.Id;
-        share.NetworkDifficulty = BlockchainStats.NetworkDifficulty;
+        // Settlement must use the same immutable work as candidate admission/credit.
+        share.NetworkDifficulty = job.BlockTemplate.Difficulty;
         share.Source = clusterConfig.ClusterName;
         share.Created = clock.Now;
         

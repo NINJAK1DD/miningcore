@@ -19,7 +19,7 @@ namespace Miningcore.Tests.Mining;
 
 public class CortexProofIdentityTests
 {
-    private static EthereumBlockTemplate Template() => new() { Header = new string('0', 64), Target = new string('0', 64), Height = 1 };
+    private static EthereumBlockTemplate Template() => new() { Header = new string('0', 64), Target = new string('0', 63) + "1", Height = 1 };
     private static StratumConnection Connect(EthereumWorkerContext context, string id)
     {
         var worker = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(), new MockMasterClock(), id, true);

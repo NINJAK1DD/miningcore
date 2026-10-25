@@ -51,6 +51,7 @@ public class IssuedJobSnapshotTests
         var time = new ManualTimeProvider();
         worker.Init(10, null, new MockMasterClock(), time);
         var template = type.GetConstructor(Type.EmptyTypes) != null ? Activator.CreateInstance(type) : RuntimeHelpers.GetUninitializedObject(type);
+        NonBitcoinCandidateCreditTests.ConfigurePolicy(template);
         var idProperty = type.GetProperty("JobId", Members) ?? type.GetProperty("Id", Members);
         // Setter may live on a base type (private Ethereum.Id).
         for(var owner = type; owner != null; owner = owner.BaseType)
@@ -110,6 +111,7 @@ public class IssuedJobSnapshotTests
         context.Init(10, null, new MockMasterClock());
         var hash = new Miningcore.Crypto.Hashing.Algorithms.Sha256D();
         var template = new KaspaJob(hash, hash, hash);
+        NonBitcoinCandidateCreditTests.ConfigurePolicy(template);
         typeof(KaspaJob).GetProperty("JobId", Members).SetValue(template, "1");
         var old = template.ForWorker(context);
         context.SetDifficulty(40);
@@ -163,11 +165,41 @@ public class IssuedJobSnapshotTests
         var context = new WorkerContextBase();
         context.Init(10, null, new MockMasterClock());
         var template = new ProgpowJob();
+        NonBitcoinCandidateCreditTests.ConfigurePolicy(template);
         var old = (ProgpowJob) template.ForWorker(context);
         context.SetDifficulty(20);
         var current = (ProgpowJob) template.ForWorker(context);
         Assert.True(old.RegisterWorkerProof("worker", "nonce", "header", "mix"));
         Assert.False(current.RegisterWorkerProof("worker", "nonce", "header", "mix"));
         Assert.True(current.RegisterWorkerProof("other-worker", "nonce", "header", "mix"));
+    }
+
+    [LinuxNativeFact]
+    public void NativeAlephiumCandidatesCapInStratumUnitsAndKeepDuplicateOwnership()
+    {
+        var hasher = new Miningcore.Crypto.Hashing.Algorithms.Blake3IHash();
+        var first = new byte[32];
+        var hash = new byte[32];
+        hasher.Digest(new byte[AlephiumConstants.NonceLength + 1], first);
+        hasher.Digest(first, hash);
+        var (from, to) = AlephiumUtils.BlockChainIndex(hash);
+        foreach(var assignment in new[] { 1e-12, 1000d })
+        {
+            var source = new AlephiumJob();
+            source.Init(new AlephiumBlockTemplate { JobId = "candidate", HeaderBlob = "00", TxsBlob = "",
+                TargetBlob = new string('f', 64), FromGroup = from, ToGroup = to });
+            var context = new AlephiumWorkerContext();
+            var clock = new MockMasterClock();
+            context.Init(assignment, null, clock);
+            var worker = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(), clock, "alephium-candidate", false);
+            worker.SetContext(context);
+            var old = source.ForWorker(context);
+            context.SetDifficulty(assignment * 2);
+            var nonce = new string('0', AlephiumConstants.NonceLength * 2);
+            var accepted = old.ProcessShare(worker, nonce);
+            Assert.True(accepted.IsBlockCandidate);
+            Assert.Equal(Math.Min(assignment, source.Difficulty / AlephiumConstants.Pow2xDiff1TargetNumZero) / AlephiumConstants.ShareMultiplier, accepted.Difficulty);
+            Assert.Equal(AlephiumStratumError.DuplicatedShare, Assert.Throws<AlephiumStratumException>(() => source.ForWorker(context).ProcessShare(worker, nonce)).Code);
+        }
     }
 }

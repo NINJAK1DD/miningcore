@@ -491,6 +491,174 @@ public class PoolFamilyAssignmentTests : TestBase
         Assert.Equal(55, worker.Difficulty);
     }
 
+    public static IEnumerable<object[]> CandidateManagedFamilies => Families.Where(f => f != "Bitcoin" && !NeedsNative(f)).Select(f => new object[] { f });
+    public static IEnumerable<object[]> CandidateNativeFamilies => Families.Where(NeedsNative).Select(f => new object[] { f });
+
+    [Theory]
+    [MemberData(nameof(CandidateManagedFamilies))]
+    public Task CandidateCeilingsBoundQueuedAndFallingAssignmentsOnTcp(string family) => CandidateCeilingPublication(family);
+
+    [LinuxNativeTheory]
+    [MemberData(nameof(CandidateNativeFamilies))]
+    public Task NativeCandidateCeilingsBoundQueuedAndFallingAssignmentsOnTcp(string family) => CandidateCeilingPublication(family);
+
+    [Fact]
+    public Task EthereumV1_CandidateCeilingsBoundEmbeddedTargetsOnTcp() => CandidateCeilingPublication("Ethereum", 1);
+
+    private async Task CandidateCeilingPublication(string family, int protocol = 2)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        var worker = fixture.Connection.Context;
+        if(worker is EthereumWorkerContext ethereum) ethereum.ProtocolVersion = protocol;
+        worker.EnqueueNewDifficulty(80);
+        fixture.SetCandidateCeiling(20);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.InRange(worker.Difficulty, 19.99, 20.01);
+        Assert.False(worker.HasPendingDifficulty);
+        fixture.SetCandidateCeiling(5);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.InRange(worker.Difficulty, 4.99, 5.01);
+        worker.VarDiff = null;
+        worker.SetDifficulty(100);
+        fixture.SetCandidateCeiling(3);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.Equal(100, worker.Difficulty);
+        var warnings = fixture.Warnings.Logs.Count(x => x.Contains("Assignment ", StringComparison.Ordinal));
+        Assert.Equal(1, warnings);
+        fixture.SetCandidateCeiling(2);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.Equal(warnings, fixture.Warnings.Logs.Count(x => x.Contains("Assignment ", StringComparison.Ordinal)));
+        Assert.Equal(100, worker.Difficulty);
+        fixture.SetCandidateCeiling(200);
+        await fixture.Broadcast();
+        fixture.SetCandidateCeiling(3);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.Equal(warnings + 1, fixture.Warnings.Logs.Count(x => x.Contains("Assignment ", StringComparison.Ordinal)));
+        Assert.True(fixture.Connection.IsAlive);
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
+    [Theory]
+    [InlineData("Equihash")]
+    [InlineData("Nexa")]
+    [InlineData("Satoshicash")]
+    public async Task ExplicitDeviceRequestsSurviveNetworkFallsAndLaterVarDiff(string family)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        var worker = fixture.Connection.Context;
+        var dynamicContext = worker.VarDiff;
+        fixture.SetCandidateCeiling(20);
+        await fixture.DeviceRequest(100);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.Same(dynamicContext, worker.VarDiff);
+        Assert.InRange(worker.Difficulty, 99.99, 100.01);
+        Assert.InRange(worker.ExplicitDifficultyFloor.Value, 99.99, 100.01);
+        fixture.SetCandidateCeiling(5);
+        worker.EnqueueNewDifficulty(900);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.InRange(worker.Difficulty, 99.99, 100.01);
+        fixture.SetCandidateCeiling(200);
+        worker.EnqueueNewDifficulty(150);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.Equal(150, worker.Difficulty);
+        worker.EnqueueNewDifficulty(10);
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.InRange(worker.Difficulty, 99.99, 100.01);
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
+    [Fact]
+    public async Task BitcoinDoesNotInstallNonBitcoinAssignmentCallbacks()
+    {
+        await using var fixture = await Fixture.Create(this, "Bitcoin");
+        Assert.Null(fixture.Connection.Context.BeforeApplyPendingDifficulty);
+        Assert.Null(fixture.Connection.Context.AfterApplyPendingDifficulty);
+    }
+
+    [Fact]
+    public async Task KaspaDisabledStaticHintIsAutomaticSeedCappedBeforeFirstWork()
+    {
+        await using var fixture = await Fixture.Create(this, "Kaspa");
+        fixture.ConfigureKaspaStatic(false);
+        fixture.SetCandidateCeiling(20);
+        await fixture.Authorize(difficulty: 1000);
+        await fixture.Flush();
+        var worker = fixture.Connection.Context;
+        Assert.NotNull(worker.VarDiff);
+        Assert.Null(worker.ExplicitDifficultyFloor);
+        Assert.InRange(worker.Difficulty, 19.99, 20.01);
+        Assert.False(worker.HasPendingDifficulty);
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
+    [Theory]
+    [InlineData("Nexa")] [InlineData("Satoshicash")]
+    public async Task RepeatedSuggestRecordsFloorWithoutRepublishingIdenticalWork(string family)
+    {
+        await using var fixture = await Fixture.Create(this, family);
+        var worker = fixture.Connection.Context;
+        worker.SetDifficulty(55);
+        worker.EnqueueNewDifficulty(80);
+        await fixture.DeviceRequest(55, 10);
+        await fixture.Flush();
+        Assert.Equal(55, worker.ExplicitDifficultyFloor);
+        Assert.False(worker.HasPendingDifficulty);
+        var updates = fixture.Messages.Count(m => m["method"]?.Value<string>() is "mining.set_difficulty" or "mining.notify");
+        Assert.Equal(0, updates);
+        await fixture.DeviceRequest(55, 11);
+        await fixture.Flush();
+        Assert.Equal(updates, fixture.Messages.Count(m => m["method"]?.Value<string>() is "mining.set_difficulty" or "mining.notify"));
+        fixture.AssertOneSuccess(10);
+        fixture.AssertOneSuccess(11);
+    }
+
+    [LinuxNativeTheory]
+    [InlineData(1, false)] [InlineData(1, true)]
+    [InlineData(2, false)]
+    public async Task ZanoTemplateUpdateBetweenApplyAndSnapshotCannotSilentlyRetarget(int protocol, bool getJob)
+    {
+        await using var fixture = await Fixture.Create(this, "Zano");
+        var worker = fixture.Connection.ContextAs<ZanoWorkerContext>();
+        worker.ProtocolVersion = protocol;
+        fixture.SetCandidateCeiling(20);
+        var original = worker.AfterApplyPendingDifficulty;
+        var applications = 0;
+        worker.AfterApplyPendingDifficulty = () =>
+        {
+            original?.Invoke();
+            if(++applications == 1) fixture.SetCandidateCeiling(5);
+        };
+        if(getJob) await fixture.ZanoGetJob(); else await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.Equal(1, applications);
+        Assert.Equal(10, worker.Difficulty);
+        Assert.Equal(worker.Difficulty, worker.validJobs.Last().Difficulty);
+        var start = fixture.Messages.Count;
+        await fixture.Broadcast();
+        await fixture.Flush();
+        Assert.Equal(2, applications);
+        Assert.Equal(5, worker.Difficulty);
+        Assert.Equal(5, worker.validJobs.Last().Difficulty);
+        if(protocol == 2)
+        {
+            var messages = fixture.Messages.Skip(start).ToArray();
+            var difficulty = Array.FindIndex(messages, m => m["method"]?.Value<string>() == "mining.set_difficulty");
+            var job = Array.FindIndex(messages, m => m["method"]?.Value<string>() == "mining.notify");
+            Assert.True(difficulty >= 0 && job > difficulty);
+            Assert.Equal(5, messages[difficulty]["params"][0].Value<double>());
+        }
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
     private sealed class LinuxNativeTheoryAttribute : TheoryAttribute
     {
         public LinuxNativeTheoryAttribute()
@@ -648,6 +816,7 @@ public class PoolFamilyAssignmentTests : TestBase
             else if(family is not ("Ethereum" or "Kaspa" or "Conceal" or "Cryptonote" or "Zano"))
                 SetField(manager, "rpc", rpc);
             job = ReadyJob(family, config, cluster);
+            NonBitcoinCandidateCreditTests.ConfigurePolicy(job);
             SetField(manager, "currentJob", job);
             if(family == "Equihash")
                 SetProperty(manager, "ChainConfig", ((EquihashCoinTemplate) coin).GetNetwork(NBitcoin.ChainName.Mainnet));
@@ -683,7 +852,21 @@ public class PoolFamilyAssignmentTests : TestBase
         }
 
         internal Task Idle() => (Task) Invoke(Pool, "UpdateVarDiffAsync", Connection, true, stop.Token);
+        internal void SetCandidateCeiling(double ceiling)
+        {
+            job = ReadyJob(family, Pool.Config, cluster);
+            NonBitcoinCandidateCreditTests.ConfigurePolicy(job, ceiling);
+            SetField(manager, "currentJob", job);
+        }
+
         internal void RemoveTemplateForFault() => SetField(manager, "currentJob", null);
+        internal void ConfigureKaspaStatic(bool enabled) => SetField(Pool, "extraPoolConfig",
+            new Miningcore.Blockchain.Kaspa.Configuration.KaspaPoolConfigExtra { EnableStaticDifficulty = enabled });
+        internal Task DeviceRequest(double difficulty, int id = 2) => DispatchRequest(new JsonRpcRequest(
+            family == "Equihash" ? "mining.suggest_target" : "mining.suggest_difficulty",
+            family == "Equihash" ? (object) new[] { (EquihashConstants.ZCashDiff1b / new System.Numerics.BigInteger(difficulty)).ToString("x").PadLeft(64, '0') } :
+            family == "Nexa" ? (object) difficulty : new object[] { difficulty }, id));
+        internal Task ZanoGetJob() => DispatchRequest(new JsonRpcRequest(ZanoStratumMethods.GetWork, Array.Empty<object>(), 30));
         internal Task SuggestDifficulty() => DispatchRequest(new JsonRpcRequest("mining.suggest_difficulty",
             family == "Nexa" ? (object) 55d : new object[] { 55d }, 2));
         internal Task Authorize(CancellationToken? ct = null, double difficulty = 55)
@@ -935,17 +1118,17 @@ public class PoolFamilyAssignmentTests : TestBase
         var offset = NativeBlob.IndexOf("020800000000012e7f76", StringComparison.Ordinal) / 2 + 2;
         if(family == "Conceal")
             return new ConcealJob(new Miningcore.Blockchain.Conceal.DaemonResponses.GetBlockTemplateResponse
-                { Blob = NativeBlob, Height = 101, ReservedOffset = offset }, new byte[3], "ready",
+                { Blob = NativeBlob, Difficulty = 1000, Height = 101, ReservedOffset = offset }, new byte[3], "ready",
                 (ConcealCoinTemplate) config.Template, config, cluster, "prev");
         if(family == "Cryptonote")
             return new CryptonoteJob(new Miningcore.Blockchain.Cryptonote.DaemonResponses.GetBlockTemplateResponse
-                { Blob = NativeBlob, Height = 101, ReservedOffset = offset }, new byte[3], "ready",
+                { Blob = NativeBlob, Difficulty = 1000, Height = 101, ReservedOffset = offset }, new byte[3], "ready",
                 (CryptonoteCoinTemplate) config.Template, config, cluster, "prev", "fixture");
         var job = Substitute.For<ZanoJob>(new Miningcore.Blockchain.Zano.DaemonResponses.GetBlockTemplateResponse
-            { Blob = NativeBlob, Height = 101, SeedHash = new string('0', 64) }, new byte[3],
+            { Blob = NativeBlob, Difficulty = 1000, Height = 101, SeedHash = new string('0', 64) }, new byte[3],
             (ZanoCoinTemplate) config.Template, config, cluster, "prev", Substitute.For<IProgpowCache>());
         job.PrepareWorkerJob(Arg.Any<double>()).Returns(c => new ZanoWorkerJob("aabb", c.Arg<double>())
-            { Height = "0x00000065", SeedHash = new string('0', 64), Target = new string('f', 64) });
+            { DifficultyTemplate = job, ExtraNonce = 1, Height = "0x00000065", SeedHash = new string('0', 64), Target = new string('f', 64) });
         return job;
     }
 

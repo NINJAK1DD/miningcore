@@ -12,6 +12,8 @@ namespace Miningcore.Tests.Mining;
 
 public class IssuedDifficultyTests
 {
+    internal sealed class PolicyJob : ICandidateCreditJob
+    { public double CandidateDifficulty => double.MaxValue; }
     public static IEnumerable<object[]> Families => typeof(WorkerContextBase).Assembly.GetTypes()
         .Where(x => typeof(WorkerContextBase).IsAssignableFrom(x) && !x.IsAbstract)
         .SelectMany(x => new[] { "static", "nicehash", "minimum" }
@@ -28,7 +30,7 @@ public class IssuedDifficultyTests
         worker.Init(10, config, wall, time);
         worker.SetDifficulty(20); // Dynamic assignment already occurred.
         worker.VarDiff.LastUpdate = wall.Now;
-        var template = new object();
+        object template = new PolicyJob();
         var old = Issue(worker, template);
         if(mode == "nicehash") worker.UserAgent = "NiceHash";
         worker.VarDiff = null;
@@ -52,7 +54,7 @@ public class IssuedDifficultyTests
     }
 
     private static object Issue(WorkerContextBase worker, object template) =>
-        worker.JobForDifficulty(template, (_, _) => new object(), "job");
+        worker.JobForDifficulty(template, (_, _) => new PolicyJob(), "job");
 
     [Fact]
     public void RepeatedChangesAndReturningToOldValueCannotRenewRetiredWork()
@@ -60,7 +62,7 @@ public class IssuedDifficultyTests
         var worker = new WorkerContextBase();
         var time = new ManualTimeProvider();
         worker.Init(10, null, new MockMasterClock(), time);
-        var template = new object();
+        object template = new PolicyJob();
         var a = Issue(worker, template);
         worker.SetDifficulty(20);
         var b = Issue(worker, template);
@@ -100,7 +102,7 @@ public class IssuedDifficultyTests
         var worker = new WorkerContextBase();
         var time = new ManualTimeProvider();
         worker.Init(10, null, new MockMasterClock(), time);
-        var template = new object();
+        object template = new PolicyJob();
         worker.RegisterBlobDifficulty(template, 1);
         worker.SetDifficulty(20);
         worker.RegisterBlobDifficulty(template, 2);
@@ -117,8 +119,8 @@ public class IssuedDifficultyTests
     {
         var worker = new WorkerContextBase();
         worker.Init(10, null, new MockMasterClock());
-        var oldTemplate = new object();
-        var newTemplate = new object();
+        object oldTemplate = new PolicyJob();
+        object newTemplate = new PolicyJob();
         worker.RegisterBlobDifficulty(oldTemplate, 1);
         worker.SetDifficulty(40);
         worker.RegisterBlobDifficulty(newTemplate, 1);
@@ -134,7 +136,7 @@ public class IssuedDifficultyTests
         var worker = new WorkerContextBase();
         var time = new ManualTimeProvider();
         worker.Init(10, null, new MockMasterClock(), time);
-        var old = Issue(worker, new object());
+        var old = Issue(worker, new PolicyJob());
         worker.SetDifficulty(40);
         worker.PreviousDifficulty = 1;
         worker.VarDiff = new VarDiffContext { LastUpdate = DateTime.MaxValue };

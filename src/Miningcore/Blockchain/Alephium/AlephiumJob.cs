@@ -23,8 +23,10 @@ public class AlephiumJobParams
     public string TargetBlob { get; set; }
 }
 
-public class AlephiumJob
+public class AlephiumJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => Difficulty / AlephiumConstants.Pow2xDiff1TargetNumZero;
+
     private AlephiumJob sourceTemplate;
     internal AlephiumJob SourceTemplate => sourceTemplate ?? this;
     internal AlephiumJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
@@ -108,6 +110,8 @@ public class AlephiumJob
         }
     }
 
+    protected virtual void HashProof(ReadOnlySpan<byte> data, Span<byte> hash) => hasher.Digest(data, hash);
+
     protected virtual Share ProcessShareInternal(StratumConnection worker, string nonce)
     {
         var context = worker.ContextAs<AlephiumWorkerContext>();
@@ -128,20 +132,20 @@ public class AlephiumJob
         
         // I know, the following looks weird but it's Alephium blockHash calculation method: https://wiki.alephium.org/mining/integration/#calculating-the-blockhash
         Span<byte> tmpHashBytes = stackalloc byte[32];
-        hasher.Digest(headerNonceBytes, tmpHashBytes);
+        HashProof(headerNonceBytes, tmpHashBytes);
         Span<byte> hashBytes = stackalloc byte[32];
-        hasher.Digest(tmpHashBytes, hashBytes);
+        HashProof(tmpHashBytes, hashBytes);
         
         var (fromGroup, toGroup) = AlephiumUtils.BlockChainIndex(hashBytes);
         // validate blockchainIndex
         if (fromGroup != BlockTemplate.FromGroup || toGroup != BlockTemplate.ToGroup)
             throw new AlephiumStratumException(AlephiumStratumError.InvalidBlockChainIndex, $"invalid block chain index, expected: ['fromGroup': {BlockTemplate.FromGroup}, 'toGroup': {BlockTemplate.ToGroup}], received['fromGroup': {fromGroup}, 'toGroup': {toGroup}]");
         
-        var targetHashBytes = new Target(new BigInteger(hashBytes, true, true));
-        var hashBytesValue = targetHashBytes.ToUInt256();
+        var hashInteger = new BigInteger(hashBytes, isUnsigned: true, isBigEndian: true);
+        var hashBytesValue = new uint256(hashBytes.ToNewReverseArray());
         
         // calc share-diff
-        var shareDiff = (double) new BigRational(AlephiumConstants.Diff1Target * 1024, targetHashBytes.ToBigInteger()) / 1024;
+        var shareDiff = (double) new BigRational(AlephiumConstants.Diff1Target * 1024, hashInteger) / 1024;
         // diff check
 
         // check if the share meets the much harder block difficulty (block candidate)
@@ -195,9 +199,15 @@ public class AlephiumJob
         Contract.RequiresNonNull(blockTemplate);
         
         JobId = blockTemplate.JobId;
-        var target = new Target(blockTemplate.TargetBlob.HexToReverseByteArray().AsSpan().ToBigInteger());
-        Difficulty = (double) new BigRational(AlephiumConstants.Diff1Target * 1024, target.ToBigInteger() * 1024) * AlephiumConstants.Pow2xDiff1TargetNumZero;
-        blockTargetValue = target.ToUInt256();
+        // Alephium uses an unsigned 24-bit compact mantissa. Re-encoding its
+        // expanded target through Bitcoin's signed compact format loses bits.
+        var target = new BigInteger(blockTemplate.TargetBlob.HexToByteArray(), isUnsigned: true, isBigEndian: true);
+        if(target.Sign <= 0 || target.GetBitLength() > 256)
+            throw new InvalidDataException("Alephium target must be a positive 256-bit value");
+        var targetBytes = target.ToByteArray(isUnsigned: true, isBigEndian: false);
+        Array.Resize(ref targetBytes, 32);
+        blockTargetValue = new uint256(targetBytes);
+        Difficulty = (double) new BigRational(AlephiumConstants.Diff1Target, target) * AlephiumConstants.Pow2xDiff1TargetNumZero;
         BlockTemplate = blockTemplate;
 
         jobParams = new AlephiumJobParams
@@ -209,5 +219,6 @@ public class AlephiumJob
             TxsBlob = string.Empty,
             TargetBlob = string.Empty,
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 }

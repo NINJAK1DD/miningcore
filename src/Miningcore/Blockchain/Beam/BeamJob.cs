@@ -21,8 +21,10 @@ using NBitcoin.Zcash;
 
 namespace Miningcore.Blockchain.Beam;
 
-public class BeamJob
+public class BeamJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => Difficulty;
+
     internal BeamJob ForWorker(Miningcore.Mining.WorkerContextBase context) =>
         context.JobForDifficulty(this, (_, id) =>
         {
@@ -121,6 +123,7 @@ public class BeamJob
 
         // Misc
         this.solver = solver;
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     public BeamBlockTemplate BlockTemplate { get; protected set; }

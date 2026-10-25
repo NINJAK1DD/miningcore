@@ -18,8 +18,11 @@ using NBitcoin.Zcash;
 
 namespace Miningcore.Blockchain.Equihash;
 
-public class EquihashJob
+public class EquihashJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty =>
+        (double) new BigRational(networkParams.Diff1BValue, new System.Numerics.BigInteger(blockTargetValue.ToBytes(), isUnsigned: true));
+
     internal EquihashJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
@@ -365,6 +368,9 @@ public class EquihashJob
         }
     }
 
+    protected virtual void HashProof(ReadOnlySpan<byte> header, Span<byte> hash, uint nTime) =>
+        headerHasher.Digest(header, hash, (ulong) nTime);
+
     protected virtual (Share Share, string BlockHex) ProcessShareInternal(StratumConnection worker, string nonce,
         uint nTime, string solution)
     {
@@ -385,7 +391,7 @@ public class EquihashJob
 
         // hash block-header
         Span<byte> headerHash = stackalloc byte[32];
-        headerHasher.Digest(headerSolutionBytes, headerHash, (ulong) nTime);
+        HashProof(headerSolutionBytes, headerHash, nTime);
         var headerValue = new uint256(headerHash);
 
         // calc share-diff
@@ -554,6 +560,7 @@ public class EquihashJob
             BlockTemplate.Bits.HexToReverseByteArray().ToHexString(),
             false
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     public EquihashBlockTemplate BlockTemplate { get; protected set; }

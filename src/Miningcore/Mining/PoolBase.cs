@@ -116,6 +116,14 @@ public abstract class PoolBase : StratumServer,
 
         context.Init(poolEndpoint.Difficulty, varDiff, clock, VarDiffTimeProvider, poolEndpoint.DifficultyGraceSeconds);
         connection.SetContext(context);
+        if(UsesCandidateDifficultyPolicy)
+        {
+            context.BeforeApplyPendingDifficulty = () => EnforceCandidateDifficultyCeiling(connection);
+            context.AfterApplyPendingDifficulty = () => WarnAboveCandidateTarget(connection);
+            // Establish the endpoint seed before exposing the connection. Bitcoin
+            // and BLAKE2b retain their separate, existing assignment policies.
+            context.ApplyPendingDifficulty();
+        }
 
         // StratumConnection bounds TLS, PROXY framing and the first complete request with
         // a relative startup deadline; partial bytes no longer defeat the silence check.
@@ -124,7 +132,50 @@ public abstract class PoolBase : StratumServer,
     #region VarDiff
 
     // An effective runtime bound, independent of the operator's nullable MaxDiff.
-    protected virtual double MaximumVarDiff => double.MaxValue;
+    protected virtual bool UsesCandidateDifficultyPolicy => false;
+    protected virtual double CandidateAssignmentLimit => double.MaxValue;
+    protected virtual double MaximumVarDiff => CandidateAssignmentLimit;
+
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<WorkerContextBase, CandidateWarning> candidateWarnings = new();
+    private sealed class CandidateWarning { internal double? Difficulty; internal bool IncompatibleFloor; }
+
+    // Runs under the existing assignment gate (or before OnConnect publication).
+    private void EnforceCandidateDifficultyCeiling(StratumConnection connection)
+    {
+        var context = connection.Context;
+        var limit = CandidateAssignmentLimit;
+        var compatible = CandidateShareCredit.BoundAutomaticAssignment(context, limit);
+        var state = candidateWarnings.GetValue(context, static _ => new());
+        if(!compatible && !state.IncompatibleFloor)
+        {
+            var floor = Math.Max(context.MinimumVarDiffDifficulty, context.VarDiff.Config.MinDiff);
+            var networkIncompatible = floor > limit;
+            var incompatibleLimit = networkIncompatible ? limit : Math.Min(context.MaximumDifficulty, context.VarDiff.Config.MaxDiff ?? double.MaxValue);
+            logger.Warn(() => $"[{connection.ConnectionId}] VarDiff floor {floor} is incompatible with {(networkIncompatible ? "candidate target" : "configured/protocol maximum")} {incompatibleLimit}; using the least excessive legal assignment. Review the configured or device floor.");
+            PublishTelemetry(TelemetryCategory.DifficultyAssignment, networkIncompatible ? "vardiff-floor-above-network" : "vardiff-floor-incompatible", TimeSpan.Zero);
+        }
+        state.IncompatibleFloor = !compatible;
+        WarnAboveCandidateTarget(connection, limit);
+    }
+
+    protected void WarnAboveCandidateTarget(StratumConnection connection) =>
+        WarnAboveCandidateTarget(connection, CandidateAssignmentLimit);
+
+    private void WarnAboveCandidateTarget(StratumConnection connection, double limit)
+    {
+        var context = connection.Context;
+        var state = candidateWarnings.GetValue(context, static _ => new());
+        if(context.Difficulty <= limit || context.VarDiff != null && context.PendingDifficulty <= limit)
+        {
+            state.Difficulty = null; // A later incompatible episode must warn again.
+            return;
+        }
+        if(state.Difficulty == context.Difficulty)
+            return;
+        state.Difficulty = context.Difficulty;
+        logger.Warn(() => $"[{connection.ConnectionId}] Assignment {context.Difficulty} exceeds candidate target {limit}. Candidate credit is capped; honest work can be under-credited and firmware can discard candidates. Lower the port/static/device floor.");
+        PublishTelemetry(TelemetryCategory.DifficultyAssignment, "assignment-above-network", TimeSpan.Zero);
+    }
 
     protected virtual async Task UpdateVarDiffAsync(StratumConnection connection, bool idle, CancellationToken ct)
     {

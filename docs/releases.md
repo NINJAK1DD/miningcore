@@ -22,7 +22,7 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
-## v0.3.0 pre-upgrade: settlement inputs and candidate credit
+## Unreleased (after v0.3.0): settlement inputs and candidate credit
 
 PROP, PPLNS and PPLNSBF now fail closed on nonpositive or nonfinite stored,
 adjusted or network difficulty **across all coin families**. A bad legacy row or
@@ -60,8 +60,59 @@ Bitcoin/merged/BLAKE2b candidates now receive credit bounded by immutable
 qualifying chain targets. Automatic difficulty is bounded by the easiest current
 chain target, and falling ceilings lower compatible dynamic assignments on the
 next broadcast. Explicit static/device/configured floors stay enforced and warn
-when incompatible. Other-family candidate accounting remains tracked in
-[#218](https://github.com/NINJAK1DD/miningcore/issues/218).
+when incompatible.
+
+Non-Bitcoin families now cap **every** accepted candidate, including exceptionally
+strong proofs, at its issued template's validated immutable threshold in that
+validator's difficulty units. Automatic assignments respect current network
+ceilings. This hard ceiling deliberately overrides VarDiff `MaxDelta` smoothing
+on a network decline. If a configured/device floor exceeds the ceiling, queued
+automatic increases are discarded and oversized work drops to the least
+excessive legal floor; the floor stays enforced and ordinary VarDiff resumes
+when the range becomes compatible. Explicit miner/device/static assignments
+remain intact across broadcasts and later automatic updates.
+`mining.suggest_difficulty` and `mining.suggest_target` now establish persistent
+VarDiff minimums: miners using suggests as a starting hint will no longer see
+automatic retargets below their last accepted suggestion. Kaspa password
+hints with `EnableStaticDifficulty=false` remain automatic initial seeds and
+are capped before first publication. Embedded target protocols, including Zano,
+apply pending assignments before capturing work. Bitcoin policy hooks remain
+scoped to their existing implementations.
+
+Xelis and Zano now reject `shareMultiplier` values other than 1 at startup:
+their previous mixed-unit contracts cannot safely price candidates. Warthog
+legacy mainnet uses conservative **unit candidate credit and an automatic unit
+assignment ceiling** until its SHA256d and Janus share domains are aligned;
+higher explicit/configured floors still warn. Warthog testnet requires Janus
+mode, matching its verifier. Invalid candidate targets are rejected during job
+initialization, retaining previous valid work; issued policies are cached and
+shared by snapshots. Historical credit is not repriced. Audit affected rows
+and retained financial evidence using the family-specific scaling documented
+in [non-Bitcoin candidate accounting](non-bitcoin-candidate-credit.md).
+
+Handshake, Xelis, Kaspa and its variants, and Alephium compare full proof hashes
+directly, avoiding lossy compact-target rounding in candidate detection and proof
+difficulty. Alephium also preserves its unsigned 24-bit mantissa target during
+job initialization, eliminating false-positive candidates above the exact
+target. Equihash/Verus candidate ceilings use the exact selected block target,
+including Verus merged-target overrides, independently of displayed parent
+difficulty. Unknown policies fail before work issuance. Repeated identical Nexa
+and Satoshicash suggestions establish the floor without republishing work. Zano
+applies deferred difficulty once per publication so template updates cannot
+silently change the issued difficulty after the notification decision.
+
+New `miningcore_difficulty_assignment_total{pool,outcome}` events distinguish
+assignment compatibility from Stratum admission. Outcomes are fixed labels:
+`assignment-above-network`, `vardiff-floor-above-network`, and
+`vardiff-floor-incompatible`. Compatible intervals reset warning deduplication.
+Alephium applies the latest published chain's ceiling; differing chain-pair
+targets can cause assignment churn (see the deployment notes).
+
+The dependency graph explicitly pins the patched
+`System.Security.Cryptography.Pkcs` 10.0.13 transitive dependency. Remove the pin
+only when upstream packages resolve that version or later and restore/audit
+checks pass. The native export regression probe now searches the test assembly
+directory, matching VSTest's native-library deployment layout.
 
 ## Unreleased: in-flight difficulty assignments
 

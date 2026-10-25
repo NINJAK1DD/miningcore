@@ -50,6 +50,7 @@ wallet balances or recovery files.
 | Review Bitcoin-family BIP310 mask safety | [Version rolling](version-rolling.md) |
 | Preserve outstanding work when miners or proxies repeat subscribe | [Bitcoin subscription policy](bitcoin-subscription-policy.md) |
 | Review duplicate-subscription baseline, lab evidence and review dispositions | [Subscription validation record](bitcoin-subscription-validation.md) |
+| Reproduce Alephium exact-target validation against an isolated live node | [Alephium devnet validation](alephium-devnet-validation.md) |
 | Review the daemon-backed merged-mining evidence | [Regtest validation record](merged-mining-regtest-validation.md) |
 | Review dated production evidence and outstanding gates | [Mainnet validation record](mainnet-validation.md) |
 
@@ -70,6 +71,7 @@ wallet balances or recovery files.
 | Maintain payout retry-contention coverage | [Payout persistence tests](payout-persistence-tests.md) |
 | Review Bitcoin-family notification ownership and regression coverage | [Job notification snapshots](bitcoin-job-notifications.md) |
 | Review Bitcoin-family response failures and reconnect behavior | [Response publication policy](bitcoin-response-publication.md) |
+| Review non-Bitcoin candidate credit and assignment ceilings | [Non-Bitcoin candidate accounting](non-bitcoin-candidate-credit.md) |
 | Review Bitcoin minimum-difficulty negotiation and work publication | [Minimum-difficulty configuration](bitcoin-minimum-difficulty.md) |
 
 The machine-readable configuration reference is

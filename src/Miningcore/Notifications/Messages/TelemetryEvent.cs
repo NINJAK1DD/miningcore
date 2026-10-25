@@ -37,7 +37,10 @@ public enum TelemetryCategory
     /// </summary>
     ApiRequest,
 
-    StratumAdmission
+    StratumAdmission,
+
+    /// <summary>Difficulty assignment constraints and candidate credit policy.</summary>
+    DifficultyAssignment
 }
 
 public record TelemetryEvent(string GroupId, TelemetryCategory Category, TimeSpan Elapsed, bool? Success = null, string Error = null)

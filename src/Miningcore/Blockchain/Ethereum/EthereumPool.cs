@@ -158,7 +158,7 @@ public class EthereumPool : PoolBase
                        context.VarDiff == null && staticDiff.Value > context.Difficulty))
                 {
                     context.VarDiff = null; // disable vardiff
-                    context.SetDifficulty(staticDiff.Value);
+                    context.SetDifficulty(staticDiff.Value, DifficultyOrigin.Static);
 
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
                 }
@@ -192,6 +192,7 @@ public class EthereumPool : PoolBase
 
     private EthereumJob CreateWorkerJob(StratumConnection connection)
     {
+        WarnAboveCandidateTarget(connection);
         var context = connection.ContextAs<EthereumWorkerContext>();
         var job = (EthereumJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId("x8"));
 
@@ -383,7 +384,7 @@ public class EthereumPool : PoolBase
                        context.VarDiff == null && staticDiff.Value > context.Difficulty))
                 {
                     context.VarDiff = null; // disable vardiff
-                    context.SetDifficulty(staticDiff.Value);
+                    context.SetDifficulty(staticDiff.Value, DifficultyOrigin.Static);
 
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
                 }
@@ -435,6 +436,8 @@ public class EthereumPool : PoolBase
 
     private async Task SendWork(EthereumWorkerContext context, StratumConnection connection, object requestId)
     {
+        // V1 carries its target in every work response, including polling.
+        context.ApplyPendingDifficulty();
         var ethereumJob = CreateWorkerJob(connection);
         var parameters = ethereumJob.GetWorkParamsForStratum(context);
 
@@ -675,6 +678,9 @@ public class EthereumPool : PoolBase
         var result = shares / interval;
         return result;
     }
+
+    protected override bool UsesCandidateDifficultyPolicy => true;
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => 1;
 

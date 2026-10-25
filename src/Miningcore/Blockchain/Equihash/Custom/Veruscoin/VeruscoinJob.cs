@@ -229,6 +229,9 @@ public class VeruscoinJob : EquihashJob
         }
     }
     
+    protected virtual void HashVerusProof(ReadOnlySpan<byte> header, Span<byte> hash, string version = null) =>
+        new Verushash().Digest(header, hash, version);
+
     protected override (Share Share, string BlockHex) ProcessShareInternal(StratumConnection worker, string nonce,
         uint nTime, string solution)
     {
@@ -247,7 +250,7 @@ public class VeruscoinJob : EquihashJob
         // hash block-header
         Span<byte> headerHash = stackalloc byte[32];
         
-        Verushash headerHasherVerus = new Verushash();
+
         
         if (BlockTemplate.Version > 4 && !string.IsNullOrEmpty(BlockTemplate.Solution))
         {
@@ -256,14 +259,14 @@ public class VeruscoinJob : EquihashJob
                 throw new StratumException(StratumError.Other, $"invalid solution - expected solution header: {BlockTemplate.Solution.Substring(0, 2)}");
             
             if (solution.Substring(VeruscoinConstants.SolutionSlice, 2) == "03")
-                headerHasherVerus.Digest(headerSolutionBytes, headerHash, VeruscoinConstants.HashVersion2b1);
+                HashVerusProof(headerSolutionBytes, headerHash, VeruscoinConstants.HashVersion2b1);
             else
-                headerHasherVerus.Digest(headerSolutionBytes, headerHash, VeruscoinConstants.HashVersion2b2);
+                HashVerusProof(headerSolutionBytes, headerHash, VeruscoinConstants.HashVersion2b2);
         }
         else if (BlockTemplate.Version > 4)
-            headerHasherVerus.Digest(headerSolutionBytes, headerHash, VeruscoinConstants.HashVersion2b);
+            HashVerusProof(headerSolutionBytes, headerHash, VeruscoinConstants.HashVersion2b);
         else
-            headerHasherVerus.Digest(headerSolutionBytes, headerHash);
+            HashVerusProof(headerSolutionBytes, headerHash);
         
         var headerValue = new uint256(headerHash);
 
@@ -442,6 +445,7 @@ public class VeruscoinJob : EquihashJob
             true,
             solutionIn
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
     
     public override (Share Share, string BlockHex) ProcessShare(StratumConnection worker, string extraNonce2, string nTime, string solution)

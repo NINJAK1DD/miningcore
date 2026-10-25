@@ -29,8 +29,11 @@ public class HandshakeTransactionOutput
     public uint Type;
 }
 
-public class HandshakeJob
+public class HandshakeJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty =>
+        (double) new BigRational(HandshakeConstants.Diff1, new System.Numerics.BigInteger(blockTargetValue.ToBytes(), isUnsigned: true)) * shareMultiplier;
+
     internal HandshakeJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
@@ -582,11 +585,11 @@ public class HandshakeJob
         for (int i = 0; i < maskBytes.Length; i++)
             shareHashBytes[i] ^= maskBytes[i];
 
-        var targetShareHashBytes = new Target(new BigInteger(shareHashBytes, true, true));
-        var shareHashValue = targetShareHashBytes.ToUInt256();
+        var shareHashInteger = new BigInteger(shareHashBytes, true, true);
+        var shareHashValue = new uint256(shareHashBytes.ToNewReverseArray());
 
         // calc share-diff
-        var shareDiff = (double) new BigRational(HandshakeConstants.Diff1, targetShareHashBytes.ToBigInteger()) * shareMultiplier;
+        var shareDiff = (double) new BigRational(HandshakeConstants.Diff1, shareHashInteger) * shareMultiplier;
 
         // check if the share meets the much harder block difficulty (block candidate)
         var isBlockCandidate = shareHashValue <= blockTargetValue;
@@ -737,6 +740,7 @@ public class HandshakeJob
             BlockTemplate.Bits,
             BlockTemplate.CurTime.ToStringHex8()
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     public object GetJobParams()

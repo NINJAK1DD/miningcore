@@ -18,6 +18,8 @@ namespace Miningcore.Blockchain.Progpow.Custom.Firo;
 
 public class FiroJob : ProgpowJob
 {
+    protected override System.Numerics.BigInteger CandidateDiff1 => FiroConstants.Diff1;
+
     public override (Share Share, string BlockHex) ProcessShareInternal(ILogger logger,
         StratumConnection worker, ulong nonce, string inputHeaderHash, string mixHash)
     {

@@ -50,6 +50,7 @@ public class MetricsPublisher : StartupGatedBackgroundService
     private Summary rpcRequestDurationSummary;
     private Summary stratumRequestDurationSummary;
     private Counter stratumAdmissionCounter;
+    private Counter difficultyAssignmentCounter;
     private Summary apiRequestDurationSummary;
     private Counter validShareCounter;
     private Counter invalidShareCounter;
@@ -77,6 +78,9 @@ public class MetricsPublisher : StartupGatedBackgroundService
 
     private void CreateMetrics(IMetricFactory metricFactory)
     {
+        difficultyAssignmentCounter = metricFactory.CreateCounter("miningcore_difficulty_assignment_total",
+            "Candidate assignment compatibility events",
+            new CounterConfiguration { LabelNames = new[] { "pool", "outcome" } });
         stratumAdmissionCounter = metricFactory.CreateCounter("miningcore_stratum_admission_total",
             "Stratum admission refusals and terminal disconnects",
             new CounterConfiguration { LabelNames = new[] { "pool", "outcome" } });
@@ -254,6 +258,10 @@ public class MetricsPublisher : StartupGatedBackgroundService
     {
         switch(msg.Category)
         {
+            case TelemetryCategory.DifficultyAssignment:
+                if(msg.Info is "assignment-above-network" or "vardiff-floor-above-network" or "vardiff-floor-incompatible")
+                    difficultyAssignmentCounter.WithLabels(msg.GroupId, msg.Info).Inc();
+                break;
             case TelemetryCategory.StratumAdmission:
                 // Never let miner-supplied strings create metric label cardinality.
                 if(msg.Info is "difficulty-refused" or "difficulty-disconnect" or "duplicate-subscribe-warning" or "duplicate-subscribe" or "publication-failure")

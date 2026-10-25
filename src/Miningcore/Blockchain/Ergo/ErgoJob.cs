@@ -9,8 +9,10 @@ using NBitcoin;
 
 namespace Miningcore.Blockchain.Ergo;
 
-public class ErgoJob
+public class ErgoJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => Difficulty;
+
     internal ErgoJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
@@ -236,5 +238,6 @@ public class ErgoJob
             string.Empty,
             false
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 }

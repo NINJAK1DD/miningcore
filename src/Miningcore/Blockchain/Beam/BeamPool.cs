@@ -104,7 +104,7 @@ public class BeamPool : PoolBase
                        context.VarDiff == null && staticDiff.Value > context.Difficulty))
                 {
                     context.VarDiff = null; // disable vardiff
-                    context.SetDifficulty(staticDiff.Value);
+                    context.SetDifficulty(staticDiff.Value, DifficultyOrigin.Static);
 
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
                 }
@@ -175,6 +175,8 @@ public class BeamPool : PoolBase
     private object[] CreateWorkerJob(StratumConnection connection)
     {
         var context = connection.ContextAs<BeamWorkerContext>();
+        context.ApplyPendingDifficulty();
+        WarnAboveCandidateTarget(connection);
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 4;
         var job = (BeamJob) manager.GetJobForStratum().ForWorker(context);
 
@@ -484,6 +486,9 @@ public class BeamPool : PoolBase
         var result = shares / interval;
         return result;
     }
+
+    protected override bool UsesCandidateDifficultyPolicy => true;
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => 1;
     

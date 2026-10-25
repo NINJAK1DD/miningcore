@@ -12,8 +12,10 @@ using Contract = Miningcore.Contracts.Contract;
 
 namespace Miningcore.Blockchain.Zano;
 
-public class ZanoJob
+public class ZanoJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => BlockTemplate.Difficulty;
+
     public ZanoJob(GetBlockTemplateResponse blockTemplate, byte[] instanceId,
         ZanoCoinTemplate coin, PoolConfig poolConfig, ClusterConfig clusterConfig, string prevHash, IProgpowCache progpowHasher)
     {
@@ -35,9 +37,12 @@ public class ZanoJob
         bytes.CopyTo(heightBytes[4..]);
 
         Height = heightBytes.ToHexString(true);
+        if(coin.ShareMultiplier != 1d)
+            throw new ArgumentOutOfRangeException(nameof(shareMultiplier), "Zano requires shareMultiplier=1");
         shareMultiplier = coin.ShareMultiplier;
 
         blobType = coin.BlobType;
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     protected double shareMultiplier;
@@ -92,6 +97,11 @@ public class ZanoJob
         return padded.ToHexString(true);
     }
 
+    protected virtual byte[] SerializeSubmittedBlock(ulong nonce) =>
+        ZanonoteBindings.ConvertBlock(blobTemplate, blobTemplate.Length, nonce);
+
+    protected virtual void ComputeBlockId(byte[] block, byte[] hash) => ZanonoteBindings.GetBlockId(block, hash);
+
     #region API-Surface
 
     public string PrevHash { get; }
@@ -130,7 +140,7 @@ public class ZanoJob
         if(!ulong.TryParse(nonce, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var fullNonce))
             throw new StratumException(StratumError.MinusOne, "bad nonce " + nonce);
 
-        var blobBytes = ZanonoteBindings.ConvertBlock(blobTemplate, blobTemplate.Length, fullNonce);
+        var blobBytes = SerializeSubmittedBlock(fullNonce);
 
         // compute
         if(!progpowHasher.Compute(logger, (int) BlockTemplate.Height, EncodeBlob(workerExtraNonce), fullNonce, out var _, out var resultBytes))
@@ -156,7 +166,7 @@ public class ZanoJob
         {
             byte[] blockHash = new byte[32];
             // compute blob hash
-            ZanonoteBindings.GetBlockId(blobBytes, blockHash);
+            ComputeBlockId(blobBytes, blockHash);
 
             // Fill in block-relevant fields
             result.IsBlockCandidate = true;

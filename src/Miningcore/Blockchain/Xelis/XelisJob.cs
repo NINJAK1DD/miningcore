@@ -17,8 +17,11 @@ using NBitcoin;
 
 namespace Miningcore.Blockchain.Xelis;
 
-public class XelisJob
+public class XelisJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty =>
+        (double) new BigRational(XelisConstants.Diff1Target, new System.Numerics.BigInteger(blockTargetValue.ToBytes(), isUnsigned: true)) * shareMultiplier;
+
     internal XelisJob ForWorker(Miningcore.Mining.WorkerContextBase context, Func<string> nextJobId = null) =>
         context.JobForDifficulty(this, (_, id) =>
         {
@@ -122,12 +125,12 @@ public class XelisJob
         else
             xelisHash.Digest(coinbaseBytes, hashCoinbaseBytes);
 
-        var targetHashCoinbaseBytes = new Target(new BigInteger(hashCoinbaseBytes, true, true));
-        var hashCoinbaseBytesValue = targetHashCoinbaseBytes.ToUInt256();
-        //throw new StratumException(StratumError.LowDifficultyShare, $"nonce: {nonce} ||| hashCoinbaseBytes: {hashCoinbaseBytes.ToHexString()} [Reverse: {hashCoinbaseBytes.ToNewReverseArray().ToHexString()}] ||| BigInteger: {targetHashCoinbaseBytes.ToBigInteger()} ||| Target: {hashCoinbaseBytesValue} [isBlockCandidate: {hashCoinbaseBytesValue <= blockTargetValue} - stratum: {new Target(new BigInteger(XelisUtils.DifficultyToTarget(context.Difficulty), true, true)).ToUInt256()} - blockTemplate: {blockTargetValue}] ||| shareDiff: {(double) new BigRational(XelisConstants.Diff1Target, targetHashCoinbaseBytes.ToBigInteger()) * shareMultiplier} [isStratumCandidate: {hashCoinbaseBytesValue <= new Target(new BigInteger(XelisUtils.DifficultyToTarget(context.Difficulty), true, true)).ToUInt256()} - stratum: {context.Difficulty} - blockTemplate: {Difficulty}]");
+        var hashCoinbaseInteger = new BigInteger(hashCoinbaseBytes, true, true);
+        var hashCoinbaseBytesValue = new uint256(hashCoinbaseBytes.ToNewReverseArray());
+        //throw new StratumException(StratumError.LowDifficultyShare, $"nonce: {nonce} ||| hashCoinbaseBytes: {hashCoinbaseBytes.ToHexString()} [Reverse: {hashCoinbaseBytes.ToNewReverseArray().ToHexString()}] ||| BigInteger: {targetHashCoinbaseBytes.ToBigInteger()} ||| Target: {hashCoinbaseBytesValue} [isBlockCandidate: {hashCoinbaseBytesValue <= blockTargetValue} - stratum: {new Target(new BigInteger(XelisUtils.DifficultyToTarget(context.Difficulty), true, true)).ToUInt256()} - blockTemplate: {blockTargetValue}] ||| shareDiff: {(double) new BigRational(XelisConstants.Diff1Target, hashCoinbaseInteger) * shareMultiplier} [isStratumCandidate: {hashCoinbaseBytesValue <= new Target(new BigInteger(XelisUtils.DifficultyToTarget(context.Difficulty), true, true)).ToUInt256()} - stratum: {context.Difficulty} - blockTemplate: {Difficulty}]");
 
         // calc share-diff
-        var shareDiff = (double) new BigRational(XelisConstants.Diff1Target, targetHashCoinbaseBytes.ToBigInteger()) * shareMultiplier;
+        var shareDiff = (double) new BigRational(XelisConstants.Diff1Target, hashCoinbaseInteger) * shareMultiplier;
 
         // diff check
 
@@ -175,13 +178,15 @@ public class XelisJob
         BlockHeader = blockHeader;
         BlockTemplate = blockTemplate;
         JobId = jobId;
+        if(shareMultiplier != 1d)
+            throw new ArgumentOutOfRangeException(nameof(shareMultiplier), "Xelis requires shareMultiplier=1");
         this.shareMultiplier = shareMultiplier;
 
         this.network = network;
 
         Difficulty = BlockTemplate.Difficulty;
         blockTargetBytes = XelisUtils.DifficultyToTarget(BlockTemplate.Difficulty);
-        blockTargetValue = new Target(new BigInteger(blockTargetBytes, true, true)).ToUInt256();
+        blockTargetValue = new uint256(blockTargetBytes.ToNewReverseArray());
 
         PrevHash = prevHash;
         prevHashBytes = PrevHash.HexToByteArray();
@@ -217,6 +222,7 @@ public class XelisJob
             BlockTemplate.Algorithm,
             false
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     public virtual object GetJobParams(bool isNew)

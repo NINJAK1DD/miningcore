@@ -212,5 +212,6 @@ public class BitcoinGoldJob : EquihashJob
             BlockTemplate.Bits.HexToReverseByteArray().ToHexString(),
             false
         };
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 }

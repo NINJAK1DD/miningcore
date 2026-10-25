@@ -48,7 +48,7 @@ public static class VarDiffManager
 
                 // A real share remains a sample even when its configured range
                 // cannot produce a valid assignment. Do not freeze its baseline.
-                var minDiff = Math.Max(options.MinDiff, context.MinimumDifficulty);
+                var minDiff = Math.Max(options.MinDiff, context.MinimumVarDiffDifficulty);
                 var maxDiff = Math.Min(options.MaxDiff ?? protocolMaximum, protocolMaximum);
                 if(!double.IsFinite(maxDiff) || maxDiff <= 0)
                     return null;
@@ -119,7 +119,7 @@ public static class VarDiffManager
                ElapsedSeconds(ctx, ctx.LastRetargetTimestamp, ts) < options.RetargetTime)
                 return null;
 
-            var minDiff = Math.Max(options.MinDiff, context.MinimumDifficulty);
+            var minDiff = Math.Max(options.MinDiff, context.MinimumVarDiffDifficulty);
             var maxDiff = Math.Min(options.MaxDiff ?? protocolMaximum, protocolMaximum);
             if(!double.IsFinite(maxDiff) || maxDiff <= 0)
                 return null;

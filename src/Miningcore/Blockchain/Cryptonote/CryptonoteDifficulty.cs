@@ -87,7 +87,7 @@ internal static class CryptonoteDifficulty
         var assignment = context.RequiresIntegerDifficulty ? Math.Floor(difficulty) : difficulty;
         if(!(context.VarDiff != null ? assignment >= context.VarDiff.Config.MinDiff : assignment > context.Difficulty))
             return false;
-        context.SetDifficulty(assignment);
+        context.SetDifficulty(assignment, DifficultyOrigin.Static);
         context.VarDiff = null;
         return true;
     }

@@ -212,6 +212,8 @@ public class ConcealPool : PoolBase
     private ConcealJobParams CreateWorkerJob(StratumConnection connection)
     {
         var context = connection.ContextAs<ConcealWorkerContext>();
+        context.ApplyPendingDifficulty();
+        WarnAboveCandidateTarget(connection);
         var job = new ConcealWorkerJob(NextJobId(), context.Difficulty);
 
         manager.PrepareWorkerJob(job, out var blob, out var target);
@@ -480,6 +482,9 @@ public class ConcealPool : PoolBase
         var result = shares / interval;
         return result;
     }
+
+    protected override bool UsesCandidateDifficultyPolicy => true;
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => 1;
 

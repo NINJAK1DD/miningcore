@@ -33,6 +33,7 @@ public class ProgpowProductionVerifierTests : TestBase
 
     internal sealed class Cache(string family) : IProgpowCache
     {
+        internal double ProofDifficulty = 20;
         internal int Calls;
         internal ulong LastNonce;
         internal byte[] LastHeader;
@@ -45,13 +46,13 @@ public class ProgpowProductionVerifierTests : TestBase
             LastHeader = (byte[]) header.Clone();
             var diff1 = family switch { "Progpow" => RavencoinConstants.Diff1, "Telestai" => TelestaiConstants.Diff1, _ => FiroConstants.Diff1 };
             mix = Convert.FromHexString(Mix);
-            result = (diff1 / 20).ToByteArray(true, true).PadFront(0, 32);
+            result = (diff1 / (BigInteger) ProofDifficulty).ToByteArray(true, true).PadFront(0, 32);
             return true;
         }
         public void Dispose() { }
     }
 
-    internal static ProgpowJob CreateSource(string family, IMasterClock clock, Cache cache)
+    internal static ProgpowJob CreateSource(string family, IMasterClock clock, Cache cache, string target = null)
     {
         ProgpowJob source = family switch
         {
@@ -63,7 +64,7 @@ public class ProgpowProductionVerifierTests : TestBase
         {
             Version = 0x20000000, PreviousBlockhash = new string('0', 64), Height = 101,
             CurTime = (uint) ((DateTimeOffset) clock.Now).ToUnixTimeSeconds(), CoinbaseValue = 5_000_000_000,
-            Bits = "1b010000", Target = new string('0', 63) + "1", Transactions = Array.Empty<BitcoinBlockTransaction>()
+            Bits = "1b010000", Target = target ?? new string('0', 63) + "1", Transactions = Array.Empty<BitcoinBlockTransaction>()
         }, "production", new PoolConfig { Template = coin }, null, new ClusterConfig(), clock,
             new KeyId(new byte[20]), Network.RegTest, false, 1, coin.CoinbaseHasherValue, coin.HeaderHasherValue,
             coin.BlockHasherValue, cache);
@@ -127,5 +128,35 @@ public class ProgpowProductionVerifierTests : TestBase
         Assert.Equal(StratumError.DuplicateShare, Assert.Throws<StratumException>(() => job.ProcessShare(LogManager.GetCurrentClassLogger(), worker,
             "abcdef010000000a", header, Cache.Mix)).Code);
         Assert.Equal(2, cache.Calls);
+    }
+
+    [Theory]
+    [InlineData("Progpow", 1)] [InlineData("Firo", 1)] [InlineData("Kiiro", 1)]
+    [InlineData("Realichain", 1)] [InlineData("Telestai", 1)]
+    [InlineData("Progpow", 20)] [InlineData("Progpow", 2000)]
+    [InlineData("Firo", 20)] [InlineData("Firo", 2000)]
+    [InlineData("Kiiro", 20)] [InlineData("Kiiro", 2000)]
+    [InlineData("Realichain", 20)] [InlineData("Realichain", 2000)]
+    [InlineData("Telestai", 20)] [InlineData("Telestai", 2000)]
+    public void CandidateCreditUsesExactFamilyTargetAndCannotBeRepriced(string family, double proof)
+    {
+        var clock = new MockMasterClock { CurrentTime = DateTime.UnixEpoch.AddSeconds(1_700_000_000) };
+        var cache = new Cache(family) { ProofDifficulty = proof };
+        var numerator = family is "Progpow" or "Telestai" ? RavencoinConstants.Diff1 : FiroConstants.Diff1;
+        var source = CreateSource(family, clock, cache, new Target(numerator).ToUInt256().ToString());
+        var context = new ProgpowWorkerContext { ExtraNonce1 = "abcdef01" };
+        context.Init(1000, null, clock);
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(), clock, "candidate", true);
+        worker.SetContext(context);
+        var old = new ProgpowWorkerJob("1", context.ExtraNonce1);
+        ((ProgpowJob) source.ForWorker(context, preserveId: true)).PrepareWorkerJob(old, out var header);
+        context.SetDifficulty(4000);
+        var accepted = old.ProcessShare(LogManager.GetCurrentClassLogger(), worker, "abcdef0100000001", header, Cache.Mix).Share;
+        Assert.True(accepted.IsBlockCandidate);
+        Assert.Equal(1, accepted.Difficulty);
+        var replacement = new ProgpowWorkerJob("2", context.ExtraNonce1);
+        ((ProgpowJob) source.ForWorker(context, preserveId: true)).PrepareWorkerJob(replacement, out header);
+        Assert.Equal(StratumError.DuplicateShare, Assert.Throws<StratumException>(() =>
+            replacement.ProcessShare(LogManager.GetCurrentClassLogger(), worker, "ABCDEF0100000001", header, Cache.Mix)).Code);
     }
 }

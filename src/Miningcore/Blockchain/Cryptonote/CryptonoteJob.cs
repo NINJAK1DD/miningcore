@@ -10,8 +10,10 @@ using Contract = Miningcore.Contracts.Contract;
 
 namespace Miningcore.Blockchain.Cryptonote;
 
-public class CryptonoteJob
+public class CryptonoteJob : Miningcore.Mining.ICandidateCreditJob
 {
+    double Miningcore.Mining.ICandidateCreditJob.CandidateDifficulty => BlockTemplate.Difficulty;
+
     public CryptonoteJob(GetBlockTemplateResponse blockTemplate, byte[] instanceId, string jobId,
         CryptonoteCoinTemplate coin, PoolConfig poolConfig, ClusterConfig clusterConfig, string prevHash, string randomXRealm)
     {
@@ -28,6 +30,7 @@ public class CryptonoteJob
 
         hashFunc = hashFuncs[coin.Hash];
         blobType = coin.BlobType;
+        Miningcore.Mining.CandidateShareCredit.Initialize(this);
     }
 
     protected delegate void HashFunc(string realm, string seedHex, ReadOnlySpan<byte> data, Span<byte> result, ulong height);

@@ -201,7 +201,7 @@ public class AlephiumPool : PoolBase
                        context.VarDiff == null && staticDiff.Value > context.Difficulty))
                 {
                     context.VarDiff = null; // disable vardiff
-                    context.SetDifficulty(staticDiff.Value);
+                    context.SetDifficulty(staticDiff.Value, DifficultyOrigin.Static);
 
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
                 }
@@ -237,6 +237,8 @@ public class AlephiumPool : PoolBase
     private AlephiumJobParams CreateWorkerJob(StratumConnection connection)
     {
         var context = connection.ContextAs<AlephiumWorkerContext>();
+        context.ApplyPendingDifficulty();
+        WarnAboveCandidateTarget(connection);
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
         var job = (AlephiumJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId("X"));
 
@@ -369,6 +371,9 @@ public class AlephiumPool : PoolBase
 
         return result;
     }
+
+    protected override bool UsesCandidateDifficultyPolicy => true;
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => AlephiumConstants.ShareMultiplier;
 

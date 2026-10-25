@@ -101,7 +101,7 @@ public class XelisPool : PoolBase
                 logger.Info(() => $"[{connection.ConnectionId}] Nicehash detected. Using API supplied difficulty of {nicehashDiff.Value}");
 
                 context.VarDiff = null; // disable vardiff
-                context.SetDifficulty(nicehashDiff.Value);
+                context.SetDifficulty(nicehashDiff.Value, DifficultyOrigin.Static);
             }
         }
         catch(Exception ex)
@@ -178,7 +178,7 @@ public class XelisPool : PoolBase
                        context.VarDiff == null && staticDiff.Value > context.Difficulty))
                 {
                     context.VarDiff = null; // disable vardiff
-                    context.SetDifficulty(staticDiff.Value);
+                    context.SetDifficulty(staticDiff.Value, DifficultyOrigin.Static);
 
                     logger.Info(() => $"[{connection.ConnectionId}] Setting static difficulty of {staticDiff.Value}");
                 }
@@ -214,6 +214,7 @@ public class XelisPool : PoolBase
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
+        WarnAboveCandidateTarget(connection);
         var context = connection.ContextAs<XelisWorkerContext>();
         var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
         var job = (XelisJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
@@ -330,6 +331,9 @@ public class XelisPool : PoolBase
         return result;
     }
 
+    protected override bool UsesCandidateDifficultyPolicy => true;
+    protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
+
     public override double ShareMultiplier => coin.ShareMultiplier;
 
     #region Overrides
@@ -337,6 +341,8 @@ public class XelisPool : PoolBase
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         coin = pc.Template.As<XelisCoinTemplate>();
+        if(coin.ShareMultiplier != 1d)
+            throw new PoolStartupException("Xelis requires shareMultiplier=1 for coherent wire targets and accounting", pc.Id);
         extraPoolConfig = pc.Extra.SafeExtensionDataAs<XelisPoolConfigExtra>();
 
         base.Configure(pc, cc);

@@ -1,0 +1,94 @@
+{
+  "nodeVersion": "v4.7.3",
+  "imageDigest": "sha256:c8bc624a166f7328c244f975d9fe5581609fe5a66f09533ff7115b39ffa80351",
+  "networkId": 4,
+  "template": {
+    "JobId": "live-devnet",
+    "Height": 1,
+    "Timestamp": "0001-01-01T00:00:00",
+    "FromGroup": 0,
+    "ToGroup": 0,
+    "HeaderBlob": "00078363F1A5A33A0482667FADFD1C9CB92FD906593DDF112DC68112D1547027CBF5A48E457BE493217CFF38B4F52637D4B5C2376CC1ABC057EB04CC29BB8B9486FAA2B127A7591FF22B4F3C43CF0C4199B16BD887A0579FD0814904D9C4111F308F2D27EA144666F703473F5F12B7C63045CA79ADD675D325D257C757A464993D508BC7D94DDFC66129049862E501FF5D5042E1E978B1A51D28E238321444A910715896EE3CBC8C4F4432A0B221039113061B6CF7EEB794B25758D247120D0DF712FC312B0C04A0EEB0767EC98137B740047D7C5E8F64463531828B7015CBEAEAA30111578E360F02E0270D69D55D906655ECADB7F228A825AB610FE4893414F2AA5618491B2261E6E9CE664D19E67AE79D14EE68AE5C5B19AE8B031945BF951C61000001A17293DE6320FFFFFF",
+    "TxsBlob": "00",
+    "TargetBlob": "00FFFFFF0000000000000000000000000000000000000000000000000000000000",
+    "ChainIndex": 0
+  },
+  "nonce": "0000000000000000000000000000000000000000000BCFFB",
+  "attempts": 774139,
+  "exactTarget": "0ffffff0000000000000000000000000000000000000000000000000000000000",
+  "oldRoundedTarget": "0ffff000000000000000000000000000000000000000000000000000000000000",
+  "proofHash": "ffffc8af201aa1944deebf5a30fe3cdd8f08589ef5b8eb790d9b5e42c84b1da0",
+  "build": {
+    "sourceCommit": "ff6ffa0601c4eb5cee71f3b4d1b53cc8b391b753",
+    "informationalVersion": "0.4.0-fix-non-bitcoin-candidate-credit.1\u002B360.Branch.fix-non-bitcoin-candidate-credit.Sha.ff6ffa0601c4eb5cee71f3b4d1b53cc8b391b753.ff6ffa0601c4eb5cee71f3b4d1b53cc8b391b753",
+    "assemblySha256": "ab8a731a26513aafaf84a9410d57ff47c7ed295de82a568e4c73c2fae530b696"
+  },
+  "classification": {
+    "LegacyDevCandidate": true,
+    "IntermediateExactHashRoundedTargetCandidate": false,
+    "ExactCandidate": true,
+    "ProofAboveRoundedTarget": true,
+    "RoundedProof": "0ffff000000000000000000000000000000000000000000000000000000000000"
+  },
+  "targetPlusOneClassification": {
+    "LegacyDevCandidate": true,
+    "IntermediateExactHashRoundedTargetCandidate": false,
+    "ExactCandidate": false,
+    "ProofAboveRoundedTarget": true,
+    "RoundedProof": "0ffff000000000000000000000000000000000000000000000000000000000000"
+  },
+  "issuedDifficulty": 1.862645260253266E-07,
+  "candidateCredit": 9.31322630126633E-10,
+  "candidateCeiling": 9.31322630126633E-10,
+  "accepted": true,
+  "persistedBlock": {
+    "hash": "ffffc8af201aa1944deebf5a30fe3cdd8f08589ef5b8eb790d9b5e42c84b1da0",
+    "timestamp": 1792923655779,
+    "chainFrom": 0,
+    "chainTo": 0,
+    "height": 1,
+    "deps": [
+      "8363f1a5a33a0482667fadfd1c9cb92fd906593ddf112dc68112d1547027cbf5",
+      "a48e457be493217cff38b4f52637d4b5c2376cc1abc057eb04cc29bb8b9486fa",
+      "a2b127a7591ff22b4f3c43cf0c4199b16bd887a0579fd0814904d9c4111f308f",
+      "2d27ea144666f703473f5f12b7c63045ca79add675d325d257c757a464993d50",
+      "8bc7d94ddfc66129049862e501ff5d5042e1e978b1a51d28e238321444a91071",
+      "5896ee3cbc8c4f4432a0b221039113061b6cf7eeb794b25758d247120d0df712",
+      "fc312b0c04a0eeb0767ec98137b740047d7c5e8f64463531828b7015cbeaeaa3"
+    ],
+    "transactions": [
+      {
+        "unsigned": {
+          "txId": "e2a1804581e07df9b65d99d1daca582ec70fe1af33ee2a2ad4dbf9943bb4ace2",
+          "version": 0,
+          "networkId": 4,
+          "gasAmount": 20000,
+          "gasPrice": "1000000000",
+          "inputs": [],
+          "fixedOutputs": [
+            {
+              "hint": 292212437,
+              "key": "6d914d6c3df939e414d009dfb707c8910e8b64a79b1ec1beddb62c03bd6402d0",
+              "attoAlphAmount": "1146542457900394123",
+              "address": "1FsroWmeJPBhcPiUr37pWXdojRBe6jdey9uukEXk1TheA",
+              "tokens": [],
+              "lockTime": 1792924255779,
+              "message": "000000"
+            }
+          ]
+        },
+        "scriptExecutionOk": true,
+        "contractInputs": [],
+        "generatedOutputs": [],
+        "inputSignatures": [],
+        "scriptSignatures": []
+      }
+    ],
+    "nonce": "0000000000000000000000000000000000000000000bcffb",
+    "version": 0,
+    "depStateHash": "0111578e360f02e0270d69d55d906655ecadb7f228a825ab610fe4893414f2aa",
+    "txsHash": "5618491b2261e6e9ce664d19e67ae79d14ee68ae5c5b19ae8b031945bf951c61",
+    "target": "20ffffff",
+    "ghostUncles": []
+  }
+}

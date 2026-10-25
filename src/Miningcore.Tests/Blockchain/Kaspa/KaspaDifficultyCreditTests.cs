@@ -8,6 +8,7 @@ using Microsoft.IO;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Kaspa;
 using Miningcore.Blockchain.Kaspa.Custom.Astrix;
+using Miningcore.Blockchain.Kaspa.Custom.Pyrin;
 using Miningcore.Blockchain.Kaspa.Custom.Karlsencoin;
 using Miningcore.Blockchain.Kaspa.Custom.Spectre;
 using Miningcore.Blockchain.Kaspa.Custom.WagLayla;
@@ -33,7 +34,7 @@ public class KaspaDifficultyCreditTests
     }
 
     private static readonly Type[] JobTypes =
-        { typeof(KaspaJob), typeof(AstrixJob), typeof(KarlsencoinJob), typeof(SpectreJob), typeof(WagLaylaJob) };
+        { typeof(KaspaJob), typeof(AstrixJob), typeof(KarlsencoinJob), typeof(SpectreJob), typeof(WagLaylaJob), typeof(PyrinJob) };
     public static IEnumerable<object[]> Validators => JobTypes
         .SelectMany(type => new[] { new object[] { type.Name, 2d }, new object[] { type.Name, 2000d } });
 
@@ -57,7 +58,7 @@ public class KaspaDifficultyCreditTests
         Set("JobId", "template");
         Set("BlockTemplate", new Kaspad.RpcBlock { Header = new Kaspad.RpcBlockHeader { DaaScore = 101, Timestamp = 123 } });
         Set("prePowHashBytes", Enumerable.Range(1, 32).Select(x => (byte) x).ToArray());
-        Set("blockTargetValue", uint256.Zero); // Every vector is an ordinary, non-block proof.
+        Set("blockTargetValue", uint256.One); // Every vector is an ordinary, non-block proof.
         typeof(KaspaJob).GetField("shareMultiplier", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(source, multiplier);
         var retired = source.ForWorker(context);
         context.SetDifficulty(1000);
@@ -102,7 +103,7 @@ public class KaspaDifficultyCreditTests
         typeof(KaspaJob).GetProperty("BlockTemplate").SetValue(source,
             new Kaspad.RpcBlock { Header = new Kaspad.RpcBlockHeader { DaaScore = 101, Timestamp = 123 } });
         typeof(KaspaJob).GetProperty("prePowHashBytes").SetValue(source, Enumerable.Range(1, 32).Select(x => (byte) x).ToArray());
-        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(source, uint256.Zero);
+        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(source, uint256.One);
         typeof(KaspaJob).GetField("shareMultiplier", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(source, 4d);
         var old = source.ForWorker(context);
         Assert.Equal(StratumError.LowDifficultyShare,
@@ -128,8 +129,13 @@ public class KaspaDifficultyCreditTests
         // Simultaneous distinct candidates must carry their own exact nonce,
         // including custom validators, without mutating the shared template.
         var candidateTarget = uint256.Parse(new string('f', 64));
-        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(old, candidateTarget);
-        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(current, candidateTarget);
+        // A fresh template owns the new target; never mutate already issued work.
+        var fresh = (KaspaJob) typeof(object).GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(source, null);
+        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(fresh, candidateTarget);
+        Miningcore.Mining.CandidateShareCredit.Initialize(fresh);
+        old = fresh.ForWorker(context, () => "3");
+        context.SetDifficulty(11);
+        current = fresh.ForWorker(context, () => "4");
         Parallel.For(100, 116, value =>
         {
             var candidate = (value % 2 == 0 ? old : current).ProcessShare(connection, value.ToString("x16"));
@@ -162,7 +168,7 @@ public class KaspaDifficultyCreditTests
         typeof(KaspaJob).GetProperty("BlockTemplate").SetValue(source,
             new Kaspad.RpcBlock { Header = new Kaspad.RpcBlockHeader { DaaScore = 101, Timestamp = 123 } });
         typeof(KaspaJob).GetProperty("prePowHashBytes").SetValue(source, Enumerable.Range(1, 32).Select(x => (byte) x).ToArray());
-        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(source, uint256.Zero);
+        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(source, uint256.One);
         typeof(KaspaJob).GetField("shareMultiplier", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(source, 4d);
         var old = source.ForWorker(context);
         Assert.Equal(StratumError.LowDifficultyShare,
@@ -216,13 +222,84 @@ public class KaspaDifficultyCreditTests
         Assert.Equal(0ul, source.BlockTemplate.Header.Nonce);
     }
 
+    [LinuxNativeTheory]
+    [InlineData("KaspaJob")] [InlineData("AstrixJob")] [InlineData("KarlsencoinJob")]
+    [InlineData("SpectreJob")] [InlineData("WagLaylaJob")] [InlineData("PyrinJob")]
+    public void FullWidthProofJustAboveCompactTargetRemainsOrdinary(string validator)
+    {
+        var target = new Target(KaspaConstants.Diff1b / 32).ToUInt256();
+        var targetInteger = new System.Numerics.BigInteger(target.ToBytes(), isUnsigned: true);
+        var exactLimit = (double) new Miningcore.Util.BigRational(KaspaConstants.Diff1b, targetInteger) * 4;
+        foreach(var offset in new[] { 0, 1, 2 })
+        {
+            var proofInteger = targetInteger + (offset == 2 ? System.Numerics.BigInteger.One << ((int) targetInteger.GetBitLength() - 25) : offset);
+            var raw = proofInteger.ToByteArray(true, false);
+            var proofDifficulty = (double) new Miningcore.Util.BigRational(KaspaConstants.Diff1b * 4, proofInteger);
+            Array.Resize(ref raw, 32);
+            // Compact conversion previously rounded target+1 down to target.
+            Assert.Equal(target, new Target(new System.Numerics.BigInteger(raw, true)).ToUInt256());
+            var source = (KaspaJob) Activator.CreateInstance(JobTypes.Single(type => type.Name == validator),
+                new Sha256D(), new Sha256D(), new FixedProof { RawHash = raw });
+            typeof(KaspaJob).GetProperty("JobId").SetValue(source, "precision");
+            typeof(KaspaJob).GetProperty("BlockTemplate").SetValue(source,
+                new Kaspad.RpcBlock { Header = new Kaspad.RpcBlockHeader { DaaScore = 101, Timestamp = 123 } });
+            typeof(KaspaJob).GetProperty("prePowHashBytes").SetValue(source, Enumerable.Range(1,32).Select(x => (byte) x).ToArray());
+            typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(source, offset == 2 ? uint256.One : target);
+            typeof(KaspaJob).GetField("shareMultiplier", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(source, 4d);
+            var clock = new MockMasterClock();
+            var context = new KaspaWorkerContext { ExtraNonce1 = "00000001" };
+            context.Init(offset == 0 ? exactLimit * 1000 : offset == 1 ? exactLimit / 2 : (proofDifficulty + exactLimit) / 2 / .99, null, clock);
+            var worker = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(), clock, "precision", false);
+            worker.SetContext(context);
+            var job = source.ForWorker(context);
+            if(offset == 2)
+            {
+                // Place the admission boundary between exact and rounded proof
+                // difficulties. Rounding only shareDiff would wrongly accept it.
+                Assert.Equal(StratumError.LowDifficultyShare, Assert.Throws<StratumException>(() => job.ProcessShare(worker, "0000000000000001")).Code);
+                context.SetDifficulty(proofDifficulty);
+                job = source.ForWorker(context);
+            }
+            var share = job.ProcessShare(worker, "0000000000000001");
+            Assert.Equal(offset == 0, share.IsBlockCandidate);
+            Assert.Equal(offset == 0 ? exactLimit / 4 : offset == 1 ? exactLimit / 8 : proofDifficulty / 4, share.Difficulty, 8);
+            Assert.Equal(StratumError.DuplicateShare, Assert.Throws<StratumException>(() => job.ProcessShare(worker, "0000000000000001")).Code);
+        }
+    }
+
     private sealed class FixedProof : IHashAlgorithm
     {
         internal double Difficulty { get; set; }
+        internal byte[] RawHash { get; set; }
         public void Digest(ReadOnlySpan<byte> data, Span<byte> result, params object[] extra)
         {
             result.Clear();
-            (KaspaConstants.Diff1b * 4 / (long) Difficulty).ToByteArray(true, false).CopyTo(result);
+            (RawHash ?? (KaspaConstants.Diff1b * 4 / (long) Difficulty).ToByteArray(true, false)).CopyTo(result);
         }
+    }
+
+    [LinuxNativeTheory]
+    [MemberData(nameof(Validators))]
+    public void CandidateCreditUsesHashTargetAndMultiplierForEveryValidator(string validator, double proofDifficulty)
+    {
+        var clock = new MockMasterClock();
+        var context = new KaspaWorkerContext { ExtraNonce1 = "00000001" };
+        context.Init(4000, null, clock);
+        var worker = new StratumConnection(new NullLogger(LogManager.LogFactory), new RecyclableMemoryStreamManager(), clock, "candidate", false);
+        worker.SetContext(context);
+        var source = (KaspaJob) Activator.CreateInstance(JobTypes.Single(type => type.Name == validator), new Sha256D(), new Sha256D(), new FixedProof { Difficulty = proofDifficulty * 4 });
+        typeof(KaspaJob).GetProperty("JobId").SetValue(source, "1");
+        typeof(KaspaJob).GetProperty("BlockTemplate").SetValue(source, new Kaspad.RpcBlock { Header = new Kaspad.RpcBlockHeader { DaaScore = 101, Timestamp = 123 } });
+        typeof(KaspaJob).GetProperty("prePowHashBytes").SetValue(source, Enumerable.Range(1, 32).Select(x => (byte) x).ToArray());
+        typeof(KaspaJob).GetProperty("blockTargetValue").SetValue(source, new Target(KaspaConstants.Diff1b).ToUInt256());
+        typeof(KaspaJob).GetField("shareMultiplier", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(source, 4d);
+        var old = source.ForWorker(context);
+        context.SetDifficulty(8000);
+        var accepted = old.ProcessShare(worker, "0000000000000001");
+        Assert.True(accepted.IsBlockCandidate);
+        Assert.Equal(1, accepted.Difficulty);
+        Assert.Equal(1ul, source.GetBlockCandidate(accepted).Header.Nonce);
+        var current = source.ForWorker(context);
+        Assert.Equal(StratumError.DuplicateShare, Assert.Throws<StratumException>(() => current.ProcessShare(worker, "0000000000000001")).Code);
     }
 }
