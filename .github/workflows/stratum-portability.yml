@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+# Advance this published servicing SDK in all three workflows together.
+env:
+  CI_DOTNET_SDK: '10.0.402'
+
 jobs:
   alpine-musl:
     name: Exclusive reservation (Alpine/musl)
@@ -76,7 +80,7 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
       with:
-        dotnet-version: 10.0.x
+        dotnet-version: ${{ env.CI_DOTNET_SDK }}
 
     - name: Run real exclusive-reservation smoke on macOS
       run: >-
