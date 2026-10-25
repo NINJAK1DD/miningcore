@@ -22,6 +22,20 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased (after v0.3.0): Ergo exact proof and network difficulty
+
+Ergo now derives proof difficulty, candidate credit limits and accepted-share
+`NetworkDifficulty` from the full Autolykos integers, removing Bitcoin compact
+target rounding. Candidate admission retains the strict `hit < B` rule. The
+existing difficulty units, stored-share division by 256, payout normalization
+and wire target format are preserved. Invalid targets fail before work issuance.
+
+New Ergo shares can receive slightly different PPLNS/PPLNSBF window scores
+because their network difficulty is now exact to double precision. Existing
+persisted shares and financial receipts are not repriced. A PostgreSQL settlement
+regression verifies exact network metadata, replay, rollback and partial-window
+allocation. See [the accounting audit](non-bitcoin-candidate-credit.md#ergo-exact-difficulty-follow-up).
+
 ## Unreleased (after v0.3.0): settlement inputs and candidate credit
 
 PROP, PPLNS and PPLNSBF now fail closed on nonpositive or nonfinite stored,

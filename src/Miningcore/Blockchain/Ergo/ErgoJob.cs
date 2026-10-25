@@ -5,7 +5,8 @@ using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Extensions;
 using Miningcore.Stratum;
 using System.Numerics;
-using NBitcoin;
+using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Util;
 
 namespace Miningcore.Blockchain.Ergo;
 
@@ -33,6 +34,7 @@ public class ErgoJob : Miningcore.Mining.ICandidateCreditJob
 
     private object[] jobParams;
     private BigInteger n;
+    private BigInteger blockTarget;
     private readonly ConcurrentDictionary<string, bool> submissions = new(StringComparer.OrdinalIgnoreCase);
     private static readonly IHashAlgorithm hasher = new Blake2b();
     private int extraNonceSize;
@@ -109,6 +111,8 @@ public class ErgoJob : Miningcore.Mining.ICandidateCreditJob
         return result;
     }
 
+    protected virtual void HashFinalProof(ReadOnlySpan<byte> input, Span<byte> output) => hasher.Digest(input, output);
+
     protected virtual Share ProcessShareInternal(StratumConnection worker, string nonce)
     {
         var context = worker.ContextAs<ErgoWorkerContext>();
@@ -149,16 +153,19 @@ public class ErgoJob : Miningcore.Mining.ICandidateCreditJob
 
         // calculate fH
         var fBytes = f.ToByteArray(true, true).PadFront(0, 32);
-        hasher.Digest(fBytes, hash);
+        HashFinalProof(fBytes, hash);
         var fh = new BigInteger(hash, true, true);
-        var fhTarget = new Target(fh);
+        // A proof is a full-width integer, never a compact target. A zero
+        // digest has unbounded proof difficulty, while issued credit stays capped.
+        var shareDifficulty = fh.IsZero ? double.PositiveInfinity :
+            (double) new BigRational(BitcoinConstants.Diff1, fh);
 
         // diff check
 
         // check if the share meets the much harder block difficulty (block candidate)
-        var isBlockCandidate = fh < BlockTemplate.B;
+        var isBlockCandidate = fh < blockTarget;
 
-        var stratumDifficulty = context.ValidateShareDifficulty(fhTarget.Difficulty, isBlockCandidate, this);
+        var stratumDifficulty = context.ValidateShareDifficulty(shareDifficulty, isBlockCandidate, this);
 
         var result = new Share
         {
@@ -219,11 +226,18 @@ public class ErgoJob : Miningcore.Mining.ICandidateCreditJob
 
     public void Init(WorkMessage blockTemplate, int blockVersion, int extraNonceSize, string jobId)
     {
+        Contract.RequiresNonNull(blockTemplate);
+        if(blockTemplate.B.Sign <= 0 || blockTemplate.B.GetBitLength() > 256)
+            throw new InvalidDataException("Ergo target must be a positive 256-bit integer");
+
         this.extraNonceSize = extraNonceSize;
 
         BlockTemplate = blockTemplate;
         JobId = jobId;
-        Difficulty = new Target(BlockTemplate.B).Difficulty;
+        // Cache the same exact target for admission, credit and settlement.
+        // Keep the existing Bitcoin-diff1 units and Ergo share normalization.
+        blockTarget = blockTemplate.B;
+        Difficulty = (double) new BigRational(BitcoinConstants.Diff1, blockTarget);
         n = CalcN(Height);
 
         jobParams = new object[]

@@ -23,7 +23,7 @@ candidate exceptions, including inherited custom validators.
 | Equihash; Veruscoin; inherited Bitcoin Gold and other Equihash jobs | network `Diff1BValue / T`, using the exact selected candidate target | Stored directly; identity adjustment |
 | ProgPoW; Firo, Kiiro, Realichain, Telestai; inherited variants | concrete validator's `Diff1 / T * m` | Divide by `m`; identity adjustment |
 | Kaspa; Astrix, Karlsen, Spectre, WagLayla; inherited variants | `KaspaConstants.Diff1b / T * m` (Spectre uses the same numerator) | Divide by `m`; Kaspa payout adjustment uses `2^31 * MinHash`; Spectre uses `2^7 * MinHash` |
-| Ergo | `Target(B).Difficulty`, in the same units as the Autolykos proof validator | Divide by `ErgoConstants.ShareMultiplier`; payout handler multiplies it back |
+| Ergo | `BitcoinConstants.Diff1 / B`, using the exact full-width Autolykos target | Divide by `ErgoConstants.ShareMultiplier`; payout handler multiplies it back |
 | Ethereum and Cortex | `BigMaxValue / T / 2^32` | Multiply by `2^32`; identity adjustment |
 | CryptoNote and Conceal | template difficulty used by candidate admission | Whole issued difficulty; identity adjustment |
 | Zano | template difficulty used by candidate admission | Unit multiplier required; identity adjustment |
@@ -50,7 +50,7 @@ needs a separately reviewed wire-target and historical-accounting migration.
 The source equations are authoritative for this implementation. Primary protocol
 references include [Alephium mining integration](https://docs.alephium.org/integration/mining/),
 [Kaspa compact target conversion](https://github.com/kaspanet/kaspad/blob/master/util/difficulty/difficulty.go),
-[Ergo Autolykos](https://github.com/ergoplatform/ergo/tree/master/src/main/scala/org/ergoplatform/mining),
+[Ergo Autolykos](https://github.com/ergoplatform/ergo/blob/master/ergo-core/src/main/scala/org/ergoplatform/mining/AutolykosPowScheme.scala),
 and [Warthog acceptance-region analysis](https://docs.warthog.network/unique-features/janushash/analysis/preliminaries/).
 The Warthog ceiling preserves the repository's existing score-credit contract;
 it does not claim that every historical Janus epoch has a new linear hash-rate model.
@@ -265,3 +265,26 @@ uses an unsigned 24-bit compact mantissa. The initializer preserves the supplied
 expanded target directly, rather than passing it through Bitcoin's signed
 compact representation. Tests exercise an `0x80abcd` mantissa below, at, and
 above the exact target, eliminating false-positive candidates above that target.
+
+## Ergo exact difficulty follow-up
+
+Ergo compares its full 256-bit Autolykos hit against the cached exact template
+`B`, with the consensus strict inequality `hit < B`. Proof difficulty, candidate
+ceiling and the share's `NetworkDifficulty` now use `BitcoinConstants.Diff1`
+divided by the full integer. Bitcoin compact encoding can truncate either input
+and must not be used here. Positive targets up to 256 bits are validated before
+publication; a zero proof hit is a valid candidate whose issued credit remains
+bounded. The snapshot caches `B` so later mutation of the RPC object cannot
+separate admission from its cached policy and settlement metadata.
+
+Stored share credit still divides by 256 and the Ergo payout handler multiplies
+it back. Wire target projection keeps its existing units and granularity. This
+changes network difficulty on newly accepted Ergo shares by removing compact
+rounding and NBitcoin's twelve-decimal conversion. Existing persisted shares and
+financial receipts retain their original values; there is no historical repricing.
+PPLNS and PPLNSBF consume the exact metadata for new shares, so their window scores
+can change slightly. PostgreSQL regression coverage persists and replays actual
+validator results, rolls back accounting and settlement, and checks a one-network
+window split equally between a newer half-difficulty ordinary share and an older
+capped candidate. The test runs each real scheme a second time with identical verified credits
+and rounded network metadata, and asserts the different persisted payout split. CI requires these native verifier and settlement cases to execute and pass.
