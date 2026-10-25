@@ -14,10 +14,16 @@ task=$(mktemp -d "${TMPDIR:-/tmp}/miningcore-alph.XXXXXXXX")
 container="miningcore-alph-${task##*.}"
 network="$container"
 cleanup() {
+    local status=$?
+    trap - EXIT
+    # Capture diagnostics before removing the node, including when dotnet/tee
+    # fails under errexit + pipefail. Cleanup must preserve the original status.
+    docker logs "$container" > "$evidence/node.log" 2>&1 || true
     docker rm --force --volumes "$container" >/dev/null 2>&1 || true
     docker network rm "$network" >/dev/null 2>&1 || true
     # Only remove the private directory allocated by mktemp for this run.
     rm -rf -- "$task"
+    exit "$status"
 }
 trap cleanup EXIT
 image='alephium/alephium@sha256:c8bc624a166f7328c244f975d9fe5581609fe5a66f09533ff7115b39ffa80351'
@@ -38,8 +44,7 @@ for attempt in {1..45}; do
     if [[ "$status" == *'"synced":true'* ]]; then ready=true; break; fi
     sleep 1
 done
-if [[ "$ready" != true ]]; then docker logs "$container" > "$evidence/node.log" 2>&1; echo 'Devnet failed to become ready' >&2; exit 1; fi
+if [[ "$ready" != true ]]; then echo 'Devnet failed to become ready' >&2; exit 1; fi
 sha256sum "$output/Miningcore.dll" > "$evidence/miningcore-sha256.txt"
 LD_LIBRARY_PATH="$output${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-    dotnet "$task/out/AlephiumDevnet.dll" "$node_ip" "$evidence/result.json" | tee "$evidence/run.log"
-docker logs "$container" > "$evidence/node.log" 2>&1
+    dotnet "$task/out/AlephiumDevnet.dll" "$node_ip" "$evidence/result.json" 2>&1 | tee "$evidence/run.log"

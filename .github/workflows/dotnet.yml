@@ -363,6 +363,22 @@ jobs:
         echo "Miningcore.Tests output libs:"
         find "$TEST_OUT" -maxdepth 1 -type f -name '*.so' -print | sort
 
+    - name: Replay Alephium receipt and historical candidate boundaries
+      shell: bash
+      env:
+        DOTNET_CLI_UI_LANGUAGE: en
+        LC_ALL: C
+        LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net10.0
+      run: |
+        set -euo pipefail
+        harness="$GITHUB_WORKSPACE/build/alephium-replay"
+        build_log=$(mktemp)
+        trap 'rm -f -- "$build_log"' EXIT
+        bash scripts/release/run-warning-audited-dotnet.sh "$build_log" \
+          build scripts/tests/alephium-devnet/AlephiumDevnet.csproj -o "$harness/out"
+        dotnet "$harness/out/AlephiumDevnet.dll" --verify-receipt \
+          docs/fixtures/alephium-devnet-2026-10-25.json
+
     - name: Test native CPU portability
       if: runner.os == 'Linux'
       shell: bash

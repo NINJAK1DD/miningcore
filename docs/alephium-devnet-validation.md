@@ -1,4 +1,4 @@
-# Alephium devnet target-recovery validation
+# Alephium devnet exact-target validation
 
 On 25 October 2026, PR #219's candidate-target fix passed a real block submission
 against an isolated Alephium **v4.7.3** devnet, network ID **4**. The test used
@@ -10,21 +10,40 @@ The node's compact target was `20ffffff`, with an unsigned 24-bit mantissa.
 Its exact expanded target begins `ffffff00`; Bitcoin compact re-encoding lowers
 that to `ffff0000`. The search requires a proof **above the old rounded target
 and at or below the exact consensus target**, with the correct chain index.
-This is a block the former implementation would have missed.
+This is a valid block that intermediate commit `97ffa085` (exact hash but still
+rounded target) would have missed. Pre-PR `dev` rounded both the proof and target,
+so it also classified this proof as a candidate. The final PR preserves that
+valid classification and eliminates false-positive candidates **above the exact
+target**. The receipt is evidence of exact-boundary correctness and real daemon
+acceptance, not recovery of a block missed by pre-PR `dev`.
 
-The final repeatable run found a proof after 49,763 attempts (nonce counter
-49,762), for chain 0 to 0 at height 1:
+| Implementation | Candidate rule | Recorded valid proof |
+| --- | --- | --- |
+| Pre-PR `dev` | `round(hash) <= round(target)` | Candidate |
+| Intermediate `97ffa085` | `hash <= round(target)` | Missed |
+| Final PR | `hash <= target` | Candidate |
 
-- Nonce: `00000000000000000000000000000000000000000000c262`.
-- BLAKE3 block hash: `ffffc7c46221dec1...b864e984d993f60` (full value in the receipt).
+The harness computes all three classifications for the mined proof and checks
+that `target + 1` was a legacy false positive but is ordinary under the exact
+rule. That boundary check is arithmetic; it is not another mined or submitted
+block.
+
+The provenance-bearing repeatable run found a proof after 302,963 attempts (nonce counter
+302,962), for chain 0 to 0 at height 1:
+
+- Nonce: `000000000000000000000000000000000000000000049f72`.
+- BLAKE3 block hash: `ffffb25423153c4a...a420a53d4a23f950` (full value in the receipt).
 - Issued difficulty: 200 times the candidate ceiling.
 - Credited difficulty and candidate ceiling: both `9.31322630126633e-10`.
 - The version-1 mining API acknowledged this exact hash as accepted.
 - A REST lookup then returned the same persisted block at height 1.
 
 The [captured receipt](fixtures/alephium-devnet-2026-10-25.json) contains the
-full template, nonce, both targets and persisted block. Two earlier commissioning
-runs also submitted recovered blocks successfully. These devnet receipts do not
+full template, nonce, both targets, computed classifications and persisted block.
+Its `build` object records the loaded Miningcore assembly's source commit,
+informational version and SHA-256. These identify the tested product binary,
+not the later commit that adds this receipt. Two earlier commissioning runs
+also submitted valid rounding-window blocks successfully. These devnet receipts do not
 establish mainnet operation or ASIC/firmware compatibility.
 
 ## Reproduce
@@ -52,11 +71,19 @@ is used, and network ID 4 is checked before any submission. CPU and memory are
 bounded and privileges dropped. The container, anonymous volumes, network and
 temporary harness directory are removed on exit. The image and evidence remain.
 
-The nonce search and acknowledgement wait are bounded. An absent recovery
+The nonce search and acknowledgement wait are bounded. An absent rounding
 window, rejected block, wrong credit or missing persisted block fails the run.
-Evidence includes the Miningcore assembly SHA-256, logs and full JSON receipt.
-This opt-in smoke test is separate from required CI native/PostgreSQL coverage;
-it submits one freshly mined block on a disposable private network.
+The cleanup trap captures node logs on success and failure before removing the
+container, and preserves the original exit status. Harness stderr is retained
+in `run.log`. Evidence includes the loaded Miningcore assembly source commit and
+SHA-256 inside `result.json`, plus logs and the separate assembly hash file.
+For an offline native replay of a receipt, build the harness against Miningcore
+and run `AlephiumDevnet.dll --verify-receipt /absolute/path/to/result.json`.
+Replay recomputes BLAKE3, chain selection and both recorded classification checks;
+it validates provenance field format, not availability of the historical binary.
+The live Docker smoke test remains opt-in and submits one freshly mined block
+on a disposable private network. CI runs the offline native receipt replay and
+historical boundary checks alongside required native/PostgreSQL coverage.
 
 Reference encoding and admission:
 [Alephium Target](https://github.com/alephium/alephium/blob/v4.7.3/protocol/src/main/scala/org/alephium/protocol/model/Target.scala),

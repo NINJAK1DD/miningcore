@@ -130,6 +130,19 @@ issued-work logs, relay journals, template archives and backups where available.
 Retained statistics alone cannot prove exact historical overpayment; pruned
 receipts, missing templates and changed floors limit reconstruction.
 
+For Alephium, Xelis, Handshake and Kaspa (including its variants), also screen
+historical daemon-rejected candidate records for compact-rounding false positives.
+Before this PR, Alephium and Xelis rounded both proof hashes and block targets;
+Handshake and Kaspa rounded the proof hash against an exact target. These rules
+could classify a hash above the exact consensus target as a candidate, bypass
+ordinary-share admission and credit the full issued difficulty before the daemon
+rejected the block. Correlate any credited share/receipt with the rejection and
+include that credit in the same suspect-work screening. A daemon rejection alone
+does not prove this cause or prove overpayment. The new full-width comparisons
+remove these false positives; they do not recover blocks missed by the pre-PR
+`dev` rules. Do not confuse those rules with the intermediate Alephium change
+that compared an exact proof against a still-rounded target.
+
 For each affected pool, produce a read-only report of suspect work, settlement
 round/window effects, paid/unpaid balances, and uncertainty. A screening estimate
 is not permission to debit miners. Freeze any proposed adjustments into a
@@ -229,4 +242,4 @@ Alephium's [target format](https://github.com/alephium/alephium/blob/master/prot
 uses an unsigned 24-bit compact mantissa. The initializer preserves the supplied
 expanded target directly, rather than passing it through Bitcoin's signed
 compact representation. Tests exercise an `0x80abcd` mantissa below, at, and
-above the exact target, covering valid candidates that re-encoding would miss.
+above the exact target, eliminating false-positive candidates above that target.
