@@ -36,7 +36,7 @@ persisted shares and financial receipts are not repriced. A PostgreSQL settlemen
 regression verifies exact network metadata, replay, rollback and partial-window
 allocation. See [the accounting audit](non-bitcoin-candidate-credit.md#ergo-exact-difficulty-follow-up).
 
-## v0.3.0 pre-upgrade: settlement inputs and candidate credit
+## Unreleased (after v0.3.0): settlement inputs and candidate credit
 
 PROP, PPLNS and PPLNSBF now fail closed on nonpositive or nonfinite stored,
 adjusted or network difficulty **across all coin families**. A bad legacy row or

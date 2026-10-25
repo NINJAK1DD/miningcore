@@ -28,11 +28,11 @@ that `target + 1` was a legacy false positive but is ordinary under the exact
 rule. That boundary check is arithmetic; it is not another mined or submitted
 block.
 
-The provenance-bearing repeatable run found a proof after 302,963 attempts (nonce counter
-302,962), for chain 0 to 0 at height 1:
+The provenance-bearing repeatable run found a proof after 774,140 attempts (nonce counter
+774,139), for chain 0 to 0 at height 1:
 
-- Nonce: `000000000000000000000000000000000000000000049f72`.
-- BLAKE3 block hash: `ffffb25423153c4a...a420a53d4a23f950` (full value in the receipt).
+- Nonce: `0000000000000000000000000000000000000000000bcffb`.
+- BLAKE3 block hash: `ffffc8af201aa194...0d9b5e42c84b1da0` (full value in the receipt).
 - Issued difficulty: 200 times the candidate ceiling.
 - Credited difficulty and candidate ceiling: both `9.31322630126633e-10`.
 - The version-1 mining API acknowledged this exact hash as accepted.
@@ -40,7 +40,8 @@ The provenance-bearing repeatable run found a proof after 302,963 attempts (nonc
 
 The [captured receipt](fixtures/alephium-devnet-2026-10-25.json) contains the
 full template, nonce, both targets, computed classifications and persisted block.
-Its `build` object records the loaded Miningcore assembly's source commit,
+Its `issuedDifficulty` records the actual immutable worker assignment alongside
+the capped credit. Its `build` object records the loaded Miningcore assembly's source commit,
 informational version and SHA-256. These identify the tested product binary,
 not the later commit that adds this receipt. Two earlier commissioning runs
 also submitted valid rounding-window blocks successfully. These devnet receipts do not
@@ -79,7 +80,10 @@ in `run.log`. Evidence includes the loaded Miningcore assembly source commit and
 SHA-256 inside `result.json`, plus logs and the separate assembly hash file.
 For an offline native replay of a receipt, build the harness against Miningcore
 and run `AlephiumDevnet.dll --verify-receipt /absolute/path/to/result.json`.
-Replay recomputes BLAKE3, chain selection and both recorded classification checks;
+Replay recomputes BLAKE3, chain selection and both recorded classification checks.
+It requires `accepted == true`, cross-checks the persisted block hash, nonce,
+height and chain against the proof/template, and verifies the recorded 200-times
+issued assignment and capped credit;
 it validates provenance field format, not availability of the historical binary.
 The live Docker smoke test remains opt-in and submits one freshly mined block
 on a disposable private network. CI runs the offline native receipt replay and

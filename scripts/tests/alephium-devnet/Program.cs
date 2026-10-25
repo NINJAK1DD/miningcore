@@ -38,6 +38,18 @@ static CandidateComparison CheckFalsePositiveBoundary(BigInteger target)
     return above;
 }
 
+// Receipt consistency is checkable offline; this does not re-contact or
+// authenticate the historical daemon. Apply the same checks to fresh responses.
+static void CheckDaemonOutcome(bool accepted, JsonElement block, string proofHash,
+    ReadOnlySpan<byte> nonce, ulong height, int from, int to)
+{
+    if(!accepted || block.GetProperty("hash").GetString() != proofHash ||
+       !Convert.FromHexString(block.GetProperty("nonce").GetString()).AsSpan().SequenceEqual(nonce) ||
+       block.GetProperty("height").GetUInt64() != height ||
+       block.GetProperty("chainFrom").GetInt32() != from || block.GetProperty("chainTo").GetInt32() != to)
+        throw new Exception("Recorded daemon acceptance or persisted block disagrees with the submitted proof");
+}
+
 if(args.Length == 2 && args[0] == "--verify-receipt")
 {
     using var receipt = JsonDocument.Parse(File.ReadAllText(args[1]));
@@ -55,13 +67,18 @@ if(args.Length == 2 && args[0] == "--verify-receipt")
     var (from, to) = AlephiumUtils.BlockChainIndex(replayHash);
     if(from != templateJson.GetProperty("FromGroup").GetInt32() || to != templateJson.GetProperty("ToGroup").GetInt32())
         throw new Exception("Receipt chain index mismatch");
+    CheckDaemonOutcome(root.GetProperty("accepted").GetBoolean(), root.GetProperty("persistedBlock"),
+        root.GetProperty("proofHash").GetString(), nonceBytes, templateJson.GetProperty("Height").GetUInt64(), from, to);
     var target = new BigInteger(Convert.FromHexString(templateJson.GetProperty("TargetBlob").GetString()), true, true);
     var expectedTarget = BigInteger.Parse(root.GetProperty("exactTarget").GetString(), System.Globalization.NumberStyles.AllowHexSpecifier);
     var recordedRoundedTarget = BigInteger.Parse(root.GetProperty("oldRoundedTarget").GetString(), System.Globalization.NumberStyles.AllowHexSpecifier);
     if(expectedTarget != target || recordedRoundedTarget != new Target(target).ToBigInteger())
         throw new Exception("Receipt target integers disagree with its template");
     var expectedCredit = (double) new Miningcore.Util.BigRational(AlephiumConstants.Diff1Target, target);
-    if(root.GetProperty("candidateCeiling").GetDouble() != expectedCredit || root.GetProperty("candidateCredit").GetDouble() != expectedCredit)
+    var recordedIssuedDifficulty = root.GetProperty("issuedDifficulty").GetDouble();
+    if(!double.IsFinite(recordedIssuedDifficulty) || recordedIssuedDifficulty != expectedCredit * 200 ||
+       root.GetProperty("candidateCeiling").GetDouble() != expectedCredit ||
+       root.GetProperty("candidateCredit").GetDouble() != Math.Min(recordedIssuedDifficulty, expectedCredit))
         throw new Exception("Receipt credit is not capped at its exact target threshold");
     var comparison = Compare(new BigInteger(replayHash, true, true), target);
     if(!comparison.LegacyDevCandidate || comparison.IntermediateExactHashRoundedTargetCandidate || !comparison.ExactCandidate)
@@ -75,7 +92,7 @@ if(args.Length == 2 && args[0] == "--verify-receipt")
     if(!Regex.IsMatch(provenance.GetProperty("sourceCommit").GetString(), "^[0-9a-f]{40}$") ||
        !Regex.IsMatch(provenance.GetProperty("assemblySha256").GetString(), "^[0-9a-f]{64}$"))
         throw new Exception("Missing or malformed Miningcore build provenance");
-    Console.WriteLine("Native receipt replay, all three classifications, target+1 false positive and build provenance verified");
+    Console.WriteLine("Native receipt replay, daemon outcome, issued credit, classifications and build provenance verified");
     return;
 }
 
@@ -131,6 +148,7 @@ for(var index=0; index<count; index++)
 if(template == null) throw new Exception("No template with an unsigned-mantissa rounding window");
 var source = new AlephiumJob(); source.Init(template);
 var context = new AlephiumWorkerContext(); context.Init(source.Difficulty / AlephiumConstants.Pow2xDiff1TargetNumZero * 200, null, new StandardClock());
+var issuedDifficulty = context.Difficulty;
 var connection = new StratumConnection(new NullLogger(LogManager.LogFactory),new RecyclableMemoryStreamManager(),new StandardClock(),"live-devnet",true);
 connection.SetContext(context);
 // Deliberately exercise the existing internal issuance path without widening
@@ -184,10 +202,11 @@ while(true)
 }
 var blockJson = await http.GetStringAsync("/blockflow/blocks/" + share.BlockHash);
 using var block = JsonDocument.Parse(blockJson);
-if(block.RootElement.GetProperty("hash").GetString() != share.BlockHash || block.RootElement.GetProperty("height").GetInt64() != (long)template.Height) throw new Exception("Accepted block not persisted");
+CheckDaemonOutcome(accepted, block.RootElement, share.BlockHash, input.AsSpan(0,24),
+    template.Height, template.FromGroup, template.ToGroup);
 var evidence = new { nodeVersion="v4.7.3", imageDigest="sha256:c8bc624a166f7328c244f975d9fe5581609fe5a66f09533ff7115b39ffa80351",networkId=4,
     template, nonce, attempts, exactTarget=exactTarget.ToString("x"),oldRoundedTarget=roundedTarget.ToString("x"),proofHash=share.BlockHash,
-    build, classification, targetPlusOneClassification, candidateCredit=share.Difficulty, candidateCeiling=ceiling, accepted, persistedBlock=block.RootElement.Clone() };
+    build, classification, targetPlusOneClassification, issuedDifficulty, candidateCredit=share.Difficulty, candidateCeiling=ceiling, accepted, persistedBlock=block.RootElement.Clone() };
 var json = JsonSerializer.Serialize(evidence, new JsonSerializerOptions { WriteIndented=true });
 File.WriteAllText(args[1],json); Console.WriteLine(json);
 
