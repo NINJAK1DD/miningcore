@@ -26,6 +26,10 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
+# Advance this published servicing SDK in all three workflows together.
+env:
+  CI_DOTNET_SDK: '10.0.402'
+
 jobs:
   resolve-release:
     name: Resolve release identity and targets
@@ -111,7 +115,7 @@ jobs:
       - name: Setup .NET for container runtime tests
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: ${{ env.CI_DOTNET_SDK }}
 
       - name: Publish ZeroMQ runtime probe
         run: >-
@@ -537,7 +541,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: ${{ env.CI_DOTNET_SDK }}
 
       - name: Test source-build identity resolution
         run: bash scripts/release/test-source-build-identity.sh
@@ -762,7 +766,7 @@ jobs:
       - name: Setup .NET for container runtime test
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: ${{ env.CI_DOTNET_SDK }}
 
       - name: Publish ZeroMQ runtime probe
         run: >-
