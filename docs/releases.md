@@ -58,6 +58,8 @@ reconnect repeatedly during suspension; that expected churn alone does not imply
 an attack. The first consensus mismatch still suspends immediately, with no
 second-response delay. Authorization racing retirement closes quietly without
 an assignment Error diagnostic.
+Expected local admission refusals now retain their Debug classification even if
+recovery reopens admission during cleanup; unrelated setup failures remain Error.
 Retired-job rejections do not affect invalid-share counts or trigger bans,
 including after recovery. Supported recovery creates fresh assignments and never reactivates
 the retired jobs. Temporary RPC outages retain compatible work; caller-requested
@@ -67,6 +69,9 @@ failures also emit a reminder at most once every ten minutes of monotonic elapse
 time, unaffected by wall-clock changes. Shares and block
 RPCs admitted before retirement retain their subsequent accounting/acceptance
 results.
+The pinned real-daemon fixture also verifies acceptance of an originally issued
+timestamp after newer timestamp-only work is obtained. Template replacement
+semantics are retained; see the [freshness evidence and limits](xelis-target-validation.md#timestamp-only-template-freshness).
 
 Xelis startup now requires an x64 native library exporting both v1 and v2 hash
 functions. Unsupported architectures and the uncertified bundled Windows ABI

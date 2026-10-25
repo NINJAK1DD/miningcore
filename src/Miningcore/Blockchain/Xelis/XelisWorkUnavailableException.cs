@@ -4,4 +4,4 @@ namespace Miningcore.Blockchain.Xelis;
 
 // A pool-side consensus transition is not evidence of miner misbehavior.
 internal sealed class XelisWorkUnavailableException() :
-    StratumException(StratumError.JobNotFound, "mining work unavailable");
+    StratumAdmissionClosedException(StratumError.JobNotFound, "mining work unavailable");

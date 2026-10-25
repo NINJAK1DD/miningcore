@@ -80,7 +80,9 @@ assignments or reopen an already suspended epoch. Refresh requests are serialize
 to prevent older responses from racing past a newer incompatibility decision.
 Operators should monitor daemon health and time since the last successful work
 refresh during a prolonged RPC outage; preserving compatible cached work does
-not establish that daemon work is fresh.
+not establish that daemon work is fresh. Count a successfully validated unchanged
+template as a successful acquisition; age since the last new job ID or block
+height is not a substitute for RPC freshness monitoring.
 Block RPCs already admitted before retirement can complete and retain an accepted
 network receipt; retirement does not erase an already submitted block outcome.
 Likewise, shares admitted at the final epoch check may finish publication and
@@ -102,6 +104,31 @@ caller-triggered cancellation. Non-2xx error bodies retain HTTP status attributi
 while still enforcing the numeric bound; runs of dashes alone are not numbers.
 
 ## Operator compatibility
+
+### Timestamp-only template freshness
+
+The pinned daemon's
+[`BlockHeader::get_work_hash`](https://github.com/xelis-project/xelis-blockchain/blob/db59b5c246ab0e40386d6c241dcd77f0aea84b10/xelis_common/src/block/header.rs#L211)
+covers version, height, tips and transactions; the timestamp is a separate field
+of the PoW challenge. Its
+[template and validation code](https://github.com/xelis-project/xelis-blockchain/blob/db59b5c246ab0e40386d6c241dcd77f0aea84b10/xelis_daemon/src/core/blockchain.rs#L1429)
+updates cached-template time, rejects excessively future-dated blocks, and
+rejects timestamps earlier than a parent. A newer template timestamp alone does
+not demonstrate that an earlier issued timestamp is invalid.
+
+The real-daemon fixture now obtains a newer template timestamp while immutable
+work remains fixed, asks the daemon for miner work after changing **only** the
+original header's timestamp, and verifies matching immutable prefix, remaining
+challenge bytes, algorithm and exact difficulty. Production refresh retains its
+original job; a real proof from that originally issued job is then accepted by
+the daemon, with its block identity checked. This closes the requested
+daemon-backed eligibility test without introducing an unproven timestamp-only
+replacement policy.
+
+This evidence covers the pinned v1 stagenet scenario with unchanged chain tips.
+It does not certify indefinite daemon outages, current-mainnet timestamp rules,
+or work remaining useful after chain-state changes. Daemon/refresh-age monitoring
+and the separate #120 production-certification work remain necessary.
 
 ### Xelis extension API changes
 
@@ -386,3 +413,20 @@ Stratum source guards pass. Final current-head automatic and manual live CI run
 links and results are recorded in PR #221 after completion. Existing #120
 modernization/certification limits and the historical local database-fixture
 baseline remain documented above.
+
+## Admission classification and timestamp review
+
+| Finding | Resolution and evidence |
+| --- | --- |
+| Optional refusal logs Error if recovery wins cleanup race | A dedicated internal local-admission exception preserves the refusal decision independently of current admission state; Xelis retirement derives from it. The accept handler uses that marker without depending on the Xelis family |
+| Preserve unrelated setup failures | Paired real-listener regressions reopen admission before refusal cleanup, verify expected refusal is Debug and unrelated failure is Error, release admission capacity and allow exclusive rebinding |
+| Timestamp-only freshness follow-up | Pinned source review and real-daemon test above confirm the original timestamp's proof remains eligible after newer timestamped work is obtained; production refresh semantics are retained |
+| Long RPC outage monitoring | Operator notes distinguish last successful validated acquisition from job-ID/height changes and retain the monitoring limitation |
+
+Expanded Linux live verification: **783 passed, zero failed, zero skipped**.
+Windows startup/RPC/Xelis pool/listener verification with the repository's
+existing CI filter: **33 passed, zero failed, one skipped**. An initial unfiltered
+Windows run also exercised the PFX certificate-identity case already excluded
+from Windows CI; that case failed its certificate thumbprint assertion. The
+filtered result does not certify that excluded case. Current-head automatic and
+manual real-daemon CI evidence is recorded in PR #221 after completion.

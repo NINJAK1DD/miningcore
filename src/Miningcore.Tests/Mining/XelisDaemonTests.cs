@@ -138,6 +138,36 @@ public class XelisDaemonTests
                 }
             });
             Assert.NotNull(solvedNonce);
+
+            // Keep the immutable challenge fixed while obtaining a newer daemon
+            // timestamp. Reconstruct a header whose only changed field is time,
+            // then ask the real daemon to derive its corresponding miner work.
+            var originalWork = Convert.FromHexString(job.BlockTemplate.Template);
+            var oldTimestamp = BinaryPrimitives.ReadUInt64BigEndian(originalWork.AsSpan(32, 8));
+            ulong newerTimestamp = oldTimestamp;
+            for(var attempt = 0; attempt < 100 && newerTimestamp <= oldTimestamp; attempt++)
+            {
+                var freshHeader = await Rpc("get_block_template", new { address });
+                var bytes = Convert.FromHexString((string) freshHeader["template"]);
+                newerTimestamp = BinaryPrimitives.ReadUInt64BigEndian(bytes.AsSpan(9, 8));
+                if(newerTimestamp <= oldTimestamp) await Task.Delay(10, deadline.Token);
+            }
+            Assert.True(newerTimestamp > oldTimestamp, "The daemon must supply a later template timestamp");
+            var timestampOnlyHeader = Convert.FromHexString(originalHeader);
+            BinaryPrimitives.WriteUInt64BigEndian(timestampOnlyHeader.AsSpan(9, 8), newerTimestamp);
+            var timestampOnlyResponse = await Rpc("get_miner_work", new { template = Convert.ToHexString(timestampOnlyHeader), address });
+            var timestampOnlyWork = Convert.FromHexString((string) timestampOnlyResponse["miner_work"]);
+            Assert.Equal(originalWork.AsSpan(0, 32).ToArray(), timestampOnlyWork.AsSpan(0, 32).ToArray());
+            Assert.Equal(newerTimestamp, BinaryPrimitives.ReadUInt64BigEndian(timestampOnlyWork.AsSpan(32, 8)));
+            Assert.Equal(originalWork.AsSpan(40).ToArray(), timestampOnlyWork.AsSpan(40).ToArray());
+            Assert.Equal(job.Algorithm, (string) timestampOnlyResponse["algorithm"]);
+            Assert.Equal(job.ExactDifficulty, BigInteger.Parse((string) timestampOnlyResponse["difficulty"]));
+
+            // The production refresh deliberately retains this unchanged work
+            // identity. Its originally issued timestamp and proof must still be
+            // accepted, not merely parseable by get_miner_work.
+            Assert.False(await consumer.Refresh(deadline.Token));
+            Assert.Same(job, consumer.CurrentJob);
             var share = await Submit(solvedNonce);
             Assert.True(share.IsBlockCandidate);
             Assert.InRange(share.Difficulty, 29999.999, 30000.001);
