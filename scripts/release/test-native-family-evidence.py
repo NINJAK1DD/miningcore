@@ -19,11 +19,13 @@ KASPA_CREDIT = "ProductionValidator_CreditsIssuedAssignmentAndExpiresOnlyRetired
 KASPA_PRECISION = "FullWidthProofJustAboveCompactTargetRemainsOrdinary"
 ZANO_PUBLICATION = "ZanoTemplateUpdateBetweenApplyAndSnapshotCannotSilentlyRetarget"
 KASPA_VALIDATORS = ("KaspaJob", "AstrixJob", "KarlsencoinJob", "SpectreJob", "WagLaylaJob", "PyrinJob")
-LIVE_FACTS = (
+ERGO_FACTS = (
     "FullWidthProofAndStrictCandidateBoundaryUseExactDifficulty",
     "RoundedProofCannotCrossOrdinaryShareAdmissionTolerance",
     "CandidateCreditUsesExactCachedTargetEvenAfterTemplateMutationAndRetarget",
     "ErgoExactNetworkDifficultyPersistsReplaysAndScoresPartialPplnsWindows",
+)
+LIVE_FACTS = ERGO_FACTS + (
     "SettlementAudit_DetectsSpecialAndInvalidLegacyRowsWithoutChangingData",
     "StaticDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit",
     "MinimumDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit",
@@ -165,7 +167,7 @@ def self_test():
     renamed.set("testName", renamed.get("testName").replace("Conceal", "RenamedFamily"))
     invalid.append(root)
     invalid.append(ET.Element("TestRun"))
-    for marker in ("PyrinJob", KASPA_PRECISION, ZANO_PUBLICATION, *LIVE_FACTS[:4]):
+    for marker in ("PyrinJob", KASPA_PRECISION, ZANO_PUBLICATION, *ERGO_FACTS):
         for outcome in (None, "NotExecuted", "Failed"):
             root = fixture()
             result = next(item for item in root if marker in item.get("testName"))

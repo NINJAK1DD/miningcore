@@ -286,5 +286,5 @@ PPLNS and PPLNSBF consume the exact metadata for new shares, so their window sco
 can change slightly. PostgreSQL regression coverage persists and replays actual
 validator results, rolls back accounting and settlement, and checks a one-network
 window split equally between a newer half-difficulty ordinary share and an older
-capped candidate. The same inputs with rounded network metadata yield a different
-split. CI requires these native verifier and settlement cases to execute and pass.
+capped candidate. The test runs each real scheme a second time with identical verified credits
+and rounded network metadata, and asserts the different persisted payout split. CI requires these native verifier and settlement cases to execute and pass.

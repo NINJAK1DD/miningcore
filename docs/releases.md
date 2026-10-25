@@ -22,7 +22,7 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
-## v0.3.0 Ergo: exact proof and network difficulty
+## Unreleased (after v0.3.0): Ergo exact proof and network difficulty
 
 Ergo now derives proof difficulty, candidate credit limits and accepted-share
 `NetworkDifficulty` from the full Autolykos integers, removing Bitcoin compact
