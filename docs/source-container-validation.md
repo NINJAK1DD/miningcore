@@ -151,8 +151,12 @@ production publish layer; warm validation also requires production publish and p
 build cache hits. The driver removes its own builder, preserves evidence and
 leaves uniquely tagged images for inspection. It never prunes shared Docker caches.
 This lab tests local builder reuse, not GHA lazy-layer restoration. A fresh-runner
-CI rerun on the same commit must independently show both APT RUN vertices as
-`CACHED` in the dependency target and production image build. Keep cache imports
+CI rerun on the same commit must independently show both APT RUN cache hits in
+the dependency target and their reuse in the production image build, without
+`container_dependencies start`/APT execution. When lazy blobs are materialized,
+BuildKit may display extraction and `DONE` instead of `CACHED`; the reviewed warm
+run fetched/extracted its builder dependency layer in 80.5 seconds without running
+APT, while its runtime dependency vertex was `CACHED`. Keep cache imports
 on all consuming solves even when a previous local run appeared to materialize layers.
 Interruption stops the active subprocess group and still attempts builder cleanup.
 Cleanup failure returns nonzero and leaves `complete: false`, distinguished from
