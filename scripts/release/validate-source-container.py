@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -12,6 +13,39 @@ import time
 import uuid
 
 import yaml
+
+
+def clean_source(root, expected=None):
+    # These Docker exclusions use the shared Git/Docker wildcard subset. Do not
+    # use --exclude-standard: git-ignored native outputs can still enter Docker.
+    def git(*arguments):
+        return subprocess.check_output(['git', '--no-optional-locks', *arguments], cwd=root, timeout=30)
+
+    commit = git('rev-parse', 'HEAD').decode().strip()
+    tracked = git('status', '--porcelain=v1', '-z', '--untracked-files=no')
+    untracked = git('ls-files', '--others', '--exclude-from=.dockerignore', '-z')
+    if tracked or untracked or (expected is not None and commit != expected):
+        raise ValueError('Exact-commit validation requires clean tracked files and no untracked Docker inputs')
+    return commit
+
+
+def remove_builder(builder):
+    try:
+        return subprocess.run(['docker', 'buildx', 'rm', builder], stdout=subprocess.DEVNULL,
+                              timeout=60, check=False).returncode
+    except (OSError, subprocess.TimeoutExpired):
+        return 'failed'
+
+
+def finish(evidence, functional_passed, cleanup_status, result):
+    evidence['functional_validation_passed'] = functional_passed
+    evidence['builder_cleanup_status'] = cleanup_status
+    evidence['complete'] = functional_passed and cleanup_status == 0
+    return result if result else (0 if evidence['complete'] else 1)
+
+
+def interrupted(signum, frame):
+    raise KeyboardInterrupt
 
 
 def main():
@@ -22,6 +56,10 @@ def main():
     root, output = args.root.resolve(), args.output.resolve()
     if output.exists() or root / 'build' not in output.parents:
         parser.error('Use a new evidence directory inside the checkout build directory')
+    try:
+        source_commit = clean_source(root)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        parser.error(str(error))
     workflow = yaml.load((root / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
     steps = workflow['jobs']['source-container-check']['steps']
     smoke = next(step['run'] for step in steps if step['name'] == 'Test protected container listeners from host loopback')
@@ -41,7 +79,7 @@ def main():
     output.mkdir(parents=True)
     token = uuid.uuid4().hex[:12]
     builder = 'issue223-' + token
-    evidence = {'schema': 1, 'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip(),
+    evidence = {'schema': 1, 'source_commit': source_commit, 'source_tree_clean': True,
                 'runs': [], 'complete': False}
 
     def run(name, command, seconds=2400, environment=None, build=False, input_file=None):
@@ -52,26 +90,35 @@ def main():
         with (output / (name + '.log')).open('wb') as log:
             process = subprocess.Popen(['timeout', '--signal=TERM', '--kill-after=30s', str(seconds), *command],
                                        cwd=root, env=environment, stdin=input_file,
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
             size = 0
-            while chunk := process.stdout.readline(65536):
-                if size + len(chunk) <= 64 * 1024 * 1024:
-                    log.write(chunk)
-                    size += len(chunk)
-                else:
-                    truncated = True
-                if build:
-                    line = chunk.decode('utf-8', errors='replace').strip()
-                    match = re.match(r'^#(\d+) (.*)$', line)
-                    if match:
-                        key, text = match.groups()
-                        if key not in vertices and len(vertices) < 128:
-                            vertices[key] = {'name': text[:200], 'cached': False}
-                        if key in vertices:
-                            if text == 'CACHED': vertices[key]['cached'] = True
-                            done = re.fullmatch(r'DONE ([0-9.]+)s', text)
-                            if done: vertices[key]['elapsed_seconds'] = float(done[1])
-            status = process.wait()
+            try:
+                while chunk := process.stdout.readline(65536):
+                    if size + len(chunk) <= 64 * 1024 * 1024:
+                        log.write(chunk)
+                        size += len(chunk)
+                    else:
+                        truncated = True
+                    if build:
+                        line = chunk.decode('utf-8', errors='replace').strip()
+                        match = re.match(r'^#(\d+) (.*)$', line)
+                        if match:
+                            key, text = match.groups()
+                            if key not in vertices and len(vertices) < 128:
+                                vertices[key] = {'name': text[:200], 'cached': False}
+                            if key in vertices:
+                                if text == 'CACHED': vertices[key]['cached'] = True
+                                done = re.fullmatch(r'DONE ([0-9.]+)s', text)
+                                if done: vertices[key]['elapsed_seconds'] = float(done[1])
+                status = process.wait()
+            except KeyboardInterrupt:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+                raise
         record = {'phase': name, 'elapsed_seconds': round(time.monotonic() - started, 3),
                   'status': status, 'log_truncated': truncated}
         if build: record['vertices'] = list(vertices.values())
@@ -82,18 +129,35 @@ def main():
         return record
 
     created = False
+    functional_passed = False
+    result = 1
+    previous_signal = signal.signal(signal.SIGTERM, interrupted)
     try:
-        run('create-builder', ['docker', 'buildx', 'create', '--name', builder, '--driver', 'docker-container'], 120)
+        # Creation can succeed just before its client is interrupted; the unique
+        # name is safe to clean up even when the create call has no success reply.
         created = True
+        run('create-builder', ['docker', 'buildx', 'create', '--name', builder, '--driver', 'docker-container'], 120)
         run('bootstrap-builder', ['docker', 'buildx', 'inspect', '--builder', builder, '--bootstrap'], 180)
         for mode in ('cold', 'warm'):
+            clean_source(root, source_commit)
+            dependencies = ['docker', 'buildx', 'build', '--builder', builder, '--progress=plain',
+                            '--build-arg', 'MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=600',
+                            '--target', 'dependency-cache', '--output', 'type=cacheonly']
+            if mode == 'cold': dependencies.append('--no-cache')
+            dependency_record = run(mode + '-dependencies', [*dependencies, '.'], 780, build=True)
+            if mode == 'warm' and sum(v['cached'] and 'RUN --mount' in v['name']
+                                      for v in dependency_record['vertices']) != 2:
+                raise ValueError('Warm dependency phases did not reuse their validated cache')
+            clean_source(root, source_commit)
             suffix = 'issue223-' + token + '-' + mode
             image = 'miningcore-source-test:' + suffix
-            command = ['docker', 'buildx', 'build', '--builder', builder, '--progress=plain', '--load', '--tag', image]
-            if mode == 'cold': command.append('--no-cache')
-            build_record = run(mode + '-image', [*command, '.'], build=True)
+            command = ['docker', 'buildx', 'build', '--builder', builder, '--progress=plain',
+                       '--build-arg', 'MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=600', '--load', '--tag', image]
+            build_record = run(mode + '-image', [*command, '.'], 1200, build=True)
+            clean_source(root, source_commit)
             probe_record = run(mode + '-probes', ['docker', 'buildx', 'build', '--builder', builder, '--progress=plain',
-                               '--target', 'runtime-probes', '--output', 'type=local,dest=' + str(exported), '.'], 600, build=True)
+                               '--build-arg', 'MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=600',
+                               '--target', 'runtime-probes', '--output', 'type=local,dest=' + str(exported), '.'], 300, build=True)
             if mode == 'warm':
                 if not any(v['cached'] and 'dotnet publish -c Release' in v['name'] for v in build_record['vertices']):
                     raise ValueError('Warm production publish did not reuse its validated cache')
@@ -116,21 +180,25 @@ def main():
             script_path.write_text(script)
             run(mode + '-listeners', ['bash', str(script_path)], 300, dict(os.environ, GITHUB_WORKSPACE=str(root)))
             exported.rename(output / (mode + '-probes'))
-        evidence['complete'] = True
-        return 0
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        clean_source(root, source_commit)
+        functional_passed = True
+        result = 0
+    except KeyboardInterrupt:
+        evidence['interrupted'] = True
+        result = 130
+        print('Source-container validation interrupted', file=sys.stderr)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         print('Source-container validation failed: ' + str(error), file=sys.stderr)
-        return 1
     finally:
+        signal.signal(signal.SIGTERM, previous_signal)
+        cleanup_status = None
         if created:
-            try:
-                cleanup = subprocess.run(['docker', 'buildx', 'rm', builder], stdout=subprocess.DEVNULL,
-                                         timeout=60, check=False)
-                evidence['builder_cleanup_status'] = cleanup.returncode
-            except (OSError, subprocess.TimeoutExpired):
-                evidence['builder_cleanup_status'] = 'failed'
+            cleanup_status = remove_builder(builder)
+            if cleanup_status != 0:
                 print('Could not remove isolated lab builder: ' + builder, file=sys.stderr)
+        result = finish(evidence, functional_passed, cleanup_status, result)
         (output / 'evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
+    return result
 
 
 if __name__ == '__main__':

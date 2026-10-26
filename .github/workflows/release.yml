@@ -91,18 +91,34 @@ jobs:
         with:
           persist-credentials: false
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
       - name: Test bounded container build failure propagation
         run: |
-          python3 scripts/release/test-container-runtime-build.py
+          python3 -B scripts/release/test-container-runtime-build.py
+          python3 -B scripts/release/test-source-container-validation.py
+          python3 -B scripts/release/test-container-workflow-policy.py
           shellcheck scripts/release/container-apt-install.sh
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
 
+      - name: Cache bounded source container dependencies
+        id: dependency-cache
+        timeout-minutes: 13
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          target: dependency-cache
+          outputs: type=cacheonly
+          build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=600
+          cache-from: type=gha,scope=source-container-dependencies,timeout=1m
+          cache-to: type=gha,mode=max,scope=source-container-dependencies,timeout=1m
+
       - name: Build source container
+        timeout-minutes: 20
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -110,24 +126,23 @@ jobs:
           load: true
           push: false
           tags: miningcore-source-test:${{ github.sha }}
-          cache-from: type=gha,scope=source-container,timeout=2m
-          cache-to: type=gha,mode=max,scope=source-container,timeout=2m,ignore-error=true
+          build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=600
 
       - name: Smoke-test source container
         run: docker run --rm miningcore-source-test:${{ github.sha }} --version
 
       - name: Export source container runtime probes
         id: runtime-probes
+        timeout-minutes: 5
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile
           target: runtime-probes
           outputs: type=local,dest=build/container-runtime-probes
-          cache-from: |
-            type=gha,scope=source-container,timeout=2m
-            type=gha,scope=source-container-runtime-probes,timeout=2m
-          cache-to: type=gha,mode=max,scope=source-container-runtime-probes,timeout=2m,ignore-error=true
+          build-args: |
+            MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=600
+            MININGCORE_PROBE_TIMEOUT_SECONDS=180
 
       - name: Verify runtime probes match the source image
         shell: bash
@@ -149,6 +164,7 @@ jobs:
 
       - name: Test protected container listeners from host loopback
         if: github.event_name == 'pull_request'
+        timeout-minutes: 2
         shell: bash
         run: |
           set -euo pipefail

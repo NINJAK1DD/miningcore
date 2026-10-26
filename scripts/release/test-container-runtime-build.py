@@ -69,7 +69,7 @@ class ContainerBuildTests(unittest.TestCase):
         path.write_text(source, encoding='utf-8')
         path.chmod(0o755)
 
-    def apt(self, **environment):
+    def apt(self, packages=None, **environment):
         self.executable('apt-get', '''#!/usr/bin/env bash
 set -eu
 printf '%s\\n' "$*" >> "$TEST_TRACE"
@@ -79,7 +79,7 @@ if [[ " $* " == *' update '* ]]; then
 fi
 exit "${INSTALL_STATUS:-0}"
 ''')
-        return subprocess.run(['bash', str(SCRIPTS / 'container-apt-install.sh'), 'libssl-dev'],
+        return subprocess.run(['bash', str(SCRIPTS / 'container-apt-install.sh'), *(packages if packages is not None else ['libssl-dev'])],
                               env=dict(self.env, **environment), capture_output=True, text=True, timeout=15)
 
     def test_update_failure_never_installs(self):
@@ -110,6 +110,23 @@ exit "${INSTALL_STATUS:-0}"
         self.assertEqual(64, self.apt(MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS='0').returncode)
         self.assertFalse(self.trace.exists())
 
+    def test_malformed_packages_never_invoke_apt(self):
+        for packages in ([], ['--allow-unauthenticated'], ['libssl-dev;true'], ['../package']):
+            with self.subTest(packages=packages):
+                self.assertEqual(64, self.apt(packages=packages).returncode)
+                self.assertFalse(self.trace.exists())
+
+    def test_builder_recommendations_are_preserved(self):
+        self.assertEqual(0, self.apt(packages=['--install-recommends', 'clang']).returncode)
+        self.assertIn(' --install-recommends ', self.trace.read_text())
+        self.assertNotIn('--no-install-recommends', self.trace.read_text())
+
+    def test_sigkill_is_not_labelled_definitely_a_timeout(self):
+        result = self.apt(INSTALL_STATUS='137')
+        self.assertEqual(137, result.returncode)
+        self.assertIn('SIGKILL/OOM', result.stderr)
+        self.assertNotIn('exceeded its bounded budget', result.stderr)
+
     def probes(self, **environment):
         scripts = self.root / 'scripts/release'
         scripts.mkdir(parents=True, exist_ok=True)
@@ -128,6 +145,9 @@ from pathlib import Path
 import sys
 args = sys.argv[1:]
 with open(os.environ['TEST_TRACE'], 'a') as trace: trace.write(json.dumps(args) + '\\n')
+if os.environ.get('COMMAND_DELAY'):
+    import time
+    time.sleep(float(os.environ['COMMAND_DELAY']))
 if args[0] == os.environ.get('FAIL_COMMAND'): sys.exit(29)
 if args[0] == os.environ.get('STALL_COMMAND'):
     import time
@@ -145,6 +165,9 @@ if args[0] == 'publish':
         (output / 'Miningcore.dll').write_bytes(b'changed' if os.environ.get('CORRUPT_APPLICATION') else source.read_bytes())
         (output / 'Miningcore.Tests.ProcessHost.dll').write_bytes(b'fixture-host')
     else: (output / 'ZeroMqRuntimeProbe.dll').write_bytes(b'fixture-probe')
+    if os.environ.get('NATIVE_PROBE') == ('host' if 'ProcessHost' in args[1] else 'zeromq'):
+        native = output / 'nested/libinjected.so.1'; native.parent.mkdir()
+        native.write_bytes(b'untrusted-native')
 ''')
         return subprocess.run(['python3', str(SCRIPTS / 'publish-container-probes.py'), str(self.root),
                                str(app.parent), str(self.root / 'probes')],
@@ -173,9 +196,28 @@ if args[0] == 'publish':
         self.assertEqual(3, len(self.trace.read_text().splitlines()))
 
     def test_probe_deadline_stops_stalled_restore(self):
-        result = self.probes(STALL_COMMAND='restore', MININGCORE_PROBE_STEP_TIMEOUT_SECONDS='1')
+        result = self.probes(STALL_COMMAND='restore', MININGCORE_PROBE_TIMEOUT_SECONDS='1')
         self.assertEqual(124, result.returncode)
         self.assertEqual(1, len(self.trace.read_text().splitlines()))
+
+    def test_total_probe_budget_is_shared_across_phases(self):
+        result = self.probes(COMMAND_DELAY='0.7', MININGCORE_PROBE_TIMEOUT_SECONDS='1')
+        self.assertEqual(124, result.returncode)
+        self.assertEqual(2, len(self.trace.read_text().splitlines()))
+
+    def test_invalid_probe_budgets_never_invoke_dotnet(self):
+        for budget in ('0', '-1', '601', 'invalid'):
+            with self.subTest(budget=budget):
+                self.assertNotEqual(0, self.probes(MININGCORE_PROBE_TIMEOUT_SECONDS=budget).returncode)
+                self.assertFalse(self.trace.exists())
+
+    def test_probe_natives_are_rejected(self):
+        for target in ('host', 'zeromq'):
+            with self.subTest(target=target):
+                result = self.probes(NATIVE_PROBE=target)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn('must not contain native', result.stderr)
+                shutil.rmtree(self.root / 'probes')
 
     def test_stale_export_directory_is_rejected(self):
         (self.root / 'probes').mkdir()

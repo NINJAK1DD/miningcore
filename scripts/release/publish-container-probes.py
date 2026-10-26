@@ -28,14 +28,15 @@ def publish(root, application, output):
     libraries = sorted(application.glob('*.so'))
     if not libraries or len(libraries) > 64:
         raise ValueError('Audited application native libraries are missing')
-    budget = int(os.environ.get('MININGCORE_PROBE_STEP_TIMEOUT_SECONDS', '300'))
-    if not 1 <= budget <= 1800:
+    budget = int(os.environ.get('MININGCORE_PROBE_TIMEOUT_SECONDS', '180'))
+    if not 1 <= budget <= 600:
         raise ValueError('Invalid probe build budget')
     output.mkdir(parents=True)
     evidence = {'schema': 1, 'application_sha256': digest(published),
                 'native_libraries': {path.name: digest(path) for path in libraries},
                 'platform': platform.machine(), 'phases': [], 'complete': False}
     result = 0
+    deadline = time.monotonic() + budget
     try:
         with tempfile.TemporaryDirectory(prefix='container-probe-audit-') as temporary:
             audit = root / 'scripts/release/run-warning-audited-dotnet.sh'
@@ -45,9 +46,13 @@ def publish(root, application, output):
                 log.touch()
                 command = ['bash', str(audit), str(log), *arguments] if audited else ['dotnet', *arguments]
                 started = time.monotonic()
-                completed = subprocess.run(['timeout', '--signal=TERM', '--kill-after=10s', str(budget), *command],
-                                           cwd=root, env=dict(os.environ, MININGCORE_ALLOW_BUILD_WARNINGS='0'))
-                status = completed.returncode if completed.returncode >= 0 else 128 - completed.returncode
+                remaining = deadline - started
+                if remaining <= 0:
+                    status = 124
+                else:
+                    completed = subprocess.run(['timeout', '--signal=TERM', '--kill-after=10s', f'{remaining:.3f}s', *command],
+                                               cwd=root, env=dict(os.environ, MININGCORE_ALLOW_BUILD_WARNINGS='0'))
+                    status = completed.returncode if completed.returncode >= 0 else 128 - completed.returncode
                 phase = {'name': name, 'elapsed_seconds': round(time.monotonic() - started, 3), 'status': status}
                 evidence['phases'].append(phase)
                 print('container_probe_phase ' + json.dumps(phase, separators=(',', ':')), flush=True)
@@ -64,8 +69,10 @@ def publish(root, application, output):
                                          '--output', str(output / 'api-listener-smoke-host')], True)
             if digest(output / 'api-listener-smoke-host/Miningcore.dll') != evidence['application_sha256']:
                 raise ValueError('Listener host changed the audited application assembly')
+            reject_probe_natives(output)
             run('publish-zeromq-probe', ['publish', 'scripts/release/fixtures/zeromq-runtime-probe/ZeroMqRuntimeProbe.csproj',
                                        *options, '--output', str(output / 'zeromq-runtime-probe')], True)
+            reject_probe_natives(output)
             evidence['complete'] = True
     except subprocess.CalledProcessError as error:
         result = error.returncode
@@ -76,6 +83,14 @@ def publish(root, application, output):
         # Fixed schema and four phases; never serialize environment or tool output.
         (output / 'build-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
     return result
+
+
+def reject_probe_natives(output):
+    # Probes must resolve native code from the audited /app via LD_LIBRARY_PATH.
+    # Include versioned objects and nested publish directories in this boundary.
+    if any(path.name.endswith('.so') or '.so.' in path.name
+           for path in output.rglob('*')):
+        raise ValueError('Probe output must not contain native shared libraries')
 
 
 def main():
