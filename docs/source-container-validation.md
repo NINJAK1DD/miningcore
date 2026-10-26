@@ -76,7 +76,10 @@ retry of the complete job, no alternate mirror and no cached package directory
 that bypasses APT verification.
 
 Only `dependency-cache` imports/exports a GitHub Actions cache, under
-`source-container-dependencies`, with one-minute service limits. It depends on
+`source-container-dependencies`, with the backend `timeout=1m` option. The
+13-minute action deadline is the hard total bound: compression and multipart
+layer uploads can outlast the backend timeout (the first reviewed CI export took
+184.1 seconds). It depends on
 both APT stages and no source/compile stages. Even with `mode=max`, its export
 contains no compiled application/native or probe layers. Export failure is fatal
 and visible; no build/cache action ignores errors. Confirm actual export completion
@@ -149,6 +152,8 @@ libraries. Static guards cover stage isolation, recommendation policy, immutable
 checkout, deadlines and cache failure policy.
 
 ## Existing release-wide follow-ups
+
+Tracked in [#225](https://github.com/NINJAK1DD/miningcore/issues/225).
 
 The source SDK/ASP.NET tags still float. Digest pinning needs an explicit servicing
 and refresh policy alongside the existing release Ubuntu image pin monitor.
