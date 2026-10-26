@@ -3,8 +3,8 @@ WORKDIR /app
 ENV DOTNET_CLI_UI_LANGUAGE=en \
     LC_ALL=C
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-RUN apt-get update && \
-    apt-get -y install cmake clang ninja-build build-essential libssl-dev pkg-config \
+COPY scripts/release/container-apt-install.sh /tmp/container-apt-install.sh
+RUN bash /tmp/container-apt-install.sh cmake clang ninja-build build-essential libssl-dev pkg-config \
         libboost-all-dev libsodium-dev libzmq5 libzmq3-dev golang-go libgmp-dev \
         libc++-dev python3 zlib1g-dev
 COPY . .
@@ -19,13 +19,21 @@ RUN set -euo pipefail; \
       ../../build Native ../../scripts/release/linux-native-libraries.txt \
       --managed-project-directory .
 
+FROM builder AS runtime-probes-build
+WORKDIR /app
+RUN python3 scripts/release/publish-container-probes.py /app /app/build /container-runtime-probes
+
+# Only CI asks for this target; the default final image still contains /app/build.
+FROM scratch AS runtime-probes
+COPY --from=runtime-probes-build /container-runtime-probes/ /
+
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-resolute
 WORKDIR /app
 # ZeroMQ.dll imports the unversioned libzmq name. Keep libzmq3-dev because it
 # supplies libzmq.so; libzmq5 supplies only the versioned libzmq.so.5 object.
 # This deliberate runtime exception also installs its development dependencies.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+COPY scripts/release/container-apt-install.sh /tmp/container-apt-install.sh
+RUN bash /tmp/container-apt-install.sh \
         curl \
         libboost-locale1.90.0 \
         libboost-regex1.90.0 \
@@ -33,7 +41,7 @@ RUN apt-get update && \
         libgmp10 \
         libsodium23 \
         libzmq3-dev && \
-    rm -rf /var/lib/apt/lists/* && \
+    rm -rf /var/lib/apt/lists/* && rm -f /tmp/container-apt-install.sh && \
     groupadd --system --gid 10001 miningcore && \
     useradd --system --uid 10001 --gid miningcore --home-dir /var/lib/miningcore \
         --shell /usr/sbin/nologin miningcore && \

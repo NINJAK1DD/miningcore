@@ -79,9 +79,8 @@ jobs:
     # Docker supplies the Ubuntu 26.04 userspace under test. Keep orchestration
     # pinned independently of the container's target operating system.
     runs-on: ubuntu-24.04
-    # A clean source-container build can exceed 30 minutes when hosted-runner
-    # CPU allocation is constrained; retain a bounded budget without cancelling
-    # successful runtime checks during job cleanup.
+    # Reuse this image's validated builder for runtime probes. No second host
+    # native toolchain/bootstrap is needed; retain the existing overall budget.
     timeout-minutes: 45
     permissions:
       contents: read
@@ -95,6 +94,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
           fetch-depth: 0
 
+      - name: Test bounded container build failure propagation
+        run: |
+          python3 scripts/release/test-container-runtime-build.py
+          shellcheck scripts/release/container-apt-install.sh
+
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
 
@@ -106,47 +110,42 @@ jobs:
           load: true
           push: false
           tags: miningcore-source-test:${{ github.sha }}
-          cache-from: type=gha,scope=source-container
-          cache-to: type=gha,mode=max,scope=source-container
+          cache-from: type=gha,scope=source-container,timeout=2m
+          cache-to: type=gha,mode=max,scope=source-container,timeout=2m,ignore-error=true
 
       - name: Smoke-test source container
         run: docker run --rm miningcore-source-test:${{ github.sha }} --version
 
-      - name: Setup .NET for container runtime tests
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      - name: Export source container runtime probes
+        id: runtime-probes
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          dotnet-version: ${{ env.CI_DOTNET_SDK }}
+          context: .
+          file: Dockerfile
+          target: runtime-probes
+          outputs: type=local,dest=build/container-runtime-probes
+          cache-from: |
+            type=gha,scope=source-container,timeout=2m
+            type=gha,scope=source-container-runtime-probes,timeout=2m
+          cache-to: type=gha,mode=max,scope=source-container-runtime-probes,timeout=2m,ignore-error=true
 
-      - name: Publish ZeroMQ runtime probe
-        run: >-
-          dotnet publish
-          scripts/release/fixtures/zeromq-runtime-probe/ZeroMqRuntimeProbe.csproj
-          --configuration Release
-          --output zeromq-runtime-probe
+      - name: Verify runtime probes match the source image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh miningcore-source-test:${{ github.sha }} \
+            -c 'cd /app && sha256sum Miningcore.dll ./*.so' |
+            python3 scripts/release/verify-container-probes.py build/container-runtime-probes/build-evidence.json
 
       - name: Smoke-test managed ZeroMQ binding in source container
         shell: bash
         run: |
           set -euo pipefail
           docker run --rm \
-            --volume "$GITHUB_WORKSPACE/zeromq-runtime-probe:/probe:ro" \
+            --volume "$GITHUB_WORKSPACE/build/container-runtime-probes/zeromq-runtime-probe:/probe:ro" \
             --entrypoint dotnet \
             miningcore-source-test:${{ github.sha }} \
             /probe/ZeroMqRuntimeProbe.dll
-
-      - name: Install container listener test build dependencies
-        if: github.event_name == 'pull_request'
-        run: >-
-          sudo apt-get update && sudo apt-get install -y
-          cmake ninja-build build-essential libssl-dev pkg-config
-          libboost-all-dev libsodium-dev libzmq3-dev libgmp-dev
-
-      - name: Publish container listener test host
-        if: github.event_name == 'pull_request'
-        run: >-
-          dotnet publish src/Miningcore.Tests.ProcessHost/Miningcore.Tests.ProcessHost.csproj
-          --configuration Release
-          --output api-listener-smoke-host
 
       - name: Test protected container listeners from host loopback
         if: github.event_name == 'pull_request'
@@ -180,7 +179,7 @@ jobs:
             --env "MININGCORE_ADMIN_API_TOKEN=$admin_token" \
             --publish 127.0.0.1:4001:4001 \
             --publish 127.0.0.1:4002:4002 \
-            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/build/container-runtime-probes/api-listener-smoke-host:/testhost:ro" \
             --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-container-smoke.json:/test/config.json:ro" \
             --entrypoint dotnet \
             miningcore-source-test:${{ github.sha }} \
@@ -265,7 +264,7 @@ jobs:
           docker run --detach --name "$unconfigured_container" \
             --network "$network" \
             --publish 127.0.0.1:4001:4001 \
-            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/build/container-runtime-probes/api-listener-smoke-host:/testhost:ro" \
             --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-container-smoke.json:/test/config.json:ro" \
             --entrypoint dotnet \
             miningcore-source-test:${{ github.sha }} \
@@ -297,7 +296,7 @@ jobs:
             --network "$network" \
             --ip 172.30.56.4 \
             --publish 127.0.0.1:4010:4000 \
-            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/build/container-runtime-probes/api-listener-smoke-host:/testhost:ro" \
             --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-rate-limit-smoke.json:/test/config.json:ro" \
             --entrypoint dotnet \
             miningcore-source-test:${{ github.sha }} \
@@ -357,7 +356,7 @@ jobs:
             --ip 172.30.56.2 \
             --env "MININGCORE_ADMIN_API_TOKEN=$admin_token" \
             --publish 127.0.0.1:4000:4000 \
-            --volume "$GITHUB_WORKSPACE/api-listener-smoke-host:/testhost:ro" \
+            --volume "$GITHUB_WORKSPACE/build/container-runtime-probes/api-listener-smoke-host:/testhost:ro" \
             --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-nginx-smoke.json:/test/config.json:ro" \
             --entrypoint dotnet \
             miningcore-source-test:${{ github.sha }} \
@@ -446,6 +445,15 @@ jobs:
           for path in /api/administrator /metrics-export; do
             assert_status 200 "$path"
           done
+
+      - name: Save bounded runtime-probe build evidence
+        if: always() && steps.runtime-probes.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: source-container-probe-evidence
+          path: build/container-runtime-probes/build-evidence.json
+          if-no-files-found: error
+          retention-days: 7
 
   build-release:
     name: Test and package Ubuntu ${{ matrix.ubuntu }} x64 (${{ matrix.role }})
