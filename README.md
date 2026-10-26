@@ -723,9 +723,10 @@ sudo docker build -t btcpool-miningcore:local .
 ```
 
 Use current Docker with BuildKit. Local source builds allow 30 minutes per
-dependency installation; CI explicitly uses ten minutes. To choose a shorter
+dependency installation; CI explicitly uses seven minutes. To choose another
 budget, pass `--build-arg MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=1200` to
-`docker build` (range: 1–1800 seconds). A host environment variable alone does
+`docker build` (range: 1–1800 seconds, or `0` to disable the total deadline for
+slow local builds). CI always uses a positive bounded value. A host environment variable alone does
 not configure the Docker build. See [source container validation](docs/source-container-validation.md).
 
 Run it with the same `/etc/miningcore/config.json` and `/var/lib/miningcore` mounts:

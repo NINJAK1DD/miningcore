@@ -107,8 +107,14 @@ exit "${INSTALL_STATUS:-0}"
             self.assertIn('Acquire::https::Timeout=30', command)
 
     def test_invalid_budget_does_not_invoke_apt(self):
-        self.assertEqual(64, self.apt(MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS='0').returncode)
+        self.assertEqual(64, self.apt(MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS='1801').returncode)
         self.assertFalse(self.trace.exists())
+
+    def test_local_zero_budget_disables_total_deadline(self):
+        result = self.apt(MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS='0')
+        self.assertEqual(0, result.returncode)
+        self.assertIn('timeout_seconds=0', result.stdout)
+        self.assertEqual(2, len(self.trace.read_text().splitlines()))
 
     def test_malformed_packages_never_invoke_apt(self):
         for packages in ([], ['--allow-unauthenticated'], ['libssl-dev;true'], ['../package']):

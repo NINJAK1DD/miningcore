@@ -48,6 +48,12 @@ def interrupted(signum, frame):
     raise KeyboardInterrupt
 
 
+def require_publish_reuse(record):
+    if not any(vertex['cached'] and 'dotnet publish -c Release' in vertex['name']
+               for vertex in record['vertices']):
+        raise ValueError('Probe export did not reuse the audited production publish')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[2])
@@ -141,7 +147,7 @@ def main():
         for mode in ('cold', 'warm'):
             clean_source(root, source_commit)
             dependencies = ['docker', 'buildx', 'build', '--builder', builder, '--progress=plain',
-                            '--build-arg', 'MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=600',
+                            '--build-arg', 'MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420',
                             '--target', 'dependency-cache', '--output', 'type=cacheonly']
             if mode == 'cold': dependencies.append('--no-cache')
             dependency_record = run(mode + '-dependencies', [*dependencies, '.'], 780, build=True)
@@ -152,12 +158,15 @@ def main():
             suffix = 'issue223-' + token + '-' + mode
             image = 'miningcore-source-test:' + suffix
             command = ['docker', 'buildx', 'build', '--builder', builder, '--progress=plain',
-                       '--build-arg', 'MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=600', '--load', '--tag', image]
+                       '--build-arg', 'MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420', '--load', '--tag', image]
             build_record = run(mode + '-image', [*command, '.'], 1200, build=True)
             clean_source(root, source_commit)
             probe_record = run(mode + '-probes', ['docker', 'buildx', 'build', '--builder', builder, '--progress=plain',
-                               '--build-arg', 'MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=600',
+                               '--build-arg', 'MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420',
                                '--target', 'runtime-probes', '--output', 'type=local,dest=' + str(exported), '.'], 300, build=True)
+            # Cold probes must also reuse this job's audited publish. Their
+            # five-minute deadline cannot accommodate another native build.
+            require_publish_reuse(probe_record)
             if mode == 'warm':
                 if not any(v['cached'] and 'dotnet publish -c Release' in v['name'] for v in build_record['vertices']):
                     raise ValueError('Warm production publish did not reuse its validated cache')

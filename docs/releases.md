@@ -1436,8 +1436,12 @@ the unversioned `libzmq.so` symlink supplied by that package; `libzmq5` alone su
 including `libsodium-dev`, into the final image. This accepted size tradeoff keeps the loader name
 distro-managed instead of creating an application-owned symlink; the package list must not be read
 as guaranteeing that final images contain no development headers. Every release-affecting pull
-request builds both the source and packaged Dockerfiles, validates the current apt package names and
-`ldd -r` provider closure, and performs a managed ZeroMQ load inside each final image. Apt package
+request builds both the source and packaged Dockerfiles, checks `ldd -r` provider closure,
+and performs a managed ZeroMQ load inside each final image. An uncached dependency build
+validates the current apt package names; an APT layer cache hit validates only the previously
+installed snapshot, not current archive/package availability. The source dependency warmer
+refreshes with `pull` and `no-cache` on relevant pushes to `dev` and weekly on the default
+branch once merged. Apt package
 names are not OCI image references and therefore remain outside the digest-based release image-pin
 monitor.
 

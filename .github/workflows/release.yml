@@ -8,6 +8,7 @@ on:
     branches: [ dev ]
     paths:
       - '.github/workflows/release.yml'
+      - '.github/workflows/source-container-cache.yml'
       - '.dockerignore'
       - 'Dockerfile'
       - 'build-*.sh'
@@ -113,7 +114,7 @@ jobs:
           file: Dockerfile
           target: dependency-cache
           outputs: type=cacheonly
-          build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=600
+          build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420
           cache-from: type=gha,scope=source-container-dependencies,timeout=1m
           cache-to: type=gha,mode=max,scope=source-container-dependencies,timeout=1m
 
@@ -126,7 +127,10 @@ jobs:
           load: true
           push: false
           tags: miningcore-source-test:${{ github.sha }}
-          build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=600
+          build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420
+          # Imported cache hits can retain lazy remote blobs. Every consuming
+          # solve needs the remote provider, even when the same builder is reused.
+          cache-from: type=gha,scope=source-container-dependencies,timeout=1m
 
       - name: Smoke-test source container
         run: docker run --rm miningcore-source-test:${{ github.sha }} --version
@@ -141,8 +145,9 @@ jobs:
           target: runtime-probes
           outputs: type=local,dest=build/container-runtime-probes
           build-args: |
-            MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=600
+            MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420
             MININGCORE_PROBE_TIMEOUT_SECONDS=180
+          cache-from: type=gha,scope=source-container-dependencies,timeout=1m
 
       - name: Verify runtime probes match the source image
         shell: bash

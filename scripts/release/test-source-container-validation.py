@@ -4,10 +4,10 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import select
 import signal
 import subprocess
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
 
@@ -78,6 +78,14 @@ class ValidationTests(unittest.TestCase):
         with patch.object(driver.subprocess, 'run', return_value=subprocess.CompletedProcess([], 37)):
             self.assertEqual(37, driver.remove_builder('unique-fixture'))
 
+    def test_cold_probe_export_must_reuse_the_production_publish(self):
+        vertex = {'name': '[builder] RUN dotnet publish -c Release', 'cached': True}
+        driver.require_publish_reuse({'vertices': [vertex]})
+        with self.assertRaises(ValueError):
+            driver.require_publish_reuse({'vertices': [dict(vertex, cached=False)]})
+        with self.assertRaises(ValueError):
+            driver.require_publish_reuse({'vertices': []})
+
     def lab_process(self, **environment):
         binary = self.base / 'bin'
         binary.mkdir()
@@ -90,7 +98,9 @@ with open(os.environ['DOCKER_TRACE'], 'a') as trace: trace.write(' '.join(args) 
 if args[:2] == ['buildx', 'build']:
     if os.environ.get('STALL_LAB'):
         Path(os.environ['LAB_MARKER']).write_text(str(os.getpid()))
-        time.sleep(30)
+        with open(os.environ['LAB_READY_PIPE'], 'w') as ready:
+            ready.write('ready\\n')
+        time.sleep(120)
     sys.exit(29)
 if args[:2] == ['buildx', 'rm']: sys.exit(int(os.environ.get('CLEANUP_STATUS', '0')))
 ''')
@@ -114,14 +124,17 @@ if args[:2] == ['buildx', 'rm']: sys.exit(int(os.environ.get('CLEANUP_STATUS', '
 
     def test_interruption_stops_child_and_cleans_up(self):
         marker = self.base / 'marker'
-        process, output = self.lab_process(STALL_LAB='1', LAB_MARKER=str(marker))
+        ready = self.base / 'ready'
+        os.mkfifo(ready)
+        descriptor = os.open(ready, os.O_RDWR | os.O_NONBLOCK)
+        process, output = self.lab_process(STALL_LAB='1', LAB_MARKER=str(marker), LAB_READY_PIPE=str(ready))
         try:
-            deadline = time.monotonic() + 5
-            while not marker.exists() and time.monotonic() < deadline:
-                time.sleep(0.02)
-            self.assertTrue(marker.exists())
+            # Signal only after the child explicitly acknowledges readiness;
+            # generous watchdogs bound failures without assuming runner speed.
+            self.assertTrue(select.select([descriptor], [], [], 60)[0], 'Child did not become ready')
+            self.assertEqual(b'ready\n', os.read(descriptor, 64))
             process.send_signal(signal.SIGTERM)
-            log, _ = process.communicate(timeout=15)
+            log, _ = process.communicate(timeout=90)
             self.assertEqual(130, process.returncode, log)
             evidence = json.loads((output / 'evidence.json').read_text())
             self.assertTrue(evidence['interrupted'])
@@ -129,9 +142,15 @@ if args[:2] == ['buildx', 'rm']: sys.exit(int(os.environ.get('CLEANUP_STATUS', '
             self.assertEqual(0, evidence['builder_cleanup_status'])
             with self.assertRaises(ProcessLookupError): os.kill(int(marker.read_text()), 0)
         finally:
+            os.close(descriptor)
             if process.poll() is None:
                 process.kill()
                 process.communicate()
+            if marker.exists():
+                try:
+                    os.kill(int(marker.read_text()), signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
 
 
 if __name__ == '__main__':

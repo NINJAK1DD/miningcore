@@ -52,7 +52,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=600
+          build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420
           push: ${{ github.event_name == 'workflow_dispatch' }}
           tags: theretromike/miningcore
           labels: ${{ steps.meta.outputs.labels }}

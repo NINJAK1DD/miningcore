@@ -52,14 +52,16 @@ timeouts and two retries. GNU `timeout` sends TERM at the budget and KILL ten
 seconds later. Normal APT signatures and package hashes remain enforced.
 Update, installation and deadline failures propagate, so a partial bootstrap
 cannot produce a successful image. Local Docker builds default to 1800 seconds;
-both source-image CI workflows explicitly pass 600 seconds. Configure both
+both source-image CI workflows and the dependency warmer explicitly pass 420 seconds. Configure both
 independent Docker stages using a build argument, for example:
 
 ```sh
 docker build --build-arg MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=1200 -t miningcore-local .
 ```
 
-The accepted range is 1–1800 seconds. A host environment variable alone is not
+The accepted range is 1–1800 seconds; `0` explicitly disables the total timeout
+for slow local builds, while request timeouts/retries and verification remain.
+All CI callers are guarded to use a positive bounded value. A host environment variable alone is not
 inherited by Docker `RUN`. Status 124 identifies expiration; status 137 can mean
 deadline escalation or external SIGKILL/OOM and is labelled accordingly.
 
@@ -75,7 +77,7 @@ There is no new
 retry of the complete job, no alternate mirror and no cached package directory
 that bypasses APT verification.
 
-Only `dependency-cache` imports/exports a GitHub Actions cache, under
+Only `dependency-cache` exports a GitHub Actions cache, under
 `source-container-dependencies`, with the backend `timeout=1m` option. The
 13-minute action deadline is the hard total bound: compression and multipart
 layer uploads can outlast the backend timeout (the first reviewed CI export took
@@ -84,14 +86,27 @@ both APT stages and no source/compile stages. Even with `mode=max`, its export
 contains no compiled application/native or probe layers. Export failure is fatal
 and visible; no build/cache action ignores errors. Confirm actual export completion
 from BuildKit logs, rather than inferring it from successful compilation.
-Production/probe builds reuse dependencies and local builder state during the
-same job without uploading source-dependent multi-gigabyte layers.
+Every consuming production/probe build also imports this dependency scope. A
+cache-only solve can record lazy cache hits without fetching their layer data;
+its remote provider cannot be assumed to survive into another solve. Reimporting
+keeps the provider available when COPY or image export materializes those layers.
+No consuming solve exports source-dependent multi-gigabyte layers.
+
+The CI APT budget is seven minutes so the 13-minute dependency step has room for
+base pulls, the ten-second termination grace and cache compression/export. A
+successful inner phase is still subject to the independent action/job deadlines.
 
 GitVersion still needs `.git`. Checkout-specific Git metadata invalidates `COPY . .`
 across CI jobs, so budget CI as a cold source/native build. Only APT dependencies
 are expected to be reusable between jobs. Fully warm lab timings describe repeated
 builds from one unchanged checkout and builder, not hosted-checkout performance.
 GitHub's branch cache rules mean a first PR/tag run may miss every dependency cache.
+The dependency-only warmer runs on relevant pushes to `dev`, weekly on the default
+branch and manual dispatch. It deliberately uses `pull` and `no-cache` to validate
+current package/archive availability and refresh default-branch caches readable
+by release tags after the workflow lands. It never compiles or publishes images.
+Cache hits do not validate current package names or security updates. A cache-service
+outage still fails a required export by policy; warming does not remove that trade-off.
 Python tests use `-B`, and Docker excludes bytecode/cache directories.
 
 The small `source-container-probe-evidence` CI artifact records architecture,
@@ -131,9 +146,14 @@ occupied fixture ports or a stale probe export. It creates its own Buildx builde
 runs an uncached dependency bootstrap, a fresh source build and probe export, then
 repeats with warm caches. This matches the CI dependency/source/probe target order.
 Both modes run image version, provenance, ZeroMQ and the workflow's actual
-protected listener script. Warm validation requires production publish and probe
+protected listener script. Cold and warm probe exports must reuse the audited
+production publish layer; warm validation also requires production publish and probe
 build cache hits. The driver removes its own builder, preserves evidence and
 leaves uniquely tagged images for inspection. It never prunes shared Docker caches.
+This lab tests local builder reuse, not GHA lazy-layer restoration. A fresh-runner
+CI rerun on the same commit must independently show both APT RUN vertices as
+`CACHED` in the dependency target and production image build. Keep cache imports
+on all consuming solves even when a previous local run appeared to materialize layers.
 Interruption stops the active subprocess group and still attempts builder cleanup.
 Cleanup failure returns nonzero and leaves `complete: false`, distinguished from
 `functional_validation_passed`; the original failure/interruption code is preserved.

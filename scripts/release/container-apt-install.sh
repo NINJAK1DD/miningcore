@@ -10,7 +10,7 @@ if [[ ${1:-} == --install-recommends ]]; then
   shift
 fi
 budget=${MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS:-1800}
-if [[ ! $budget =~ ^[0-9]{1,4}$ ]] || (( 10#$budget < 1 || 10#$budget > 1800 )) || (( $# == 0 )); then
+if [[ ! $budget =~ ^[0-9]{1,4}$ ]] || (( 10#$budget > 1800 )) || (( $# == 0 )); then
   echo 'Invalid container dependency budget or empty package list' >&2
   exit 64
 fi
@@ -22,6 +22,8 @@ for package in "$@"; do
 done
 budget=$((10#$budget))
 printf 'container_dependencies start timeout_seconds=%s\n' "$budget"
+# GNU timeout treats zero as disabled. This opt-in is for slow local builds;
+# workflow policy tests require every CI caller to use a positive bounded value.
 status=0
 timeout --signal=TERM --kill-after=10s "${budget}s" bash -euo pipefail -c '
   apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
