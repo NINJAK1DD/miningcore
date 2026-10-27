@@ -37,7 +37,31 @@ class WorkflowPolicyTests(unittest.TestCase):
         tests = next(step for step in steps if step['name'] == 'Test bounded container build failure propagation')
         self.assertIn('python3 -B', tests['run'])
         checkout = next(step for step in steps if step['name'] == 'Checkout source')
-        self.assertEqual('${{ github.event.pull_request.head.sha || github.sha }}', checkout['with']['ref'])
+        self.assertEqual('${{ env.SOURCE_SHA }}', checkout['with']['ref'])
+
+    def test_source_checkout_and_every_image_reference_use_the_same_identity(self):
+        workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
+        job = workflow['jobs']['source-container-check']
+        self.assertEqual('${{ github.event.pull_request.head.sha || github.sha }}', job['env']['SOURCE_SHA'])
+        expected = 'miningcore-source-test:${{ env.SOURCE_SHA }}'
+        references = 0
+        for step in job['steps']:
+            text = step.get('run', '') + step.get('with', {}).get('tags', '')
+            count = text.count('miningcore-source-test:')
+            self.assertEqual(count, text.count(expected), step['name'])
+            references += count
+        self.assertGreater(references, 1)
+
+    def test_release_and_warmer_dependency_cache_inputs_match(self):
+        release = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
+        warmer = yaml.load((ROOT / '.github/workflows/source-container-cache.yml').read_text(), Loader=yaml.BaseLoader)
+        dependency = next(step['with'] for step in release['jobs']['source-container-check']['steps']
+                          if step.get('with', {}).get('target') == 'dependency-cache')
+        refresh = next(step['with'] for step in warmer['jobs']['dependencies']['steps']
+                       if step.get('with', {}).get('target') == 'dependency-cache')
+        # Even a lower, otherwise valid timeout changes the APT layer cache key.
+        self.assertEqual(dependency['build-args'], refresh['build-args'])
+        self.assertEqual(dependency['cache-to'], refresh['cache-to'])
 
     def test_default_branch_dependency_refresh_is_bounded_and_never_publishes(self):
         workflow = yaml.load((ROOT / '.github/workflows/source-container-cache.yml').read_text(), Loader=yaml.BaseLoader)

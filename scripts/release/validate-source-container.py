@@ -183,7 +183,7 @@ def main():
             run(mode + '-version', ['docker', 'run', '--rm', image, '--version'], 120)
             run(mode + '-zeromq', ['docker', 'run', '--rm', '--volume', str(exported / 'zeromq-runtime-probe') + ':/probe:ro',
                                  '--entrypoint', 'dotnet', image, '/probe/ZeroMqRuntimeProbe.dll'], 120)
-            script = smoke.replace('${{ github.sha }}', suffix)
+            script = smoke.replace('${{ env.SOURCE_SHA }}', suffix)
             if '${{' in script: raise ValueError('Unsupported workflow expression in runtime check')
             script_path = output / (mode + '-listeners.sh')
             script_path.write_text(script)

@@ -91,6 +91,8 @@ cache-only solve can record lazy cache hits without fetching their layer data;
 its remote provider cannot be assumed to survive into another solve. Reimporting
 keeps the provider available when COPY or image export materializes those layers.
 No consuming solve exports source-dependent multi-gigabyte layers.
+The workflow policy requires the release dependency build arguments to equal the
+warmer's arguments exactly: even a lower timeout changes the APT cache key.
 
 The CI APT budget is seven minutes so the 13-minute dependency step has room for
 base pulls, the ten-second termination grace and cache compression/export. A
@@ -108,6 +110,19 @@ by release tags after the workflow lands. It never compiles or publishes images.
 Cache hits do not validate current package names or security updates. A cache-service
 outage still fails a required export by policy; warming does not remove that trade-off.
 Python tests use `-B`, and Docker excludes bytecode/cache directories.
+
+After merge, verify the warmer's dependency export completes, then verify a new
+PR/ref imports the default-branch cache and both APT RUN vertices are reused
+without helper execution. Until that happens, default-branch warming is configured
+and statically checked, not demonstrated live. The merge push matches the warmer's
+Dockerfile/helper/workflow path filters. Record the warmer and consuming job links
+before the next release; manual dispatch on `dev` can retry a missed push run.
+
+Base-image digest changes can invalidate dependencies before the next weekly run.
+Monitor misses and cache-service failures before increasing refresh frequency;
+daily uncached refreshes can churn multi-gigabyte layers against repository cache
+limits. A warm release check may use an APT snapshot up to a week old; published
+release artifacts still come from the independent `Dockerfile.release` path.
 
 The small `source-container-probe-evidence` CI artifact records architecture,
 artifact digests and four phase durations/statuses, with seven-day retention.
@@ -138,7 +153,9 @@ allowed. Checks use the shared Git/Docker wildcard subset in the current
 `.dockerignore` (`--exclude-from`, not normal Git ignores). Docker-specific pattern
 extensions require updating this check and its fixtures. The source commit/tree
 are rechecked before each image/probe build and before success. CI source checkout
-uses the immutable PR head SHA.
+uses the immutable PR head SHA. A single job-level `SOURCE_SHA` also names every
+source test image and container invocation, so a synthetic merge SHA cannot label
+an image built from a different checked-out commit.
 
 The output directory must be new and inside `build/`, which is excluded from the
 Docker context. The driver refuses existing reserved listener containers/networks,

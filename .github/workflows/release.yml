@@ -83,6 +83,8 @@ jobs:
     # Reuse this image's validated builder for runtime probes. No second host
     # native toolchain/bootstrap is needed; retain the existing overall budget.
     timeout-minutes: 45
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     permissions:
       contents: read
 
@@ -92,7 +94,7 @@ jobs:
         with:
           persist-credentials: false
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ env.SOURCE_SHA }}
           fetch-depth: 0
 
       - name: Test bounded container build failure propagation
@@ -126,14 +128,14 @@ jobs:
           file: Dockerfile
           load: true
           push: false
-          tags: miningcore-source-test:${{ github.sha }}
+          tags: miningcore-source-test:${{ env.SOURCE_SHA }}
           build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420
           # Imported cache hits can retain lazy remote blobs. Every consuming
           # solve needs the remote provider, even when the same builder is reused.
           cache-from: type=gha,scope=source-container-dependencies,timeout=1m
 
       - name: Smoke-test source container
-        run: docker run --rm miningcore-source-test:${{ github.sha }} --version
+        run: docker run --rm miningcore-source-test:${{ env.SOURCE_SHA }} --version
 
       - name: Export source container runtime probes
         id: runtime-probes
@@ -153,7 +155,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --entrypoint sh miningcore-source-test:${{ github.sha }} \
+          docker run --rm --entrypoint sh miningcore-source-test:${{ env.SOURCE_SHA }} \
             -c 'cd /app && sha256sum Miningcore.dll ./*.so' |
             python3 scripts/release/verify-container-probes.py build/container-runtime-probes/build-evidence.json
 
@@ -164,7 +166,7 @@ jobs:
           docker run --rm \
             --volume "$GITHUB_WORKSPACE/build/container-runtime-probes/zeromq-runtime-probe:/probe:ro" \
             --entrypoint dotnet \
-            miningcore-source-test:${{ github.sha }} \
+            miningcore-source-test:${{ env.SOURCE_SHA }} \
             /probe/ZeroMqRuntimeProbe.dll
 
       - name: Test protected container listeners from host loopback
@@ -203,7 +205,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE/build/container-runtime-probes/api-listener-smoke-host:/testhost:ro" \
             --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-container-smoke.json:/test/config.json:ro" \
             --entrypoint dotnet \
-            miningcore-source-test:${{ github.sha }} \
+            miningcore-source-test:${{ env.SOURCE_SHA }} \
             /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
 
           admin_status=000
@@ -288,7 +290,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE/build/container-runtime-probes/api-listener-smoke-host:/testhost:ro" \
             --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-container-smoke.json:/test/config.json:ro" \
             --entrypoint dotnet \
-            miningcore-source-test:${{ github.sha }} \
+            miningcore-source-test:${{ env.SOURCE_SHA }} \
             /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
 
           unavailable_status=000
@@ -320,7 +322,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE/build/container-runtime-probes/api-listener-smoke-host:/testhost:ro" \
             --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-rate-limit-smoke.json:/test/config.json:ro" \
             --entrypoint dotnet \
-            miningcore-source-test:${{ github.sha }} \
+            miningcore-source-test:${{ env.SOURCE_SHA }} \
             /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
 
           metrics_status=000
@@ -380,7 +382,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE/build/container-runtime-probes/api-listener-smoke-host:/testhost:ro" \
             --volume "$GITHUB_WORKSPACE/scripts/release/api-listener-nginx-smoke.json:/test/config.json:ro" \
             --entrypoint dotnet \
-            miningcore-source-test:${{ github.sha }} \
+            miningcore-source-test:${{ env.SOURCE_SHA }} \
             /testhost/Miningcore.Tests.ProcessHost.dll api /test/config.json
 
           # Review the pinned nginx version and digest at least quarterly and
