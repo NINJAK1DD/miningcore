@@ -80,7 +80,7 @@ that bypasses APT verification.
 Only `dependency-cache` exports a GitHub Actions cache, under
 `source-container-dependencies`, with the backend `timeout=1m` option. The
 13-minute action deadline is the hard total bound: compression and multipart
-layer uploads can outlast the backend timeout (the first reviewed CI export took
+layer uploads can outlast the backend timeout (the first measured CI export took
 184.1 seconds). It depends on
 both APT stages and no source/compile stages. Even with `mode=max`, its export
 contains no compiled application/native or probe layers. Export failure is fatal
@@ -175,7 +175,7 @@ This lab tests local builder reuse, not GHA lazy-layer restoration. A fresh-runn
 CI rerun on the same commit must independently show both APT RUN cache hits in
 the dependency target and their reuse in the production image build, without
 `container_dependencies start`/APT execution. When lazy blobs are materialized,
-BuildKit may display extraction and `DONE` instead of `CACHED`; the reviewed warm
+BuildKit may display extraction and `DONE` instead of `CACHED`; the recorded warm
 run fetched/extracted its builder dependency layer in 80.5 seconds without running
 APT, while its runtime dependency vertex was `CACHED`. Keep cache imports
 on all consuming solves even when a previous local run appeared to materialize layers.
