@@ -156,6 +156,10 @@ are rechecked before each image/probe build and before success. CI source checko
 uses the immutable PR head SHA. A single job-level `SOURCE_SHA` also names every
 source test image and container invocation, so a synthetic merge SHA cannot label
 an image built from a different checked-out commit.
+Runtime scripts expand the quoted shell variable `"$SOURCE_SHA"`; GitHub expression
+interpolation is limited to action inputs and the job environment. The lab passes
+its unique image suffix through that environment and executes the listener script
+unchanged, rejecting any leftover GitHub workflow expression.
 
 The output directory must be new and inside `build/`, which is excluded from the
 Docker context. The driver refuses existing reserved listener containers/networks,
@@ -205,6 +209,8 @@ covered by claims about this source-container job.
 
 ## Design references
 
+- [GitHub's intermediate environment variable guidance](https://docs.github.com/en/actions/reference/security/secure-use#use-an-intermediate-environment-variable)
+  explains using quoted shell variables instead of generating inline script text from expressions.
 - [Docker multi-stage builds](https://docs.docker.com/build/building/multi-stage/)
   explain reuse of a named builder without adding the SDK to the runtime image.
 - [Docker local exporter](https://docs.docker.com/build/exporters/local-tar/)

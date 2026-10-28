@@ -86,6 +86,22 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             driver.require_publish_reuse({'vertices': []})
 
+    def test_listener_identity_uses_environment_without_shell_reinterpretation(self):
+        source = 'fixture-$(printf unexpected)'
+        script = 'printf "%s" "$SOURCE_SHA"'
+        with patch.dict(os.environ, {'SOURCE_SHA': 'parent-source', 'LAB_INHERITED': 'kept'}):
+            environment = driver.listener_environment(script, self.root, source)
+        result = subprocess.run(['bash', '-eu', '-c', script], env=environment,
+                                capture_output=True, text=True, timeout=10, check=True)
+        self.assertEqual(source, result.stdout)
+        self.assertEqual(str(self.root), environment['GITHUB_WORKSPACE'])
+        self.assertEqual('kept', environment['LAB_INHERITED'])
+
+    def test_listener_rejects_leftover_workflow_expressions(self):
+        for expression in ('${{ env.SOURCE_SHA }}', '${{ github.sha }}', '${{ unknown }}'):
+            with self.subTest(expression=expression), self.assertRaises(ValueError):
+                driver.listener_environment('echo ' + expression, self.root, 'fixture')
+
     def lab_process(self, **environment):
         binary = self.base / 'bin'
         binary.mkdir()

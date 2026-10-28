@@ -43,13 +43,13 @@ class WorkflowPolicyTests(unittest.TestCase):
         workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
         job = workflow['jobs']['source-container-check']
         self.assertEqual('${{ github.event.pull_request.head.sha || github.sha }}', job['env']['SOURCE_SHA'])
-        expected = 'miningcore-source-test:${{ env.SOURCE_SHA }}'
         references = 0
         for step in job['steps']:
-            text = step.get('run', '') + step.get('with', {}).get('tags', '')
-            count = text.count('miningcore-source-test:')
-            self.assertEqual(count, text.count(expected), step['name'])
-            references += count
+            for text, expected in ((step.get('run', ''), '"miningcore-source-test:$SOURCE_SHA"'),
+                                   (step.get('with', {}).get('tags', ''), 'miningcore-source-test:${{ env.SOURCE_SHA }}')):
+                count = text.count('miningcore-source-test:')
+                self.assertEqual(count, text.count(expected), step['name'])
+                references += count
         self.assertGreater(references, 1)
 
     def test_release_and_warmer_dependency_cache_inputs_match(self):

@@ -54,6 +54,12 @@ def require_publish_reuse(record):
         raise ValueError('Probe export did not reuse the audited production publish')
 
 
+def listener_environment(script, root, source_sha):
+    if '${{' in script:
+        raise ValueError('Unsupported workflow expression in runtime check')
+    return dict(os.environ, GITHUB_WORKSPACE=str(root), SOURCE_SHA=source_sha)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[2])
@@ -183,11 +189,10 @@ def main():
             run(mode + '-version', ['docker', 'run', '--rm', image, '--version'], 120)
             run(mode + '-zeromq', ['docker', 'run', '--rm', '--volume', str(exported / 'zeromq-runtime-probe') + ':/probe:ro',
                                  '--entrypoint', 'dotnet', image, '/probe/ZeroMqRuntimeProbe.dll'], 120)
-            script = smoke.replace('${{ env.SOURCE_SHA }}', suffix)
-            if '${{' in script: raise ValueError('Unsupported workflow expression in runtime check')
+            environment = listener_environment(smoke, root, suffix)
             script_path = output / (mode + '-listeners.sh')
-            script_path.write_text(script)
-            run(mode + '-listeners', ['bash', str(script_path)], 300, dict(os.environ, GITHUB_WORKSPACE=str(root)))
+            script_path.write_text(smoke)
+            run(mode + '-listeners', ['bash', str(script_path)], 300, environment)
             exported.rename(output / (mode + '-probes'))
         clean_source(root, source_commit)
         functional_passed = True
