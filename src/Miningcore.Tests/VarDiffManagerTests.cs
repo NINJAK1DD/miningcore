@@ -128,6 +128,7 @@ public class VarDiffManagerTests
     public void ExtremeRatios_AvoidIntermediateOverflowAndUnderflow(double difficulty, double target,
         double average, double expected)
     {
+        using var floatingPoint = DefaultFloatingPointScope.Enter();
         var (context, options, clock, time) = Fixture(difficulty);
         options.MinDiff = double.Epsilon;
         options.TargetTime = target;
@@ -139,7 +140,41 @@ public class VarDiffManagerTests
         var result = VarDiffManager.Update(context, options, clock);
         Assert.NotNull(result);
         Assert.True(double.IsFinite(result.Value));
-        Assert.InRange(result.Value / expected, 0.99999999999999, 1.00000000000001);
+        if(double.IsSubnormal(expected))
+            Assert.Equal(BitConverter.DoubleToInt64Bits(expected), BitConverter.DoubleToInt64Bits(result.Value));
+        else
+            Assert.InRange(result.Value / expected, 0.99999999999999, 1.00000000000001);
+    }
+
+    [Fact]
+    public void ExtremeRatios_UseDefaultFloatingPointModeAndRestoreNativeCallerState()
+    {
+        if(!DefaultFloatingPointScope.IsSupported)
+        {
+            Assert.Null(DefaultFloatingPointScope.Enter());
+            return;
+        }
+
+        var original = DefaultFloatingPointScope.Capture();
+        try
+        {
+            var native = original;
+            native.Mxcsr |= 0x8040; // FTZ and DAZ, as used by native hashing code.
+            DefaultFloatingPointScope.Restore(native);
+            var before = DefaultFloatingPointScope.Capture();
+            using(DefaultFloatingPointScope.Enter())
+            {
+                Assert.Equal(0u, DefaultFloatingPointScope.Capture().Mxcsr & 0x8040u);
+            }
+            Assert.Equal(before.Mxcsr, DefaultFloatingPointScope.Capture().Mxcsr);
+            // Enter the real fixture with the contaminated mode still active.
+            ExtremeRatios_AvoidIntermediateOverflowAndUnderflow(1e-300, 1e-30, 1, double.Epsilon);
+            Assert.Equal(before.Mxcsr, DefaultFloatingPointScope.Capture().Mxcsr);
+        }
+        finally
+        {
+            DefaultFloatingPointScope.Restore(original);
+        }
     }
 
     [Theory]

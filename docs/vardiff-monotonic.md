@@ -281,6 +281,16 @@ runtime role.
 
 ## Validation evidence
 
+The extreme-ratio arithmetic fixture requires gradual underflow. On glibc Linux
+x86-64 it saves the thread's floating-point environment, establishes the default
+environment and restores the complete saved state on exit. A forced FTZ/DAZ
+regression enters the fixture with denormals disabled and verifies state restoration.
+Subnormal expected results use an exact bit comparison, retaining the
+`double.Epsilon` vector without a ratio that can itself become `0 / 0`.
+Other platforms retain their existing arithmetic test execution. This test-only
+isolation does not change production hashing or VarDiff behavior; the native
+boundary investigation is tracked in [#226](https://github.com/NINJAK1DD/miningcore/issues/226).
+
 Dated run results and environment details are recorded in
 [PR #209](https://github.com/NINJAK1DD/miningcore/pull/209).
 The commands above describe reproducible validation without depending on a particular
