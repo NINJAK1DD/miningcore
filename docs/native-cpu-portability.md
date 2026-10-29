@@ -33,9 +33,11 @@ Volume 1, “Checking for the DAZ Flag in the MXCSR Register,” and Volume 2A,
 “FXSAVE—Save x87 FPU, MMX Technology, and SSE State” (save-area layout and
 reserved-bit fallback). Section titles identify the references across revisions
 whose section numbers differ.
-Sticky exception status flags are allowed to accumulate: they describe arithmetic
-already performed (Zano initialization sets the inexact flag), rather than rounding,
-exception masks or denormal handling for subsequent managed operations.
+The gate compares floating-point controls only. Sticky exception status flags are
+excluded from the comparison and may be set or cleared (Zano initialization sets
+the inexact flag). These flags record prior arithmetic; preserving that status
+history is outside the gate's contract. Rounding, exception masks and denormal
+handling for subsequent operations remain checked.
 
 The gate runs in Linux package/source inventory validation, the source Docker
 builder and the .NET/Release jobs before their managed tests. The implementation
