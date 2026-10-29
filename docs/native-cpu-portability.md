@@ -29,8 +29,10 @@ On x86-64 the probe reads `MXCSR_MASK` from an aligned, zeroed FXSAVE area befor
 enabling flushing. DAZ is enabled only when advertised; a zero mask uses Intel's
 `0x0000ffbf` fallback, which excludes DAZ. Regression cases cover zero masks,
 unsupported DAZ and supported DAZ. See the [Intel Software Developer's Manual](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
-Volume 1 §10.5.1.2 (DAZ detection and MXCSR_MASK) and the FXSAVE instruction entry in
-Volume 2A (save-area layout and reserved-bit fallback).
+Volume 1, “Checking for the DAZ Flag in the MXCSR Register,” and Volume 2A,
+“FXSAVE—Save x87 FPU, MMX Technology, and SSE State” (save-area layout and
+reserved-bit fallback). Section titles identify the references across revisions
+whose section numbers differ.
 Sticky exception status flags are allowed to accumulate: they describe arithmetic
 already performed (Zano initialization sets the inexact flag), rather than rounding,
 exception masks or denormal handling for subsequent managed operations.
