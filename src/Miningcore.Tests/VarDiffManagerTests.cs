@@ -163,9 +163,9 @@ public class VarDiffManagerTests
         try
         {
             var native = original;
-            native.ControlWord |= 0x0c00; // x87 round toward zero.
+            native.ControlWord |= 0x0c3f; // x87 round toward zero, exceptions masked.
             native.StatusWord |= 1; // A masked x87 invalid-operation status flag.
-            native.Mxcsr |= 0xe040; // FTZ, DAZ and SSE round toward zero.
+            native.Mxcsr |= 0xffc0; // FTZ, DAZ and SSE round toward zero, exceptions masked.
             DefaultFloatingPointScope.Restore(native);
             var before = DefaultFloatingPointScope.Capture();
             using(DefaultFloatingPointScope.Enter())
@@ -175,18 +175,24 @@ public class VarDiffManagerTests
                 Assert.Equal(0, active.ControlWord & 0x0c00);
                 Assert.Equal(0, active.StatusWord & 0x3f);
             }
-            Assert.Equal(before, DefaultFloatingPointScope.Capture());
+            AssertSameFloatingPointBehavior(before);
             // Enter the real fixture with the contaminated mode still active.
             ExtremeRatios_AvoidIntermediateOverflowAndUnderflow(1e-300, 1e-30, 1, double.Epsilon);
-            Assert.Equal(before, DefaultFloatingPointScope.Capture());
+            AssertSameFloatingPointBehavior(before);
             Assert.Throws<InvalidOperationException>(() => DefaultFloatingPointScope.Run(
                 () => throw new InvalidOperationException("fixture failed")));
-            Assert.Equal(before, DefaultFloatingPointScope.Capture());
+            AssertSameFloatingPointBehavior(before);
         }
         finally
         {
             DefaultFloatingPointScope.Restore(original);
         }
+    }
+
+    private static void AssertSameFloatingPointBehavior(DefaultFloatingPointScope.State expected)
+    {
+        var actual = DefaultFloatingPointScope.Capture();
+        Assert.True(expected.HasSameBehavior(actual), $"Expected: {expected}{Environment.NewLine}Actual: {actual}");
     }
 
     [Theory]

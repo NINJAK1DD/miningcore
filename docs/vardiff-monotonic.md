@@ -285,8 +285,11 @@ The extreme-ratio arithmetic fixture requires gradual underflow. On glibc Linux
 x86-64 it saves the thread's floating-point environment, establishes the default
 environment and restores the complete saved state on exit. A forced FTZ/DAZ
 regression enters the fixture with denormals disabled, non-default x87/SSE rounding
-and a masked x87 exception flag. It compares all represented x87 environment fields
-and MXCSR after normal and exceptional exits. A failed fixture and a simultaneous
+and a masked x87 exception flag. It compares the x87 control, status and tag words
+and MXCSR after normal and exceptional exits, with hexadecimal failure diagnostics.
+The saved state still includes all glibc fields; instruction/data pointers, opcode
+and selectors are excluded from assertions because they record prior x87 execution.
+A failed fixture and a simultaneous
 restoration failure are reported together, preserving both diagnostics.
 Subnormal expected results use an exact bit comparison, retaining the
 `double.Epsilon` vector without a ratio that can itself become `0 / 0`.

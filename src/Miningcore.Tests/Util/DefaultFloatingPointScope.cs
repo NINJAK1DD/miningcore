@@ -27,6 +27,14 @@ internal sealed class DefaultFloatingPointScope : IDisposable
         [FieldOffset(20)] public uint DataPointer;
         [FieldOffset(24)] public ushort DataSelector;
         [FieldOffset(28)] public uint Mxcsr;
+
+        // x87 instruction/data pointers and opcode record prior execution;
+        // restoring numerical behavior does not require those values to match.
+        internal bool HasSameBehavior(State other) => ControlWord == other.ControlWord &&
+            StatusWord == other.StatusWord && TagWord == other.TagWord && Mxcsr == other.Mxcsr;
+
+        public override string ToString() =>
+            $"x87(control=0x{ControlWord:x4}, status=0x{StatusWord:x4}, tags=0x{TagWord:x4}), MXCSR=0x{Mxcsr:x8}";
     }
 
     private State saved;
