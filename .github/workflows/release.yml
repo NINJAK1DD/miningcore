@@ -611,13 +611,21 @@ jobs:
           src/Miningcore.Tests/Miningcore.Tests.csproj
 
       - name: Run complete test suite
+        id: release_full_suite
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Release/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Release/net10.0
           MININGCORE_TEST_POSTGRES: Host=postgres;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
         run: >-
           dotnet test --configuration Release
           --logger:"console;verbosity=detailed"
+          --logger:"trx;LogFileName=release-full.trx"
+          --results-directory "$GITHUB_WORKSPACE/build/ci-tests"
           --no-build --verbosity normal src
+
+      - name: Report captured floating-point diagnostics
+        if: ${{ always() && steps.release_full_suite.outcome != 'skipped' }}
+        timeout-minutes: 1
+        run: python3 -B scripts/release/report-floating-point-diagnostics.py "$GITHUB_WORKSPACE/build/ci-tests/release-full.trx"
 
       - name: Publish framework-dependent Linux x64 build
         run: >-

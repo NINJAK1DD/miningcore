@@ -288,8 +288,11 @@ environment and restores the complete saved state on exit. A test-only native
 helper reads `MXCSR_MASK` from aligned, zeroed FXSAVE storage before enabling DAZ;
 a zero mask uses the `0x0000ffbf` fallback that excludes DAZ. The regression has an
 FTZ-only row and a DAZ row when advertised, with an explicit FTZ fallback otherwise.
-On DAZ-capable hosts, negative controls show that both unisolated fixtures fail,
-then their isolated counterparts pass. Both rows use non-default x87/SSE rounding
+On DAZ-capable hosts, negative controls require the precise expected failures:
+VarDiff returns zero instead of the epsilon bit pattern, and CryptoNote fails to
+throw its expected range exception. Their isolated counterparts then pass. Success
+and failure construction/formatting/stack paths are warmed in the default mode first.
+Both rows use non-default x87/SSE rounding
 and a masked x87 exception flag. It compares the x87 control, status and tag words
 and MXCSR after normal and exceptional exits, with hexadecimal failure diagnostics.
 The saved state still includes all glibc fields; instruction/data pointers, opcode
@@ -303,15 +306,23 @@ The native-assisted stack regression pushes `1` with `fld1`, confirms that entry
 is rejected without changing controls, tags or stack position, then pops and checks
 the same value. Sticky flags may accumulate during managed exception handling.
 
-The helper is compiled with `cc` only for full glibc Linux x64 test builds and is
+The helper is compiled with `${CC:-cc}` only for full glibc Linux x64 test builds and is
 copied only to test output. Managed-only listener smoke, musl, macOS and Windows
 builds do not compile it. It is not a production hashing library or runtime artifact.
+Both intermediate and output `.so` paths are registered with MSBuild `FileWrites`
+for normal and incremental builds and for clean, including managed-only clean runs.
 
 Before isolation, non-default numerical controls are reported through the
 fixture's `ITestOutputHelper`, including the managed thread ID and saved/default
 hexadecimal state. Sticky exception flags alone are not reported as a mode leak.
-The diagnostic callback is mandatory. Ordinary fixtures use the diagnostic sink
-that also emits an escaped GitHub Actions warning when `GITHUB_ACTIONS=true`.
+The diagnostic callback is mandatory. The Linux full-suite and both Ubuntu Release
+jobs capture TRX output. An `always()` post-test step runs
+`scripts/release/report-floating-point-diagnostics.py` to emit escaped GitHub warning
+commands directly from the runner, without relying on test-host stdout forwarding.
+Warnings include the test name; duplicate messages are coalesced, missing/malformed
+reports fail reporting, and synthetic/unrelated messages are ignored. This follows
+[xUnit v2 output capture](https://xunit.net/docs/capturing-output) and
+[GitHub workflow commands](https://docs.github.com/en/actions/reference/workflow-commands-for-github-actions).
 Synthetic regression diagnostics are captured and asserted, not forwarded as
 unexpected native-leak warnings. The combined regression belongs to the scope
 tests; neither numeric fixture depends on the other fixture's test class.

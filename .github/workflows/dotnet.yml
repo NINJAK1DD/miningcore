@@ -132,6 +132,10 @@ jobs:
       shell: bash
       run: bash scripts/release/test-linux-native-symbol-contracts.sh
 
+    - name: Test floating-point diagnostic reporting
+      timeout-minutes: 1
+      run: python3 -B scripts/release/test-floating-point-diagnostics.py
+
     - name: Test warning-free build audit
       shell: bash
       run: bash scripts/release/test-warning-free-build.sh
@@ -403,6 +407,7 @@ jobs:
         src/Miningcore.Tests/Miningcore.Tests.csproj
 
     - name: Test
+      id: linux_full_suite
       shell: bash
       env:
         LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net10.0
@@ -411,6 +416,11 @@ jobs:
         dotnet test --logger:"console;verbosity=detailed" --logger:"trx;LogFileName=linux-full.trx" \
           --results-directory "$GITHUB_WORKSPACE/build/ci-tests" --no-build --verbosity normal src
         python3 scripts/release/test-native-family-evidence.py --self-test "$GITHUB_WORKSPACE/build/ci-tests/linux-full.trx"
+
+    - name: Report captured floating-point diagnostics
+      if: ${{ always() && steps.linux_full_suite.outcome != 'skipped' }}
+      timeout-minutes: 1
+      run: python3 -B scripts/release/report-floating-point-diagnostics.py "$GITHUB_WORKSPACE/build/ci-tests/linux-full.trx"
 
   pps-postgres-compatibility:
     name: PPS schema on PostgreSQL ${{ matrix.postgres }}

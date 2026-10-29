@@ -39,6 +39,16 @@ public class DefaultFloatingPointScopeTests
         // Warm the numeric paths under the default mode before deliberate changes.
         VarDiffManagerTests.VerifyExtremeRatio(1e-300, 1e-30, 1, double.Epsilon);
         CryptonoteDifficultyAssignmentTests.VerifyFrozenDeltaAndIncompatibleNormalizedStart();
+        // Warm failure construction, numeric formatting and stack capture too.
+        var warmLong = Record.Exception(() => Assert.Equal(1L, 0L));
+        var warmDouble = Record.Exception(() => Assert.Equal(1d, 2d));
+        var warmThrows = Record.Exception(() => { Assert.Throws<ArgumentOutOfRangeException>(() => { }); });
+        Assert.IsType<EqualException>(warmLong);
+        Assert.IsType<EqualException>(warmDouble);
+        Assert.IsType<ThrowsException>(warmThrows);
+        _ = warmLong.ToString();
+        _ = warmDouble.ToString();
+        _ = warmThrows.ToString();
         var diagnostics = new List<string>();
         var vardiff = new VarDiffManagerTests(diagnostics.Add);
         var cryptonote = new CryptonoteDifficultyAssignmentTests(diagnostics.Add);
@@ -50,7 +60,8 @@ public class DefaultFloatingPointScopeTests
             native.StatusWord |= 1;
             native.Mxcsr = (native.Mxcsr & ~0x40u) | 0xff80u | (daz ? 0x40u : 0u);
             DefaultFloatingPointScope.Restore(native);
-            // No fresh floating-point/JIT-sensitive paths before Enter resets mode.
+            // Numeric/failure paths are warmed above; keep unrelated floating-point
+            // work out of this deliberately contaminated window.
             var before = DefaultFloatingPointScope.Capture();
             Assert.Equal(daz ? 0x40u : 0u, before.Mxcsr & 0x40u);
             using(DefaultFloatingPointScope.Enter(diagnostics.Add))
@@ -65,11 +76,15 @@ public class DefaultFloatingPointScopeTests
             if(daz)
             {
                 // Negative controls prove these exact paths fail without isolation.
-                Assert.IsAssignableFrom<XunitException>(Record.Exception(() =>
+                var underflow = Assert.IsType<EqualException>(Record.Exception(() =>
                     VarDiffManagerTests.VerifyExtremeRatio(1e-300, 1e-30, 1, double.Epsilon)));
+                Assert.Matches(@"Expected:\s+1(?:\r?\n|$)", underflow.Message);
+                Assert.Matches(@"Actual:\s+0(?:\r?\n|$)", underflow.Message);
                 DefaultFloatingPointScope.Restore(before);
-                Assert.IsAssignableFrom<XunitException>(Record.Exception(
+                var rejectedDelta = Assert.IsType<ThrowsException>(Record.Exception(
                     CryptonoteDifficultyAssignmentTests.VerifyFrozenDeltaAndIncompatibleNormalizedStart));
+                Assert.Contains(nameof(ArgumentOutOfRangeException), rejectedDelta.Message);
+                Assert.Contains("No exception was thrown", rejectedDelta.Message);
                 DefaultFloatingPointScope.Restore(before);
             }
 
@@ -150,24 +165,13 @@ public class DefaultFloatingPointScopeTests
         Assert.False(ran);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void RealDiagnostics_UseTestOutputAndSafelyAnnotateGithubActions(bool githubActions)
+    [Fact]
+    public void RealDiagnostics_AlwaysUseCapturedTestOutput()
     {
         var testOutput = Substitute.For<ITestOutputHelper>();
-        using var annotations = new StringWriter();
         const string message = "mode 100%\r\n::error::not a command";
-        DefaultFloatingPointScope.Diagnostic(testOutput, annotations, githubActions)(message);
+        DefaultFloatingPointScope.Diagnostic(testOutput)(message);
         testOutput.Received(1).WriteLine(message);
-        if(githubActions)
-        {
-            Assert.Contains("::warning title=Non-default floating-point controls::", annotations.ToString());
-            Assert.Contains("100%25%0D%0A::error::not a command", annotations.ToString());
-            Assert.Single(annotations.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries));
-        }
-        else
-            Assert.Equal(string.Empty, annotations.ToString());
     }
 
     [Fact]
