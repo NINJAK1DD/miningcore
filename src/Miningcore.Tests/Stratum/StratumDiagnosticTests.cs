@@ -618,10 +618,10 @@ public class StratumDiagnosticTests
             await release.Task.WaitAsync(Deadline);
             throw failure;
         };
-        StratumConnection connection = null;
+        StratumConnection observed = null;
         var server = new DiagnosticServer(container, Substitute.For<IMessageBus>(), logs.Logger)
         {
-            Initialize = value => { connection = value; value.SetContext(worker); },
+            Initialize = value => { observed = value; value.SetContext(worker); },
             Handler = (connection, request, ct) =>
                 TrackAuthorization(() => pool.DispatchRequest(connection, request, ct), authorization),
         };
@@ -640,7 +640,7 @@ public class StratumDiagnosticTests
         }
         Assert.Equal(1, server.Errors);
         Assert.Equal(0, server.Completions);
-        Assert.True(connection.IsDisconnectRequested);
+        Assert.True(observed.IsDisconnectRequested);
         Assert.Single(logs.Records.Where(record => record["event"].Value<string>() ==
             nameof(StratumDiagnostics.Event.AssignmentPublicationFailure)));
         Assert.Equal(1, worker.AssignmentGate.CurrentCount);
