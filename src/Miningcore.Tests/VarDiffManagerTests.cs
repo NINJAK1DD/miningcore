@@ -128,7 +128,11 @@ public class VarDiffManagerTests
     public void ExtremeRatios_AvoidIntermediateOverflowAndUnderflow(double difficulty, double target,
         double average, double expected)
     {
-        using var floatingPoint = DefaultFloatingPointScope.Enter();
+        DefaultFloatingPointScope.Run(() => VerifyExtremeRatio(difficulty, target, average, expected));
+    }
+
+    private static void VerifyExtremeRatio(double difficulty, double target, double average, double expected)
+    {
         var (context, options, clock, time) = Fixture(difficulty);
         options.MinDiff = double.Epsilon;
         options.TargetTime = target;
@@ -159,17 +163,25 @@ public class VarDiffManagerTests
         try
         {
             var native = original;
-            native.Mxcsr |= 0x8040; // FTZ and DAZ, as used by native hashing code.
+            native.ControlWord |= 0x0c00; // x87 round toward zero.
+            native.StatusWord |= 1; // A masked x87 invalid-operation status flag.
+            native.Mxcsr |= 0xe040; // FTZ, DAZ and SSE round toward zero.
             DefaultFloatingPointScope.Restore(native);
             var before = DefaultFloatingPointScope.Capture();
             using(DefaultFloatingPointScope.Enter())
             {
-                Assert.Equal(0u, DefaultFloatingPointScope.Capture().Mxcsr & 0x8040u);
+                var active = DefaultFloatingPointScope.Capture();
+                Assert.Equal(0u, active.Mxcsr & 0xe040u);
+                Assert.Equal(0, active.ControlWord & 0x0c00);
+                Assert.Equal(0, active.StatusWord & 0x3f);
             }
-            Assert.Equal(before.Mxcsr, DefaultFloatingPointScope.Capture().Mxcsr);
+            Assert.Equal(before, DefaultFloatingPointScope.Capture());
             // Enter the real fixture with the contaminated mode still active.
             ExtremeRatios_AvoidIntermediateOverflowAndUnderflow(1e-300, 1e-30, 1, double.Epsilon);
-            Assert.Equal(before.Mxcsr, DefaultFloatingPointScope.Capture().Mxcsr);
+            Assert.Equal(before, DefaultFloatingPointScope.Capture());
+            Assert.Throws<InvalidOperationException>(() => DefaultFloatingPointScope.Run(
+                () => throw new InvalidOperationException("fixture failed")));
+            Assert.Equal(before, DefaultFloatingPointScope.Capture());
         }
         finally
         {

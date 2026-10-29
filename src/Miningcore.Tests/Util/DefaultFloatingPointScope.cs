@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Runtime.ExceptionServices;
 
 namespace Miningcore.Tests.Util;
 
@@ -17,6 +18,14 @@ internal sealed class DefaultFloatingPointScope : IDisposable
     [StructLayout(LayoutKind.Explicit, Size = 32)]
     internal struct State
     {
+        [FieldOffset(0)] public ushort ControlWord;
+        [FieldOffset(4)] public ushort StatusWord;
+        [FieldOffset(8)] public ushort TagWord;
+        [FieldOffset(12)] public uint InstructionPointer;
+        [FieldOffset(16)] public ushort CodeSelector;
+        [FieldOffset(18)] public ushort Opcode;
+        [FieldOffset(20)] public uint DataPointer;
+        [FieldOffset(24)] public ushort DataSelector;
         [FieldOffset(28)] public uint Mxcsr;
     }
 
@@ -29,12 +38,32 @@ internal sealed class DefaultFloatingPointScope : IDisposable
         // glibc defines FE_DFL_ENV as (const fenv_t *) -1.
         if(SetDefault(new IntPtr(-1)) != 0)
         {
-            Restore(saved);
-            throw new InvalidOperationException("Cannot establish the default floating-point environment");
+            var failure = new InvalidOperationException("Cannot establish the default floating-point environment");
+            try { Restore(saved); }
+            catch(Exception restoreFailure) { throw new AggregateException(failure, restoreFailure); }
+            throw failure;
         }
     }
 
     internal static IDisposable Enter() => IsSupported ? new DefaultFloatingPointScope() : null;
+
+    internal static void Run(Action action) => Run(action, Enter());
+
+    // Keep a failed assertion as well as a restoration failure; Dispose in a
+    // plain using/finally would replace the original diagnostic.
+    internal static void Run(Action action, IDisposable scope)
+    {
+        ExceptionDispatchInfo failure = null;
+        try { action(); }
+        catch(Exception ex) { failure = ExceptionDispatchInfo.Capture(ex); }
+        try { scope?.Dispose(); }
+        catch(Exception restoreFailure) when(failure != null)
+        {
+            throw new AggregateException("Fixture and floating-point restoration both failed",
+                failure.SourceException, restoreFailure);
+        }
+        failure?.Throw();
+    }
 
     internal static State Capture()
     {
