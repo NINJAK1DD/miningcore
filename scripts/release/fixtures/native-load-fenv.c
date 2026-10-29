@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "native-mxcsr.h"
 
 /* Never link this probe with fast-math: its own startup must preserve IEEE mode. */
 struct controls {
@@ -69,7 +70,7 @@ int main(int argc, char **argv)
     if(mode >= 4)
     {
 #if defined(__x86_64__)
-        unsigned int mxcsr = capture().mxcsr | 0x8040u;
+        unsigned int mxcsr = capture().mxcsr | native_supported_flush_bits();
         __asm__ volatile("ldmxcsr %0" : : "m"(mxcsr));
 #else
         uint64_t fpcr = capture().fpcr | (UINT64_C(1) << 24);

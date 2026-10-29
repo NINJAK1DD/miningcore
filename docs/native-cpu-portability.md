@@ -16,6 +16,11 @@ checks CryptoNote's empty-input Keccak vector and rejected-input path. Missing
 libraries, missing dependencies, crashes and a ten-second probe deadline fail the
 gate. The probe compiles without fast-math and tests both clean and deliberately
 corrupting constructor/destructor fixtures.
+On x86-64 the probe reads `MXCSR_MASK` from an aligned, zeroed FXSAVE area before
+enabling flushing. DAZ is enabled only when advertised; a zero mask uses Intel's
+`0x0000ffbf` fallback, which excludes DAZ. Regression cases cover zero masks,
+unsupported DAZ and supported DAZ. See Intel's
+[processor manual](https://cdrdv2-public.intel.com/843823/252046-sdm-change-document-1.pdf).
 Sticky exception status flags are allowed to accumulate: they describe arithmetic
 already performed (Zano initialization sets the inexact flag), rather than rounding,
 exception masks or denormal handling for subsequent managed operations.
