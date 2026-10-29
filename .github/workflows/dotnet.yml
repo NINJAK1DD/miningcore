@@ -397,7 +397,7 @@ jobs:
     - name: Test native load floating-point state
       if: runner.os == 'Linux'
       shell: bash
-      run: bash scripts/release/test-native-load-fenv.sh src/Miningcore/bin/Debug/net10.0
+      run: bash scripts/release/test-native-load-fenv.sh src/Miningcore/bin/Debug/net10.0 --cryptonote-vectors
 
     - name: Test RandomX CPU and OS dispatch
       shell: bash

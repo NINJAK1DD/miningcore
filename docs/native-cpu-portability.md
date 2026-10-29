@@ -27,6 +27,11 @@ executed lab coverage remain Linux x86-64. This load-time gate does not establis
 that every exported hashing operation or third-party variant preserves state;
 the wider call-boundary audit remains tracked in [#226](https://github.com/NINJAK1DD/miningcore/issues/226).
 
+Inventory validation always enforces load/unload preservation, including package
+tests that use symbol-only stub libraries. Real source Docker, .NET/Release and
+Ubuntu native-vector runs additionally require `--cryptonote-vectors`; a stub
+export table is not a cryptographic implementation and cannot pass that check.
+
 ## Linux x64 instruction baseline
 
 Linux x64 native libraries built by `src/Miningcore/build-libs-linux.sh` target

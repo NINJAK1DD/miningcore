@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
-publish_dir=$(realpath "${1:?usage: test-native-load-fenv.sh PUBLISH_DIRECTORY}")
+publish_dir=$(realpath "${1:?usage: test-native-load-fenv.sh PUBLISH_DIRECTORY [--cryptonote-vectors]}")
+probe_args=()
+case "${2:-}" in
+  '') ;;
+  --cryptonote-vectors) probe_args+=(--cryptonote-vectors) ;;
+  *) echo 'Unknown native floating-point probe option' >&2; exit 64 ;;
+esac
+[[ "$#" -le 2 ]] || exit 64
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work_dir=$(mktemp -d)
 trap 'rm -rf -- "$work_dir"' EXIT
@@ -14,7 +21,7 @@ while IFS= read -r library; do
   for mode in {0..7}; do
     # A fresh process for each library/mode ensures constructors actually execute.
     LD_LIBRARY_PATH="$publish_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-      timeout --kill-after=2s 10s "$work_dir/probe" "$publish_dir/$library" "$mode"
+      timeout --kill-after=2s 10s "$work_dir/probe" "$publish_dir/$library" "$mode" "${probe_args[@]}"
   done
   count=$((count + 1))
 done < "$script_dir/linux-native-libraries.txt"

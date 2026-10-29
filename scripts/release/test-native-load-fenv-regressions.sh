@@ -51,4 +51,10 @@ if "$work_dir/probe" "$work_dir/missing.so" 0 >"$work_dir/failure.log" 2>&1; the
   echo 'Probe accepted a missing native library' >&2; exit 1
 fi
 grep -q 'dlopen failed' "$work_dir/failure.log"
+cp "$work_dir/clean.so" "$work_dir/libcryptonote.so"
+"$work_dir/probe" "$work_dir/libcryptonote.so" 0
+if "$work_dir/probe" "$work_dir/libcryptonote.so" 0 --cryptonote-vectors >"$work_dir/failure.log" 2>&1; then
+  echo 'Vector mode accepted a symbol-only CryptoNote stub' >&2; exit 1
+fi
+grep -q 'missing cn_fast_hash_export' "$work_dir/failure.log"
 echo 'Native floating-point loader regressions passed'

@@ -53,9 +53,10 @@ static int unchanged(const char *path, const char *phase, struct controls before
 int main(int argc, char **argv)
 {
     static const int rounding[] = { FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO };
-    if(argc != 3 || argv[2][0] < '0' || argv[2][0] > '7' || argv[2][1] != '\0')
+    if((argc != 3 && argc != 4) || argv[2][0] < '0' || argv[2][0] > '7' || argv[2][1] != '\0' ||
+        (argc == 4 && strcmp(argv[3], "--cryptonote-vectors") != 0))
     {
-        fprintf(stderr, "usage: native-load-fenv LIBRARY MODE(0..7)\n");
+        fprintf(stderr, "usage: native-load-fenv LIBRARY MODE(0..7) [--cryptonote-vectors]\n");
         return 64;
     }
     const unsigned int mode = (unsigned int)(argv[2][0] - '0');
@@ -86,7 +87,7 @@ int main(int argc, char **argv)
     int ok = unchanged(argv[1], "dlopen", before);
     const char *name = strrchr(argv[1], '/');
     name = name ? name + 1 : argv[1];
-    if(strcmp(name, "libcryptonote.so") == 0)
+    if(argc == 4 && strcmp(name, "libcryptonote.so") == 0)
     {
         typedef void (*fast_hash)(const char *, unsigned char *, uint32_t);
         fast_hash hash = (fast_hash)dlsym(library, "cn_fast_hash_export");
