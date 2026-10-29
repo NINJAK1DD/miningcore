@@ -22,11 +22,12 @@ class DiagnosticReporterTests(unittest.TestCase):
         ET.SubElement(output, tag('StdOut')).text = '\n'.join(lines or [])
         ET.SubElement(output, tag('StdErr')).text = reporter.PREFIX + ' not captured fixture output'
         definitions = ET.SubElement(root, tag('TestDefinitions'))
-        for index, (owner, method) in enumerate(sorted(reporter.REQUIRED_FIXTURES)):
-            test_id = f'numeric-{index}'
-            ET.SubElement(results, tag('UnitTestResult'), testId=test_id, testName=method, outcome=outcome)
-            definition = ET.SubElement(definitions, tag('UnitTest'), id=test_id)
-            ET.SubElement(definition, tag('TestMethod'), className=owner, name=method)
+        for index, ((owner, method), count) in enumerate(sorted(reporter.REQUIRED_FIXTURES.items())):
+            for case in range(count):
+                test_id = f'numeric-{index}-{case}'
+                ET.SubElement(results, tag('UnitTestResult'), testId=test_id, testName=method, outcome=outcome)
+                definition = ET.SubElement(definitions, tag('UnitTest'), id=test_id)
+                ET.SubElement(definition, tag('TestMethod'), className=owner, name=method)
         path = Path(directory) / 'results.trx'
         ET.ElementTree(root).write(path, encoding='utf-8', xml_declaration=True)
         return path
@@ -37,13 +38,13 @@ class DiagnosticReporterTests(unittest.TestCase):
                 with self.subTest(namespace=namespace, outcome=outcome), tempfile.TemporaryDirectory() as directory:
                     message = reporter.PREFIX + ' on managed thread 42. Saved: MXCSR=0x9fc0'
                     path = self.report(directory, namespace, outcome, lines=[message])
-                    self.assertEqual([('fixture', message)], list(reporter.diagnostics(path)))
+                    self.assertEqual(([('fixture', message)], []), reporter.read_report(path))
 
     def test_ignores_synthetic_and_unrelated_messages(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.report(directory, lines=['Synthetic control regression: enabled=True',
                 'Expected: ' + reporter.PREFIX, 'ordinary output'])
-            self.assertEqual([], list(reporter.diagnostics(path)))
+            self.assertEqual(([], []), reporter.read_report(path))
 
     def test_escapes_command_data_and_test_names(self):
         warning = reporter.workflow_warning('fixture%\r\n::error::injected', reporter.PREFIX + ' 100%')
@@ -124,7 +125,7 @@ class DiagnosticReporterTests(unittest.TestCase):
                     error = io.StringIO()
                     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
                         self.assertEqual(1, reporter.main([str(path)]))
-                    self.assertIn('missing executed numeric fixtures:', error.getvalue())
+                    self.assertIn('incomplete numeric fixture evidence:', error.getvalue())
                     self.assertEqual('', output.getvalue())
 
     def test_fixture_identity_is_independent_of_display_name(self):
@@ -134,7 +135,76 @@ class DiagnosticReporterTests(unittest.TestCase):
             for result in root.findall(f'./{{{reporter.TRX_NAMESPACE}}}Results/*'):
                 result.set('testName', 'display name with arguments: value, other')
             ET.ElementTree(root).write(path, encoding='utf-8')
-            self.assertEqual([], list(reporter.diagnostics(path)))
+            self.assertEqual(([], []), reporter.read_report(path))
+
+    def test_partial_runs_emit_warnings_before_failing_coverage(self):
+        for namespace in ('', reporter.TRX_NAMESPACE):
+            for outcome in ('NotExecuted', 'Aborted', 'Timeout', 'Error'):
+                with self.subTest(namespace=namespace, outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                    message = reporter.PREFIX + ' saved MXCSR=0x9fc0'
+                    path = self.report(directory, namespace, lines=[message, message])
+                    root = ET.parse(path).getroot()
+                    prefix = f'{{{namespace}}}' if namespace else ''
+                    root.find(prefix + 'Results')[1].set('outcome', outcome)
+                    ET.ElementTree(root).write(path, encoding='utf-8')
+                    combined = io.StringIO()
+                    with contextlib.redirect_stdout(combined), contextlib.redirect_stderr(combined):
+                        self.assertEqual(1, reporter.main([str(path)]))
+                    lines = combined.getvalue().splitlines()
+                    self.assertTrue(lines[0].startswith('::warning '))
+                    self.assertIn(message, lines[0])
+                    self.assertEqual(1, sum(line.startswith('::warning ') for line in lines))
+                    self.assertIn('incomplete numeric fixture evidence:', lines[1])
+                    self.assertNotIn('distinct test warning(s)', combined.getvalue())
+
+    def test_all_reports_are_scanned_even_when_earlier_evidence_is_invalid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / 'partial'
+            second = root / 'complete'
+            first.mkdir()
+            second.mkdir()
+            partial = self.report(first, lines=[reporter.PREFIX + ' first'])
+            tree = ET.parse(partial)
+            tree.getroot().remove(tree.getroot().find('TestDefinitions'))
+            tree.write(partial, encoding='utf-8')
+            complete = self.report(second, lines=[reporter.PREFIX + ' second'])
+            malformed = root / 'malformed.trx'
+            malformed.write_text('<TestRun>', encoding='utf-8')
+            for early in (partial, root / 'missing.trx', malformed):
+                combined = io.StringIO()
+                with self.subTest(early=early), contextlib.redirect_stdout(combined), contextlib.redirect_stderr(combined):
+                    self.assertEqual(1, reporter.main([str(early), str(complete)]))
+                lines = combined.getvalue().splitlines()
+                self.assertTrue(any(line.startswith('::warning ') and ' second' in line for line in lines))
+                self.assertTrue(lines[-1].startswith('Cannot read floating-point diagnostic report:'))
+                if early == partial:
+                    self.assertIn(' first', lines[0])
+
+    def test_all_four_theory_cases_are_required_and_duplicate_ids_do_not_count(self):
+        for change in ('removed', 'skipped', 'duplicate-id', 'extra-case'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                path = self.report(directory)
+                tree = ET.parse(path)
+                results = tree.getroot().find('Results')
+                vardiff = [result for result in results if result.get('testName').startswith('ExtremeRatios_')]
+                self.assertEqual(4, len(vardiff))
+                if change == 'removed':
+                    results.remove(vardiff[0])
+                elif change == 'skipped':
+                    vardiff[0].set('outcome', 'NotExecuted')
+                elif change == 'duplicate-id':
+                    vardiff[0].set('testId', vardiff[1].get('testId'))
+                else:
+                    ET.SubElement(results, 'UnitTestResult', testId='extra', outcome='Passed')
+                    definition = ET.SubElement(tree.getroot().find('TestDefinitions'), 'UnitTest', id='extra')
+                    ET.SubElement(definition, 'TestMethod', className='Miningcore.Tests.VarDiffManagerTests',
+                                  name='ExtremeRatios_AvoidIntermediateOverflowAndUnderflow')
+                tree.write(path, encoding='utf-8')
+                error = io.StringIO()
+                with contextlib.redirect_stderr(error):
+                    self.assertEqual(1, reporter.main([str(path)]))
+                self.assertIn('expected 4 distinct executed case(s)', error.getvalue())
 
 
 if __name__ == '__main__':

@@ -334,6 +334,13 @@ executed. The reporter links result `testId` values to the canonical class/metho
 in `TestDefinitions`, so theory display-name formatting is irrelevant. Passed and
 failed cases count as executed, preserving diagnostics from failing runs; skipped
 or merely discovered cases do not. A valid TRX from another suite fails reporting.
+The gate requires four distinct executed VarDiff theory case IDs and one CryptoNote
+case ID; repeated IDs do not fill a missing case. Update those counts deliberately
+when changing the fixture vectors. For structurally valid partial reports, every
+available contamination warning is emitted before incomplete fixture evidence makes
+the step fail. All supplied report paths are scanned even if an earlier report is
+incomplete, missing or malformed. No successful warning-count summary is printed
+when evidence validation fails.
 When upgrading xUnit, verify the DAZ negative controls' `EqualException` expected/actual
 lines and `ThrowsException` missing-range-exception wording. This follows
 [xUnit v2 output capture](https://xunit.net/docs/capturing-output) and
