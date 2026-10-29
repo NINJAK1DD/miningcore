@@ -2,8 +2,9 @@
 
 ## Floating-point environment at native library load
 
-The CryptoNote shared-library link uses link flags only. Compilation retains its
-existing optimization flags; passing `-Ofast` to the link driver on GCC 11/12 or
+The CryptoNote shared-library link uses link flags only, with `-s` explicitly in
+`LDFLAGS` to preserve the previously stripped release artifact. Compilation retains
+its existing optimization flags; passing `-Ofast` to the link driver on GCC 11/12 or
 affected Clang versions can include `crtfastmath` startup code that enables FTZ/DAZ
 on the loading thread. Later threads can inherit that mode. GCC documents the
 shared-library behavior change in its [GCC 13 release notes](https://gcc.gnu.org/gcc-13/changes.html).
@@ -14,13 +15,22 @@ four rounding modes and flushing both enabled and disabled. The probe compares x
 control and MXCSR control bits before/after load and unload, and also
 checks CryptoNote's empty-input Keccak vector and rejected-input path. Missing
 libraries, missing dependencies, crashes and a ten-second probe deadline fail the
-gate. The probe compiles without fast-math and tests both clean and deliberately
-corrupting constructor/destructor fixtures.
+gate. Failures identify the library, mode and exit status, including timeout (124),
+forced kill (137) and signal termination. Kill escalation follows after two seconds.
+`MININGCORE_FENV_TIMEOUT_SECONDS` may shorten the deadline to an integer from 1 to 10;
+it cannot extend or disable it. Unset nonempty `LD_LIBRARY_PATH` and `LD_PRELOAD`
+before invoking the gate: inherited overrides are rejected, and probe dependency
+resolution uses only the publish directory plus the system loader paths.
+The probe compiles without fast-math. Regressions cover the shell entry point as
+well as clean/status-only and corrupting constructors/destructors, clearing
+previously enabled flushing, crashes, hangs that require TERM or KILL, option and
+inventory rejection, and a final inventory entry without a terminating newline.
 On x86-64 the probe reads `MXCSR_MASK` from an aligned, zeroed FXSAVE area before
 enabling flushing. DAZ is enabled only when advertised; a zero mask uses Intel's
 `0x0000ffbf` fallback, which excludes DAZ. Regression cases cover zero masks,
-unsupported DAZ and supported DAZ. See Intel's
-[processor manual](https://cdrdv2-public.intel.com/843823/252046-sdm-change-document-1.pdf).
+unsupported DAZ and supported DAZ. See the [Intel Software Developer's Manual](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
+Volume 1 §10.5.1.2 (DAZ detection and MXCSR_MASK) and the FXSAVE instruction entry in
+Volume 2A (save-area layout and reserved-bit fallback).
 Sticky exception status flags are allowed to accumulate: they describe arithmetic
 already performed (Zano initialization sets the inexact flag), rather than rounding,
 exception masks or denormal handling for subsequent managed operations.
@@ -31,6 +41,10 @@ also provides AArch64 FPCR/FPSR checks, but the supported release/native build a
 executed lab coverage remain Linux x86-64. This load-time gate does not establish
 that every exported hashing operation or third-party variant preserves state;
 the wider call-boundary audit remains tracked in [#226](https://github.com/NINJAK1DD/miningcore/issues/226).
+That audit also includes libraries outside this 25-library inventory, such as the
+system `libzmq` used by relay bindings. Debian 12 source builds use affected GCC 12
+but have no dedicated CI lane for this loader gate; its Makefile correction is
+shared with Ubuntu. DAZ-incapable physical hardware and ARM64 have not been tested.
 
 Inventory validation always enforces load/unload preservation, including package
 tests that use symbol-only stub libraries. Real source Docker, .NET/Release and
