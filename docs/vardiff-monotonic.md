@@ -281,21 +281,39 @@ runtime role.
 
 ## Validation evidence
 
-The extreme-ratio arithmetic fixture requires gradual underflow. On glibc Linux
+The extreme-ratio arithmetic fixture and CryptoNote short-target `MaxDelta`
+configuration fixture require gradual underflow. On glibc Linux
 x86-64 it saves the thread's floating-point environment, establishes the default
-environment and restores the complete saved state on exit. A forced FTZ/DAZ
-regression enters the fixture with denormals disabled, non-default x87/SSE rounding
+environment and restores the complete saved state on exit. The forced FTZ
+regression disables optional DAZ rather than assuming hardware support, and uses non-default x87/SSE rounding
 and a masked x87 exception flag. It compares the x87 control, status and tag words
 and MXCSR after normal and exceptional exits, with hexadecimal failure diagnostics.
 The saved state still includes all glibc fields; instruction/data pointers, opcode
 and selectors are excluded from assertions because they record prior x87 execution.
 A failed fixture and a simultaneous
 restoration failure are reported together, preserving both diagnostics.
+The saved x87 stack must be empty: `fenv_t` captures the environment, not register
+values, so a nonempty stack fails before resetting state. Keep floating-point
+work and JIT-sensitive arithmetic out of the deliberately contaminated window.
+
+Before isolation, non-default numerical controls are reported through the
+fixture's `ITestOutputHelper`, including the managed thread ID and saved/default
+hexadecimal state. Sticky exception flags alone are not reported as a mode leak.
+Diagnostic callback failures restore the original environment too. An assembly-wide
+before/after hook is not used: async tests can resume on different OS threads, so
+such comparisons would not reliably identify a leaking native call. The exported-call
+audit remains open in #226; output from these two scoped fixtures is evidence, not
+global enforcement. Unsupported Windows, musl and ARM64 executions retain their
+existing arithmetic tests without native isolation; an ARM64 job needs its own ABI
+and control-state validation before this scope can support it.
 Subnormal expected results use an exact bit comparison, retaining the
 `double.Epsilon` vector without a ratio that can itself become `0 / 0`.
 Other platforms retain their existing arithmetic test execution. This test-only
 isolation does not change production hashing or VarDiff behavior; the native
 boundary investigation is tracked in [#226](https://github.com/NINJAK1DD/miningcore/issues/226).
+Merge the production load-time correction [#227](https://github.com/NINJAK1DD/miningcore/pull/227)
+first. This test hardening supplements that correction and is not a release prerequisite
+for the container-budget changes in #224 once the native correction is integrated.
 
 Dated run results and environment details are recorded in
 [PR #209](https://github.com/NINJAK1DD/miningcore/pull/209).

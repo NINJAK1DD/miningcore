@@ -9,11 +9,16 @@ using Miningcore.Mining;
 using Miningcore.Tests.Util;
 using Miningcore.VarDiff;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Miningcore.Tests.Mining;
 
 public class CryptonoteDifficultyAssignmentTests
 {
+    private readonly ITestOutputHelper output;
+
+    public CryptonoteDifficultyAssignmentTests(ITestOutputHelper output) => this.output = output;
+
     public static IEnumerable<object[]> InvalidAssignments
     {
         get
@@ -212,7 +217,12 @@ public class CryptonoteDifficultyAssignmentTests
     [Fact]
     public void Configuration_RejectsFrozenDeltaAndIncompatibleNormalizedStart()
     {
-        // Exact review configuration: floor(1.5)=1, but effective range is [2,2].
+        DefaultFloatingPointScope.Run(VerifyFrozenDeltaAndIncompatibleNormalizedStart, output.WriteLine);
+    }
+
+    private static void VerifyFrozenDeltaAndIncompatibleNormalizedStart()
+    {
+        // floor(1.5)=1, but the effective range is [2,2].
         var options = new VarDiffConfig { MinDiff = 1.5, MaxDiff = 2.5, MaxDelta = 0.5,
             TargetTime = 10, RetargetTime = 1, VariancePercent = 1 };
         var endpoint = new PoolEndpoint { Difficulty = 1.5, VarDiff = options };

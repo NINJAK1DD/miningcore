@@ -33,6 +33,11 @@ internal sealed class DefaultFloatingPointScope : IDisposable
         internal bool HasSameBehavior(State other) => ControlWord == other.ControlWord &&
             StatusWord == other.StatusWord && TagWord == other.TagWord && Mxcsr == other.Mxcsr;
 
+        // Sticky exception flags can change during ordinary arithmetic; they
+        // are restoration state, but not evidence of a leaked numerical mode.
+        internal bool HasSameControls(State other) => ControlWord == other.ControlWord &&
+            (Mxcsr & ~0x3fu) == (other.Mxcsr & ~0x3fu);
+
         public override string ToString() =>
             $"x87(control=0x{ControlWord:x4}, status=0x{StatusWord:x4}, tags=0x{TagWord:x4}), MXCSR=0x{Mxcsr:x8}";
     }
@@ -40,22 +45,37 @@ internal sealed class DefaultFloatingPointScope : IDisposable
     private State saved;
     private bool disposed;
 
-    private DefaultFloatingPointScope()
+    private DefaultFloatingPointScope(Action<string> diagnostic)
     {
         saved = Capture();
-        // glibc defines FE_DFL_ENV as (const fenv_t *) -1.
-        if(SetDefault(new IntPtr(-1)) != 0)
+        // fenv_t stores tags/environment, not x87 register values. Resetting a
+        // live x87 stack would exceed this scope's restoration contract.
+        if(saved.TagWord != ushort.MaxValue)
+            throw new InvalidOperationException("Numeric fixture isolation requires an empty x87 stack");
+        try
         {
-            var failure = new InvalidOperationException("Cannot establish the default floating-point environment");
+            // glibc defines FE_DFL_ENV as (const fenv_t *) -1.
+            if(SetDefault(new IntPtr(-1)) != 0)
+                throw new InvalidOperationException("Cannot establish the default floating-point environment");
+            var current = Capture();
+            if(!saved.HasSameControls(current))
+                (diagnostic ?? Console.WriteLine)(
+                    $"Non-default floating-point controls at numeric fixture entry on managed thread {Environment.CurrentManagedThreadId}. " +
+                    $"Saved: {saved}; default: {current}. Fixture isolated; investigate preceding native calls (#226).");
+        }
+        catch(Exception failure)
+        {
+            // A capture or output callback failure must also roll back the reset.
             try { Restore(saved); }
             catch(Exception restoreFailure) { throw new AggregateException(failure, restoreFailure); }
-            throw failure;
+            throw;
         }
     }
 
-    internal static IDisposable Enter() => IsSupported ? new DefaultFloatingPointScope() : null;
+    internal static IDisposable Enter(Action<string> diagnostic = null) =>
+        IsSupported ? new DefaultFloatingPointScope(diagnostic) : null;
 
-    internal static void Run(Action action) => Run(action, Enter());
+    internal static void Run(Action action, Action<string> diagnostic = null) => Run(action, Enter(diagnostic));
 
     // Keep a failed assertion as well as a restoration failure; Dispose in a
     // plain using/finally would replace the original diagnostic.

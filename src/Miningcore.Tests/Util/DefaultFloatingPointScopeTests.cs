@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using NSubstitute;
 using Xunit;
 
@@ -6,6 +7,35 @@ namespace Miningcore.Tests.Util;
 
 public class DefaultFloatingPointScopeTests
 {
+    [Fact]
+    public void ControlComparison_IgnoresStickyStatusAndTagsButDetectsChangedModes()
+    {
+        var expected = new DefaultFloatingPointScope.State { ControlWord = 0x037f, Mxcsr = 0x1f80 };
+        var actual = expected;
+        actual.StatusWord = 0x3f;
+        actual.TagWord = 0xffff;
+        actual.Mxcsr |= 0x3f;
+        Assert.True(expected.HasSameControls(actual));
+        actual.Mxcsr |= 0x8000; // FTZ, supported on the baseline.
+        Assert.False(expected.HasSameControls(actual));
+        actual = expected;
+        actual.ControlWord ^= 0x0400;
+        Assert.False(expected.HasSameControls(actual));
+    }
+
+    [Fact]
+    public void Run_PreservesOriginalThrowSiteInStackTrace()
+    {
+        var scope = Substitute.For<IDisposable>();
+        var failure = Assert.Throws<InvalidOperationException>(() =>
+            DefaultFloatingPointScope.Run(ThrowFixtureFailure, scope));
+        Assert.Contains(nameof(ThrowFixtureFailure), failure.StackTrace);
+        scope.Received(1).Dispose();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowFixtureFailure() => throw new InvalidOperationException("fixture failed");
+
     [Fact]
     public void BehaviorComparison_IgnoresInstructionBookkeeping()
     {
