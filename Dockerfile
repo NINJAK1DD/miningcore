@@ -15,6 +15,7 @@ RUN set -euo pipefail; \
     dotnet publish -c Release --framework net10.0 -o ../../build \
       2>&1 | tee "$build_log"; \
     bash ../../scripts/release/assert-warning-free-build.sh "$build_log"; \
+    bash ../../scripts/release/test-native-load-fenv.sh ../../build; \
     python3 ../../scripts/release/assert-linux-native-symbol-contracts.py \
       ../../build Native ../../scripts/release/linux-native-libraries.txt \
       --managed-project-directory .

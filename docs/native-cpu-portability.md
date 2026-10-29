@@ -1,5 +1,34 @@
 # Linux native CPU portability
 
+## Floating-point environment at native library load
+
+The CryptoNote shared-library link uses link flags only. Compilation retains its
+existing optimization flags; passing `-Ofast` to the link driver on GCC 11/12 or
+affected Clang versions can include `crtfastmath` startup code that enables FTZ/DAZ
+on the loading thread. Later threads can inherit that mode. GCC documents the
+shared-library behavior change in its [GCC 13 release notes](https://gcc.gnu.org/gcc-13/changes.html).
+
+`scripts/release/test-native-load-fenv.sh PUBLISH_DIRECTORY` checks every library
+in the shipped inventory with `RTLD_NOW`. Each library/mode uses a fresh process,
+four rounding modes and flushing both enabled and disabled. The probe compares x87
+control and MXCSR control bits before/after load and unload, and also
+checks CryptoNote's empty-input Keccak vector and rejected-input path. Missing
+libraries, missing dependencies, crashes and a ten-second probe deadline fail the
+gate. The probe compiles without fast-math and tests both clean and deliberately
+corrupting constructor/destructor fixtures.
+Sticky exception status flags are allowed to accumulate: they describe arithmetic
+already performed (Zano initialization sets the inexact flag), rather than rounding,
+exception masks or denormal handling for subsequent managed operations.
+
+The gate runs in Linux package/source inventory validation, the source Docker
+builder and the .NET/Release jobs before their managed tests. The implementation
+also provides AArch64 FPCR/FPSR checks, but the supported release/native build and
+executed lab coverage remain Linux x86-64. This load-time gate does not establish
+that every exported hashing operation or third-party variant preserves state;
+the wider call-boundary audit remains tracked in [#226](https://github.com/NINJAK1DD/miningcore/issues/226).
+
+## Linux x64 instruction baseline
+
 Linux x64 native libraries built by `src/Miningcore/build-libs-linux.sh` target
 **x86-64-v2 plus AES-NI and PCLMULQDQ**, with generic tuning. This includes SSE3,
 SSSE3, SSE4.1, SSE4.2, POPCNT, CMPXCHG16B and LAHF/SAHF. It does not impose an

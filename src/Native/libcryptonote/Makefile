@@ -27,7 +27,9 @@ OBJECTS = exports.o \
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+	# Compile-time fast-math must not inject crtfastmath startup code into the DSO.
+	# GCC before 13 and Clang can otherwise alter the loading thread's FP mode.
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 .PHONY: clean
 
