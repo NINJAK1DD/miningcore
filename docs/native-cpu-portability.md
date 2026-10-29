@@ -36,8 +36,8 @@ whose section numbers differ.
 The gate compares floating-point controls only. Sticky exception status flags are
 excluded from the comparison and may be set or cleared (Zano initialization sets
 the inexact flag). These flags record prior arithmetic; preserving that status
-history is outside the gate's contract. Rounding, exception masks and denormal
-handling for subsequent operations remain checked.
+history is outside the gate's contract. Rounding, x87 precision control, exception
+masks and denormal handling for subsequent operations remain checked.
 
 The gate runs in Linux package/source inventory validation, the source Docker
 builder and the .NET/Release jobs before their managed tests. The implementation
