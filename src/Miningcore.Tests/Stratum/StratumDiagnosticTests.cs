@@ -567,6 +567,7 @@ public class StratumDiagnosticTests
         logs.AssertSafe();
     }
 
+    // One-request test handoff: later invocations cannot replace the first task.
     private static Task TrackAuthorization(Func<Task> handler, TaskCompletionSource<Task> authorization)
     {
         Task operation;
@@ -617,9 +618,10 @@ public class StratumDiagnosticTests
             await release.Task.WaitAsync(Deadline);
             throw failure;
         };
+        StratumConnection connection = null;
         var server = new DiagnosticServer(container, Substitute.For<IMessageBus>(), logs.Logger)
         {
-            Initialize = connection => connection.SetContext(worker),
+            Initialize = value => { connection = value; value.SetContext(worker); },
             Handler = (connection, request, ct) =>
                 TrackAuthorization(() => pool.DispatchRequest(connection, request, ct), authorization),
         };
@@ -638,6 +640,9 @@ public class StratumDiagnosticTests
         }
         Assert.Equal(1, server.Errors);
         Assert.Equal(0, server.Completions);
+        Assert.True(connection.IsDisconnectRequested);
+        Assert.Single(logs.Records.Where(record => record["event"].Value<string>() ==
+            nameof(StratumDiagnostics.Event.AssignmentPublicationFailure)));
         Assert.Equal(1, worker.AssignmentGate.CurrentCount);
         pool.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
         logs.AssertSafe();
@@ -658,6 +663,8 @@ public class StratumDiagnosticTests
         var pool = new AuthorizationPool(container, logs.Logger, cache, true, false);
         var worker = new BitcoinWorkerContext { UserAgent = Hostile };
         worker.Init(1, null, new StandardClock());
+        var job = new DiagnosticBitcoinJob();
+        worker.AddJob(job, 1);
         var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var acquired = false;
@@ -689,6 +696,7 @@ public class StratumDiagnosticTests
                     ["params"] = new JArray(Secret, Hostile) }.ToString(Formatting.None) + "\n");
                 Assert.True(JObject.Parse(await tcp.Reader.ReadLineAsync().WaitAsync(Deadline))["result"].Value<bool>());
                 await reached.Task.WaitAsync(Deadline);
+                Assert.Same(job, worker.GetJob(job.JobId));
                 tcp.Client.Client.Shutdown(SocketShutdown.Send);
                 await cancelled.Task.WaitAsync(Deadline);
                 // Keep the gate held until the cancelled waiter has drained;
@@ -702,11 +710,14 @@ public class StratumDiagnosticTests
                     worker.AssignmentGate.Release();
             }
             await tcp.Dispatch.WaitAsync(Deadline);
-            // Before entry, request cleanup closes jobs without rewriting this
-            // flag. Inside the assignment boundary, retirement also clears it.
-            Assert.Equal(beforeEntry, worker.IsAuthorized);
+            // Pre-entry cleanup currently retains the flag; clearing it in the
+            // future is allowed. Both paths must disconnect and close jobs.
+            if(!beforeEntry)
+                Assert.False(worker.IsAuthorized);
             Assert.Equal(!beforeEntry, acquired);
             Assert.True(connection.IsDisconnectRequested);
+            Assert.Null(worker.GetJob(job.JobId));
+            Assert.Throws<BitcoinJobRegistryClosedException>(() => worker.AddJob(job, 1));
             Assert.Equal(1, worker.AssignmentGate.CurrentCount);
         }
         Assert.Equal(0, server.Errors);
@@ -1212,6 +1223,11 @@ public class StratumDiagnosticTests
         return reservation;
     }
 
+    private sealed class DiagnosticBitcoinJob : BitcoinJob
+    {
+        internal DiagnosticBitcoinJob() => JobId = "diagnostic-job";
+    }
+
     private sealed class AuthorizationPool : BitcoinPool
     {
         private readonly bool authorized;
@@ -1237,6 +1253,9 @@ public class StratumDiagnosticTests
             OnAuthorizeAsync(connection, new Timestamped<JsonRpcRequest>(request, DateTimeOffset.UtcNow), ct);
         public Task DispatchRequest(StratumConnection connection, JsonRpcRequest request, CancellationToken ct) =>
             OnRequestAsync(connection, new Timestamped<JsonRpcRequest>(request, DateTimeOffset.UtcNow), ct);
+        // Waiting fires only for pending acquisition; Cancelled observes the
+        // token through acquisition and the hook. BeforeAssignmentReturn owns
+        // the lease, before RunAssignmentAsync activates it and checks the token.
         internal override async ValueTask<WorkerAssignmentLease> EnterAssignmentAsync(StratumConnection connection,
             CancellationToken ct, bool skipIfBusy = false)
         {
