@@ -515,10 +515,15 @@ public class StratumDiagnosticTests
         var pool = new AuthorizationPool(container, logs.Logger, cache, authorized, ban);
         var worker = new BitcoinWorkerContext { UserAgent = Hostile };
         worker.Init(1, null, new StandardClock());
+        var authorizationComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var server = new DiagnosticServer(container, Substitute.For<IMessageBus>(), logs.Logger)
         {
             Initialize = connection => connection.SetContext(worker),
-            Handler = pool.Authorize,
+            Handler = async (connection, request, ct) =>
+            {
+                await pool.Authorize(connection, request, ct);
+                authorizationComplete.SetResult();
+            },
         };
         await using(var tcp = await TcpSession.Start(logs.Logger, server))
         {
@@ -541,9 +546,12 @@ public class StratumDiagnosticTests
                 Assert.Equal(authorized, response["result"].Value<bool>());
                 if(!authorized)
                     Assert.Equal((int) StratumError.UnauthorizedWorker, response["error"]["code"].Value<int>());
+                // The reply can arrive before post-reply assignment processing
+                // finishes. Closing now can cancel it and retire authorization.
+                await authorizationComplete.Task.WaitAsync(Deadline);
             }
+            Assert.Equal(authorized, worker.IsAuthorized);
         }
-        Assert.Equal(authorized, worker.IsAuthorized);
         Assert.Equal(Secret, worker.Miner);
         Assert.Equal(Hostile.Trim(), worker.Worker);
         Assert.Equal(Hostile, pool.Password);
