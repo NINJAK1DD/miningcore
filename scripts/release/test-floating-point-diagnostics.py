@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import io
 from pathlib import Path
+import re
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -13,6 +14,32 @@ spec.loader.exec_module(reporter)
 
 
 class DiagnosticReporterTests(unittest.TestCase):
+    def test_vardiff_source_vectors_match_reporter_contract(self):
+        identity = next(key for key in reporter.REQUIRED_FIXTURES
+                        if key[0] == 'Miningcore.Tests.VarDiffManagerTests')
+        source_path = Path(__file__).resolve().parents[2] / 'src/Miningcore.Tests/VarDiffManagerTests.cs'
+        source = source_path.read_text(encoding='utf-8')
+        # This fixture uses literal InlineData; fail clearly if its declaration
+        # changes instead of accidentally counting attributes on another method.
+        pattern = (r'((?:^[ \t]*\[[^\]\r\n]+\][ \t]*\r?\n)+)^[ \t]*public[ \t]+void[ \t]+'
+                   + re.escape(identity[1]) + r'[ \t]*\(')
+        matches = list(re.finditer(pattern, source, re.MULTILINE))
+        self.assertEqual(1, len(matches), f'Cannot uniquely locate InlineData for {source_path}:{identity[1]}')
+        arguments = re.findall(r'\[\s*InlineData\s*\((.*?)\)\s*\]', matches[0].group(1), re.DOTALL)
+        vectors = [tuple(re.sub(r'\s+', '', argument_list).split(',')) for argument_list in arguments]
+        expected_count = reporter.REQUIRED_FIXTURES[identity]
+        self.assertEqual(expected_count, len(vectors),
+                         f'{identity[1]} has {len(vectors)} InlineData rows, but REQUIRED_FIXTURES expects '
+                         f'{expected_count}; update the reporter count deliberately when changing vectors')
+        # Keep the independent boundary-vector manifest deliberate too: four
+        # distinct test IDs must not conceal an accidentally duplicated vector.
+        self.assertCountEqual([
+            ('1e300', '1e10', '1e20', '1e290'),
+            ('1e-300', '1e-10', '0.001', '1e-307'),
+            ('1e-300', '1e-30', '1', 'double.Epsilon'),
+            ('1e306', '10', '0.001', 'double.MaxValue'),
+        ], vectors, 'VarDiff boundary vectors changed; verify and update the independent vector manifest deliberately')
+
     def report(self, directory, namespace='', outcome='Passed', test_name='fixture', lines=None):
         tag = lambda name: f'{{{namespace}}}{name}' if namespace else name
         root = ET.Element(tag('TestRun'))

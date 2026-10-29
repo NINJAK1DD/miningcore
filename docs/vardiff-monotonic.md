@@ -336,7 +336,12 @@ failed cases count as executed, preserving diagnostics from failing runs; skippe
 or merely discovered cases do not. A valid TRX from another suite fails reporting.
 The gate requires four distinct executed VarDiff theory case IDs and one CryptoNote
 case ID; repeated IDs do not fill a missing case. Update those counts deliberately
-when changing the fixture vectors. For structurally valid partial reports, every
+when changing the fixture vectors. The reporter self-test reads the VarDiff method's
+literal `InlineData` attributes and checks their count against `REQUIRED_FIXTURES`
+before the full build. An independent tuple manifest checks the four intended input
+vectors, so a duplicated/replaced vector with an unchanged case count also fails
+early. Deliberate vector changes must update that manifest after verifying the
+boundary coverage. For structurally valid partial reports, every
 available contamination warning is emitted before incomplete fixture evidence makes
 the step fail. All supplied report paths are scanned even if an earlier report is
 incomplete, missing or malformed. No successful warning-count summary is printed
