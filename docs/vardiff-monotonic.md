@@ -284,8 +284,12 @@ runtime role.
 The extreme-ratio arithmetic fixture and CryptoNote short-target `MaxDelta`
 configuration fixture require gradual underflow. On glibc Linux
 x86-64 it saves the thread's floating-point environment, establishes the default
-environment and restores the complete saved state on exit. The forced FTZ
-regression disables optional DAZ rather than assuming hardware support, and uses non-default x87/SSE rounding
+environment and restores the complete saved state on exit. A test-only native
+helper reads `MXCSR_MASK` from aligned, zeroed FXSAVE storage before enabling DAZ;
+a zero mask uses the `0x0000ffbf` fallback that excludes DAZ. The regression has an
+FTZ-only row and a DAZ row when advertised, with an explicit FTZ fallback otherwise.
+On DAZ-capable hosts, negative controls show that both unisolated fixtures fail,
+then their isolated counterparts pass. Both rows use non-default x87/SSE rounding
 and a masked x87 exception flag. It compares the x87 control, status and tag words
 and MXCSR after normal and exceptional exits, with hexadecimal failure diagnostics.
 The saved state still includes all glibc fields; instruction/data pointers, opcode
@@ -295,10 +299,22 @@ restoration failure are reported together, preserving both diagnostics.
 The saved x87 stack must be empty: `fenv_t` captures the environment, not register
 values, so a nonempty stack fails before resetting state. Keep floating-point
 work and JIT-sensitive arithmetic out of the deliberately contaminated window.
+The native-assisted stack regression pushes `1` with `fld1`, confirms that entry
+is rejected without changing controls, tags or stack position, then pops and checks
+the same value. Sticky flags may accumulate during managed exception handling.
+
+The helper is compiled with `cc` only for full glibc Linux x64 test builds and is
+copied only to test output. Managed-only listener smoke, musl, macOS and Windows
+builds do not compile it. It is not a production hashing library or runtime artifact.
 
 Before isolation, non-default numerical controls are reported through the
 fixture's `ITestOutputHelper`, including the managed thread ID and saved/default
 hexadecimal state. Sticky exception flags alone are not reported as a mode leak.
+The diagnostic callback is mandatory. Ordinary fixtures use the diagnostic sink
+that also emits an escaped GitHub Actions warning when `GITHUB_ACTIONS=true`.
+Synthetic regression diagnostics are captured and asserted, not forwarded as
+unexpected native-leak warnings. The combined regression belongs to the scope
+tests; neither numeric fixture depends on the other fixture's test class.
 Diagnostic callback failures restore the original environment too. An assembly-wide
 before/after hook is not used: async tests can resume on different OS threads, so
 such comparisons would not reliably identify a leaking native call. The exported-call

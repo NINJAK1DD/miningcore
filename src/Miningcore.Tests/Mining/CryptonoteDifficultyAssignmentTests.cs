@@ -15,9 +15,11 @@ namespace Miningcore.Tests.Mining;
 
 public class CryptonoteDifficultyAssignmentTests
 {
-    private readonly ITestOutputHelper output;
+    private readonly Action<string> diagnostic;
 
-    public CryptonoteDifficultyAssignmentTests(ITestOutputHelper output) => this.output = output;
+    public CryptonoteDifficultyAssignmentTests(ITestOutputHelper output) : this(DefaultFloatingPointScope.Diagnostic(output)) { }
+
+    internal CryptonoteDifficultyAssignmentTests(Action<string> diagnostic) => this.diagnostic = diagnostic;
 
     public static IEnumerable<object[]> InvalidAssignments
     {
@@ -217,10 +219,10 @@ public class CryptonoteDifficultyAssignmentTests
     [Fact]
     public void Configuration_RejectsFrozenDeltaAndIncompatibleNormalizedStart()
     {
-        DefaultFloatingPointScope.Run(VerifyFrozenDeltaAndIncompatibleNormalizedStart, output.WriteLine);
+        DefaultFloatingPointScope.Run(VerifyFrozenDeltaAndIncompatibleNormalizedStart, diagnostic);
     }
 
-    private static void VerifyFrozenDeltaAndIncompatibleNormalizedStart()
+    internal static void VerifyFrozenDeltaAndIncompatibleNormalizedStart()
     {
         // floor(1.5)=1, but the effective range is [2,2].
         var options = new VarDiffConfig { MinDiff = 1.5, MaxDiff = 2.5, MaxDelta = 0.5,

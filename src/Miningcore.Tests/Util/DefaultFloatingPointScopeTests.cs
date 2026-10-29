@@ -1,12 +1,175 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Collections.Generic;
+using System.IO;
+using Miningcore.Tests.Mining;
 using NSubstitute;
 using Xunit;
+using Xunit.Abstractions;
+using Xunit.Sdk;
 
 namespace Miningcore.Tests.Util;
 
 public class DefaultFloatingPointScopeTests
 {
+    private readonly ITestOutputHelper output;
+    private readonly Action<string> diagnostic;
+
+    public DefaultFloatingPointScopeTests(ITestOutputHelper output)
+    {
+        this.output = output;
+        diagnostic = DefaultFloatingPointScope.Diagnostic(output);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NumericFixtures_SurviveSupportedContaminationAndRestoreState(bool requestDaz)
+    {
+        if(!DefaultFloatingPointScope.IsSupported)
+        {
+            Assert.Null(DefaultFloatingPointScope.Enter(diagnostic));
+            return;
+        }
+        RequireNativeProbe();
+        using var baseline = DefaultFloatingPointScope.Enter(diagnostic);
+        var daz = requestDaz && (FloatingPointNativeProbe.MxcsrMask() & 0x40u) != 0;
+        output.WriteLine($"Synthetic control regression: request DAZ={requestDaz}, supported/enabled={daz}");
+
+        // Warm the numeric paths under the default mode before deliberate changes.
+        VarDiffManagerTests.VerifyExtremeRatio(1e-300, 1e-30, 1, double.Epsilon);
+        CryptonoteDifficultyAssignmentTests.VerifyFrozenDeltaAndIncompatibleNormalizedStart();
+        var diagnostics = new List<string>();
+        var vardiff = new VarDiffManagerTests(diagnostics.Add);
+        var cryptonote = new CryptonoteDifficultyAssignmentTests(diagnostics.Add);
+        var original = DefaultFloatingPointScope.Capture();
+        try
+        {
+            var native = original;
+            native.ControlWord |= 0x0c3f;
+            native.StatusWord |= 1;
+            native.Mxcsr = (native.Mxcsr & ~0x40u) | 0xff80u | (daz ? 0x40u : 0u);
+            DefaultFloatingPointScope.Restore(native);
+            // No fresh floating-point/JIT-sensitive paths before Enter resets mode.
+            var before = DefaultFloatingPointScope.Capture();
+            Assert.Equal(daz ? 0x40u : 0u, before.Mxcsr & 0x40u);
+            using(DefaultFloatingPointScope.Enter(diagnostics.Add))
+            {
+                var active = DefaultFloatingPointScope.Capture();
+                Assert.Equal(0u, active.Mxcsr & 0xe040u);
+                Assert.Equal(0, active.ControlWord & 0x0c00);
+                Assert.Equal(0, active.StatusWord & 0x3f);
+            }
+            AssertSameBehavior(before);
+
+            if(daz)
+            {
+                // Negative controls prove these exact paths fail without isolation.
+                Assert.IsAssignableFrom<XunitException>(Record.Exception(() =>
+                    VarDiffManagerTests.VerifyExtremeRatio(1e-300, 1e-30, 1, double.Epsilon)));
+                DefaultFloatingPointScope.Restore(before);
+                Assert.IsAssignableFrom<XunitException>(Record.Exception(
+                    CryptonoteDifficultyAssignmentTests.VerifyFrozenDeltaAndIncompatibleNormalizedStart));
+                DefaultFloatingPointScope.Restore(before);
+            }
+
+            vardiff.ExtremeRatios_AvoidIntermediateOverflowAndUnderflow(1e-300, 1e-30, 1, double.Epsilon);
+            AssertSameBehavior(before);
+            cryptonote.Configuration_RejectsFrozenDeltaAndIncompatibleNormalizedStart();
+            AssertSameBehavior(before);
+            Assert.Throws<InvalidOperationException>(() => DefaultFloatingPointScope.Run(
+                () => throw new InvalidOperationException("fixture failed"), diagnostics.Add));
+            AssertSameBehavior(before);
+            Assert.Equal(4, diagnostics.Count);
+            Assert.All(diagnostics, message =>
+            {
+                Assert.Contains("Non-default floating-point controls", message);
+                Assert.Contains("MXCSR=", message);
+            });
+
+            var diagnosticFailure = new InvalidOperationException("diagnostic failed");
+            Assert.Same(diagnosticFailure, Assert.Throws<InvalidOperationException>(() =>
+                DefaultFloatingPointScope.Enter(_ => throw diagnosticFailure)));
+            AssertSameBehavior(before);
+        }
+        finally
+        {
+            DefaultFloatingPointScope.Restore(original);
+        }
+    }
+
+    [Fact]
+    public void Enter_RejectsLiveX87StackWithoutResettingOrLosingItsValue()
+    {
+        if(!DefaultFloatingPointScope.IsSupported)
+            return;
+        RequireNativeProbe();
+        using var baseline = DefaultFloatingPointScope.Enter(diagnostic);
+        var original = DefaultFloatingPointScope.Capture();
+        var diagnostics = new List<string>();
+        var retainedValue = 0;
+        FloatingPointNativeProbe.PushOne();
+        try
+        {
+            var occupied = DefaultFloatingPointScope.Capture();
+            Assert.NotEqual(ushort.MaxValue, occupied.TagWord);
+            var error = Assert.Throws<InvalidOperationException>(() => DefaultFloatingPointScope.Enter(diagnostics.Add));
+            Assert.Contains("empty x87 stack", error.Message);
+            var after = DefaultFloatingPointScope.Capture();
+            // Managed exception handling may set sticky inexact status. Check
+            // mode, tags and stack position; the pop below verifies the value.
+            Assert.True(occupied.HasSameControls(after), $"Expected: {occupied}; actual: {after}");
+            Assert.Equal(occupied.TagWord, after.TagWord);
+            Assert.Equal(occupied.StatusWord & 0x3800, after.StatusWord & 0x3800);
+            Assert.Empty(diagnostics);
+        }
+        finally
+        {
+            retainedValue = FloatingPointNativeProbe.PopIsOne();
+            DefaultFloatingPointScope.Restore(original);
+        }
+        Assert.Equal(1, retainedValue);
+    }
+
+    private static void AssertSameBehavior(DefaultFloatingPointScope.State expected)
+    {
+        var actual = DefaultFloatingPointScope.Capture();
+        Assert.True(expected.HasSameBehavior(actual), $"Expected: {expected}{Environment.NewLine}Actual: {actual}");
+    }
+
+    private static void RequireNativeProbe() => Assert.True(
+        File.Exists(Path.Combine(AppContext.BaseDirectory, "libminingcore_test_fenv.so")),
+        "This regression requires a full glibc Linux x64 test build without MiningcoreStratumListenerSmoke=true");
+
+    [Fact]
+    public void EntryDiagnostic_IsRequiredEvenWhenIsolationIsUnsupported()
+    {
+        Assert.Throws<ArgumentNullException>(() => DefaultFloatingPointScope.Enter(null));
+        var ran = false;
+        Assert.Throws<ArgumentNullException>(() => DefaultFloatingPointScope.Run(() => ran = true, null));
+        Assert.False(ran);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RealDiagnostics_UseTestOutputAndSafelyAnnotateGithubActions(bool githubActions)
+    {
+        var testOutput = Substitute.For<ITestOutputHelper>();
+        using var annotations = new StringWriter();
+        const string message = "mode 100%\r\n::error::not a command";
+        DefaultFloatingPointScope.Diagnostic(testOutput, annotations, githubActions)(message);
+        testOutput.Received(1).WriteLine(message);
+        if(githubActions)
+        {
+            Assert.Contains("::warning title=Non-default floating-point controls::", annotations.ToString());
+            Assert.Contains("100%25%0D%0A::error::not a command", annotations.ToString());
+            Assert.Single(annotations.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries));
+        }
+        else
+            Assert.Equal(string.Empty, annotations.ToString());
+    }
+
     [Fact]
     public void ControlComparison_IgnoresStickyStatusAndTagsButDetectsChangedModes()
     {
@@ -28,7 +191,7 @@ public class DefaultFloatingPointScopeTests
     {
         var scope = Substitute.For<IDisposable>();
         var failure = Assert.Throws<InvalidOperationException>(() =>
-            DefaultFloatingPointScope.Run(ThrowFixtureFailure, scope));
+            DefaultFloatingPointScope.RunWithScope(ThrowFixtureFailure, scope));
         Assert.Contains(nameof(ThrowFixtureFailure), failure.StackTrace);
         scope.Received(1).Dispose();
     }
@@ -95,7 +258,7 @@ public class DefaultFloatingPointScopeTests
         var scope = Substitute.For<IDisposable>();
         if(restorationFails)
             scope.When(x => x.Dispose()).Do(_ => throw restorationFailure);
-        var failure = Record.Exception(() => DefaultFloatingPointScope.Run(() =>
+        var failure = Record.Exception(() => DefaultFloatingPointScope.RunWithScope(() =>
         {
             if(fixtureFails)
                 throw fixtureFailure;

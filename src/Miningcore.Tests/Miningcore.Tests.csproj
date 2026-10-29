@@ -115,6 +115,20 @@
     <Delete Files="$(TargetDir)libodocrypt.dll" />
   </Target>
 
+  <PropertyGroup>
+    <FloatingPointTestHelperHostRid>$([System.Runtime.InteropServices.RuntimeInformation]::RuntimeIdentifier)</FloatingPointTestHelperHostRid>
+  </PropertyGroup>
+
+  <!-- Test-only capability/stack probe; managed-only listener smoke needs no C compiler. -->
+  <Target Name="BuildFloatingPointTestHelper" AfterTargets="Build"
+          Condition="'$(IsLinux)' == 'true' and '$([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)' == 'X64' and !$(FloatingPointTestHelperHostRid.Contains('musl')) and '$(MiningcoreStratumListenerSmoke)' != 'true'"
+          Inputs="$(MSBuildProjectFullPath);$(MSBuildProjectDirectory)/Fixtures/FloatingPointProbe.c"
+          Outputs="$(TargetDir)libminingcore_test_fenv.so">
+    <MakeDir Directories="$(IntermediateOutputPath)native-fenv" />
+    <Exec Command="cc -std=c11 -O2 -fPIC -shared -fno-fast-math -Wall -Wextra -Werror &quot;$(MSBuildProjectDirectory)/Fixtures/FloatingPointProbe.c&quot; -o &quot;$(IntermediateOutputPath)native-fenv/libminingcore_test_fenv.so&quot;" />
+    <Copy SourceFiles="$(IntermediateOutputPath)native-fenv/libminingcore_test_fenv.so" DestinationFolder="$(TargetDir)" />
+  </Target>
+
   <!-- Copy Linux native libs from Miningcore output into test output -->
   <Target Name="CopyLibsLinux" AfterTargets="Build" Condition="'$(IsLinux)' == 'true'">
     <ItemGroup>

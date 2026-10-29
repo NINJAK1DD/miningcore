@@ -1,6 +1,8 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Runtime.ExceptionServices;
+using System.IO;
+using Xunit.Abstractions;
 
 namespace Miningcore.Tests.Util;
 
@@ -59,7 +61,7 @@ internal sealed class DefaultFloatingPointScope : IDisposable
                 throw new InvalidOperationException("Cannot establish the default floating-point environment");
             var current = Capture();
             if(!saved.HasSameControls(current))
-                (diagnostic ?? Console.WriteLine)(
+                diagnostic(
                     $"Non-default floating-point controls at numeric fixture entry on managed thread {Environment.CurrentManagedThreadId}. " +
                     $"Saved: {saved}; default: {current}. Fixture isolated; investigate preceding native calls (#226).");
         }
@@ -72,14 +74,36 @@ internal sealed class DefaultFloatingPointScope : IDisposable
         }
     }
 
-    internal static IDisposable Enter(Action<string> diagnostic = null) =>
-        IsSupported ? new DefaultFloatingPointScope(diagnostic) : null;
+    internal static IDisposable Enter(Action<string> diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(diagnostic);
+        return IsSupported ? new DefaultFloatingPointScope(diagnostic) : null;
+    }
 
-    internal static void Run(Action action, Action<string> diagnostic = null) => Run(action, Enter(diagnostic));
+    internal static void Run(Action action, Action<string> diagnostic) => RunWithScope(action, Enter(diagnostic));
+
+    internal static Action<string> Diagnostic(ITestOutputHelper output) => Diagnostic(output, Console.Out,
+        string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase));
+
+    internal static Action<string> Diagnostic(ITestOutputHelper output, TextWriter annotations, bool githubActions)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(annotations);
+        return message =>
+        {
+            output.WriteLine(message);
+            if(githubActions)
+            {
+                // Workflow command data must not introduce another command/line.
+                var escaped = message.Replace("%", "%25").Replace("\r", "%0D").Replace("\n", "%0A");
+                annotations.WriteLine($"::warning title=Non-default floating-point controls::{escaped}");
+            }
+        };
+    }
 
     // Keep a failed assertion as well as a restoration failure; Dispose in a
     // plain using/finally would replace the original diagnostic.
-    internal static void Run(Action action, IDisposable scope)
+    internal static void RunWithScope(Action action, IDisposable scope)
     {
         ExceptionDispatchInfo failure = null;
         try { action(); }

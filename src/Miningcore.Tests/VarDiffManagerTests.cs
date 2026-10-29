@@ -17,9 +17,11 @@ namespace Miningcore.Tests;
 
 public class VarDiffManagerTests
 {
-    private readonly ITestOutputHelper output;
+    private readonly Action<string> diagnostic;
 
-    public VarDiffManagerTests(ITestOutputHelper output) => this.output = output;
+    public VarDiffManagerTests(ITestOutputHelper output) : this(DefaultFloatingPointScope.Diagnostic(output)) { }
+
+    internal VarDiffManagerTests(Action<string> diagnostic) => this.diagnostic = diagnostic;
 
     public static IEnumerable<object[]> BurstWindows =>
         from stored in new[] { 0, 1, 4, 9, 10 }
@@ -133,10 +135,10 @@ public class VarDiffManagerTests
     public void ExtremeRatios_AvoidIntermediateOverflowAndUnderflow(double difficulty, double target,
         double average, double expected)
     {
-        DefaultFloatingPointScope.Run(() => VerifyExtremeRatio(difficulty, target, average, expected), output.WriteLine);
+        DefaultFloatingPointScope.Run(() => VerifyExtremeRatio(difficulty, target, average, expected), diagnostic);
     }
 
-    private static void VerifyExtremeRatio(double difficulty, double target, double average, double expected)
+    internal static void VerifyExtremeRatio(double difficulty, double target, double average, double expected)
     {
         var (context, options, clock, time) = Fixture(difficulty);
         options.MinDiff = double.Epsilon;
@@ -153,74 +155,6 @@ public class VarDiffManagerTests
             Assert.Equal(BitConverter.DoubleToInt64Bits(expected), BitConverter.DoubleToInt64Bits(result.Value));
         else
             Assert.InRange(result.Value / expected, 0.99999999999999, 1.00000000000001);
-    }
-
-    [Fact]
-    public void ExtremeRatios_UseDefaultFloatingPointModeAndRestoreNativeCallerState()
-    {
-        if(!DefaultFloatingPointScope.IsSupported)
-        {
-            Assert.Null(DefaultFloatingPointScope.Enter());
-            return;
-        }
-
-        var cryptonoteOutput = Substitute.For<ITestOutputHelper>();
-        var cryptonoteFixture = new Miningcore.Tests.Mining.CryptonoteDifficultyAssignmentTests(cryptonoteOutput);
-        var original = DefaultFloatingPointScope.Capture();
-        try
-        {
-            var native = original;
-            native.ControlWord |= 0x0c3f; // x87 round toward zero, exceptions masked.
-            native.StatusWord |= 1; // A masked x87 invalid-operation status flag.
-            // FTZ is the baseline; never enable optional DAZ without MXCSR_MASK.
-            native.Mxcsr = (native.Mxcsr & ~0x40u) | 0xff80u;
-            DefaultFloatingPointScope.Restore(native);
-            // Keep floating-point work/JIT-sensitive arithmetic out of this
-            // window until Enter establishes the default environment.
-            var before = DefaultFloatingPointScope.Capture();
-            Assert.Equal(0u, before.Mxcsr & 0x40u);
-            var diagnostics = new List<string>();
-            using(DefaultFloatingPointScope.Enter(message =>
-                {
-                    diagnostics.Add(message);
-                    output.WriteLine(message);
-                }))
-            {
-                var active = DefaultFloatingPointScope.Capture();
-                Assert.Equal(0u, active.Mxcsr & 0xe040u);
-                Assert.Equal(0, active.ControlWord & 0x0c00);
-                Assert.Equal(0, active.StatusWord & 0x3f);
-            }
-            Assert.Single(diagnostics);
-            Assert.Contains("Non-default floating-point controls", diagnostics[0]);
-            Assert.Contains("MXCSR=", diagnostics[0]);
-            AssertSameFloatingPointBehavior(before);
-            // Enter the real fixture with the contaminated mode still active.
-            ExtremeRatios_AvoidIntermediateOverflowAndUnderflow(1e-300, 1e-30, 1, double.Epsilon);
-            AssertSameFloatingPointBehavior(before);
-            cryptonoteFixture.Configuration_RejectsFrozenDeltaAndIncompatibleNormalizedStart();
-            AssertSameFloatingPointBehavior(before);
-            Assert.Throws<InvalidOperationException>(() => DefaultFloatingPointScope.Run(
-                () => throw new InvalidOperationException("fixture failed"), output.WriteLine));
-            AssertSameFloatingPointBehavior(before);
-
-            var diagnosticFailure = new InvalidOperationException("diagnostic failed");
-            Assert.Same(diagnosticFailure, Assert.Throws<InvalidOperationException>(() =>
-                DefaultFloatingPointScope.Enter(_ => throw diagnosticFailure)));
-            AssertSameFloatingPointBehavior(before);
-        }
-        finally
-        {
-            DefaultFloatingPointScope.Restore(original);
-        }
-        cryptonoteOutput.Received(1).WriteLine(Arg.Is<string>(message =>
-            message.Contains("Non-default floating-point controls")));
-    }
-
-    private static void AssertSameFloatingPointBehavior(DefaultFloatingPointScope.State expected)
-    {
-        var actual = DefaultFloatingPointScope.Capture();
-        Assert.True(expected.HasSameBehavior(actual), $"Expected: {expected}{Environment.NewLine}Actual: {actual}");
     }
 
     [Theory]
