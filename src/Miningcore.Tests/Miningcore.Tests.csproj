@@ -44,7 +44,9 @@
          XunitException(message, innerException) constructor added in xUnit 2.4.2. -->
     <!-- When upgrading xUnit or its runner, verify cross-collection DisableParallelization
          scheduling: PostgresConfigurationLoggingTests relies on it while temporarily
-         changing Program.logger and JsonConvert.DefaultSettings. -->
+         changing Program.logger and JsonConvert.DefaultSettings. Also verify the
+         EqualException Expected: 1 / Actual: 0 and ThrowsException missing-range-exception
+         message assertions in DefaultFloatingPointScopeTests.NumericFixtures_SurviveSupportedContaminationAndRestoreState. -->
     <PackageReference Include="xunit" Version="2.4.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.4.5">
       <PrivateAssets>all</PrivateAssets>
@@ -133,6 +135,7 @@
           Inputs="$(MSBuildProjectFullPath);$(MSBuildProjectDirectory)/Fixtures/FloatingPointProbe.c"
           Outputs="$(TargetDir)libminingcore_test_fenv.so">
     <MakeDir Directories="$(IntermediateOutputPath)native-fenv" />
+    <!-- CC is one executable/wrapper path; use a wrapper for compiler arguments. -->
     <Exec Command="&quot;${CC:-cc}&quot; -std=c11 -O2 -fPIC -shared -fno-fast-math -Wall -Wextra -Werror &quot;$(MSBuildProjectDirectory)/Fixtures/FloatingPointProbe.c&quot; -o &quot;$(IntermediateOutputPath)native-fenv/libminingcore_test_fenv.so&quot;" />
     <Copy SourceFiles="$(IntermediateOutputPath)native-fenv/libminingcore_test_fenv.so" DestinationFolder="$(TargetDir)" />
   </Target>

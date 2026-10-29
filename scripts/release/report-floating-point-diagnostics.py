@@ -7,14 +7,19 @@ import sys
 import xml.etree.ElementTree as ET
 
 PREFIX = "Non-default floating-point controls at numeric fixture entry"
+TRX_NAMESPACE = "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"
 
 
 def diagnostics(path):
     root = ET.parse(path).getroot()
-    for result in root.iter():
-        if result.tag.rsplit('}', 1)[-1] != 'UnitTestResult':
-            continue
-        output = result.find('./{*}Output/{*}StdOut')
+    namespace = f'{{{TRX_NAMESPACE}}}' if root.tag == f'{{{TRX_NAMESPACE}}}TestRun' else ''
+    if root.tag != namespace + 'TestRun':
+        raise ValueError(f'{path}: expected a TRX TestRun root')
+    results = root.findall(f'./{namespace}Results/{namespace}UnitTestResult')
+    if not results:
+        raise ValueError(f'{path}: expected at least one TRX UnitTestResult in Results')
+    for result in results:
+        output = result.find(f'./{namespace}Output/{namespace}StdOut')
         if output is None:
             continue
         for line in (output.text or '').splitlines():
@@ -40,7 +45,7 @@ def main(argv=None):
                 if item not in seen:
                     seen.add(item)
                     print(workflow_warning(*item))
-    except (OSError, ET.ParseError) as error:
+    except (OSError, ET.ParseError, ValueError) as error:
         print(f'Cannot read floating-point diagnostic report: {error}', file=sys.stderr)
         return 1
     print(f'Floating-point diagnostics: {len(seen)} distinct test warning(s)')

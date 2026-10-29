@@ -309,6 +309,10 @@ the same value. Sticky flags may accumulate during managed exception handling.
 The helper is compiled with `${CC:-cc}` only for full glibc Linux x64 test builds and is
 copied only to test output. Managed-only listener smoke, musl, macOS and Windows
 builds do not compile it. It is not a production hashing library or runtime artifact.
+`CC` names one executable or wrapper path, including paths with spaces. For a
+compiler plus arguments, such as `ccache gcc`, put the invocation in an executable
+wrapper and set `CC` to its path. Run `dotnet clean` before switching compilers;
+changing `CC` alone does not invalidate MSBuild's incremental outputs.
 Both intermediate and output `.so` paths are registered with MSBuild `FileWrites`
 for normal and incremental builds and for clean, including managed-only clean runs.
 
@@ -320,7 +324,12 @@ jobs capture TRX output. An `always()` post-test step runs
 `scripts/release/report-floating-point-diagnostics.py` to emit escaped GitHub warning
 commands directly from the runner, without relying on test-host stdout forwarding.
 Warnings include the test name; duplicate messages are coalesced, missing/malformed
-reports fail reporting, and synthetic/unrelated messages are ignored. This follows
+reports fail reporting, and synthetic/unrelated messages are ignored. Reports must
+have a `TestRun` root and a direct `Results/UnitTestResult` section containing at
+least one test, either in the standard TRX namespace or without a namespace.
+Empty test runs and unrelated XML fail reporting rather than reporting zero warnings.
+When upgrading xUnit, verify the DAZ negative controls' `EqualException` expected/actual
+lines and `ThrowsException` missing-range-exception wording. This follows
 [xUnit v2 output capture](https://xunit.net/docs/capturing-output) and
 [GitHub workflow commands](https://docs.github.com/en/actions/reference/workflow-commands-for-github-actions).
 Synthetic regression diagnostics are captured and asserted, not forwarded as

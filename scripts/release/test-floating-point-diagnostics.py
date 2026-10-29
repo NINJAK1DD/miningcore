@@ -66,6 +66,27 @@ class DiagnosticReporterTests(unittest.TestCase):
                 with self.subTest(malformed=malformed), contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(1, reporter.main([str(path)]))
 
+    def test_well_formed_xml_requires_meaningful_trx_results(self):
+        documents = (
+            '<unrelated><Results><UnitTestResult /></Results></unrelated>',
+            '<TestRun />',
+            '<TestRun><Results /></TestRun>',
+            '<TestRun><Other><UnitTestResult /></Other></TestRun>',
+            '<TestRun xmlns="urn:unrelated"><Results><UnitTestResult /></Results></TestRun>',
+            '<TestRun><Results xmlns="urn:unrelated"><UnitTestResult /></Results></TestRun>',
+            f'<TestRun xmlns="{reporter.TRX_NAMESPACE}"><Results /></TestRun>',
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'invalid.trx'
+            for document in documents:
+                path.write_text(document, encoding='utf-8')
+                error = io.StringIO()
+                output = io.StringIO()
+                with self.subTest(document=document), contextlib.redirect_stderr(error), contextlib.redirect_stdout(output):
+                    self.assertEqual(1, reporter.main([str(path)]))
+                    self.assertIn('Cannot read floating-point diagnostic report:', error.getvalue())
+                    self.assertEqual('', output.getvalue())
+
 
 if __name__ == '__main__':
     unittest.main()
