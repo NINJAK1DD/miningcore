@@ -21,6 +21,12 @@ class DiagnosticReporterTests(unittest.TestCase):
         output = ET.SubElement(result, tag('Output'))
         ET.SubElement(output, tag('StdOut')).text = '\n'.join(lines or [])
         ET.SubElement(output, tag('StdErr')).text = reporter.PREFIX + ' not captured fixture output'
+        definitions = ET.SubElement(root, tag('TestDefinitions'))
+        for index, (owner, method) in enumerate(sorted(reporter.REQUIRED_FIXTURES)):
+            test_id = f'numeric-{index}'
+            ET.SubElement(results, tag('UnitTestResult'), testId=test_id, testName=method, outcome=outcome)
+            definition = ET.SubElement(definitions, tag('UnitTest'), id=test_id)
+            ET.SubElement(definition, tag('TestMethod'), className=owner, name=method)
         path = Path(directory) / 'results.trx'
         ET.ElementTree(root).write(path, encoding='utf-8', xml_declaration=True)
         return path
@@ -86,6 +92,49 @@ class DiagnosticReporterTests(unittest.TestCase):
                     self.assertEqual(1, reporter.main([str(path)]))
                     self.assertIn('Cannot read floating-point diagnostic report:', error.getvalue())
                     self.assertEqual('', output.getvalue())
+
+    def test_required_fixtures_need_matching_executed_results(self):
+        for change in ('no-definitions', 'no-results', 'wrong-id', 'wrong-class',
+                       'wrong-method', 'skipped', 'missing-outcome'):
+            for namespace in ('', reporter.TRX_NAMESPACE):
+                with self.subTest(change=change, namespace=namespace), tempfile.TemporaryDirectory() as directory:
+                    path = self.report(directory, namespace)
+                    root = ET.parse(path).getroot()
+                    prefix = f'{{{namespace}}}' if namespace else ''
+                    definitions = root.find(prefix + 'TestDefinitions')
+                    results = root.find(prefix + 'Results')
+                    result = results[1]
+                    method = definitions[0].find(prefix + 'TestMethod')
+                    if change == 'no-definitions':
+                        root.remove(definitions)
+                    elif change == 'no-results':
+                        results.remove(result)
+                    elif change == 'wrong-id':
+                        result.set('testId', 'unrelated')
+                    elif change == 'wrong-class':
+                        method.set('className', 'Unrelated.Fixture')
+                    elif change == 'wrong-method':
+                        method.set('name', method.get('name') + '_Unrelated')
+                    elif change == 'skipped':
+                        result.set('outcome', 'NotExecuted')
+                    else:
+                        result.attrib.pop('outcome')
+                    ET.ElementTree(root).write(path, encoding='utf-8')
+                    output = io.StringIO()
+                    error = io.StringIO()
+                    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+                        self.assertEqual(1, reporter.main([str(path)]))
+                    self.assertIn('missing executed numeric fixtures:', error.getvalue())
+                    self.assertEqual('', output.getvalue())
+
+    def test_fixture_identity_is_independent_of_display_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.report(directory, reporter.TRX_NAMESPACE)
+            root = ET.parse(path).getroot()
+            for result in root.findall(f'./{{{reporter.TRX_NAMESPACE}}}Results/*'):
+                result.set('testName', 'display name with arguments: value, other')
+            ET.ElementTree(root).write(path, encoding='utf-8')
+            self.assertEqual([], list(reporter.diagnostics(path)))
 
 
 if __name__ == '__main__':

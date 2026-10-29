@@ -328,6 +328,12 @@ reports fail reporting, and synthetic/unrelated messages are ignored. Reports mu
 have a `TestRun` root and a direct `Results/UnitTestResult` section containing at
 least one test, either in the standard TRX namespace or without a namespace.
 Empty test runs and unrelated XML fail reporting rather than reporting zero warnings.
+Each report must also show that `VarDiffManagerTests.ExtremeRatios_AvoidIntermediateOverflowAndUnderflow`
+and `CryptonoteDifficultyAssignmentTests.Configuration_RejectsFrozenDeltaAndIncompatibleNormalizedStart`
+executed. The reporter links result `testId` values to the canonical class/method
+in `TestDefinitions`, so theory display-name formatting is irrelevant. Passed and
+failed cases count as executed, preserving diagnostics from failing runs; skipped
+or merely discovered cases do not. A valid TRX from another suite fails reporting.
 When upgrading xUnit, verify the DAZ negative controls' `EqualException` expected/actual
 lines and `ThrowsException` missing-range-exception wording. This follows
 [xUnit v2 output capture](https://xunit.net/docs/capturing-output) and

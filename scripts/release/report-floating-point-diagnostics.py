@@ -8,6 +8,11 @@ import xml.etree.ElementTree as ET
 
 PREFIX = "Non-default floating-point controls at numeric fixture entry"
 TRX_NAMESPACE = "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"
+REQUIRED_FIXTURES = {
+    ('Miningcore.Tests.VarDiffManagerTests', 'ExtremeRatios_AvoidIntermediateOverflowAndUnderflow'),
+    ('Miningcore.Tests.Mining.CryptonoteDifficultyAssignmentTests',
+     'Configuration_RejectsFrozenDeltaAndIncompatibleNormalizedStart'),
+}
 
 
 def diagnostics(path):
@@ -18,6 +23,20 @@ def diagnostics(path):
     results = root.findall(f'./{namespace}Results/{namespace}UnitTestResult')
     if not results:
         raise ValueError(f'{path}: expected at least one TRX UnitTestResult in Results')
+    # Match canonical class/method identities, not xUnit's formatted theory names.
+    # Failed tests still carry useful diagnostics; skipped/discovered-only tests
+    # do not establish that either protected numeric path actually ran.
+    executed = {result.get('testId') for result in results
+                if result.get('testId') and result.get('outcome') in ('Passed', 'Failed')}
+    fixtures = set()
+    for definition in root.findall(f'./{namespace}TestDefinitions/{namespace}UnitTest'):
+        method = definition.find(f'{namespace}TestMethod')
+        if definition.get('id') in executed and method is not None:
+            fixtures.add((method.get('className'), method.get('name')))
+    missing = REQUIRED_FIXTURES - fixtures
+    if missing:
+        names = ', '.join(f'{owner}.{method}' for owner, method in sorted(missing))
+        raise ValueError(f'{path}: missing executed numeric fixtures: {names}')
     for result in results:
         output = result.find(f'./{namespace}Output/{namespace}StdOut')
         if output is None:
