@@ -6,6 +6,8 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
+using System.Net.Http;
+using System.Security.Authentication;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
@@ -19,11 +21,18 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Autofac;
+using Miningcore.Blockchain;
+using AlephiumClient = Miningcore.Blockchain.Alephium.AlephiumClient;
+using AlephiumJobManager = Miningcore.Blockchain.Alephium.AlephiumJobManager;
+using SelfClique = Miningcore.Blockchain.Alephium.SelfClique;
 using Miningcore.Configuration;
+using Miningcore.Diagnostics;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Messaging;
 using Miningcore.Notifications.Messages;
+using Miningcore.Time;
 using Miningcore.Rpc;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -799,6 +808,258 @@ public class RpcDiagnosticTests
             Assert.Equal(cases[i].Status, records[i]["httpStatus"].Value<int?>());
             Assert.Equal(JTokenType.Null, records[i]["method"].Type);
         }
+    }
+
+    [Fact]
+    public void WrappedTlsFailures_KeepStructuralCategoryWithoutLeakingMessages()
+    {
+        var wrapped = new HttpRequestException(UnsafeText, new AuthenticationException(UnsafeText));
+        Assert.Equal("tls-handshake", DiagnosticFailure.Category(wrapped));
+
+        Exception tooDeep = new AuthenticationException(UnsafeText);
+        for(var i = 0; i < 8; i++)
+            tooDeep = new IOException(UnsafeText, tooDeep);
+        Assert.Equal("io", DiagnosticFailure.Category(tooDeep));
+        Assert.Equal("http", DiagnosticFailure.Category(new HttpRequestException(UnsafeText)));
+        Assert.Equal("tls-handshake", DiagnosticFailure.Category(new HttpRequestException(
+            HttpRequestError.SecureConnectionError, UnsafeText, null)));
+
+        using var logs = new CapturedLogs(NLog.LogLevel.Warn);
+        RpcDiagnostics.Write(logs.Logger, NLog.LogLevel.Warn, RpcDiagnostics.Transport.Http,
+            RpcDiagnostics.Stage.Failure, failure: wrapped);
+        logs.AssertSafe();
+        Assert.Contains("\"failure\":\"tls-handshake\"", Assert.Single(logs.Messages));
+    }
+
+    [Fact]
+    public async Task TlsWarning_RearmsAfterSingleAndBatchHttpResponses()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var logs = new CapturedLogs(NLog.LogLevel.Warn);
+        await using var server = await Server.Start(async context =>
+        {
+            if(context.Request.Path == "/unauthorized")
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            }
+
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JToken.Parse(await reader.ReadToEndAsync(deadline.Token));
+            static JObject Reply(JToken item) => new() { ["id"] = item["id"], ["result"] = "ok" };
+            var reply = request is JArray items ? (JToken) new JArray(items.Select(Reply)) : Reply(request);
+            await context.Response.WriteAsync(reply.ToString(Formatting.None), deadline.Token);
+        });
+
+        // The same client sees failed handshakes, decoded and undecodable HTTP
+        // responses, then later failures. No trust-store override is used.
+        var endpoint = server.Endpoint();
+        var client = new RpcClient(endpoint, new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
+        int Warnings() => logs.Messages.Count(message => message.Contains("\"failure\":\"tls-handshake\"", StringComparison.Ordinal));
+
+        endpoint.Ssl = true; // HTTPS against the local HTTP-only listener.
+        for(var i = 0; i < 2; i++)
+        {
+            var failed = await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token);
+            Assert.Equal("tls-handshake", DiagnosticFailure.Category(failed.Error?.InnerException));
+        }
+        Assert.Equal(1, Warnings());
+
+        endpoint.Ssl = false;
+        Assert.Null((await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error);
+        endpoint.Ssl = true;
+        Assert.Equal("tls-handshake", DiagnosticFailure.Category(
+            (await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error?.InnerException));
+        Assert.Equal(2, Warnings());
+
+        endpoint.Ssl = false;
+        endpoint.HttpPath = "/unauthorized";
+        Assert.NotNull((await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error);
+        endpoint.HttpPath = null;
+        endpoint.Ssl = true;
+        Assert.Equal("tls-handshake", DiagnosticFailure.Category(
+            (await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error?.InnerException));
+        Assert.Equal(3, Warnings());
+
+        endpoint.Ssl = false;
+        Assert.Null(Assert.Single(await client.ExecuteBatchAsync(logs.Logger, deadline.Token,
+            new RpcRequest("getnetworkinfo"))).Error);
+        endpoint.Ssl = true;
+        Assert.Equal("tls-handshake", DiagnosticFailure.Category(
+            (await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error?.InnerException));
+        Assert.Equal(4, Warnings());
+
+        endpoint.Ssl = false;
+        endpoint.HttpPath = "/unauthorized";
+        Assert.NotNull(Assert.Single(await client.ExecuteBatchAsync(logs.Logger, deadline.Token,
+            new RpcRequest("getnetworkinfo"))).Error);
+        endpoint.HttpPath = null;
+        endpoint.Ssl = true;
+        Assert.Equal("tls-handshake", DiagnosticFailure.Category(
+            (await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error?.InnerException));
+        Assert.Equal(5, Warnings());
+        logs.AssertSafe();
+    }
+
+    [Fact]
+    public async Task AlephiumStartupTlsWarning_RearmsAfterSuccessfulDaemonResponse()
+    {
+        using var logs = new CapturedLogs(NLog.LogLevel.Warn);
+        using var http = new HttpClient();
+        var tls = new HttpRequestException(HttpRequestError.SecureConnectionError, UnsafeText, null);
+        var client = new ScriptedAlephiumClient(http,
+            () => Task.FromException<SelfClique>(tls),
+            () => Task.FromException<SelfClique>(tls),
+            () => Task.FromException<SelfClique>(new IOException(UnsafeText)),
+            () => Task.FromResult(new SelfClique { SelfReady = false, Synced = false }),
+            () => Task.FromException<SelfClique>(tls));
+        var manager = new AlephiumTlsManagerProbe(logs.Logger, client);
+        int Warnings() => logs.Messages.Count(message => message.Contains("\"failure\":\"tls-handshake\"", StringComparison.Ordinal));
+
+        Assert.False(await manager.Healthy());
+        Assert.False(await manager.Healthy());
+        Assert.False(await manager.Healthy());
+        Assert.Equal(1, Warnings());
+        Assert.False(await manager.Healthy()); // Decoded, but not yet synced.
+        Assert.False(await manager.Healthy());
+        Assert.Equal(2, Warnings());
+        Assert.All(logs.Messages, message =>
+        {
+            Assert.StartsWith("RPC consumer diagnostic ", message);
+            Assert.DoesNotContain(Secret, message);
+            Assert.DoesNotContain(UnsafeText, message);
+            Assert.DoesNotContain(message, c => c is '\r' or '\n');
+            Assert.True(message.Length < 512);
+            Assert.Equal("tls-handshake", JObject.Parse(message["RPC consumer diagnostic ".Length..])
+                ["failure"]?.Value<string>());
+        });
+    }
+
+    [Theory]
+    [InlineData("ergo", "api_key")]
+    [InlineData("alephium", "X-API-KEY")]
+    public async Task CoinClientRedirect_DoesNotForwardApiKey(string coin, string apiKeyHeader)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var redirectedRequests = 0;
+        await using var destination = await Server.Start(async context =>
+        {
+            Interlocked.Increment(ref redirectedRequests);
+            await context.Response.WriteAsync("{}", deadline.Token);
+        });
+        var destinationEndpoint = destination.Endpoint();
+        var location = $"http://{destinationEndpoint.Host}:{destinationEndpoint.Port}/capture";
+        var originHeaders = new TaskCompletionSource<(string ApiKey, string Authorization)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var origin = await Server.Start(async context =>
+        {
+            originHeaders.TrySetResult((context.Request.Headers[apiKeyHeader].ToString(),
+                context.Request.Headers.Authorization.ToString()));
+            context.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
+            context.Response.Headers.Location = location;
+            await context.Response.WriteAsync("{}", deadline.Token);
+        });
+
+        // The redirect policy belongs to the same handler for HTTP and HTTPS.
+        // Certificate validation is exercised separately by RpcTlsTests.
+        var endpoint = origin.Endpoint();
+        endpoint.HttpPath = string.Empty;
+        endpoint.Extra = new Dictionary<string, object> { ["apiKey"] = Secret };
+        var pool = new PoolConfig { Daemons = [endpoint] };
+        var cluster = new ClusterConfig();
+        if(coin == "ergo")
+        {
+            var error = await Assert.ThrowsAnyAsync<Miningcore.Blockchain.Ergo.ApiException>(() =>
+                Miningcore.Blockchain.Ergo.ErgoClientFactory.CreateClient(pool, cluster, null)
+                    .GetNodeInfoAsync(deadline.Token));
+            Assert.Equal(307, error.StatusCode);
+        }
+        else
+        {
+            var error = await Assert.ThrowsAnyAsync<Miningcore.Blockchain.Alephium.AlephiumApiException>(() =>
+                Miningcore.Blockchain.Alephium.AlephiumClientFactory.CreateClient(pool, cluster, null)
+                    .GetInfosSelfCliqueAsync(deadline.Token));
+            Assert.Equal(307, error.StatusCode);
+        }
+
+        var headers = await originHeaders.Task.WaitAsync(deadline.Token);
+        Assert.Equal(Secret, headers.ApiKey);
+        Assert.Equal("Basic " + EncodedCredentials, headers.Authorization);
+        Assert.Equal(0, Volatile.Read(ref redirectedRequests));
+    }
+
+    [Fact]
+    public async Task SharedRpcRedirect_DoesNotForwardWalletPassword()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var redirectedRequests = 0;
+        await using var destination = await Server.Start(async context =>
+        {
+            Interlocked.Increment(ref redirectedRequests);
+            await context.Response.WriteAsync("{}", deadline.Token);
+        });
+        var destinationEndpoint = destination.Endpoint();
+        var location = $"http://{destinationEndpoint.Host}:{destinationEndpoint.Port}/capture";
+        var originRequests = 0;
+        var originRequest = new TaskCompletionSource<(string Method, string Password, string Authorization)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var origin = await Server.Start(async context =>
+        {
+            Interlocked.Increment(ref originRequests);
+            using var reader = new StreamReader(context.Request.Body);
+            var body = JToken.Parse(await reader.ReadToEndAsync(deadline.Token));
+            if(body is JObject single)
+                originRequest.TrySetResult((single["method"]?.Value<string>(),
+                    single["params"]?[0]?.Value<string>(), context.Request.Headers.Authorization.ToString()));
+            context.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
+            context.Response.Headers.Location = location;
+            await context.Response.WriteAsync("{\"result\":\"must-not-be-accepted\"}", deadline.Token);
+        });
+
+        // A 307 preserves POST bodies. HTTP loopback exercises the same redirect
+        // policy used for HTTPS; certificate trust is tested separately.
+        using var logs = new CapturedLogs(NLog.LogLevel.Warn);
+        var endpoint = origin.Endpoint();
+        endpoint.HttpPath = string.Empty;
+        var client = new RpcClient(endpoint, new JsonSerializerSettings(),
+            Substitute.For<IMessageBus>(), "test");
+        var response = await client.ExecuteAsync<JToken>(logs.Logger, "walletpassphrase",
+            deadline.Token, new object[] { Secret, 60 });
+        Assert.Equal(HttpStatusCode.TemporaryRedirect,
+            Assert.IsType<HttpRequestException>(response.Error?.InnerException).StatusCode);
+        var request = await originRequest.Task.WaitAsync(deadline.Token);
+        Assert.Equal("walletpassphrase", request.Method);
+        Assert.Equal(Secret, request.Password);
+        Assert.Equal("Basic " + EncodedCredentials, request.Authorization);
+        var batch = await client.ExecuteBatchAsync(logs.Logger, deadline.Token,
+            new RpcRequest("walletpassphrase", new object[] { Secret, 60 }));
+        Assert.Equal(HttpStatusCode.TemporaryRedirect,
+            Assert.IsType<HttpRequestException>(Assert.Single(batch).Error?.InnerException).StatusCode);
+        Assert.Equal(2, Volatile.Read(ref originRequests));
+        Assert.Equal(0, Volatile.Read(ref redirectedRequests));
+        Assert.Empty(logs.Messages); // A rejected redirect is not a TLS failure.
+    }
+
+    private sealed class ScriptedAlephiumClient(HttpClient http, params Func<Task<SelfClique>>[] replies)
+        : AlephiumClient("http://localhost", http)
+    {
+        private readonly Queue<Func<Task<SelfClique>>> pending = new(replies);
+        public override Task<SelfClique> GetInfosSelfCliqueAsync(CancellationToken cancellationToken)
+            => pending.Dequeue()();
+    }
+
+    private sealed class AlephiumTlsManagerProbe : AlephiumJobManager
+    {
+        public AlephiumTlsManagerProbe(NLog.ILogger log, AlephiumClient client)
+            : base(Substitute.For<IComponentContext>(), Substitute.For<IMessageBus>(),
+                new StandardClock(), Substitute.For<IExtraNonceProvider>())
+        {
+            logger = log;
+            typeof(AlephiumJobManager).GetField("rpc", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(this, client);
+        }
+
+        public Task<bool> Healthy() => AreDaemonsHealthyAsync(CancellationToken.None);
     }
 
     [Fact]

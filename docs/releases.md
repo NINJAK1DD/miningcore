@@ -22,6 +22,26 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased (after v0.3.0): verify daemon RPC TLS certificates
+
+HTTPS/HTTP2 and WSS daemon RPC transports now use platform certificate validation
+instead of accepting arbitrary server certificates. All coin families using the
+shared client, plus the independent Ergo and Alephium HTTP clients, are affected.
+Endpoints with expired, untrusted or mismatched
+certificates must renew/replace them or provision their independently verified
+private CA into the service/container trust store before upgrading. Restart to
+retire existing pooled connections. Look for `tls-handshake` in structured RPC
+Warning/Error diagnostics if a daemon fails to reconnect. No database migration
+or insecure-skip option is added. Daemon JSON-RPC HTTP clients no longer follow
+redirects, preventing Ergo/Alephium API-key headers and shared-client POST
+bodies from reaching a redirected origin. Configure the final daemon/proxy URL
+directly. See
+[daemon TLS compatibility and testing](rpc-tls.md).
+Beam explorer, Conceal and Warthog node REST requests still use plain HTTP and
+may follow redirects regardless of `ssl`; see [#235](https://github.com/NINJAK1DD/miningcore/issues/235).
+Warthog wallet-private-key exposure through REST URLs and error text is tracked
+in [#236](https://github.com/NINJAK1DD/miningcore/issues/236).
+
 ## Unreleased (after v0.3.0): native floating-point state on CryptoNote load
 
 CryptoNote's Linux shared-library link no longer passes `-Ofast` to the linker

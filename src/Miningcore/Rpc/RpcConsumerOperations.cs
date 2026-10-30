@@ -62,6 +62,7 @@ internal static class RpcConsumerOperations
         "BitcoinJobManager.SendDirectSubmissionNotification",
         "BitcoinJobManager.UpdateJob",
         "BitcoinJobManagerBase.AreDaemonsHealthyAsync",
+        "BitcoinJobManagerBase.AreDaemonsConnectedAsync",
         "BitcoinJobManagerBase.PostStartInitAsync",
         "BitcoinJobManagerBase.SubmitBlockAsync",
         "BitcoinJobManagerBase.UpdateNetworkStatsAsync",

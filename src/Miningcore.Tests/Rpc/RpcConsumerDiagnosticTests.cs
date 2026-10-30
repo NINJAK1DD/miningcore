@@ -391,8 +391,10 @@ public class RpcConsumerDiagnosticTests
                     .Where(x => !x.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar)))
         {
             var source = File.ReadAllText(file);
+            // Alephium's edge-triggered TLS warning selects a level before
+            // forwarding its fixed operation label to the same diagnostic sink.
             foreach(Match match in Regex.Matches(source,
-                        "RpcConsumerDiagnostics\\.Write\\([^,]+,\\s*[^,]+,\\s*\"([^\"]+)\""))
+                        "(?:RpcConsumerDiagnostics\\.Write\\([^,]+,\\s*[^,]+,\\s*|ReportDaemonStartupFailure\\()\"([^\"]+)\""))
             {
                 Assert.Contains(match.Groups[1].Value, RpcConsumerOperations.All);
                 operations.Add(match.Groups[1].Value);

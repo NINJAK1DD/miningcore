@@ -607,7 +607,7 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
         if(response.Error != null || response.Response == null)
         {
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManagerBase.AreDaemonsHealthyAsync", code: response.Error?.Code);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinJobManagerBase.AreDaemonsHealthyAsync", failure: response.Error?.InnerException, code: response.Error?.Code);
             return false;
         }
 
@@ -623,7 +623,10 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
         var response = await rpc.ExecuteAsync<NetworkInfo>(logger, BitcoinCommands.GetNetworkInfo, ct);
 
         if(response.Error != null || response.Response == null)
+        {
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BitcoinJobManagerBase.AreDaemonsConnectedAsync", failure: response.Error?.InnerException, code: response.Error?.Code);
             return false;
+        }
 
         // update stats
         if(!string.IsNullOrEmpty(response.Response.Version))
