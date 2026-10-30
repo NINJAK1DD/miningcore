@@ -196,6 +196,48 @@ malformed packages, invalid budgets, a shared total deadline and probe native
 libraries. Static guards cover stage isolation, recommendation policy, immutable
 checkout, deadlines and cache failure policy.
 
+## Integrating native validation and test hardening
+
+Integrate the native load-time correction [#227](https://github.com/NINJAK1DD/miningcore/pull/227),
+then the TCP authorization test correction [#229](https://github.com/NINJAK1DD/miningcore/pull/229),
+before this source-container change. Additional numeric fixture hardening
+[#228](https://github.com/NINJAK1DD/miningcore/pull/228) can follow; this container
+implementation does not require that fixture isolation once the native correction
+is integrated. Refresh each remaining branch from `dev` and require its updated
+checks to pass before merging.
+
+The source-container job checks out the immutable PR head, so refresh the branch
+itself after the prerequisite merges. A successful test of GitHub's synthetic
+merge commit in another job does not establish that this source-image build
+contains the native correction.
+
+In the combined Dockerfile, retain the dependency stages, the audited `builder`
+stage and its `test-native-load-fenv.sh ../../build --cryptonote-vectors` invocation
+after publication and before `assert-linux-native-symbol-contracts.py`. Keep the
+Release job's native-loader step as well as the source-container job's budgets,
+cache imports, provenance and protected-listener checks.
+
+When integrating #228, both it and #227 insert a self-test after
+`Test Linux native symbol contracts` in `.github/workflows/dotnet.yml`. If Git
+reports that insertion as a conflict, retain both steps:
+
+```yaml
+    - name: Test native floating-point load gate
+      shell: bash
+      run: bash scripts/release/test-native-load-fenv-regressions.sh
+
+    - name: Test floating-point diagnostic reporting
+      timeout-minutes: 1
+      run: python3 -B scripts/release/test-floating-point-diagnostics.py
+```
+
+Also retain #228's TRX capture and post-test reporting steps. Run the container
+contracts, reporter self-tests and loader regressions on the resolved tree, then
+require combined .NET and Release validation before publishing. Record the final
+integration SHA and job links in [#225](https://github.com/NINJAK1DD/miningcore/issues/225).
+The default-branch warmer export and subsequent cache-consumption checks above
+remain pending until their actual runs succeed.
+
 ## Existing release-wide follow-ups
 
 Tracked in [#225](https://github.com/NINJAK1DD/miningcore/issues/225).
