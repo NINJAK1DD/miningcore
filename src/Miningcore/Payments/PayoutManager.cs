@@ -27,7 +27,7 @@ namespace Miningcore.Payments;
 /// </summary>
 public class PayoutManager : ProcessStatusBackgroundService
 {
-    public PayoutManager(ILifetimeScope ctx,
+    public PayoutManager(ILifetimeScope lifetimeScope,
         IConnectionFactory cf,
         IBlockRepository blockRepo,
         IShareRepository shareRepo,
@@ -37,7 +37,7 @@ public class PayoutManager : ProcessStatusBackgroundService
         IPayoutManagerLease payoutLease,
         IProcessStatus processStatus) : base(processStatus)
     {
-        Contract.RequiresNonNull(ctx);
+        Contract.RequiresNonNull(lifetimeScope);
         Contract.RequiresNonNull(cf);
         Contract.RequiresNonNull(blockRepo);
         Contract.RequiresNonNull(shareRepo);
@@ -45,7 +45,7 @@ public class PayoutManager : ProcessStatusBackgroundService
         Contract.RequiresNonNull(messageBus);
         Contract.RequiresNonNull(payoutLease);
 
-        this.ctx = ctx;
+        this.lifetimeScope = lifetimeScope;
         this.cf = cf;
         this.blockRepo = blockRepo;
         this.shareRepo = shareRepo;
@@ -59,7 +59,7 @@ public class PayoutManager : ProcessStatusBackgroundService
             clusterConfig.PaymentProcessing.Interval : 600);
     }
 
-    internal PayoutManager(ILifetimeScope ctx,
+    internal PayoutManager(ILifetimeScope lifetimeScope,
         IConnectionFactory cf,
         IBlockRepository blockRepo,
         IShareRepository shareRepo,
@@ -70,7 +70,7 @@ public class PayoutManager : ProcessStatusBackgroundService
         IProcessStatus processStatus,
         Func<CancellationToken, Task> executeOverride,
         bool subscribeToPoolStatus) :
-        this(ctx, cf, blockRepo, shareRepo, balanceRepo, clusterConfig, messageBus,
+        this(lifetimeScope, cf, blockRepo, shareRepo, balanceRepo, clusterConfig, messageBus,
             payoutLease, processStatus)
     {
         this.executeOverride = executeOverride;
@@ -81,7 +81,7 @@ public class PayoutManager : ProcessStatusBackgroundService
     private readonly IBalanceRepository balanceRepo;
     private readonly IBlockRepository blockRepo;
     private readonly IConnectionFactory cf;
-    private readonly ILifetimeScope ctx;
+    private readonly ILifetimeScope lifetimeScope;
     private readonly IShareRepository shareRepo;
     private readonly IMessageBus messageBus;
     private readonly TimeSpan interval;
@@ -195,7 +195,7 @@ public class PayoutManager : ProcessStatusBackgroundService
             {
                 // Autofac owns disposable handlers. A short-lived scope releases its
                 // references at the end of this cycle, including on failure.
-                await using var payoutScope = ctx.BeginLifetimeScope();
+                await using var payoutScope = lifetimeScope.BeginLifetimeScope();
                 var family = HandleFamilyOverride(poolConfig.Template.Family, poolConfig);
 
                 // resolve payout handler
