@@ -475,12 +475,13 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
         await UpdateNetworkStatsAsync(ct);
 
         // Periodically update network stats
-        Observable.Interval(TimeSpan.FromMinutes(1))
+        var networkStatsSubscription = Observable.Interval(TimeSpan.FromMinutes(1))
             .Select(via => Observable.FromAsync(() =>
                 Guard(()=> UpdateNetworkStatsAsync(ct),
                     ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "WarthogJobManager.PostStartInitAsync", failure: ex))))
             .Concat()
             .Subscribe();
+        ct.Register(networkStatsSubscription.Dispose);
 
         SetupJobUpdates(ct);
     }

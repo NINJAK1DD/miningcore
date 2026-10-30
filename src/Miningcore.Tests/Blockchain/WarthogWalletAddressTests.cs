@@ -37,7 +37,8 @@ public sealed class WarthogDaemonFactAttribute : FactAttribute
 {
     public WarthogDaemonFactAttribute()
     {
-        if(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MININGCORE_TEST_WARTHOG_DAEMON")))
+        var daemon = Environment.GetEnvironmentVariable("MININGCORE_TEST_WARTHOG_DAEMON");
+        if(string.IsNullOrWhiteSpace(daemon) || !File.Exists(daemon))
             Skip = "Set MININGCORE_TEST_WARTHOG_DAEMON to run the isolated Warthog daemon test";
     }
 }
@@ -55,6 +56,7 @@ public class WarthogWalletAddressTests : TestBase
     private const string LargestValidAddress = "adde4c73c7b9cee17da6c7b3e2b2eea1a0dcbe675de096be";
     private const string LetterKey = "00000000000000000000000000000000000000000000000000000000000000ab";
     private const string LetterAddress = "81ac61244a9ba7b579f747f80f6f1b09fe9dcab1488b77c2";
+    private const string PinHash = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
     [Fact]
     public void LocalDerivation_MatchesIndependentSecp256k1Vector()
@@ -204,6 +206,7 @@ public class WarthogWalletAddressTests : TestBase
 
         // Independently reconstruct the Warthog preimage from public transaction fields.
         var preimage = new byte[32 + 4 + 4 + 3 + 8 + 20 + 8];
+        Convert.FromHexString(PinHash).CopyTo(preimage, 0);
         BinaryPrimitives.WriteUInt32BigEndian(preimage.AsSpan(32, 4), transaction.PinHeight);
         BinaryPrimitives.WriteUInt32BigEndian(preimage.AsSpan(36, 4), transaction.NonceId);
         BinaryPrimitives.WriteUInt64BigEndian(preimage.AsSpan(43, 8), transaction.Fee);
@@ -251,11 +254,18 @@ public class WarthogWalletAddressTests : TestBase
         manager.Configure(CreatePool(Address),
             new ClusterConfig { PaymentProcessing = new ClusterPaymentProcessingConfig { Enabled = true } });
 
-        await manager.StartAsync(CancellationToken.None);
-
-        Assert.Contains("/chain/head", requests.Paths);
-        Assert.Contains("/chain/mine/" + Address, requests.Paths);
-        AssertNoCanary(requests, capture);
+        using var startup = new CancellationTokenSource();
+        try
+        {
+            await manager.StartAsync(startup.Token);
+            Assert.Contains("/chain/head", requests.Paths);
+            Assert.Contains("/chain/mine/" + Address, requests.Paths);
+            AssertNoCanary(requests, capture);
+        }
+        finally
+        {
+            startup.Cancel();
+        }
     }
 
     [WarthogDaemonFact]
@@ -316,10 +326,16 @@ public class WarthogWalletAddressTests : TestBase
             manager.Configure(pool,
                 new ClusterConfig { PaymentProcessing = new ClusterPaymentProcessingConfig { Enabled = true } });
             using var startupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            await manager.Initialize(startupTimeout.Token);
-
-            Assert.Contains("/chain/mine/" + Address, requests.Paths);
-            AssertNoCanary(requests.Requests, capture);
+            try
+            {
+                await manager.Initialize(startupTimeout.Token);
+                Assert.Contains("/chain/mine/" + Address, requests.Paths);
+                AssertNoCanary(requests.Requests, capture);
+            }
+            finally
+            {
+                startupTimeout.Cancel();
+            }
         }
         finally
         {
@@ -433,7 +449,7 @@ public class WarthogWalletAddressTests : TestBase
             var path = request.RequestUri.AbsolutePath;
             var body = path switch
             {
-                "/chain/head" => "{\"code\":0,\"data\":{\"is_janushash\":false,\"synced\":true,\"pinHash\":\"" + new string('0', 64) + "\",\"pinHeight\":42}}",
+                "/chain/head" => "{\"code\":0,\"data\":{\"is_janushash\":false,\"synced\":true,\"pinHash\":\"" + PinHash + "\",\"pinHeight\":42}}",
                 "/peers/connected" => "[]",
                 _ when path.StartsWith("/chain/mine/", StringComparison.Ordinal) =>
                     "{\"code\":0,\"data\":{\"testnet\":true}}",

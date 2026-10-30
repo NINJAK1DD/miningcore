@@ -44,8 +44,9 @@ may follow redirects regardless of `ssl`; see [#235](https://github.com/NINJAK1D
 
 Warthog wallet address checks now derive the address locally, removing the
 private key from daemon REST URLs and startup errors. Invalid keys and
-non-lowercase pool addresses fail before daemon startup checks. If an older
-version ran with Warthog payments enabled, follow the
+non-lowercase pool addresses fail before daemon startup checks when payment
+processing is enabled for both the cluster and pool. If an older version ran
+with Warthog payments enabled, follow the
 [Warthog key incident guidance](warthog-wallet-key-security.md).
 
 ## Unreleased (after v0.3.0): native floating-point state on CryptoNote load

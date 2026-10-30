@@ -27,7 +27,7 @@ namespace Miningcore.Payments;
 /// </summary>
 public class PayoutManager : ProcessStatusBackgroundService
 {
-    public PayoutManager(IComponentContext ctx,
+    public PayoutManager(ILifetimeScope ctx,
         IConnectionFactory cf,
         IBlockRepository blockRepo,
         IShareRepository shareRepo,
@@ -59,7 +59,7 @@ public class PayoutManager : ProcessStatusBackgroundService
             clusterConfig.PaymentProcessing.Interval : 600);
     }
 
-    internal PayoutManager(IComponentContext ctx,
+    internal PayoutManager(ILifetimeScope ctx,
         IConnectionFactory cf,
         IBlockRepository blockRepo,
         IShareRepository shareRepo,
@@ -81,7 +81,7 @@ public class PayoutManager : ProcessStatusBackgroundService
     private readonly IBalanceRepository balanceRepo;
     private readonly IBlockRepository blockRepo;
     private readonly IConnectionFactory cf;
-    private readonly IComponentContext ctx;
+    private readonly ILifetimeScope ctx;
     private readonly IShareRepository shareRepo;
     private readonly IMessageBus messageBus;
     private readonly TimeSpan interval;
@@ -166,7 +166,7 @@ public class PayoutManager : ProcessStatusBackgroundService
         }
     }
 
-    private void AttachPool(IMiningPool pool)
+    internal void AttachPool(IMiningPool pool)
     {
         pools.TryAdd(pool.Config.Id, pool);
     }
@@ -177,7 +177,7 @@ public class PayoutManager : ProcessStatusBackgroundService
             AttachPool(notification.Pool);
     }
 
-    private async Task ProcessPoolsAsync(CancellationToken ct)
+    internal async Task ProcessPoolsAsync(CancellationToken ct)
     {
         foreach(var pool in pools.Values.ToArray().Where(x => x.Config.Enabled && x.Config.PaymentProcessing.Enabled))
         {
@@ -193,18 +193,20 @@ public class PayoutManager : ProcessStatusBackgroundService
 
             try
             {
+                // Autofac owns disposable handlers. A short-lived scope releases its
+                // references at the end of this cycle, including on failure.
+                await using var payoutScope = ctx.BeginLifetimeScope();
                 var family = HandleFamilyOverride(poolConfig.Template.Family, poolConfig);
 
                 // resolve payout handler
-                var handlerImpl = ctx.Resolve<IEnumerable<Meta<Lazy<IPayoutHandler, CoinFamilyAttribute>>>>()
+                var handlerImpl = payoutScope.Resolve<IEnumerable<Meta<Lazy<IPayoutHandler, CoinFamilyAttribute>>>>()
                     .First(x => x.Value.Metadata.SupportedFamilies.Contains(family)).Value;
 
                 var handler = handlerImpl.Value;
-                using var handlerLifetime = handler as IDisposable;
                 await handler.ConfigureAsync(clusterConfig, poolConfig, ct);
 
                 // resolve payout scheme
-                var scheme = ctx.ResolveKeyed<IPayoutScheme>(poolConfig.PaymentProcessing.PayoutScheme);
+                var scheme = payoutScope.ResolveKeyed<IPayoutScheme>(poolConfig.PaymentProcessing.PayoutScheme);
 
                 await UpdatePoolBalancesAsync(pool, poolConfig, handler, scheme, ct);
                 await PayoutPoolBalancesAsync(pool, poolConfig, handler, ct);

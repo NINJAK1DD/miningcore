@@ -6,7 +6,8 @@ Miningcore derives the configured Warthog pool address locally from
 transactions. The node receives the signed transaction, never the key. Startup
 rejects malformed keys and address mismatches with sanitized messages that do
 not include the key. The configured pool address must match the lowercase
-checksummed address exactly; a mixed-case address is rejected at startup.
+checksummed address exactly when payment processing is enabled for both the
+cluster and the pool; a mixed-case address is then rejected at startup.
 
 The wallet key is still a signing secret in the pool configuration. Limit access
 to the configuration file, backups, process memory, and any system that can read
