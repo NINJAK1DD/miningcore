@@ -935,6 +935,59 @@ public class RpcDiagnosticTests
         });
     }
 
+    [Theory]
+    [InlineData("ergo", "api_key")]
+    [InlineData("alephium", "X-API-KEY")]
+    public async Task CoinClientRedirect_DoesNotForwardApiKey(string coin, string apiKeyHeader)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var redirectedRequests = 0;
+        await using var destination = await Server.Start(async context =>
+        {
+            Interlocked.Increment(ref redirectedRequests);
+            await context.Response.WriteAsync("{}", deadline.Token);
+        });
+        var destinationEndpoint = destination.Endpoint();
+        var location = $"http://{destinationEndpoint.Host}:{destinationEndpoint.Port}/capture";
+        var originHeaders = new TaskCompletionSource<(string ApiKey, string Authorization)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var origin = await Server.Start(async context =>
+        {
+            originHeaders.TrySetResult((context.Request.Headers[apiKeyHeader].ToString(),
+                context.Request.Headers.Authorization.ToString()));
+            context.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
+            context.Response.Headers.Location = location;
+            await context.Response.WriteAsync("{}", deadline.Token);
+        });
+
+        // The redirect policy belongs to the same handler for HTTP and HTTPS.
+        // Certificate validation is exercised separately by RpcTlsTests.
+        var endpoint = origin.Endpoint();
+        endpoint.HttpPath = string.Empty;
+        endpoint.Extra = new Dictionary<string, object> { ["apiKey"] = Secret };
+        var pool = new PoolConfig { Daemons = [endpoint] };
+        var cluster = new ClusterConfig();
+        if(coin == "ergo")
+        {
+            var error = await Assert.ThrowsAnyAsync<Miningcore.Blockchain.Ergo.ApiException>(() =>
+                Miningcore.Blockchain.Ergo.ErgoClientFactory.CreateClient(pool, cluster, null)
+                    .GetNodeInfoAsync(deadline.Token));
+            Assert.Equal(307, error.StatusCode);
+        }
+        else
+        {
+            var error = await Assert.ThrowsAnyAsync<Miningcore.Blockchain.Alephium.AlephiumApiException>(() =>
+                Miningcore.Blockchain.Alephium.AlephiumClientFactory.CreateClient(pool, cluster, null)
+                    .GetInfosSelfCliqueAsync(deadline.Token));
+            Assert.Equal(307, error.StatusCode);
+        }
+
+        var headers = await originHeaders.Task.WaitAsync(deadline.Token);
+        Assert.Equal(Secret, headers.ApiKey);
+        Assert.Equal("Basic " + EncodedCredentials, headers.Authorization);
+        Assert.Equal(0, Volatile.Read(ref redirectedRequests));
+    }
+
     private sealed class ScriptedAlephiumClient(HttpClient http, params Func<Task<SelfClique>>[] replies)
         : AlephiumClient("http://localhost", http)
     {

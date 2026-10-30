@@ -25,7 +25,8 @@ public static class ErgoClientFactory
         var result = new ErgoClient(baseUrl.ToString(), new HttpClient(new HttpClientHandler
         {
             AutomaticDecompression = DecompressionMethods.All,
-
+            // Keep the API key and any other request headers on the configured daemon.
+            AllowAutoRedirect = false,
         }));
 
         if(!string.IsNullOrEmpty(extra?.ApiKey))

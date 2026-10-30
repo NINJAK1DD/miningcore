@@ -9,6 +9,14 @@ validation callbacks. This covers every coin family using `RpcClient` and the
 separate generated Ergo and Alephium HTTP clients. Kaspa's gRPC client already
 uses default server-certificate validation.
 
+Ergo and Alephium daemon HTTP clients do not follow redirects. Their custom
+`api_key` and `X-API-KEY` headers stay on requests to the configured endpoint.
+If a daemon or reverse proxy previously redirected these requests, configure
+`daemons[].host` and its port/path to the final endpoint; a 3xx response now
+surfaces as a daemon error. [.NET redirect handling](https://learn.microsoft.com/en-us/dotnet/api/system.net.http.httpclienthandler.allowautoredirect?view=net-10.0)
+otherwise retains custom headers when it automatically follows redirects,
+including to another HTTPS origin.
+
 The trust configuration includes the operating system trust store available to
 the Miningcore service (inside its container when applicable). On Linux, .NET
 can also use the service account's `CurrentUser\Root` certificate store. For a

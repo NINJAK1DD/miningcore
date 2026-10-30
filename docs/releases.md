@@ -32,7 +32,10 @@ certificates must renew/replace them or provision their independently verified
 private CA into the service/container trust store before upgrading. Restart to
 retire existing pooled connections. Look for `tls-handshake` in structured RPC
 Warning/Error diagnostics if a daemon fails to reconnect. No database migration
-or insecure-skip option is added. See [daemon TLS compatibility and testing](rpc-tls.md).
+or insecure-skip option is added. Ergo and Alephium no longer follow daemon HTTP
+redirects, preventing their custom API-key headers from reaching a redirected
+origin; configure the final daemon/proxy URL directly. See
+[daemon TLS compatibility and testing](rpc-tls.md).
 
 ## Unreleased (after v0.3.0): native floating-point state on CryptoNote load
 
