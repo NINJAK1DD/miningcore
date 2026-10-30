@@ -217,8 +217,8 @@ public class RpcClient
             // send request
             using(var response = await httpClient.SendAsync(request, ct))
             {
-                // A received HTTP response proves this handshake completed, even
-                // if its body cannot be decoded as JSON-RPC (for example, a 401).
+                // A response proves the carrying connection is usable; for HTTPS,
+                // its TLS handshake completed even if the body is invalid (for example, a 401).
                 Volatile.Write(ref tlsWarningEmitted, 0);
                 // read response
                 var responseContent = await response.Content.ReadAsStringAsync(ct);
