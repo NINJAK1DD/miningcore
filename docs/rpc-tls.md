@@ -28,11 +28,9 @@ when the daemon endpoint sets `ssl: true` or `http2: true`. For Warthog,
 `ssl: true` can protect its WSS subscription while its node REST traffic
 remains plaintext. Keep these REST endpoints on a trusted loopback or private
 path until [REST transport hardening #235](https://github.com/NINJAK1DD/miningcore/issues/235)
-is complete. Warthog's wallet check also places its configured private key in
-the REST URL and can include it in error text; see
-[Warthog key exposure #236](https://github.com/NINJAK1DD/miningcore/issues/236).
-Treat a key exposed through logs or an untrusted network path as compromised and
-replace it through the chain's supported wallet procedure.
+is complete. Warthog's wallet address check now runs locally and does not send
+the configured private key to the daemon; see
+[Warthog wallet key security](warthog-wallet-key-security.md) for incident response.
 
 The trust configuration includes the operating system trust store available to
 the Miningcore service (inside its container when applicable). On Linux, .NET

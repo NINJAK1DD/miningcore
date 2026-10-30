@@ -74,7 +74,6 @@ public static class WarthogCommands
 
     public const string GetBlockByHeight = "/chain/block/" + DataLabel;
 
-    public const string GetWallet = "/tools/wallet/from_privkey/" + DataLabel;
     public const string GetBalance = "/account/" + DataLabel + "/balance";
     public const string GetTransaction = "/transaction/lookup/" + DataLabel;
     public const string SendTransaction = "/transaction/add";

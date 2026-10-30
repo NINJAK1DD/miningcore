@@ -41,6 +41,13 @@ public class ErgoExactDifficultySettlementTests
         var normalization = (ErgoPayoutHandler) RuntimeHelpers.GetUninitializedObject(typeof(ErgoPayoutHandler));
         Assert.Equal(network, normalization.AdjustShareDifficulty(candidate.Difficulty));
         Assert.Equal(network / 2, normalization.AdjustShareDifficulty(ordinary.Difficulty));
+        // The uninitialized instance is used only for its pure difficulty adjustment.
+        // Formatting requires an initialized pool config when info logging is enabled.
+        var payoutHandler = Substitute.For<IPayoutHandler>();
+        payoutHandler.AdjustShareDifficulty(Arg.Any<double>())
+            .Returns(call => normalization.AdjustShareDifficulty(call.Arg<double>()));
+        payoutHandler.FormatAmount(Arg.Any<decimal>())
+            .Returns(call => $"{call.Arg<decimal>():0.#####} ERG");
 
         var schema = $"ergo_precision_{Guid.NewGuid():N}";
         var cs = new NpgsqlConnectionStringBuilder(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES")) { SearchPath = schema, Pooling = false };
@@ -116,13 +123,13 @@ public class ErgoExactDifficultySettlementTests
                     var block = new Block { PoolId = id, BlockHeight = 100, Miner = "candidate", Created = created };
                     await using(var tx = await connection.BeginTransactionAsync())
                     {
-                        await scheme.UpdateBalancesAsync(connection, tx, pool, normalization, block, 50m, CancellationToken.None);
+                        await scheme.UpdateBalancesAsync(connection, tx, pool, payoutHandler, block, 50m, CancellationToken.None);
                         await tx.RollbackAsync();
                     }
                     Assert.Equal(0, await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM balances WHERE poolid=@id", new { id }));
                     await using(var tx = await connection.BeginTransactionAsync())
                     {
-                        await scheme.UpdateBalancesAsync(connection, tx, pool, normalization, block, 50m, CancellationToken.None);
+                        await scheme.UpdateBalancesAsync(connection, tx, pool, payoutHandler, block, 50m, CancellationToken.None);
                         await tx.CommitAsync();
                     }
                     var candidateBalance = await balances.GetBalanceAsync(connection, id, "candidate");
