@@ -988,6 +988,58 @@ public class RpcDiagnosticTests
         Assert.Equal(0, Volatile.Read(ref redirectedRequests));
     }
 
+    [Fact]
+    public async Task SharedRpcRedirect_DoesNotForwardWalletPassword()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var redirectedRequests = 0;
+        await using var destination = await Server.Start(async context =>
+        {
+            Interlocked.Increment(ref redirectedRequests);
+            await context.Response.WriteAsync("{}", deadline.Token);
+        });
+        var destinationEndpoint = destination.Endpoint();
+        var location = $"http://{destinationEndpoint.Host}:{destinationEndpoint.Port}/capture";
+        var originRequests = 0;
+        var originRequest = new TaskCompletionSource<(string Method, string Password, string Authorization)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var origin = await Server.Start(async context =>
+        {
+            Interlocked.Increment(ref originRequests);
+            using var reader = new StreamReader(context.Request.Body);
+            var body = JToken.Parse(await reader.ReadToEndAsync(deadline.Token));
+            if(body is JObject single)
+                originRequest.TrySetResult((single["method"]?.Value<string>(),
+                    single["params"]?[0]?.Value<string>(), context.Request.Headers.Authorization.ToString()));
+            context.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
+            context.Response.Headers.Location = location;
+            await context.Response.WriteAsync("{\"result\":\"must-not-be-accepted\"}", deadline.Token);
+        });
+
+        // A 307 preserves POST bodies. HTTP loopback exercises the same redirect
+        // policy used for HTTPS; certificate trust is tested separately.
+        using var logs = new CapturedLogs(NLog.LogLevel.Warn);
+        var endpoint = origin.Endpoint();
+        endpoint.HttpPath = string.Empty;
+        var client = new RpcClient(endpoint, new JsonSerializerSettings(),
+            Substitute.For<IMessageBus>(), "test");
+        var response = await client.ExecuteAsync<JToken>(logs.Logger, "walletpassphrase",
+            deadline.Token, new object[] { Secret, 60 });
+        Assert.Equal(HttpStatusCode.TemporaryRedirect,
+            Assert.IsType<HttpRequestException>(response.Error?.InnerException).StatusCode);
+        var request = await originRequest.Task.WaitAsync(deadline.Token);
+        Assert.Equal("walletpassphrase", request.Method);
+        Assert.Equal(Secret, request.Password);
+        Assert.Equal("Basic " + EncodedCredentials, request.Authorization);
+        var batch = await client.ExecuteBatchAsync(logs.Logger, deadline.Token,
+            new RpcRequest("walletpassphrase", new object[] { Secret, 60 }));
+        Assert.Equal(HttpStatusCode.TemporaryRedirect,
+            Assert.IsType<HttpRequestException>(Assert.Single(batch).Error?.InnerException).StatusCode);
+        Assert.Equal(2, Volatile.Read(ref originRequests));
+        Assert.Equal(0, Volatile.Read(ref redirectedRequests));
+        Assert.Empty(logs.Messages); // A rejected redirect is not a TLS failure.
+    }
+
     private sealed class ScriptedAlephiumClient(HttpClient http, params Func<Task<SelfClique>>[] replies)
         : AlephiumClient("http://localhost", http)
     {

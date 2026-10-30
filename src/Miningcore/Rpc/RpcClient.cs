@@ -52,6 +52,8 @@ public class RpcClient
     private static readonly HttpClient httpClient = new(new HttpClientHandler
     {
         AutomaticDecompression = DecompressionMethods.All,
+        // A 307/308 can replay a wallet password or payout POST body to another origin.
+        AllowAutoRedirect = false,
         // Keep platform chain, validity and hostname verification for daemon HTTPS.
     });
 
@@ -220,6 +222,8 @@ public class RpcClient
                 // A response proves the carrying connection is usable; for HTTPS,
                 // its TLS handshake completed even if the body is invalid (for example, a 401).
                 Volatile.Write(ref tlsWarningEmitted, 0);
+                if((int) response.StatusCode is >= 300 and <= 399)
+                    throw new HttpRequestException("Daemon RPC redirect was refused", null, response.StatusCode);
                 // read response
                 var responseContent = await response.Content.ReadAsStringAsync(ct);
 
@@ -280,6 +284,8 @@ public class RpcClient
             {
                 // Re-arm on HTTP response receipt, regardless of body decoding.
                 Volatile.Write(ref tlsWarningEmitted, 0);
+                if((int) response.StatusCode is >= 300 and <= 399)
+                    throw new HttpRequestException("Daemon RPC redirect was refused", null, response.StatusCode);
                 // deserialize response
                 var responseContent = await response.Content.ReadAsStringAsync(ct);
 
