@@ -50,8 +50,7 @@ public class RpcClient
     private static readonly HttpClient httpClient = new(new HttpClientHandler
     {
         AutomaticDecompression = DecompressionMethods.All,
-
-        ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true,
+        // Keep platform chain, validity and hostname verification for daemon HTTPS.
     });
 
     #region API-Surface
@@ -443,7 +442,7 @@ public class RpcClient
                             // connect
                             var protocol = endPoint.Ssl ? "wss" : "ws";
                             var uri = new Uri($"{protocol}://{endPoint.Host}:{endPoint.Port}{endPoint.HttpPath}");
-                            client.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+                            // WSS uses the same platform certificate trust policy as HTTPS.
 
                             RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
                                 RpcDiagnostics.Stage.Connect, method, endpointIndex: endpointIndex);
