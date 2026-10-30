@@ -281,6 +281,94 @@ runtime role.
 
 ## Validation evidence
 
+The extreme-ratio arithmetic fixture and CryptoNote short-target `MaxDelta`
+configuration fixture require gradual underflow. On glibc Linux
+x86-64 it saves the thread's floating-point environment, establishes the default
+environment and restores the complete saved state on exit. A test-only native
+helper reads `MXCSR_MASK` from aligned, zeroed FXSAVE storage before enabling DAZ;
+a zero mask uses the `0x0000ffbf` fallback that excludes DAZ. The regression has an
+FTZ-only row and a DAZ row when advertised, with an explicit FTZ fallback otherwise.
+On DAZ-capable hosts, negative controls require the precise expected failures:
+VarDiff returns zero instead of the epsilon bit pattern, and CryptoNote fails to
+throw its expected range exception. Their isolated counterparts then pass. Success
+and failure construction/formatting/stack paths are warmed in the default mode first.
+Both rows use non-default x87/SSE rounding
+and a masked x87 exception flag. It compares the x87 control, status and tag words
+and MXCSR after normal and exceptional exits, with hexadecimal failure diagnostics.
+The saved state still includes all glibc fields; instruction/data pointers, opcode
+and selectors are excluded from assertions because they record prior x87 execution.
+A failed fixture and a simultaneous
+restoration failure are reported together, preserving both diagnostics.
+The saved x87 stack must be empty: `fenv_t` captures the environment, not register
+values, so a nonempty stack fails before resetting state. Keep floating-point
+work and JIT-sensitive arithmetic out of the deliberately contaminated window.
+The native-assisted stack regression pushes `1` with `fld1`, confirms that entry
+is rejected without changing controls, tags or stack position, then pops and checks
+the same value. Sticky flags may accumulate during managed exception handling.
+
+The helper is compiled with `${CC:-cc}` only for full glibc Linux x64 test builds and is
+copied only to test output. Managed-only listener smoke, musl, macOS and Windows
+builds do not compile it. It is not a production hashing library or runtime artifact.
+`CC` names one executable or wrapper path, including paths with spaces. For a
+compiler plus arguments, such as `ccache gcc`, put the invocation in an executable
+wrapper and set `CC` to its path. Run `dotnet clean` before switching compilers;
+changing `CC` alone does not invalidate MSBuild's incremental outputs.
+Both intermediate and output `.so` paths are registered with MSBuild `FileWrites`
+for normal and incremental builds and for clean, including managed-only clean runs.
+
+Before isolation, non-default numerical controls are reported through the
+fixture's `ITestOutputHelper`, including the managed thread ID and saved/default
+hexadecimal state. Sticky exception flags alone are not reported as a mode leak.
+The diagnostic callback is mandatory. The Linux full-suite and both Ubuntu Release
+jobs capture TRX output. An `always()` post-test step runs
+`scripts/release/report-floating-point-diagnostics.py` to emit escaped GitHub warning
+commands directly from the runner, without relying on test-host stdout forwarding.
+Warnings include the test name; duplicate messages are coalesced, missing/malformed
+reports fail reporting, and synthetic/unrelated messages are ignored. Reports must
+have a `TestRun` root and a direct `Results/UnitTestResult` section containing at
+least one test, either in the standard TRX namespace or without a namespace.
+Empty test runs and unrelated XML fail reporting rather than reporting zero warnings.
+Each report must also show that `VarDiffManagerTests.ExtremeRatios_AvoidIntermediateOverflowAndUnderflow`
+and `CryptonoteDifficultyAssignmentTests.Configuration_RejectsFrozenDeltaAndIncompatibleNormalizedStart`
+executed. The reporter links result `testId` values to the canonical class/method
+in `TestDefinitions`, so theory display-name formatting is irrelevant. Passed and
+failed cases count as executed, preserving diagnostics from failing runs; skipped
+or merely discovered cases do not. A valid TRX from another suite fails reporting.
+The gate requires four distinct executed VarDiff theory case IDs and one CryptoNote
+case ID; repeated IDs do not fill a missing case. Update those counts deliberately
+when changing the fixture vectors. The reporter self-test reads the VarDiff method's
+literal `InlineData` attributes and checks their count against `REQUIRED_FIXTURES`
+before the full build. An independent tuple manifest checks the four intended input
+vectors, so a duplicated/replaced vector with an unchanged case count also fails
+early. Deliberate vector changes must update that manifest after verifying the
+boundary coverage. For structurally valid partial reports, every
+available contamination warning is emitted before incomplete fixture evidence makes
+the step fail. All supplied report paths are scanned even if an earlier report is
+incomplete, missing or malformed. No successful warning-count summary is printed
+when evidence validation fails.
+When upgrading xUnit, verify the DAZ negative controls' `EqualException` expected/actual
+lines and `ThrowsException` missing-range-exception wording. This follows
+[xUnit v2 output capture](https://xunit.net/docs/capturing-output) and
+[GitHub workflow commands](https://docs.github.com/en/actions/reference/workflow-commands-for-github-actions).
+Synthetic regression diagnostics are captured and asserted, not forwarded as
+unexpected native-leak warnings. The combined regression belongs to the scope
+tests; neither numeric fixture depends on the other fixture's test class.
+Diagnostic callback failures restore the original environment too. An assembly-wide
+before/after hook is not used: async tests can resume on different OS threads, so
+such comparisons would not reliably identify a leaking native call. The exported-call
+audit remains open in #226; output from these two scoped fixtures is evidence, not
+global enforcement. Unsupported Windows, musl and ARM64 executions retain their
+existing arithmetic tests without native isolation; an ARM64 job needs its own ABI
+and control-state validation before this scope can support it.
+Subnormal expected results use an exact bit comparison, retaining the
+`double.Epsilon` vector without a ratio that can itself become `0 / 0`.
+Other platforms retain their existing arithmetic test execution. This test-only
+isolation does not change production hashing or VarDiff behavior; the native
+boundary investigation is tracked in [#226](https://github.com/NINJAK1DD/miningcore/issues/226).
+Merge the production load-time correction [#227](https://github.com/NINJAK1DD/miningcore/pull/227)
+first. This test hardening supplements that correction and is not a release prerequisite
+for the container-budget changes in #224 once the native correction is integrated.
+
 Dated run results and environment details are recorded in
 [PR #209](https://github.com/NINJAK1DD/miningcore/pull/209).
 The commands above describe reproducible validation without depending on a particular
