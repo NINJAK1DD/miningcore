@@ -7,6 +7,7 @@ using Miningcore.Contracts;
 
 namespace Miningcore.Rest;
 
+// A policy handler may refuse 3xx before response-returning methods can return it.
 public class SimpleRestClient
 {
     public SimpleRestClient(IHttpClientFactory factory, string baseUrl)

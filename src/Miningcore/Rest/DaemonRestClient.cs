@@ -25,10 +25,13 @@ public static class DaemonRestClient
                 UseCookies = false,
                 PooledConnectionLifetime = TimeSpan.FromMinutes(5),
             })
-            .AddHttpMessageHandler<DaemonRestDiagnosticsHandler>();
+            .AddHttpMessageHandler<DaemonRestDiagnosticsHandler>()
+            // Connection lifetime handles DNS/TLS renewal; keep outage state stable.
+            .SetHandlerLifetime(Timeout.InfiniteTimeSpan);
     }
 
-    public static SimpleRestClient Create(IHttpClientFactory factory, DaemonEndpointConfig endpoint)
+    public static SimpleRestClient Create(IHttpClientFactory factory, DaemonEndpointConfig endpoint,
+        string poolId = null, int? endpointIndex = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
         ArgumentNullException.ThrowIfNull(endpoint);
@@ -40,12 +43,32 @@ public static class DaemonRestClient
         // for some families (for example Conceal's /json_rpc), not a REST prefix.
         var baseUrl = new UriBuilder(scheme, endpoint.Host, endpoint.Port).Uri
             .GetLeftPart(UriPartial.Authority);
-        var client = factory.CreateClient(ClientName);
+        var client = factory.CreateClient(ClientName) ??
+            throw new InvalidOperationException("Daemon REST HTTP policy is not registered");
         if(client.BaseAddress != registrationMarker)
             throw new InvalidOperationException("Daemon REST HTTP policy is not registered");
         client.BaseAddress = new Uri(baseUrl + "/");
-        return new SimpleRestClient(client, baseUrl,
-            endpoint.Http2 ? HttpVersion.Version20 : null,
-            endpoint.Http2 ? HttpVersionPolicy.RequestVersionExact : HttpVersionPolicy.RequestVersionOrLower);
+        return new DaemonPolicyRestClient(client, baseUrl, endpoint.Http2, poolId, endpointIndex);
+    }
+
+    // The daemon-specific path also protects direct Send/SendWithResponse calls.
+    // General SimpleRestClient callers retain their caller-specified versions.
+    private sealed class DaemonPolicyRestClient(HttpClient client, string baseUrl, bool http2,
+        string poolId, int? endpointIndex) : SimpleRestClient(client, baseUrl,
+            http2 ? HttpVersion.Version20 : null,
+            http2 ? HttpVersionPolicy.RequestVersionExact : HttpVersionPolicy.RequestVersionOrLower)
+    {
+        protected override void PrepareRequest(HttpRequestMessage request,
+            IEnumerable<KeyValuePair<string, string>> headers)
+        {
+            if(http2)
+            {
+                request.Version = HttpVersion.Version20;
+                request.VersionPolicy = HttpVersionPolicy.RequestVersionExact;
+            }
+            request.Options.Set(DaemonRestDiagnosticsHandler.PoolIdOption, poolId);
+            request.Options.Set(DaemonRestDiagnosticsHandler.EndpointIndexOption, endpointIndex);
+            base.PrepareRequest(request, headers);
+        }
     }
 }

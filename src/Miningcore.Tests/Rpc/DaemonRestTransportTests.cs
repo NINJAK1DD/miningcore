@@ -12,8 +12,13 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Http;
 using Miningcore.Configuration;
 using Miningcore.Rest;
+using Miningcore.Rpc;
+using Newtonsoft.Json.Linq;
+using NSubstitute;
 using Xunit;
 
 namespace Miningcore.Tests.Rpc;
@@ -110,6 +115,27 @@ public class DaemonRestTransportTests
     }
 
     [Fact]
+    public void NullFactoryClientFailsWithPolicyError()
+    {
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(DaemonRestClient.ClientName).Returns((HttpClient)null);
+        var ex = Assert.Throws<InvalidOperationException>(() => DaemonRestClient.Create(factory,
+            new DaemonEndpointConfig { Host = "localhost", Port = 8080 }));
+        Assert.Equal("Daemon REST HTTP policy is not registered", ex.Message);
+    }
+
+    [Fact]
+    public void NamedPolicyKeepsHandlerAcrossPayoutCycles()
+    {
+        var services = new ServiceCollection();
+        services.AddDaemonRestClient();
+        using var provider = services.BuildServiceProvider();
+        var options = provider.GetRequiredService<IOptionsMonitor<HttpClientFactoryOptions>>()
+            .Get(DaemonRestClient.ClientName);
+        Assert.Equal(Timeout.InfiniteTimeSpan, options.HandlerLifetime);
+    }
+
+    [Fact]
     public async Task GeneratedRequestsUseExplicitVersionWithoutOverwritingCallerRequest()
     {
         var versions = new List<(Version Version, HttpVersionPolicy Policy)>();
@@ -127,6 +153,43 @@ public class DaemonRestTransportTests
 
         Assert.Equal((HttpVersion.Version20, HttpVersionPolicy.RequestVersionExact), versions[0]);
         Assert.Equal((HttpVersion.Version11, HttpVersionPolicy.RequestVersionOrLower), versions[1]);
+    }
+
+    [Fact]
+    public async Task DaemonDirectSendCannotOverrideRequiredHttp2()
+    {
+        var versions = new List<(Version Version, HttpVersionPolicy Policy)>();
+        var services = new ServiceCollection();
+        services.AddDaemonRestClient()
+            .ConfigurePrimaryHttpMessageHandler(() => new RecordingVersionHandler(versions));
+        using var provider = services.BuildServiceProvider();
+        var rest = DaemonRestClient.Create(provider.GetRequiredService<IHttpClientFactory>(),
+            new DaemonEndpointConfig { Host = "example.invalid", Port = 443, Http2 = true });
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://example.invalid/status")
+        {
+            Version = HttpVersion.Version11,
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+        };
+        await rest.Send<object>(request, CancellationToken.None);
+        using var responseRequest = new HttpRequestMessage(HttpMethod.Get, "https://example.invalid/status")
+        {
+            Version = HttpVersion.Version11,
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+        };
+        using var response = await rest.SendWithResponse<object>(responseRequest, CancellationToken.None);
+        Assert.Equal(2, versions.Count);
+        Assert.All(versions, version =>
+            Assert.Equal((HttpVersion.Version20, HttpVersionPolicy.RequestVersionExact), version));
+    }
+
+    [Fact]
+    public void RestDiagnosticRejectsUnreviewedFailureLabels()
+    {
+        var logger = new WarningRecorder();
+        RpcDiagnostics.WriteRest(logger, "synthetic-secret", "pool-1", 2);
+        var record = JObject.Parse(Assert.Single(logger.Warnings)["RPC diagnostic ".Length..]);
+        Assert.Equal("other", record.Value<string>("failure"));
+        Assert.DoesNotContain("synthetic-secret", logger.Warnings[0]);
     }
 
     [Theory]
@@ -208,17 +271,37 @@ public class DaemonRestTransportTests
             InnerHandler = new DiagnosticSequenceHandler(),
         });
         const string url = "https://user:synthetic-credential@127.0.0.1:1234/wallet/synthetic-secret";
+        async Task<HttpResponseMessage> SendTagged()
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Options.Set(DaemonRestDiagnosticsHandler.PoolIdOption, "pool-1");
+            request.Options.Set(DaemonRestDiagnosticsHandler.EndpointIndexOption, 2);
+            return await client.SendAsync(request);
+        }
         for(var i = 0; i < 4; i++)
-            await Assert.ThrowsAsync<HttpRequestException>(() => client.GetAsync(url));
-        using var recovered = await client.GetAsync(url);
+            await Assert.ThrowsAsync<HttpRequestException>(SendTagged);
+        using var recovered = await SendTagged();
         Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
-        await Assert.ThrowsAsync<HttpRequestException>(() => client.GetAsync(url));
+        await Assert.ThrowsAsync<HttpRequestException>(SendTagged);
 
         Assert.Equal(4, logger.Warnings.Count);
         Assert.Equal(2, logger.Warnings.Count(x => x.Contains("tls-handshake", StringComparison.Ordinal)));
-        Assert.Equal(2, logger.Warnings.Count(x => x.Contains("redirect refused", StringComparison.Ordinal)));
+        Assert.Equal(2, logger.Warnings.Count(x => x.Contains("redirect-refused", StringComparison.Ordinal)));
+        foreach(var warning in logger.Warnings)
+        {
+            Assert.StartsWith("RPC diagnostic ", warning);
+            var record = JObject.Parse(warning["RPC diagnostic ".Length..]);
+            Assert.Equal("Rest", record.Value<string>("transport"));
+            Assert.Equal("Failure", record.Value<string>("stage"));
+            Assert.Equal("pool-1", record.Value<string>("poolId"));
+            Assert.Equal(2, record.Value<int>("endpointIndex"));
+            if(record.Value<string>("failure") == "redirect-refused")
+                Assert.Equal(307, record.Value<int>("httpStatus"));
+        }
         Assert.All(logger.Warnings, warning => Assert.DoesNotContain("synthetic-secret", warning));
         Assert.All(logger.Warnings, warning => Assert.DoesNotContain("synthetic-credential", warning));
+        Assert.All(logger.Warnings, warning => Assert.DoesNotContain("127.0.0.1", warning));
+        Assert.All(logger.Warnings, warning => Assert.DoesNotContain("1234", warning));
     }
 
     [Fact]

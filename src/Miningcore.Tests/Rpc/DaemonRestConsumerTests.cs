@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -29,6 +30,7 @@ using Miningcore.Persistence.Repositories;
 using Miningcore.Rest;
 using Miningcore.Time;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using NSubstitute;
 using Xunit;
 
@@ -63,6 +65,46 @@ public class DaemonRestConsumerTests
         await RestClient(manager, "explorerRestClient").Get<object>(BeamExplorerCommands.GetStatus,
             CancellationToken.None);
         Assert.Equal("/" + BeamExplorerCommands.GetStatus.TrimStart('/'), requestedPath);
+    }
+
+    [Fact]
+    public async Task BeamExplorerFailureIdentifiesPoolAndFullDaemonIndexWithoutUrl()
+    {
+        await using var app = await StartServer(context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
+            context.Response.Headers.Location = "http://127.0.0.1:1/capture";
+            return Task.CompletedTask;
+        });
+        var warnings = new RestWarningProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.AddProvider(warnings));
+        Miningcore.Program.AddHttpClients(services);
+        using var clients = services.BuildServiceProvider();
+        using var container = CreateContainer();
+        var manager = new BeamJobManager(container, Substitute.For<IMasterClock>(),
+            clients.GetRequiredService<IHttpClientFactory>(), Substitute.For<IMessageBus>(),
+            Substitute.For<IExtraNonceProvider>());
+        manager.Configure(new PoolConfig
+        {
+            Id = "beam-rest-test", Template = new BeamCoinTemplate(),
+            Daemons = new[]
+            {
+                new DaemonEndpointConfig { Host = "127.0.0.1", Port = 1 },
+                Endpoint(app, BeamConstants.ExplorerDaemonCategory),
+            },
+        }, new ClusterConfig());
+
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            RestClient(manager, "explorerRestClient").Get<object>(BeamExplorerCommands.GetStatus,
+                CancellationToken.None));
+        Assert.Equal(HttpStatusCode.TemporaryRedirect, ex.StatusCode);
+        var record = JObject.Parse(Assert.Single(warnings.Warnings)["RPC diagnostic ".Length..]);
+        Assert.Equal("Rest", record.Value<string>("transport"));
+        Assert.Equal("beam-rest-test", record.Value<string>("poolId"));
+        Assert.Equal(2, record.Value<int>("endpointIndex"));
+        Assert.Equal("redirect-refused", record.Value<string>("failure"));
+        Assert.DoesNotContain("127.0.0.1", warnings.Warnings.Single());
     }
 
     [Fact]
@@ -101,10 +143,10 @@ public class DaemonRestConsumerTests
             Interlocked.Increment(ref replayed);
             return context.Response.WriteAsync("{}");
         });
-        var requestedPaths = new List<string>();
+        var requestedPaths = new ConcurrentQueue<string>();
         await using var daemon = await StartServer(context =>
         {
-            requestedPaths.Add($"{context.Request.Method} {context.Request.Path}");
+            requestedPaths.Enqueue($"{context.Request.Method} {context.Request.Path}");
             if(context.Request.Method == "POST")
             {
                 context.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
@@ -191,5 +233,30 @@ public class DaemonRestConsumerTests
             {
                 ToAddress = "synthetic-address", Signature = "synthetic-signature",
             }, CancellationToken.None);
+    }
+
+    private sealed class RestWarningProvider : ILoggerProvider
+    {
+        public ConcurrentQueue<string> Warnings { get; } = new();
+        public ILogger CreateLogger(string categoryName) => new RestWarningLogger(categoryName, Warnings);
+        public void Dispose() { }
+
+        private sealed class RestWarningLogger(string category, ConcurrentQueue<string> warnings) : ILogger
+        {
+            public IDisposable BeginScope<TState>(TState state) where TState : notnull => Scope.Instance;
+            public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
+                Exception exception, Func<TState, Exception, string> formatter)
+            {
+                if(category == typeof(DaemonRestDiagnosticsHandler).FullName && IsEnabled(logLevel))
+                    warnings.Enqueue(formatter(state, exception));
+            }
+
+            private sealed class Scope : IDisposable
+            {
+                public static readonly Scope Instance = new();
+                public void Dispose() { }
+            }
+        }
     }
 }

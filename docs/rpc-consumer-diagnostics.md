@@ -27,6 +27,13 @@ projection. Global Json.NET settings cannot change it. Update monitoring filters
 that matched the former free-form messages. Error severity alone does not establish
 a conclusive payment failure: check the outcome and retained reconciliation evidence.
 
+Daemon REST transport failures use the related `RPC diagnostic ` JSON record with
+`transport: "Rest"`, `stage: "Failure"`, `poolId`, and the one-based
+`endpointIndex` from the pool's full daemon list. Fixed `failure` values are
+`tls-handshake`, `http2-negotiation`, and `redirect-refused`; a refused
+redirect supplies its numeric `httpStatus`. The configured host and port are
+used only to group repeated outages in memory and never appear in the record.
+
 ## Audited consumers
 
 | Group | Reviewed output paths |

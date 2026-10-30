@@ -351,7 +351,9 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
     {
         var jsonSerializerSettings = ctx.Resolve<JsonSerializerSettings>();
 
-        restClient = DaemonRestClient.Create(httpClientFactory, daemonEndpoints.First());
+        var restEndpoint = daemonEndpoints.First();
+        restClient = DaemonRestClient.Create(httpClientFactory, restEndpoint,
+            poolConfig.Id, RpcDiagnostics.EndpointIndex(poolConfig.Daemons, restEndpoint));
         rpc = new RpcClient(daemonEndpoints.First(), jsonSerializerSettings, messageBus, poolConfig.Id);
     }
 

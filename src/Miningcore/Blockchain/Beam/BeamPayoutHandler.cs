@@ -179,7 +179,9 @@ public class BeamPayoutHandler : PayoutHandlerBase,
             .Where(x => x.Category?.ToLower() == BeamConstants.ExplorerDaemonCategory)
             .ToArray();
             
-        restClient = DaemonRestClient.Create(httpClientFactory, daemonEndpoints.First());
+        var restEndpoint = daemonEndpoints.First();
+        restClient = DaemonRestClient.Create(httpClientFactory, restEndpoint,
+            poolConfig.Id, RpcDiagnostics.EndpointIndex(poolConfig.Daemons, restEndpoint));
         
         // configure wallet daemon
         var walletDaemonEndpoints = pc.Daemons

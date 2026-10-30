@@ -567,7 +567,9 @@ public class BeamJobManager : JobManagerBase<BeamJob>
     {
         var jsonSerializerSettings = ctx.Resolve<JsonSerializerSettings>();
         
-        explorerRestClient = DaemonRestClient.Create(httpClientFactory, explorerDaemonEndpoints.First());
+        var explorerEndpoint = explorerDaemonEndpoints.First();
+        explorerRestClient = DaemonRestClient.Create(httpClientFactory, explorerEndpoint,
+            poolConfig.Id, RpcDiagnostics.EndpointIndex(poolConfig.Daemons, explorerEndpoint));
         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "BeamJobManager.ConfigureDaemons");
         
         if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)

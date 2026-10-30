@@ -50,6 +50,10 @@ pool**: place a trusted TLS proxy in front of a native HTTP listener, point
 `host` and `port` at its final HTTPS address, and provision certificate trust
 for the Miningcore service. HTTP redirects cannot perform this migration.
 See the [daemon REST migration guide](rpc-tls.md#beam-conceal-and-warthog-rest-endpoints).
+If a daemon does not reconnect, look for `RPC diagnostic` Warnings with
+`transport: "Rest"` and `failure` of `tls-handshake`, `http2-negotiation` or
+`redirect-refused`. The record identifies the pool and daemon index without
+logging the host, port or wallet URL.
 
 ## Unreleased (after v0.3.0): Warthog wallet private key secrecy
 

@@ -46,6 +46,7 @@ internal static class RpcTlsProbe
                     "rest-warthog" => WarthogCommands.GetChainInfo,
                     "rest-http2" => BeamExplorerCommands.GetStatus,
                     "rest-http2-http1" => BeamExplorerCommands.GetStatus,
+                    "rest-redirect-http" => BeamExplorerCommands.GetStatus,
                     _ => throw new ArgumentOutOfRangeException(nameof(transport)),
                 };
                 try
@@ -60,6 +61,11 @@ internal static class RpcTlsProbe
                 }
                 catch(HttpRequestException ex) when(transport == "rest-http2-http1" &&
                     ex.HttpRequestError == HttpRequestError.VersionNegotiationError)
+                {
+                    return Report(false);
+                }
+                catch(HttpRequestException ex) when(transport == "rest-redirect-http" &&
+                    ex.StatusCode == System.Net.HttpStatusCode.TemporaryRedirect)
                 {
                     return Report(false);
                 }

@@ -4,6 +4,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NLog;
 using ZeroMQ;
+using MsLog = Microsoft.Extensions.Logging;
 
 namespace Miningcore.Rpc;
 
@@ -11,7 +12,7 @@ namespace Miningcore.Rpc;
 // response IDs, error messages, or exception objects to a logging target.
 internal static class RpcDiagnostics
 {
-    internal enum Transport { Http, WebSocket, Zmq }
+    internal enum Transport { Http, WebSocket, Zmq, Rest }
     internal enum Stage { Request, Response, Connect, Subscribe, Receive, Failure, StopTimeout, CancellationCallbackFailure }
 
     internal static string Method(string method) => RpcMethodCatalog.Label(method);
@@ -25,6 +26,36 @@ internal static class RpcDiagnostics
 
         var index = Array.FindIndex(configured, item => ReferenceEquals(item, endpoint));
         return index >= 0 ? index + 1 : null;
+    }
+
+    // The REST handler has a Microsoft logger; keep its projection in the same
+    // fixed RPC diagnostic vocabulary without ever exposing its request URI.
+    internal static void WriteRest(MsLog.ILogger logger, string failure, string poolId,
+        int? endpointIndex, int? status = null)
+    {
+        if(!logger.IsEnabled(MsLog.LogLevel.Warning))
+            return;
+
+        failure = failure is "tls-handshake" or "http2-negotiation" or "redirect-refused"
+            ? failure : "other";
+
+        var data = new JObject
+        {
+            ["transport"] = Transport.Rest.ToString(),
+            ["stage"] = Stage.Failure.ToString(),
+            ["method"] = "other",
+            ["batchCount"] = null,
+            ["httpStatus"] = status,
+            ["bytes"] = null,
+            ["httpResponseChars"] = null,
+            ["elapsedMs"] = null,
+            ["endpointIndex"] = endpointIndex,
+            ["failure"] = failure,
+            ["failureCode"] = null,
+            ["poolId"] = poolId,
+        };
+        MsLog.LoggerExtensions.LogWarning(logger, "RPC diagnostic {Record}",
+            data.ToString(Formatting.None));
     }
 
     /// <remarks>

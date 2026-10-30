@@ -102,7 +102,9 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
             .Where(x => string.IsNullOrEmpty(x.Category))
             .ToArray();
 
-        restClient = DaemonRestClient.Create(httpClientFactory, daemonEndpoints.First());
+        var restEndpoint = daemonEndpoints.First();
+        restClient = DaemonRestClient.Create(httpClientFactory, restEndpoint,
+            poolConfig.Id, RpcDiagnostics.EndpointIndex(poolConfig.Daemons, restEndpoint));
 
         try
         {

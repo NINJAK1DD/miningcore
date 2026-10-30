@@ -64,10 +64,13 @@ transport. A redirect response now surfaces as an error. Configure the
 final listener directly, including the final host and port. The REST handler
 refuses all redirects so a wallet-related URL, a payment POST body, or
 custom headers cannot be replayed to a different origin by a 3xx response.
-REST transport warnings identify the configured authority and fixed failure
-category without logging paths, query strings, response bodies or credentials.
-TLS and HTTP/2 negotiation warnings appear once per outage and rearm after a
-response; redirect warnings surface a refused 3xx status.
+REST transport warnings use the structured `RPC diagnostic` record with
+`transport: "Rest"`, `poolId`, the one-based `endpointIndex` in the pool's full
+daemon list, and a fixed failure category. They omit host, port, paths, query
+strings, response bodies and credentials. Look for `tls-handshake`,
+`http2-negotiation` or `redirect-refused`; the latter includes the 3xx
+`httpStatus`. Transport warnings appear once per outage and rearm after a
+response. An unknown endpoint index is JSON null, never a guessed first daemon.
 
 Warthog's wallet address check runs locally and does not send the configured
 private key to the daemon; see
@@ -156,6 +159,8 @@ Warthog paths over real loopback HTTPS with trusted, untrusted, expired and
 wrong-name certificates, plus HTTPS selected by `http2` with actual HTTP/2
 negotiation. An HTTP/1.1-only HTTPS server cannot receive a request when
 `http2` is required. Rejected handshakes deliver no request to the server. The
+HTTPS redirect test confirms that an HTTP 307 cannot replay a TLS-protected
+request to a plaintext HTTP listener. The
 `DaemonRestTransportTests` fixture uses two real HTTP listeners to verify
 cleartext compatibility and that 301/302/303/307/308 responses never replay
 GET URLs, headers or POST payment data to another origin.

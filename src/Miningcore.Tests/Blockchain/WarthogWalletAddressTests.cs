@@ -46,8 +46,16 @@ public sealed class WarthogDaemonFactAttribute : FactAttribute
 }
 
 [Collection("Warthog wallet secrecy")]
-public class WarthogWalletAddressTests : TestBase
+public class WarthogWalletAddressTests : TestBase, IDisposable
 {
+    private readonly List<ServiceProvider> clientProviders = new();
+
+    public void Dispose()
+    {
+        foreach(var provider in clientProviders)
+            provider.Dispose();
+    }
+
     // Public, synthetic secp256k1 scalar 1: never use this key for real funds.
     private static readonly string Canary = new string('0', 63) + '1';
     private const string Address = "751e76e8199196d454941c45d1b3a323f1433bd6ffded884";
@@ -387,12 +395,14 @@ public class WarthogWalletAddressTests : TestBase
         },
     };
 
-    private static IHttpClientFactory MakeFactory(HttpMessageHandler requests)
+    private IHttpClientFactory MakeFactory(HttpMessageHandler requests)
     {
         var services = new ServiceCollection();
         services.AddDaemonRestClient()
             .ConfigurePrimaryHttpMessageHandler(() => requests);
-        return services.BuildServiceProvider().GetRequiredService<IHttpClientFactory>();
+        var provider = services.BuildServiceProvider();
+        clientProviders.Add(provider);
+        return provider.GetRequiredService<IHttpClientFactory>();
     }
 
     private TestPayoutHandler CreatePayoutHandler(HttpMessageHandler requests,
