@@ -661,8 +661,14 @@ for dockerfile in "$source_dockerfile" "$release_dockerfile"; do
   fi
 
   runtime_stage=$(awk '
-    /^FROM / { stage = "" }
-    { stage = stage $0 ORS }
+    { sub(/\r$/, "") }
+    # A final stage may inherit an earlier named runtime dependency stage.
+    # Follow FROM inheritance only; COPY --from must not import builder packages.
+    /^FROM / {
+      stage = ($2 in stages) ? stages[$2] : ""
+      name = (NF >= 4 && tolower($(NF - 1)) == "as") ? $NF : ""
+    }
+    { stage = stage $0 ORS; if (name != "") stages[name] = stage }
     END { printf "%s", stage }
   ' "$dockerfile")
   for runtime_package in libsodium23 libzmq3-dev; do
