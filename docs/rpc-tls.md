@@ -19,17 +19,45 @@ surfaces as a daemon error. [.NET redirect handling](https://learn.microsoft.com
 otherwise retains custom headers and can resend POST bodies when it
 automatically follows redirects, including to another HTTPS origin.
 
-### REST clients outside this change
+### Beam, Conceal and Warthog REST endpoints
 
-Beam explorer, Conceal and Warthog node REST requests use `SimpleRestClient`,
-not the JSON-RPC or generated clients described above. Their current base URLs
-are always plain HTTP and their default HTTP client can follow redirects, even
-when the daemon endpoint sets `ssl: true` or `http2: true`. For Warthog,
-`ssl: true` can protect its WSS subscription while its node REST traffic
-remains plaintext. Keep these REST endpoints on a trusted loopback or private
-path until [REST transport hardening #235](https://github.com/NINJAK1DD/miningcore/issues/235)
-is complete. Warthog's wallet check also places its configured private key in
-the REST URL and can include it in error text; see
+The Beam explorer, Conceal daemon and Warthog node REST clients now use the
+selected daemon endpoint's `host`, `port`, `ssl` and `http2` settings. With both
+flags false they use HTTP/1.1. `ssl: true` selects HTTPS with ordinary platform
+certificate verification. `http2: true` selects HTTPS and requires HTTP/2
+negotiation; it works with `ssl: false`. REST paths start at `/`; `httpPath`
+continues to configure JSON-RPC routes (such as Conceal's `/json_rpc`), not a
+REST prefix. For Beam the applicable endpoint has category `explorer`; for
+Conceal and Warthog it is the uncategorized daemon endpoint. Both job and
+payout clients use this same contract.
+
+The published native APIs describe HTTP listeners for
+[Beam explorer](https://github.com/BeamMW/beam/wiki/Beam-Node-Explorer-API),
+[Conceal](https://github.com/ConcealNetwork/conceal-api) and
+[Warthog](https://docs.warthog.network/developers/api/rest/). They do not
+document native HTTPS or HTTP/2 switches for these REST listeners. Use a trusted
+reverse proxy with TLS termination for HTTPS, and an HTTP/2-capable proxy for
+`http2: true`. Keep the native HTTP listener reachable only from that proxy on
+a protected local/private path. Point `host` and `port` at the proxy's final
+HTTPS listener and provision a certificate trusted by the Miningcore service
+whose SAN matches `host`. An HTTP-only endpoint will fail its HTTPS handshake;
+Miningcore will not fall back to plaintext. If HTTP/2 is requested, a proxy
+that only negotiates HTTP/1.1 will fail instead of silently downgrading.
+
+**Upgrade existing configurations before restarting.** Previously, `ssl: true`
+or `http2: true` did not protect these REST calls: they still used HTTP. They
+now take effect. For a native HTTP-only deployment, first configure the TLS
+proxy and update the endpoint host/port and service trust store. Test its final
+URL directly, without relying on an HTTP redirect. If you intentionally retain
+HTTP on a protected local/private path, set both flags false; review other RPC
+and WebSocket connections sharing that endpoint because those flags also affect
+their transport. A redirect response now surfaces as an error. Configure the
+final listener directly, including the final host and port. The REST handler
+refuses all redirects so a wallet key in a GET URL, a payment POST body, or
+custom headers cannot be replayed to a different origin by a 3xx response.
+
+Warthog's wallet check still places its configured private key in the REST URL
+and can include it in error text; see
 [Warthog key exposure #236](https://github.com/NINJAK1DD/miningcore/issues/236).
 Treat a key exposed through logs or an untrusted network path as compromised and
 replace it through the chain's supported wallet procedure.
@@ -111,6 +139,20 @@ private CA in Windows/macOS trust stores is not independently certified by
 this fixture.
 Existing HTTP/WS transport, cancellation, RPC compatibility and diagnostic
 tests cover unchanged cleartext behavior.
+
+The REST transport matrix in `RpcTlsTests` exercises Beam, Conceal and
+Warthog paths over real loopback HTTPS with trusted, untrusted, expired and
+wrong-name certificates, plus HTTPS selected by `http2` with actual HTTP/2
+negotiation. Rejected handshakes deliver no request to the server. The
+`DaemonRestTransportTests` fixture uses two real HTTP listeners to verify
+cleartext compatibility and that 301/302/303/307/308 responses never replay
+GET URLs, headers or POST payment data to another origin. Run these on the
+documented Ubuntu test lab with:
+
+```bash
+dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --no-restore \
+  --filter 'FullyQualifiedName~RpcTlsTests|FullyQualifiedName~DaemonRestTransportTests'
+```
 
 Reproduce on the documented Linux lab after building the solution:
 

@@ -46,7 +46,8 @@ public class RpcTlsTests
     }
 
     public static IEnumerable<object[]> Cases =>
-        from transport in new[] { "https", "http2", "batch", "wss", "ergo", "alephium" }
+        from transport in new[] { "https", "http2", "batch", "wss", "ergo", "alephium",
+            "rest-beam", "rest-conceal", "rest-warthog", "rest-http2" }
         from certificate in new[] { "valid", "untrusted", "expired", "wrong-name", "dns-valid", "dns-ip-only" }
         select new object[] { transport, certificate };
 
@@ -60,6 +61,9 @@ public class RpcTlsTests
     [InlineData("wss")]
     [InlineData("ergo")]
     [InlineData("alephium")]
+    [InlineData("rest-beam")]
+    [InlineData("rest-conceal")]
+    [InlineData("rest-warthog")]
     public async Task PlatformRejectsUntrustedDaemonCertificate(string transport)
         => await VerifyCertificateBeforeSendingRpc(transport, "untrusted");
 
@@ -100,6 +104,19 @@ public class RpcTlsTests
                             WebSocketMessageType.Text, true, context.RequestAborted);
                         return;
                     }
+                    if(transport.StartsWith("rest-", StringComparison.Ordinal))
+                    {
+                        Assert.Equal(transport switch
+                        {
+                            "rest-conceal" => "/getinfo",
+                            "rest-warthog" => "/chain/info",
+                            _ => "/status",
+                        }, context.Request.Path.Value);
+                        Assert.Equal("synthetic-secret", context.Request.Headers["X-Synthetic"].ToString());
+                        if(transport == "rest-http2") Assert.Equal("HTTP/2", context.Request.Protocol);
+                        await context.Response.WriteAsync("{\"value\":\"verified\"}");
+                        return;
+                    }
                     Assert.Equal("Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("fixture:synthetic-secret")),
                         context.Request.Headers.Authorization.ToString());
                     if(transport == "ergo")
@@ -131,8 +148,10 @@ public class RpcTlsTests
                 var endpoint = new DaemonEndpointConfig
                 {
                     Host = certificate.StartsWith("dns-", StringComparison.Ordinal) ? "localhost" : address.Host,
-                    Port = address.Port, Ssl = transport != "http2", Http2 = transport == "http2",
+                    Port = address.Port, Ssl = transport is not ("http2" or "rest-http2"),
+                    Http2 = transport is "http2" or "rest-http2",
                     User = "fixture", Password = "synthetic-secret",
+                    HttpPath = transport == "rest-conceal" ? "/json_rpc" : null,
                     Extra = new Dictionary<string, object> { ["apiKey"] = "synthetic-api-key" },
                 };
                 var config = Path.Combine(directory, "endpoint.json");

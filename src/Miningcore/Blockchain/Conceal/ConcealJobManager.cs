@@ -378,7 +378,7 @@ public class ConcealJobManager : JobManagerBase<ConcealJob>
     {
         var jsonSerializerSettings = ctx.Resolve<JsonSerializerSettings>();
         
-        restClient = new SimpleRestClient(httpClientFactory, "http://" + daemonEndpoints.First().Host.ToString() + ":" + daemonEndpoints.First().Port.ToString() + "/");
+        restClient = DaemonRestClient.Create(httpClientFactory, daemonEndpoints.First());
         rpc = new RpcClient(daemonEndpoints.First(), jsonSerializerSettings, messageBus, poolConfig.Id);
 
         if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)

@@ -32,6 +32,7 @@ using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Rpc;
+using Miningcore.Rest;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Crypto.Hashing.Equihash;
 using Miningcore.Crypto.Hashing.Ethash.Etchash;
@@ -275,6 +276,7 @@ public class Program : ProcessStatusBackgroundService
                 {
                     ConfigureHostShutdown(services);
                     services.AddHttpClient();
+                    services.AddDaemonRestClient();
                     services.AddMemoryCache();
 
                     ConfigureBackgroundServices(services);

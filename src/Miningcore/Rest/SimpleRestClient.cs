@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -10,10 +11,14 @@ namespace Miningcore.Rest;
 public class SimpleRestClient
 {
     public SimpleRestClient(IHttpClientFactory factory, string baseUrl)
+        : this(factory.CreateClient(), baseUrl)
+    {
+    }
+
+    public SimpleRestClient(HttpClient client, string baseUrl)
     {
         this.baseUrl = baseUrl;
-
-        httpClient = factory.CreateClient();
+        httpClient = client;
     }
 
     protected virtual IEnumerable<KeyValuePair<string, string>> PrepareQueryParams(
@@ -25,6 +30,11 @@ public class SimpleRestClient
     protected virtual void PrepareRequest(HttpRequestMessage request,
         IEnumerable<KeyValuePair<string, string>> headers)
     {
+        if(httpClient.DefaultRequestVersion != HttpVersion.Version11)
+        {
+            request.Version = httpClient.DefaultRequestVersion;
+            request.VersionPolicy = httpClient.DefaultVersionPolicy;
+        }
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         if (headers != null)

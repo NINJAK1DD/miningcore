@@ -7,6 +7,8 @@ using Miningcore.Blockchain.Ergo;
 using Miningcore.Blockchain.Alephium;
 using Miningcore.Messaging;
 using Miningcore.Rpc;
+using Miningcore.Rest;
+using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NLog;
@@ -28,6 +30,31 @@ internal static class RpcTlsProbe
         try
         {
             var endpoint = JsonConvert.DeserializeObject<DaemonEndpointConfig>(await File.ReadAllTextAsync(configPath));
+            if(transport.StartsWith("rest-", StringComparison.Ordinal))
+            {
+                var services = new ServiceCollection();
+                services.AddDaemonRestClient();
+                using var provider = services.BuildServiceProvider();
+                var restClient = DaemonRestClient.Create(provider.GetRequiredService<IHttpClientFactory>(), endpoint);
+                var path = transport switch
+                {
+                    "rest-beam" => "status",
+                    "rest-conceal" => "getinfo",
+                    "rest-warthog" => "/chain/info",
+                    "rest-http2" => "status",
+                    _ => throw new ArgumentOutOfRangeException(nameof(transport)),
+                };
+                try
+                {
+                    var response = await restClient.Get<Dictionary<string, string>>(path, deadline.Token,
+                        headers: new Dictionary<string, string> { ["X-Synthetic"] = "synthetic-secret" });
+                    return response.GetValueOrDefault("value") == "verified" ? Report(true) : 2;
+                }
+                catch(Exception ex) when(IsTlsHandshake(ex))
+                {
+                    return Report(false);
+                }
+            }
             var client = new RpcClient(endpoint, new JsonSerializerSettings(), new MessageBus(), "tls-test");
             var logger = LogManager.GetCurrentClassLogger();
             if(transport == "wss")
