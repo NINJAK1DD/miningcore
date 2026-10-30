@@ -213,11 +213,12 @@ End-to-end gateway/server/direct-reward testing remains required in #163.
 
 ## Reproducible validation
 
-### Review hardening
+### Compatibility hardening and regression coverage
 
-Both independent reviews supplied on 30 October were addressed:
+The implementation includes the following compatibility, reliability and
+operational protections, with regression evidence for each:
 
-| Finding | Resolution and regression evidence |
+| Area | Behavior and regression evidence |
 | --- | --- |
 | Rolling regtest pre-start policy | Explicit `30:134:140` rolling schedules use 110 policy depth before height 30, ordinary consensus depth 100, and 111 wallet confirmations. Live height-29 checks cover 100/101/110/111 confirmations and API progress. |
 | Record identity encodes consensus rules | Explicit historical start/release and rolling enforcement metadata replace `this == Mainnet`. Process binding compares the complete schedule. |
@@ -280,10 +281,10 @@ embedded schema resources and reused those unchanged, audited native libraries.
 The combined test build also built the current dev branch's native floating-point
 test helper; it completed with zero warnings/errors.
 
-The complete final reviewed source, incorporating current dev
+The final implementation, incorporating current dev
 `f366acc877124a00f0207c1875db57a1422d7ec7`, passed the full suite:
 **5208 passed, zero failed, one benchmark skipped**, in 12 minutes 53 seconds.
-This supersedes the earlier partial final-validation boundary. It enabled
+The run enabled
 real Knots/Core/Litecoin/Dogecoin, PostgreSQL accounting and isolated TLS/payment
 fixtures. It exercised production startup, real Stratum shares/candidates,
 accepted custodial blocks, all four supported accounting schemes, wallet payout
@@ -299,7 +300,7 @@ The published `test_bitcoin` maturity suite passed all four cases, proving
 mainnet constants separately from isolated schedule/mocktime overrides.
 Both offline cache/failure gates passed (five tests each), as did all four
 lab-helper tests, ShellCheck, Markdown link/anchor checks and immutable
-workflow-action pin checks. The final run includes all review regressions above,
+workflow-action pin checks. The final run includes all regressions listed above,
 historical and rolling-pruned live fixtures, production payout/accounting and
 unchanged ASIC/header and other-family tests. The managed build completed with
 zero warnings/errors, reusing the unchanged audited production native libraries.
