@@ -26,7 +26,6 @@ public static class AlephiumClientFactory
         {
             AutomaticDecompression = DecompressionMethods.Deflate | DecompressionMethods.GZip,
 
-            ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true,
         }));
 
         if(!string.IsNullOrEmpty(extra?.ApiKey))

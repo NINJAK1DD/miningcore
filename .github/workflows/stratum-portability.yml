@@ -89,3 +89,12 @@ jobs:
         --framework net10.0
         --property:MiningcoreStratumListenerSmoke=true
         --filter "FullyQualifiedName~Miningcore.Tests.Stratum.StratumListenerPortabilityTests"
+
+    - name: Test macOS daemon TLS rejection
+      run: >-
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
+        --no-restore
+        --configuration Release
+        --framework net10.0
+        --property:MiningcoreStratumListenerSmoke=true
+        --filter "FullyQualifiedName~Miningcore.Tests.Rpc.RpcTlsTests.PlatformRejectsUntrustedDaemonCertificate"

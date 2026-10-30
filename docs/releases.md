@@ -26,7 +26,8 @@ for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
 HTTPS/HTTP2 and WSS daemon RPC transports now use platform certificate validation
 instead of accepting arbitrary server certificates. All coin families using the
-shared client are affected. Endpoints with expired, untrusted or mismatched
+shared client, plus the independent Ergo and Alephium HTTP clients, are affected.
+Endpoints with expired, untrusted or mismatched
 certificates must renew/replace them or provision their independently verified
 private CA into the service/container trust store before upgrading. Restart to
 retire existing pooled connections. No database migration or insecure-skip

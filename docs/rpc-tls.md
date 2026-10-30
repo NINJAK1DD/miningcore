@@ -5,10 +5,14 @@ WebSocket subscriptions (`wss`) use .NET's platform certificate validation.
 Certificates must be valid for the configured hostname or IP address, within
 their validity period, and chain to a trusted certificate authority. The shared
 RPC transports no longer accept every certificate through unconditional
-validation callbacks. This affects every coin family using `RpcClient`.
+validation callbacks. This covers every coin family using `RpcClient` and the
+separate generated Ergo and Alephium HTTP clients. Kaspa's gRPC client already
+uses default server-certificate validation.
 
-The trust configuration is the operating system trust store available to the
-Miningcore service, or the trust store inside its container. For a private CA,
+The trust configuration includes the operating system trust store available to
+the Miningcore service (inside its container when applicable). On Linux, .NET
+can also use the service account's `CurrentUser\Root` certificate store. For a
+private CA,
 provision its public CA certificate through your host/container's supported
 trust-store mechanism before starting Miningcore. Keep the CA private key off
 the pool host. Ensure the daemon/proxy serves the required intermediate chain
@@ -31,36 +35,47 @@ validation failure by disabling TLS or adding a permissive callback. Plain
 HTTP/WS configuration retains its existing behavior and does not provide TLS
 protection; keep such daemon connections on a protected local/private path.
 
+`http2: true` selects HTTPS for RPC even when `ssl: false`; WebSocket
+subscriptions select `ws://` or `wss://` from `ssl` alone. Set `ssl: true`
+when the subscription must use TLS. If WSS certificate verification fails,
+Ethereum, Xelis and Warthog continue polling while subscription retries log an
+Error about every five seconds. Shares can still flow during this degraded mode.
+An HTTP TLS transport failure emits a one-time structured Warning with
+`failure: "tls-handshake"`; WSS emits an Error with the same category. On
+Windows this category also covers TLS protocol negotiation failure, so it does
+not identify a specific certificate problem. Inspect daemon trust, name,
+validity and protocol settings without copying credentials into logs.
+
 No new application trust override or insecure-skip option is introduced.
-Platform TLS protocol and revocation defaults are retained; this change does
+Platform TLS protocol defaults are retained. Certificate revocation is not
+checked by default by these .NET HTTP and WebSocket clients; this change does
 not establish a separate revocation or client-certificate policy. HTTP basic
 authentication and websocket payload handling otherwise retain their contracts.
 The application schema and database require no migration.
 
 ## Validation
 
-`RpcTlsTests` runs 16 real loopback TLS cases: single HTTPS RPC, HTTPS selected
-by `http2` (negotiating HTTP/2), batch HTTPS RPC and WSS, each with trusted,
-untrusted, expired and wrong-name server certificates. Valid certificates allow
-the actual RPC/subscribe path; invalid certificates must fail before the server
-receives credentials, JSON-RPC requests or websocket upgrades. HTTP rejection
-must retain an authentication failure as its structural cause.
+`RpcTlsTests` exercises real loopback TLS for single HTTPS RPC, HTTPS selected
+by `http2` (negotiating HTTP/2), batch HTTPS RPC, WSS, Ergo and Alephium, each
+with trusted, untrusted, expired, wrong-name, DNS-only and IP-only certificates.
+Valid certificates allow the actual RPC/subscribe path; invalid certificates
+must fail before the server receives credentials, JSON-RPC requests or
+websocket upgrades. On Linux, HTTP rejection retains an authentication failure
+as its structural cause. Windows Schannel can report the failure through the
+bounded `SecureConnectionError` transport category instead.
 
 Every client runs in a fresh child process. Linux `SSL_CERT_FILE` and
-`SSL_CERT_DIR` point only that child at an ephemeral CA and empty CA directory.
+`SSL_CERT_DIR` point the child at an ephemeral CA and empty CA directory;
+the service account's .NET `CurrentUser\Root` store can still be consulted.
 The test never changes the parent environment or machine/user trust stores.
-Processes, servers, keys and temporary files have bounded cleanup. These tests
-run on Linux/OpenSSL and explicitly skip elsewhere; Windows/macOS platform
-trust-store provisioning is not independently certified by this fixture.
+Processes, servers, keys and temporary files have bounded cleanup. The full
+trusted/untrusted matrix runs on Linux/OpenSSL. A separate Windows/macOS smoke
+test rejects an untrusted certificate through each client without changing a
+platform trust store; Windows and macOS CI run that test. Provisioning a
+private CA in Windows/macOS trust stores is not independently certified by
+this fixture.
 Existing HTTP/WS transport, cancellation, RPC compatibility and diagnostic
 tests cover unchanged cleartext behavior.
-
-The Ubuntu WSL lab passed all 135 TLS/RPC/daemon-error cases with zero skips.
-Restoring both original permissive callbacks in the disposable lab made all 12
-invalid-certificate cases fail while the four trusted cases passed. Restoring
-the fix passed all 16 certificate cases again. These negative controls confirm
-the assertions detect the original bypass. Managed sources were rebuilt; the
-lab reused existing native outputs, and full CI independently rebuilds them.
 
 Reproduce on the documented Linux lab after building the solution:
 
@@ -72,3 +87,6 @@ dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --no-restore
 The implementation follows the platform contracts for
 [HTTP certificate validation](https://learn.microsoft.com/en-us/dotnet/api/system.net.http.httpclienthandler.servercertificatecustomvalidationcallback?view=net-10.0)
 and [WebSocket certificate validation](https://learn.microsoft.com/en-us/dotnet/api/system.net.websockets.clientwebsocketoptions.remotecertificatevalidationcallback?view=net-10.0).
+The [HTTP revocation check](https://learn.microsoft.com/en-us/dotnet/api/system.net.http.httpclienthandler.checkcertificaterevocationlist?view=net-10.0)
+and [cross-platform trust-store behavior](https://learn.microsoft.com/en-us/dotnet/standard/security/cross-platform-cryptography)
+are documented by .NET.

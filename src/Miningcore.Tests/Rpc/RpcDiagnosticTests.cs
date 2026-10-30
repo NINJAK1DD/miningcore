@@ -6,6 +6,8 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
+using System.Net.Http;
+using System.Security.Authentication;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
@@ -20,6 +22,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Miningcore.Configuration;
+using Miningcore.Diagnostics;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Messaging;
@@ -799,6 +802,27 @@ public class RpcDiagnosticTests
             Assert.Equal(cases[i].Status, records[i]["httpStatus"].Value<int?>());
             Assert.Equal(JTokenType.Null, records[i]["method"].Type);
         }
+    }
+
+    [Fact]
+    public void WrappedTlsFailures_KeepStructuralCategoryWithoutLeakingMessages()
+    {
+        var wrapped = new HttpRequestException(UnsafeText, new AuthenticationException(UnsafeText));
+        Assert.Equal("tls-handshake", DiagnosticFailure.Category(wrapped));
+
+        Exception tooDeep = new AuthenticationException(UnsafeText);
+        for(var i = 0; i < 8; i++)
+            tooDeep = new IOException(UnsafeText, tooDeep);
+        Assert.Equal("io", DiagnosticFailure.Category(tooDeep));
+        Assert.Equal("http", DiagnosticFailure.Category(new HttpRequestException(UnsafeText)));
+        Assert.Equal("tls-handshake", DiagnosticFailure.Category(new HttpRequestException(
+            HttpRequestError.SecureConnectionError, UnsafeText, null)));
+
+        using var logs = new CapturedLogs(NLog.LogLevel.Warn);
+        RpcDiagnostics.Write(logs.Logger, NLog.LogLevel.Warn, RpcDiagnostics.Transport.Http,
+            RpcDiagnostics.Stage.Failure, failure: wrapped);
+        logs.AssertSafe();
+        Assert.Contains("\"failure\":\"tls-handshake\"", Assert.Single(logs.Messages));
     }
 
     [Fact]

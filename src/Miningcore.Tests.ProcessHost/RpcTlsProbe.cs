@@ -1,7 +1,10 @@
 using System.Reactive.Linq;
 using System.Security.Authentication;
+using System.Net.Http;
 using System.Text;
 using Miningcore.Configuration;
+using Miningcore.Blockchain.Ergo;
+using Miningcore.Blockchain.Alephium;
 using Miningcore.Messaging;
 using Miningcore.Rpc;
 using Newtonsoft.Json;
@@ -17,9 +20,10 @@ internal static class RpcTlsProbe
     internal static async Task<int> RunAsync(string configPath, string transport)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        var failure = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failure = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var httpTlsWarning = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var logging = new LoggingConfiguration();
-        logging.AddRule(LogLevel.Error, LogLevel.Fatal, new FailureTarget(failure));
+        logging.AddRule(LogLevel.Warn, LogLevel.Fatal, new FailureTarget(failure, httpTlsWarning));
         LogManager.Configuration = logging;
         try
         {
@@ -33,7 +37,7 @@ internal static class RpcTlsProbe
                     .Subscribe(data => received.TrySetResult(data));
                 var completed = await Task.WhenAny(received.Task, failure.Task).WaitAsync(deadline.Token);
                 if(completed == failure.Task)
-                    return Report(false);
+                    return await failure.Task ? Report(false) : 2;
                 return Encoding.UTF8.GetString(await received.Task) == "verified" ? Report(true) : 2;
             }
 
@@ -41,14 +45,32 @@ internal static class RpcTlsProbe
             {
                 var responses = await client.ExecuteBatchAsync(logger, deadline.Token, new RpcRequest("get_info"));
                 if(responses.Length != 1) return 2;
-                return Result(responses[0]);
+                return Result(responses[0], httpTlsWarning.Task.IsCompleted);
             }
             if(transport is "https" or "http2")
-                return Result(await client.ExecuteAsync<JToken>(logger, "get_info", deadline.Token));
+                return Result(await client.ExecuteAsync<JToken>(logger, "get_info", deadline.Token),
+                    httpTlsWarning.Task.IsCompleted);
+            if(transport is "ergo" or "alephium")
+            {
+                var pool = new PoolConfig { Daemons = [endpoint] };
+                try
+                {
+                    if(transport == "ergo")
+                        return await ErgoClientFactory.CreateClient(pool, new ClusterConfig(), null)
+                            .GetNodeInfoAsync(deadline.Token) != null ? Report(true) : 2;
+                    return await AlephiumClientFactory.CreateClient(pool, new ClusterConfig(), null)
+                        .GetInfosSelfCliqueAsync(deadline.Token) != null ? Report(true) : 2;
+                }
+                catch(Exception ex) when(IsTlsHandshake(ex))
+                {
+                    return Report(false);
+                }
+            }
             return 64;
         }
-        catch(Exception)
+        catch(Exception ex)
         {
+            Console.Error.WriteLine(ex.GetType().FullName);
             return 2; // Unexpected failures cannot satisfy a TLS rejection assertion.
         }
         finally
@@ -58,12 +80,12 @@ internal static class RpcTlsProbe
         }
     }
 
-    private static int Result(RpcResponse<JToken> response)
+    private static int Result(RpcResponse<JToken> response, bool tlsWarningRecorded)
     {
         if(response.Error == null)
-            return response.Response?.Value<string>() == "verified" ? Report(true) : 2;
-        for(var cause = response.Error.InnerException; cause != null; cause = cause.InnerException)
-            if(cause is AuthenticationException) return Report(false);
+            return !tlsWarningRecorded && response.Response?.Value<string>() == "verified" ? Report(true) : 2;
+        if(IsTlsHandshake(response.Error.InnerException) && tlsWarningRecorded)
+            return Report(false);
         return 2;
     }
 
@@ -73,8 +95,38 @@ internal static class RpcTlsProbe
         return accepted ? 0 : 20;
     }
 
-    private sealed class FailureTarget(TaskCompletionSource failure) : Target
+    private static bool IsTlsHandshake(Exception failure)
     {
-        protected override void Write(LogEventInfo logEvent) => failure.TrySetResult();
+        var cause = failure;
+        for(var depth = 0; cause != null && depth < 8; cause = cause.InnerException, depth++)
+            if(cause is AuthenticationException)
+                return true;
+        cause = failure;
+        for(var depth = 0; cause != null && depth < 8; cause = cause.InnerException, depth++)
+            if(cause is HttpRequestException { HttpRequestError: HttpRequestError.SecureConnectionError })
+                return true;
+        return false;
+    }
+
+    private sealed class FailureTarget(TaskCompletionSource<bool> failure, TaskCompletionSource httpTlsWarning) : Target
+    {
+        protected override void Write(LogEventInfo logEvent)
+        {
+            const string prefix = "RPC diagnostic ";
+            var message = logEvent.FormattedMessage;
+            if(!message.StartsWith(prefix, StringComparison.Ordinal))
+                return;
+            try
+            {
+                var data = JObject.Parse(message[prefix.Length..]);
+                if(data.Value<string>("stage") != "Failure") return;
+                if(data.Value<string>("transport") == "WebSocket" && logEvent.Level == LogLevel.Error)
+                    failure.TrySetResult(data.Value<string>("failure") == "tls-handshake");
+                if(data.Value<string>("transport") == "Http" && logEvent.Level == LogLevel.Warn &&
+                   data.Value<string>("failure") == "tls-handshake")
+                    httpTlsWarning.TrySetResult();
+            }
+            catch(JsonException) { failure.TrySetResult(false); }
+        }
     }
 }

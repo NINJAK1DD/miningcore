@@ -36,14 +36,34 @@ public class RpcTlsTests
         }
     }
 
+    private sealed class NonLinuxTrustTheoryAttribute : TheoryAttribute
+    {
+        public NonLinuxTrustTheoryAttribute()
+        {
+            if(OperatingSystem.IsLinux())
+                Skip = "The full isolated CA matrix runs on Linux";
+        }
+    }
+
     public static IEnumerable<object[]> Cases =>
-        from transport in new[] { "https", "http2", "batch", "wss" }
-        from certificate in new[] { "valid", "untrusted", "expired", "wrong-name" }
+        from transport in new[] { "https", "http2", "batch", "wss", "ergo", "alephium" }
+        from certificate in new[] { "valid", "untrusted", "expired", "wrong-name", "dns-valid", "dns-ip-only" }
         select new object[] { transport, certificate };
 
     [LinuxTrustTheory]
     [MemberData(nameof(Cases))]
     public async Task ProductionTransportsVerifyCertificateBeforeSendingRpc(string transport, string certificate)
+        => await VerifyCertificateBeforeSendingRpc(transport, certificate);
+
+    [NonLinuxTrustTheory]
+    [InlineData("https")]
+    [InlineData("wss")]
+    [InlineData("ergo")]
+    [InlineData("alephium")]
+    public async Task PlatformRejectsUntrustedDaemonCertificate(string transport)
+        => await VerifyCertificateBeforeSendingRpc(transport, "untrusted");
+
+    private static async Task VerifyCertificateBeforeSendingRpc(string transport, string certificate)
     {
         var directory = Path.Combine(Path.GetTempPath(), "miningcore-rpc-tls-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -56,6 +76,7 @@ public class RpcTlsTests
             using var serverKey = RSA.Create(2048);
             using var serverCert = CreateServer(ca, serverKey, certificate);
             var requests = 0;
+            var handlerFailure = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
             var builder = WebApplication.CreateBuilder();
             builder.Logging.ClearProviders();
             builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0, listener =>
@@ -67,24 +88,41 @@ public class RpcTlsTests
             app.UseWebSockets();
             app.Run(async context =>
             {
-                Interlocked.Increment(ref requests);
-                if(transport == "wss")
+                try
                 {
-                    using var socket = await context.WebSockets.AcceptWebSocketAsync();
-                    var buffer = new byte[4096];
-                    await socket.ReceiveAsync(new ArraySegment<byte>(buffer), context.RequestAborted);
-                    await socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes("verified")),
-                        WebSocketMessageType.Text, true, context.RequestAborted);
-                    return;
+                    Interlocked.Increment(ref requests);
+                    if(transport == "wss")
+                    {
+                        using var socket = await context.WebSockets.AcceptWebSocketAsync();
+                        var buffer = new byte[4096];
+                        await socket.ReceiveAsync(new ArraySegment<byte>(buffer), context.RequestAborted);
+                        await socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes("verified")),
+                            WebSocketMessageType.Text, true, context.RequestAborted);
+                        return;
+                    }
+                    Assert.Equal("Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("fixture:synthetic-secret")),
+                        context.Request.Headers.Authorization.ToString());
+                    if(transport == "ergo")
+                        Assert.Equal("synthetic-api-key", context.Request.Headers["api_key"].ToString());
+                    if(transport == "alephium")
+                        Assert.Equal("synthetic-api-key", context.Request.Headers["X-API-KEY"].ToString());
+                    if(transport == "http2") Assert.Equal("HTTP/2", context.Request.Protocol);
+                    if(transport is "ergo" or "alephium")
+                    {
+                        await context.Response.WriteAsync("{}");
+                        return;
+                    }
+                    using var reader = new StreamReader(context.Request.Body);
+                    var request = JToken.Parse(await reader.ReadToEndAsync());
+                    static JObject Response(JToken item) => new() { ["id"] = item["id"], ["result"] = "verified" };
+                    JToken response = request is JArray batch ? new JArray(batch.Select(Response)) : Response(request);
+                    await context.Response.WriteAsync(response.ToString(Formatting.None));
                 }
-                Assert.Equal("Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("fixture:synthetic-secret")),
-                    context.Request.Headers.Authorization.ToString());
-                if(transport == "http2") Assert.Equal("HTTP/2", context.Request.Protocol);
-                using var reader = new StreamReader(context.Request.Body);
-                var request = JToken.Parse(await reader.ReadToEndAsync());
-                static JObject Response(JToken item) => new() { ["id"] = item["id"], ["result"] = "verified" };
-                JToken response = request is JArray batch ? new JArray(batch.Select(Response)) : Response(request);
-                await context.Response.WriteAsync(response.ToString(Formatting.None));
+                catch(Exception ex)
+                {
+                    handlerFailure.TrySetResult(ex);
+                    throw;
+                }
             });
             await app.StartAsync();
             try
@@ -92,8 +130,10 @@ public class RpcTlsTests
                 var address = new Uri(app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>().Addresses.Single());
                 var endpoint = new DaemonEndpointConfig
                 {
-                    Host = address.Host, Port = address.Port, Ssl = transport != "http2", Http2 = transport == "http2",
+                    Host = certificate.StartsWith("dns-", StringComparison.Ordinal) ? "localhost" : address.Host,
+                    Port = address.Port, Ssl = transport != "http2", Http2 = transport == "http2",
                     User = "fixture", Password = "synthetic-secret",
+                    Extra = new Dictionary<string, object> { ["apiKey"] = "synthetic-api-key" },
                 };
                 var config = Path.Combine(directory, "endpoint.json");
                 var trust = Path.Combine(directory, "ca.pem");
@@ -129,7 +169,8 @@ public class RpcTlsTests
                         await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
                     }
                 }
-                var accepted = certificate == "valid";
+                var accepted = certificate is "valid" or "dns-valid";
+                Assert.False(handlerFailure.Task.IsCompleted, handlerFailure.Task.IsCompleted ? handlerFailure.Task.Result.ToString() : null);
                 Assert.True(process.ExitCode == (accepted ? 0 : 20), $"TLS probe exit {process.ExitCode}: {await stdout}\n{await stderr}");
                 Assert.Equal(accepted ? "accepted" : "rejected", (await stdout).Trim());
                 Assert.Equal(accepted ? 1 : 0, Volatile.Read(ref requests));
@@ -154,9 +195,12 @@ public class RpcTlsTests
 
     private static X509Certificate2 CreateServer(X509Certificate2 ca, RSA key, string kind)
     {
-        var request = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        // Keep the common name unrelated to the endpoint: some TLS stacks
+        // still fall back to CN even when a certificate has only an IP SAN.
+        var request = new CertificateRequest("CN=rpc-test.invalid", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         var san = new SubjectAlternativeNameBuilder();
         if(kind == "wrong-name") san.AddDnsName("wrong-name.invalid");
+        else if(kind == "dns-valid") san.AddDnsName("localhost");
         else san.AddIpAddress(IPAddress.Loopback);
         request.CertificateExtensions.Add(san.Build());
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));

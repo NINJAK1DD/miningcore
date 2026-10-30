@@ -6,6 +6,7 @@ using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Text;
 using Miningcore.Configuration;
+using Miningcore.Diagnostics;
 using Miningcore.Extensions;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
@@ -46,6 +47,7 @@ public class RpcClient
     private readonly JsonSerializer serializer;
     private readonly IMessageBus messageBus;
     private readonly string poolId;
+    private int tlsWarningEmitted;
 
     private static readonly HttpClient httpClient = new(new HttpClientHandler
     {
@@ -99,6 +101,7 @@ public class RpcClient
 
         catch(Exception ex)
         {
+            WarnOnTlsFailure(logger, ex, method);
             RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
                 RpcDiagnostics.Stage.Failure, method, failure: ex);
             if(throwOnError)
@@ -129,11 +132,20 @@ public class RpcClient
 
         catch(Exception ex)
         {
+            WarnOnTlsFailure(logger, ex);
             RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
                 RpcDiagnostics.Stage.Failure, batchCount: batch.Length, failure: ex);
             // Caller-observable data is preserved; unsafe consumer logging is tracked in #154.
             return Enumerable.Repeat(new RpcResponse<JToken>(null, new JsonRpcError(-500, ex.Message, null, ex)), batch.Length).ToArray();
         }
+    }
+
+    private void WarnOnTlsFailure(ILogger logger, Exception failure, string method = null)
+    {
+        if(logger.IsEnabled(LogLevel.Warn) && DiagnosticFailure.Category(failure) == "tls-handshake" &&
+           Interlocked.Exchange(ref tlsWarningEmitted, 1) == 0)
+            RpcDiagnostics.Write(logger, LogLevel.Warn, RpcDiagnostics.Transport.Http,
+                RpcDiagnostics.Stage.Failure, method, failure: failure);
     }
 
     public IObservable<byte[]> WebsocketSubscribe(ILogger logger, CancellationToken ct, DaemonEndpointConfig endPoint,
