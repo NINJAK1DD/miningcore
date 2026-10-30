@@ -198,6 +198,21 @@ checkout, deadlines and cache failure policy.
 
 ## Integrating native validation and test hardening
 
+Repository rules are configured separately from workflow files. In the `Dev`
+ruleset for `refs/heads/dev`, require **Test source container** from **GitHub
+Actions** and enable **Require branches to be up to date before merging**
+(`strict_required_status_checks_policy`). Preserve the other repository rules.
+This makes branch refresh and successful source-image validation merge requirements.
+
+The Release workflow runs on every pull request targeting `dev`, including changes
+outside the old build-path list. Its source-container job runs independently,
+without a job condition or dependency that could skip it; existing build budgets
+remain in force. This also runs Release validation for file-only changes that were
+previously filtered out. Policy tests protect the unfiltered trigger and unique
+required check name. Do not make the separately path-filtered **Docker Image CI**
+job a required check. GitHub explains why workflow-level path filters can leave
+[required checks pending](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
+
 Integrate the native load-time correction [#227](https://github.com/NINJAK1DD/miningcore/pull/227),
 then the TCP authorization test correction [#229](https://github.com/NINJAK1DD/miningcore/pull/229),
 before this source-container change. Additional numeric fixture hardening

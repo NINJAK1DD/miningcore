@@ -9,6 +9,30 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkflowPolicyTests(unittest.TestCase):
+    def test_required_source_check_runs_for_every_dev_pull_request(self):
+        workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
+        trigger = workflow['on']['pull_request']
+        self.assertEqual(['dev'], trigger['branches'])
+        for key in ('paths', 'paths-ignore', 'branches-ignore', 'types'):
+            self.assertNotIn(key, trigger, 'Required source check must report on every dev PR')
+        job = workflow['jobs']['source-container-check']
+        self.assertEqual('Test source container', job['name'])
+        self.assertNotIn('if', job, 'Required source check must not be skipped by a job condition')
+        self.assertNotIn('needs', job, 'Required source check must run independently of other jobs')
+        self.assertNotIn(job.get('continue-on-error'), ('true', True))
+
+    def test_required_source_check_name_is_unique(self):
+        matches = []
+        for path in sorted((ROOT / '.github/workflows').iterdir()):
+            if path.suffix not in ('.yml', '.yaml'):
+                continue
+            workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+            for job_id, job in workflow.get('jobs', {}).items():
+                if job.get('name') == 'Test source container':
+                    matches.append((path.name, job_id))
+        self.assertEqual([('release.yml', 'source-container-check')], matches,
+                         'A duplicate check name could satisfy the required gate with another job')
+
     def test_source_container_policy(self):
         workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
         job = workflow['jobs']['source-container-check']

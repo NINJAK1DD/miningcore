@@ -6,21 +6,8 @@ on:
       - 'v*'
   pull_request:
     branches: [ dev ]
-    paths:
-      - '.github/workflows/release.yml'
-      - '.github/workflows/source-container-cache.yml'
-      - '.dockerignore'
-      - 'Dockerfile'
-      - 'build-*.sh'
-      - 'global.json'
-      - 'src/**'
-      - 'packaging/**'
-      - 'scripts/release/**'
-      - 'docs/**'
-      - 'examples/**'
-      - 'config.example.json'
-      - 'README.md'
-      - 'LICENSE'
+    # Test source container is a required dev check. Every PR must report it,
+    # including changes outside application/build paths; do not path-filter it.
   workflow_dispatch:
 
 concurrency:
