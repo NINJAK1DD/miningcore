@@ -44,7 +44,9 @@
          XunitException(message, innerException) constructor added in xUnit 2.4.2. -->
     <!-- When upgrading xUnit or its runner, verify cross-collection DisableParallelization
          scheduling: PostgresConfigurationLoggingTests relies on it while temporarily
-         changing Program.logger and JsonConvert.DefaultSettings. -->
+         changing Program.logger and JsonConvert.DefaultSettings. Also verify the
+         EqualException Expected: 1 / Actual: 0 and ThrowsException missing-range-exception
+         message assertions in DefaultFloatingPointScopeTests.NumericFixtures_SurviveSupportedContaminationAndRestoreState. -->
     <PackageReference Include="xunit" Version="2.4.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.4.5">
       <PrivateAssets>all</PrivateAssets>
@@ -113,6 +115,29 @@
   <Target Name="RemoveOdoCryptFromManagedOnlyTestOutput" BeforeTargets="PrepareForBuild"
           Condition="'$(IsWindows)' == 'true' and '$(BuildOdoCryptWindows)' == 'false'">
     <Delete Files="$(TargetDir)libodocrypt.dll" />
+  </Target>
+
+  <PropertyGroup>
+    <FloatingPointTestHelperHostRid>$([System.Runtime.InteropServices.RuntimeInformation]::RuntimeIdentifier)</FloatingPointTestHelperHostRid>
+  </PropertyGroup>
+
+  <!-- Test-only capability/stack probe; managed-only listener smoke needs no C compiler. -->
+  <Target Name="TrackFloatingPointTestHelperOutputs" BeforeTargets="BuildFloatingPointTestHelper;_CleanGetCurrentAndPriorFileWrites;CoreClean">
+    <ItemGroup>
+      <FileWrites Include="$(IntermediateOutputPath)native-fenv/libminingcore_test_fenv.so;$(TargetDir)libminingcore_test_fenv.so" />
+      <!-- Also clean helpers built directly, before a full build records FileWrites. -->
+      <Clean Include="$(IntermediateOutputPath)native-fenv/libminingcore_test_fenv.so;$(TargetDir)libminingcore_test_fenv.so" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="BuildFloatingPointTestHelper" AfterTargets="Build"
+          Condition="'$(IsLinux)' == 'true' and '$([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)' == 'X64' and !$(FloatingPointTestHelperHostRid.Contains('musl')) and '$(MiningcoreStratumListenerSmoke)' != 'true'"
+          Inputs="$(MSBuildProjectFullPath);$(MSBuildProjectDirectory)/Fixtures/FloatingPointProbe.c"
+          Outputs="$(TargetDir)libminingcore_test_fenv.so">
+    <MakeDir Directories="$(IntermediateOutputPath)native-fenv" />
+    <!-- CC is one executable/wrapper path; use a wrapper for compiler arguments. -->
+    <Exec Command="&quot;${CC:-cc}&quot; -std=c11 -O2 -fPIC -shared -fno-fast-math -Wall -Wextra -Werror &quot;$(MSBuildProjectDirectory)/Fixtures/FloatingPointProbe.c&quot; -o &quot;$(IntermediateOutputPath)native-fenv/libminingcore_test_fenv.so&quot;" />
+    <Copy SourceFiles="$(IntermediateOutputPath)native-fenv/libminingcore_test_fenv.so" DestinationFolder="$(TargetDir)" />
   </Target>
 
   <!-- Copy Linux native libs from Miningcore output into test output -->

@@ -65,6 +65,7 @@ wallet balances or recovery files.
 | Task | Guide |
 | --- | --- |
 | Build, package and publish a release | [Maintainer release procedure](releases.md#maintainer-release-procedure) |
+| Reproduce cold/warm source-image builds and bounded dependency acquisition | [Source container validation](source-container-validation.md) |
 | Review dependency and licence decisions | [Dependency security](dependency-security.md) |
 | Review reproducible daemon-backed evidence | [Regtest validation record](merged-mining-regtest-validation.md) |
 | Review dated production evidence | [Mainnet validation record](mainnet-validation.md) |

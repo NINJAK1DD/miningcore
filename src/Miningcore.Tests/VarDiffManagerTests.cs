@@ -11,11 +11,18 @@ using Miningcore.Time;
 using Miningcore.VarDiff;
 using NSubstitute;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Miningcore.Tests;
 
 public class VarDiffManagerTests
 {
+    private readonly Action<string> diagnostic;
+
+    public VarDiffManagerTests(ITestOutputHelper output) : this(DefaultFloatingPointScope.Diagnostic(output)) { }
+
+    internal VarDiffManagerTests(Action<string> diagnostic) => this.diagnostic = diagnostic;
+
     public static IEnumerable<object[]> BurstWindows =>
         from stored in new[] { 0, 1, 4, 9, 10 }
         from ticks in new[] { 0, 1, 200 } // zero, 100 ns, 20 us
@@ -128,6 +135,11 @@ public class VarDiffManagerTests
     public void ExtremeRatios_AvoidIntermediateOverflowAndUnderflow(double difficulty, double target,
         double average, double expected)
     {
+        DefaultFloatingPointScope.Run(() => VerifyExtremeRatio(difficulty, target, average, expected), diagnostic);
+    }
+
+    internal static void VerifyExtremeRatio(double difficulty, double target, double average, double expected)
+    {
         var (context, options, clock, time) = Fixture(difficulty);
         options.MinDiff = double.Epsilon;
         options.TargetTime = target;
@@ -139,7 +151,10 @@ public class VarDiffManagerTests
         var result = VarDiffManager.Update(context, options, clock);
         Assert.NotNull(result);
         Assert.True(double.IsFinite(result.Value));
-        Assert.InRange(result.Value / expected, 0.99999999999999, 1.00000000000001);
+        if(double.IsSubnormal(expected))
+            Assert.Equal(BitConverter.DoubleToInt64Bits(expected), BitConverter.DoubleToInt64Bits(result.Value));
+        else
+            Assert.InRange(result.Value / expected, 0.99999999999999, 1.00000000000001);
     }
 
     [Theory]
