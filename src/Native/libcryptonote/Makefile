@@ -1,7 +1,7 @@
 INC_DIRS = -I. -Icontrib/epee/include
 CFLAGS = $(CPU_FLAGS) $(INC_DIRS) -fno-exceptions -std=gnu11  -fPIC -DNDEBUG -Ofast -funroll-loops -fvariable-expansion-in-unroller -ftree-loop-if-convert-stores -fmerge-all-constants -fbranch-target-load-optimize2
-CXXFLAGS = $(CPU_FLAGS) $(INC_DIRS) -fexceptions -frtti -std=gnu++14  -fPIC -DNDEBUG -Ofast -s -funroll-loops -fvariable-expansion-in-unroller -ftree-loop-if-convert-stores -fmerge-all-constants -fbranch-target-load-optimize2
-LDFLAGS = -shared -Wl,--no-undefined
+CXXFLAGS = $(CPU_FLAGS) $(INC_DIRS) -fexceptions -frtti -std=gnu++14  -fPIC -DNDEBUG -Ofast -funroll-loops -fvariable-expansion-in-unroller -ftree-loop-if-convert-stores -fmerge-all-constants -fbranch-target-load-optimize2
+LDFLAGS = -shared -s -Wl,--no-undefined
 LDLIBS = -lboost_date_time -lboost_regex -lcrypto -lsodium -lssl
 TARGET  = libcryptonote.so
 
@@ -26,8 +26,11 @@ OBJECTS = exports.o \
 
 all: $(TARGET)
 
+# Compile-time fast-math must not inject crtfastmath startup code into the DSO.
+# GCC before 13 and Clang can otherwise alter the loading thread's FP mode.
+# Keep stripping in LDFLAGS without passing compile-time optimization to the linker.
 $(TARGET): $(OBJECTS)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 .PHONY: clean
 
