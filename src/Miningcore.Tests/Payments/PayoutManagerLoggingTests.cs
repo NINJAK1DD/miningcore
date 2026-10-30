@@ -40,7 +40,7 @@ public class PayoutManagerLoggingTests
             var balances = Substitute.For<IBalanceRepository>();
             var connections = Substitute.For<IConnectionFactory>();
             var lease = Substitute.For<IPayoutManagerLease>();
-            var manager = new PayoutManager(Substitute.For<IComponentContext>(), connections,
+            var manager = new PayoutManager(Substitute.For<ILifetimeScope>(), connections,
                 Substitute.For<IBlockRepository>(), Substitute.For<IShareRepository>(), balances,
                 new ClusterConfig { PaymentProcessing = new ClusterPaymentProcessingConfig() },
                 Substitute.For<IMessageBus>(), lease, new ProcessStatus());

@@ -53,14 +53,12 @@ HTTP on a protected local/private path, set both flags false; review other RPC
 and WebSocket connections sharing that endpoint because those flags also affect
 their transport. A redirect response now surfaces as an error. Configure the
 final listener directly, including the final host and port. The REST handler
-refuses all redirects so a wallet key in a GET URL, a payment POST body, or
+refuses all redirects so a wallet-related URL, a payment POST body, or
 custom headers cannot be replayed to a different origin by a 3xx response.
 
-Warthog's wallet check still places its configured private key in the REST URL
-and can include it in error text; see
-[Warthog key exposure #236](https://github.com/NINJAK1DD/miningcore/issues/236).
-Treat a key exposed through logs or an untrusted network path as compromised and
-replace it through the chain's supported wallet procedure.
+Warthog's wallet address check runs locally and does not send the configured
+private key to the daemon; see
+[Warthog wallet key security](warthog-wallet-key-security.md) for incident response.
 
 The trust configuration includes the operating system trust store available to
 the Miningcore service (inside its container when applicable). On Linux, .NET

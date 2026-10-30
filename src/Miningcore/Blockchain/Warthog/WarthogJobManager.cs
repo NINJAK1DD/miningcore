@@ -203,6 +203,26 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
             .ToArray();
 
         base.Configure(pc, cc);
+
+        // Configure runs before StartAsync performs daemon reachability/sync checks.
+        if(string.IsNullOrEmpty(pc.Address))
+            throw new TrustedPoolStartupException("Pool address is not configured", pc.Id);
+
+        if(cc.PaymentProcessing?.Enabled == true && pc.PaymentProcessing?.Enabled == true)
+        {
+            if(string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPrivateKey))
+                throw new TrustedPoolStartupException("Pool address private key is not configured", pc.Id);
+
+            try
+            {
+                using var key = WarthogWalletAddress.ValidatePrivateKey(
+                    extraPoolPaymentProcessingConfig.WalletPrivateKey, pc.Address);
+            }
+            catch(ArgumentException ex)
+            {
+                throw new TrustedPoolStartupException(ex.Message, pc.Id);
+            }
+        }
     }
 
     public object[] GetSubscriberData(StratumConnection worker)
@@ -415,10 +435,6 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
 
     protected override async Task PostStartInitAsync(CancellationToken ct)
     {
-        // validate pool address
-        if(string.IsNullOrEmpty(poolConfig.Address))
-            throw new TrustedPoolStartupException("Pool address is not configured", poolConfig.Id);
-
         // test daemon
         try
         {
@@ -456,38 +472,16 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
             throw new TrustedPoolStartupException($"Pool address check failed...", poolConfig.Id);
         }
 
-        if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
-        {
-            // validate pool address privateKey
-            if(string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPrivateKey))
-                throw new TrustedPoolStartupException("Pool address private key is not configured", poolConfig.Id);
-
-            try
-            {
-                var responsePoolAddressWalletPrivateKey = await restClient.Get<WarthogWalletResponse>(WarthogCommands.GetWallet.Replace(WarthogCommands.DataLabel, extraPoolPaymentProcessingConfig?.WalletPrivateKey), ct);
-                if(responsePoolAddressWalletPrivateKey?.Error != null)
-                    throw new PoolStartupException($"Pool address private key '{extraPoolPaymentProcessingConfig?.WalletPrivateKey}': {responsePoolAddressWalletPrivateKey.Error} (Code {responsePoolAddressWalletPrivateKey?.Code})", poolConfig.Id);
-
-                if(responsePoolAddressWalletPrivateKey.Data.Address != poolConfig.Address)
-                    throw new PoolStartupException($"Pool address private key '{extraPoolPaymentProcessingConfig?.WalletPrivateKey}' [{responsePoolAddressWalletPrivateKey.Data.Address}] does not match pool address: {poolConfig.Address}", poolConfig.Id);
-            }
-
-            catch(Exception)
-            {
-                logger.Warn(() => $"'{WarthogCommands.DaemonName} - {WarthogCommands.GetWallet}' daemon does not seem to be running...");
-                throw new TrustedPoolStartupException($"Pool address private key check failed...", poolConfig.Id);
-            }
-        }
-
         await UpdateNetworkStatsAsync(ct);
 
         // Periodically update network stats
-        Observable.Interval(TimeSpan.FromMinutes(1))
+        var networkStatsSubscription = Observable.Interval(TimeSpan.FromMinutes(1))
             .Select(via => Observable.FromAsync(() =>
                 Guard(()=> UpdateNetworkStatsAsync(ct),
                     ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "WarthogJobManager.PostStartInitAsync", failure: ex))))
             .Concat()
             .Subscribe();
+        ct.Register(networkStatsSubscription.Dispose);
 
         SetupJobUpdates(ct);
     }
