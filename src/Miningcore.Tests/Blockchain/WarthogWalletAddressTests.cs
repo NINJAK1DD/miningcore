@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
 using AutoMapper;
+using Microsoft.Extensions.DependencyInjection;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Warthog;
 using Miningcore.Blockchain.Warthog.DaemonRequests;
@@ -19,6 +20,7 @@ using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
+using Miningcore.Rest;
 using Miningcore.Stratum;
 using Miningcore.Time;
 using NLog;
@@ -387,9 +389,10 @@ public class WarthogWalletAddressTests : TestBase
 
     private static IHttpClientFactory MakeFactory(HttpMessageHandler requests)
     {
-        var factory = Substitute.For<IHttpClientFactory>();
-        factory.CreateClient(Arg.Any<string>()).Returns(new HttpClient(requests));
-        return factory;
+        var services = new ServiceCollection();
+        services.AddDaemonRestClient()
+            .ConfigurePrimaryHttpMessageHandler(() => requests);
+        return services.BuildServiceProvider().GetRequiredService<IHttpClientFactory>();
     }
 
     private TestPayoutHandler CreatePayoutHandler(HttpMessageHandler requests,
