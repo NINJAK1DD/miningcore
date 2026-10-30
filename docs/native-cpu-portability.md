@@ -1,5 +1,62 @@
 # Linux native CPU portability
 
+## Floating-point environment at native library load
+
+The CryptoNote shared-library link uses link flags only, with `-s` explicitly in
+`LDFLAGS` to preserve the previously stripped release artifact. Compilation retains
+its existing optimization flags; passing `-Ofast` to the link driver on GCC 11/12 or
+affected Clang versions can include `crtfastmath` startup code that enables FTZ/DAZ
+on the loading thread. Later threads can inherit that mode. GCC documents the
+shared-library behavior change in its [GCC 13 release notes](https://gcc.gnu.org/gcc-13/changes.html).
+
+`scripts/release/test-native-load-fenv.sh PUBLISH_DIRECTORY` checks every library
+in the shipped inventory with `RTLD_NOW`. Each library/mode uses a fresh process,
+four rounding modes and flushing both enabled and disabled. The probe compares x87
+control and MXCSR control bits before/after load and unload, and also
+checks CryptoNote's empty-input Keccak vector and rejected-input path. Missing
+libraries, missing dependencies, crashes and a ten-second probe deadline fail the
+gate. Failures identify the library, mode and exit status, including timeout (124),
+forced kill (137) and signal termination. Kill escalation follows after two seconds.
+`MININGCORE_FENV_TIMEOUT_SECONDS` may shorten the deadline to an integer from 1 to 10;
+it cannot extend or disable it. Unset nonempty `LD_LIBRARY_PATH` and `LD_PRELOAD`
+before invoking the gate: inherited overrides are rejected, and probe dependency
+resolution uses only the publish directory plus the system loader paths.
+The probe compiles without fast-math. Regressions cover the shell entry point as
+well as clean/status-only and corrupting constructors/destructors, clearing
+previously enabled flushing, crashes, hangs that require TERM or KILL, option and
+inventory rejection, and a final inventory entry without a terminating newline.
+On x86-64 the probe reads `MXCSR_MASK` from an aligned, zeroed FXSAVE area before
+enabling flushing. DAZ is enabled only when advertised; a zero mask uses Intel's
+`0x0000ffbf` fallback, which excludes DAZ. Regression cases cover zero masks,
+unsupported DAZ and supported DAZ. See the [Intel Software Developer's Manual](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
+Volume 1, “Checking for the DAZ Flag in the MXCSR Register,” and Volume 2A,
+“FXSAVE—Save x87 FPU, MMX Technology, and SSE State” (save-area layout and
+reserved-bit fallback). Section titles identify the references across revisions
+whose section numbers differ.
+The gate compares floating-point controls only. Sticky exception status flags are
+excluded from the comparison and may be set or cleared (Zano initialization sets
+the inexact flag). These flags record prior arithmetic; preserving that status
+history is outside the gate's contract. Rounding, x87 precision control, exception
+masks and denormal handling for subsequent operations remain checked.
+
+The gate runs in Linux package/source inventory validation, the source Docker
+builder and the .NET/Release jobs before their managed tests. The implementation
+also provides AArch64 FPCR/FPSR checks, but the supported release/native build and
+executed lab coverage remain Linux x86-64. This load-time gate does not establish
+that every exported hashing operation or third-party variant preserves state;
+the wider call-boundary audit remains tracked in [#226](https://github.com/NINJAK1DD/miningcore/issues/226).
+That audit also includes libraries outside this 25-library inventory, such as the
+system `libzmq` used by relay bindings. Debian 12 source builds use affected GCC 12
+but have no dedicated CI lane for this loader gate; its Makefile correction is
+shared with Ubuntu. DAZ-incapable physical hardware and ARM64 have not been tested.
+
+Inventory validation always enforces load/unload preservation, including package
+tests that use symbol-only stub libraries. Real source Docker, .NET/Release and
+Ubuntu native-vector runs additionally require `--cryptonote-vectors`; a stub
+export table is not a cryptographic implementation and cannot pass that check.
+
+## Linux x64 instruction baseline
+
 Linux x64 native libraries built by `src/Miningcore/build-libs-linux.sh` target
 **x86-64-v2 plus AES-NI and PCLMULQDQ**, with generic tuning. This includes SSE3,
 SSSE3, SSE4.1, SSE4.2, POPCNT, CMPXCHG16B and LAHF/SAHF. It does not impose an

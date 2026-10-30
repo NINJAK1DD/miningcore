@@ -602,6 +602,10 @@ jobs:
         shell: bash
         run: bash scripts/release/test-randomx-cpu-os-state.sh "${TMPDIR:-/tmp}"
 
+      - name: Test native load floating-point state
+        shell: bash
+        run: bash scripts/release/test-native-load-fenv.sh src/Miningcore/bin/Release/net10.0 --cryptonote-vectors
+
       - name: Smoke-test ZeroMQ relay runtime
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Release/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Release/net10.0

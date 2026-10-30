@@ -8,6 +8,8 @@ repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 test_project="$repository_root/src/Miningcore.Tests/Miningcore.Tests.csproj"
 test_output="$repository_root/src/Miningcore.Tests/bin/Release/net10.0"
 
+bash "$repository_root/scripts/release/test-native-load-fenv.sh" "$publish_dir" --cryptonote-vectors
+
 # Exercise the light-cache path whose temporary DAG-node lifetime is fixed in all four libraries.
 # The synthetic cache keeps this deterministic and fast without allocating a production-size DAG.
 bash "$repository_root/scripts/release/test-ethash-light-vectors.sh" "$publish_dir"

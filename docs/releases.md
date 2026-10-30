@@ -22,6 +22,31 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased (after v0.3.0): native floating-point state on CryptoNote load
+
+CryptoNote's Linux shared-library link no longer passes `-Ofast` to the linker
+driver. GCC 12 and earlier, and affected Clang versions, can otherwise add startup
+code that enables FTZ/DAZ on the thread that first loads the library, including a
+managed thread making its first CryptoNote P/Invoke. Subnormal inputs or results
+can then become zero, affecting later arithmetic on that thread and threads it
+spawns. Ordinary configured mining difficulties have not been shown to fail.
+
+This affects earlier Ubuntu 22.04 compatibility archives and source builds with
+GCC 11/12, including Ubuntu 22.04 and Debian 12. Standard Ubuntu 24.04/26.04 GCC
+builds and the Ubuntu 26.04 release container do not have this startup mechanism:
+[GCC 13 changed shared-object fast-math startup behavior](https://gcc.gnu.org/gcc-13/changes.html).
+Custom toolchains still require validation. Windows prebuilt libraries are unchanged.
+
+Replace an affected installation with a fixed archive for the same supported host,
+or rebuild the native libraries from the fixed source using the documented build
+driver, then restart Miningcore to retire threads with inherited state. Do not mix
+archives built for different Ubuntu/glibc targets. Object optimization and hashing
+code are unchanged; `-s` now lives explicitly in `LDFLAGS`, preserving stripped
+CryptoNote artifacts. The Linux load/unload gate checks all 25 shipped libraries
+in eight floating-point modes before managed tests. This does not establish that
+every subsequent exported hashing call preserves state; see the
+[native contract and validation limits](native-cpu-portability.md#floating-point-environment-at-native-library-load).
+
 ## Unreleased (after v0.3.0): Ergo exact proof and network difficulty
 
 Ergo now derives proof difficulty, candidate credit limits and accepted-share
