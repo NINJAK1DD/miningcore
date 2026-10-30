@@ -79,9 +79,9 @@ Published [manifest/signatures](https://bitcoinknots.org/files/29.x/29.4.3.knots
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Linux x86-64 archive | `4c67f1139b668fc3b98e339dd16112c636b2c0f42c2294b98fb92d1d27943e24` |
-| Released source archive | `f1613e4ec63b7a1d87e9eba10aed730195a08c732e8883c4215e2d4680b9ed83` |
-| Windows pgpverifiable ZIP (manifest pin) | `3035ee70d108f6ff7fa76b99df9e261181da34a471b30946cf5a1e5e504ec709` |
+| Linux x86-64 archive | SHA-256 `4c67f1139b668fc3b98e339dd16112c636b2c0f42c2294b98fb92d1d27943e24` |
+| Released source archive | SHA-256 `f1613e4ec63b7a1d87e9eba10aed730195a08c732e8883c4215e2d4680b9ed83` |
+| Windows pgpverifiable ZIP (manifest pin) | SHA-256 `3035ee70d108f6ff7fa76b99df9e261181da34a471b30946cf5a1e5e504ec709` |
 
 The lab downloaded and checksum-verified the Linux and source archives. In an
 isolated keyring, the manifest produced `VALIDSIG` for Luke Dashjr's codesigning
