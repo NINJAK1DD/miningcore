@@ -34,6 +34,8 @@ fi
 
 echo "Validated ${#expected_libraries[@]} Linux native libraries in $publish_dir"
 
+bash "$script_dir/test-native-load-fenv.sh" "$publish_dir"
+
 python3 "$script_dir/assert-linux-native-symbol-contracts.py" \
   "$publish_dir" \
   "$repository_root/src/Miningcore/Native" \
