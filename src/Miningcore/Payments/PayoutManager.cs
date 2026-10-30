@@ -102,7 +102,9 @@ public class PayoutManager : ProcessStatusBackgroundService
     internal const int DirectSettlementReconciliationBatchSize = 64;
     internal const ulong DirectSettlementReconciliationDepth = 4_032;
     internal const int Blake2bOrphanReconciliationBatchSize = 64;
-    internal const ulong Blake2bOrphanReconciliationDepth = 12_960;
+    // Two reviewed rolling maturity intervals. Keyset batches remain bounded;
+    // older or already credited rewards require the operator recovery audit.
+    internal const ulong Blake2bOrphanReconciliationDepth = 51_840;
     // ProcessPoolsAsync serializes pool cycles; never access this cursor cache
     // from concurrent classification work without adding synchronization.
     private readonly Dictionary<string, long> blake2bOrphanCursors = new(StringComparer.Ordinal);

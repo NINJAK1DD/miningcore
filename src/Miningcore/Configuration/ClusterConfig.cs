@@ -260,6 +260,10 @@ public partial class BitcoinTemplate : CoinTemplate
         [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
         public int? Blake2bMaturityRelease { get; set; }
 
+        // Explicit fixture-only -testcoinbasematuritylongexpiry=parent-MTP.
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public long? Blake2bMaturityExpiry { get; set; }
+
         /// <summary>
         /// Arbitrary extension data
         /// </summary>

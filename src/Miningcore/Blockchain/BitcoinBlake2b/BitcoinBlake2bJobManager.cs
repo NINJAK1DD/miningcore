@@ -57,6 +57,9 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
             poolConfig.Id);
         maturity = BitcoinBlake2bMaturity.ForNetwork(blake2bCoin, chainName, poolConfig.Id);
         maturity.ValidateDeployment(deployment.Response, poolConfig.Id);
+        if(!await BitcoinBlake2bChainEvidence.VerifyAsync(chain.Response, deployment.Response,
+            hash => GetAttestationHeaderAsync(hash, ct), poolConfig.Id, ct))
+            throw new PoolStartupException("Bitcoin BLAKE2b startup chain evidence is unavailable; retry after synchronization", poolConfig.Id);
         attestedChain = chainName;
         // Re-attest the first runtime template after chain-specific setup.
         daemonAttestationExpires = DateTime.MinValue;
@@ -77,16 +80,16 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
         // Operators must verify the downloaded binary independently.
         var version = info?["version"];
         var subversion = info?["subversion"];
-        if(version?.Type != JTokenType.Integer || !long.TryParse(version.ToString(), out var number) || number != 290402 ||
+        if(version?.Type != JTokenType.Integer || !long.TryParse(version.ToString(), out var number) || number != 290403 ||
            subversion?.Type != JTokenType.String ||
            !IsReviewedUserAgent(subversion.Value<string>()))
             throw new PoolStartupException(
-                $"Pool '{poolId}' requires reviewed Bitcoin Knots 29.4.2.knots20260508 with its recognized version/user-agent prefix; incompatible received subversion is withheld. Inspect getnetworkinfo privately. Daemon upgrades or agent spoofing require an explicit compatibility review", poolId);
+                $"Pool '{poolId}' requires reviewed Bitcoin Knots 29.4.3.knots20260508 with its recognized version/user-agent prefix; incompatible received subversion is withheld. Inspect getnetworkinfo privately. Daemon upgrades or agent spoofing require an explicit compatibility review", poolId);
     }
 
     private static bool IsReviewedUserAgent(string agent) => agent is { Length: <= 256 } &&
         System.Text.RegularExpressions.Regex.IsMatch(agent,
-            @"\A/Satoshi:29\.4\.2(?:\([\x20-\x27\x2a-\x7e]*\))?/Knots:20260508/[\x20-\x7e]*\z",
+            @"\A/Satoshi:29\.4\.3(?:\([\x20-\x27\x2a-\x7e]*\))?/Knots:20260508/[\x20-\x7e]*\z",
             System.Text.RegularExpressions.RegexOptions.NonBacktracking);
 
     protected override async Task<RpcResponse<BlockTemplate>> GetBlockTemplateAsync(CancellationToken ct)
@@ -130,6 +133,9 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
     protected virtual Task<RpcResponse<JObject>> ReadDaemonAttestationAsync(string method, CancellationToken ct) =>
         rpc.ExecuteAsync<JObject>(logger, method, ct);
 
+    protected virtual Task<RpcResponse<JObject>> GetAttestationHeaderAsync(string hash, CancellationToken ct) =>
+        rpc.ExecuteAsync<JObject>(logger, "getblockheader", ct, new object[] { hash, true });
+
     private async Task<JsonRpcError> AttestDaemonAsync(CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -159,6 +165,14 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
             blake2bCoin.Networks[expectedChain].Blake2bActivationHeight!.Value, poolConfig.Id);
         maturity = BitcoinBlake2bMaturity.ForNetwork(blake2bCoin, expectedChain, poolConfig.Id);
         maturity.ValidateDeployment(deployment.Response, poolConfig.Id);
+        if(!await BitcoinBlake2bChainEvidence.VerifyAsync(chain.Response, deployment.Response,
+            hash => GetAttestationHeaderAsync(hash, ct), poolConfig.Id, ct))
+        {
+            attestationRpcError = new JsonRpcError(-500, "Bitcoin BLAKE2b chain evidence changed or is unavailable; fresh work withheld", null);
+            attestationRpcFailures = Math.Min(attestationRpcFailures + 1, 6);
+            nextAttestationRpcAttempt = clock.Now.AddSeconds(Math.Min(30, 1 << (attestationRpcFailures - 1)));
+            return attestationRpcError;
+        }
         attestedChain = expectedChain;
         attestationRpcFailures = 0;
         attestationRpcError = null;
@@ -272,7 +286,7 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
         {
             // Reserve the largest uint32 height and signed timestamp pushes,
             // OP_0, fixed extranonce bytes and the 128-bit job discriminator.
-            // Pinned Knots 29.4.2 emits an empty coinbaseaux object. The exact
+            // Pinned Knots 29.4.3 emits an empty coinbaseaux object. The exact
             // runtime contract rejects unexpected nonempty daemon-supplied flags.
             var maximum = new Script(Op.GetPushOp((long) uint.MaxValue), Op.GetPushOp(long.MaxValue),
                 Op.GetPushOp(0)).Length + BitcoinConstants.ExtranoncePlaceHolderLength +

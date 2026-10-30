@@ -4,28 +4,54 @@ using Newtonsoft.Json.Linq;
 
 namespace Miningcore.Blockchain.BitcoinBlake2b;
 
-// Knots 58398baf33e588779685ead478e6397bb28ed3d6. RPC height_end is
-// inclusive; the source release height is exclusive. Wallet/mempool policy
-// applies Maturity to ALL coinbases and survives consensus deactivation.
-internal sealed record BitcoinBlake2bMaturity(int Start, int Enforce, int Release, int Maturity)
+// Knots a7c4617524c334f542484bfef3919b9f12573840. Historical consensus,
+// rolling consensus and wallet policy are different contracts. Never select
+// reward maturity from the current wall clock, current tip MTP or active flag.
+internal sealed record BitcoinBlake2bMaturity(int Start, int Enforce, int Release, int Maturity,
+    int? RollingStart = null, int? RollingMaturity = null, long? Expiry = null)
 {
-    internal static readonly BitcoinBlake2bMaturity Mainnet = new(973440, 973440, 979920, 6480);
+    internal static readonly BitcoinBlake2bMaturity Mainnet = new(973440, 973440, 979920, 6480,
+        979919, 25920, 1819756800);
     internal static readonly BitcoinBlake2bMaturity Regtest = new(int.MaxValue, int.MaxValue, int.MaxValue, 100);
 
-    internal bool ActiveAt(long spendHeight) => spendHeight >= Enforce && spendHeight < Release;
+    internal bool HistoricalActiveAt(long spendHeight) => (Expiry == null || this == Mainnet) &&
+        spendHeight >= Enforce && spendHeight < Release;
+    internal bool ActiveAt(long spendHeight) => HistoricalActiveAt(spendHeight) ||
+        RollingStart.HasValue && spendHeight >= (this == Mainnet ? RollingStart.Value : Enforce);
     internal int WalletConfirmations => checked(Maturity + 1);
+
+    internal int PolicyMaturity(uint rewardHeight, long parentMtp)
+    {
+        if(parentMtp < 0 || parentMtp > uint.MaxValue) throw new ArgumentOutOfRangeException(nameof(parentMtp));
+        // Upstream checks expiry before the historical-height fallback.
+        if(Expiry.HasValue && parentMtp >= Expiry.Value) return 100;
+        return RollingStart.HasValue && rewardHeight >= RollingStart.Value ? RollingMaturity!.Value : Maturity;
+    }
+
+    internal int ConsensusMaturity(uint rewardHeight, long spendHeight, long parentMtp)
+    {
+        var historical = HistoricalActiveAt(spendHeight) && rewardHeight >= Start ? Maturity : 100;
+        var rolling = RollingStart.HasValue && spendHeight >= (this == Mainnet ? RollingStart.Value : Enforce) &&
+            rewardHeight >= RollingStart.Value && parentMtp < Expiry!.Value ? RollingMaturity!.Value : 100;
+        return Math.Max(historical, rolling);
+    }
 
     internal static BitcoinBlake2bMaturity ForNetwork(BitcoinBlake2bTemplate coin, string chain, string poolId)
     {
         if(chain is not ("main" or "regtest") || !coin.Networks.TryGetValue(chain, out var network))
             throw new PoolStartupException("Unsupported Bitcoin BLAKE2b maturity network", poolId);
         var values = new[] { network.Blake2bMaturityStart, network.Blake2bMaturityEnforce, network.Blake2bMaturityRelease };
-        if(values.All(x => x == null)) return chain == "main" ? Mainnet : Regtest;
+        var expiry = network.Blake2bMaturityExpiry;
+        if(values.All(x => x == null) && expiry == null) return chain == "main" ? Mainnet : Regtest;
         if(chain != "regtest" || values.Any(x => x == null) ||
             values.Any(x => x < 0 || x >= int.MaxValue) ||
-            values[1] < 2 || values[2] <= values[1] || values[2] <= values[0] || values[2] - values[0] <= 100)
+            values[1] < 2 || values[2] <= values[1] || values[2] <= values[0] || values[2] - values[0] <= 100 ||
+            expiry is <= 0 or > uint.MaxValue)
             throw new PoolStartupException("Long-maturity overrides require an explicit valid isolated-regtest schedule", poolId);
-        return new(values[0]!.Value, values[1]!.Value, values[2]!.Value, values[2]!.Value - values[0]!.Value);
+        return expiry.HasValue
+            ? new(values[0]!.Value, values[1]!.Value, values[2]!.Value, 100,
+                values[0]!.Value, values[2]!.Value - values[0]!.Value, expiry)
+            : new(values[0]!.Value, values[1]!.Value, values[2]!.Value, values[2]!.Value - values[0]!.Value);
     }
 
     internal void ValidateDeployment(JObject info, string poolId)
@@ -39,21 +65,23 @@ internal sealed record BitcoinBlake2bMaturity(int Start, int Enforce, int Releas
             info["height"]?.Type == JTokenType.Integer &&
             long.TryParse(info["height"].ToString(), out var regtestTip) && regtestTip >= 0 && regtestTip < int.MaxValue)
             return;
-        var fields = new[] { "type", "height", "height_end", "coinbase_start_height", "maturity", "active" };
+        if(info?["height"]?.Type != JTokenType.Integer ||
+            !long.TryParse(info["height"].ToString(), out var tip) || tip < 0 || tip >= int.MaxValue)
+            throw new PoolStartupException("Bitcoin BLAKE2b deployment tip is invalid", poolId);
+        var rolling = RollingStart.HasValue && (this != Mainnet || tip + 1 >= RollingStart.Value);
+        var fields = new[] { "type", "height", rolling ? "coinbase_expiry_time" : "height_end", "coinbase_start_height", "maturity", "active" };
         if(deployment == null || deployment.Properties().Any(x => !fields.Contains(x.Name, StringComparer.Ordinal)) ||
             deployment.Properties().Count() != fields.Length ||
             deployment["type"]?.Type != JTokenType.String || deployment["type"].Value<string>() != "flagday" ||
-            !IntegerEquals(deployment["height"], Enforce) ||
-            !IntegerEquals(deployment["height_end"], Release - 1) ||
-            !IntegerEquals(deployment["coinbase_start_height"], Start) ||
-            !IntegerEquals(deployment["maturity"], Maturity) ||
-            info?["height"]?.Type != JTokenType.Integer ||
-            !long.TryParse(info["height"].ToString(), out var tip) || tip < 0 || tip >= int.MaxValue ||
+            !IntegerEquals(deployment["height"], rolling && this == Mainnet ? RollingStart!.Value : Enforce) ||
+            !IntegerEquals(deployment[rolling ? "coinbase_expiry_time" : "height_end"], rolling ? Expiry!.Value : Release - 1) ||
+            !IntegerEquals(deployment["coinbase_start_height"], rolling ? RollingStart!.Value : Start) ||
+            !IntegerEquals(deployment["maturity"], rolling ? RollingMaturity!.Value : Maturity) ||
             deployment["active"]?.Type != JTokenType.Boolean || deployment["active"].Value<bool>() != ActiveAt(tip + 1))
             throw new PoolStartupException("Bitcoin BLAKE2b long-maturity deployment differs from the reviewed height/field contract", poolId);
     }
 
-    private static bool IntegerEquals(JToken token, int expected) => token?.Type == JTokenType.Integer &&
+    private static bool IntegerEquals(JToken token, long expected) => token?.Type == JTokenType.Integer &&
         long.TryParse(token.ToString(), out var value) && value == expected;
 
     internal void ValidateRules(string[] rules, uint nextHeight, string poolId)
@@ -64,10 +92,11 @@ internal sealed record BitcoinBlake2bMaturity(int Start, int Enforce, int Releas
             throw new PoolStartupException("Bitcoin BLAKE2b GBT rules contradict the reviewed next-height contract", poolId);
     }
 
-    internal int RequiredConfirmations(int operatorConfirmations) => Math.Max(WalletConfirmations, operatorConfirmations);
-    internal int Remaining(int confirmations, int operatorConfirmations) =>
-        (int) Math.Max(0L, (long) RequiredConfirmations(operatorConfirmations) - confirmations);
-    internal double Progress(int confirmations, int operatorConfirmations, bool walletImmature) =>
-        Math.Clamp((double) confirmations / RequiredConfirmations(operatorConfirmations), 0,
+    internal int RequiredConfirmations(int operatorConfirmations, int? policyMaturity = null) =>
+        Math.Max(checked((policyMaturity ?? Maturity) + 1), operatorConfirmations);
+    internal int Remaining(int confirmations, int operatorConfirmations, int? policyMaturity = null) =>
+        (int) Math.Max(0L, (long) RequiredConfirmations(operatorConfirmations, policyMaturity) - confirmations);
+    internal double Progress(int confirmations, int operatorConfirmations, bool walletImmature, int? policyMaturity = null) =>
+        Math.Clamp((double) confirmations / RequiredConfirmations(operatorConfirmations, policyMaturity), 0,
             walletImmature ? Math.BitDecrement(1.0) : 1.0);
 }

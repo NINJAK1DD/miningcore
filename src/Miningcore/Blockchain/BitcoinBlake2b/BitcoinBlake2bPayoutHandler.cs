@@ -100,10 +100,22 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
             BitcoinBlake2bJobManager.ValidateDeployment(deployment.Response,
                 coin.Networks[chainName].Blake2bActivationHeight!.Value, poolConfig.Id);
             schedule.ValidateDeployment(deployment.Response, poolConfig.Id);
+            if(!await BitcoinBlake2bChainEvidence.VerifyAsync(chain.Response, deployment.Response,
+                hash => GetBlockHeaderAsync(hash, ct), poolConfig.Id, ct))
+                throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.RpcUnavailable);
         }
         catch(PoolStartupException)
         {
             throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.ContractDrift);
+        }
+        catch(JsonException ex)
+        {
+            throw AttestationFailure(JsonFailureReason(ex));
+        }
+        catch(Exception ex) when(ex is HttpRequestException or TimeoutException ||
+            ex is OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.RpcUnavailable);
         }
         try { contracts.Attest(poolConfig.Id, chainName, schedule); }
         catch(InvalidOperationException)
@@ -162,6 +174,7 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
         try
         {
             var result = await GetBlockHeaderAsync(hash, ct);
+            ct.ThrowIfCancellationRequested();
             var header = result?.Error == null ? result?.Response : null;
             if(header?["hash"]?.Type != JTokenType.String ||
                 !string.Equals(header["hash"].Value<string>(), hash, StringComparison.OrdinalIgnoreCase) ||
@@ -169,9 +182,14 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
                 header["confirmations"]?.Type != JTokenType.Integer || !int.TryParse(header["confirmations"].ToString(), out var confirmations) ||
                 confirmations == 0 || confirmations < -1)
                 return null;
-            return new(hash, height, confirmations);
+            var previous = header["previousblockhash"]?.Type == JTokenType.String
+                ? header["previousblockhash"].Value<string>() : null;
+            long? mtp = header["mediantime"]?.Type == JTokenType.Integer &&
+                long.TryParse(header["mediantime"].ToString(), out var time) && time >= 0 && time <= uint.MaxValue ? time : null;
+            return new(hash, height, confirmations, previous, mtp);
         }
-        catch(Exception ex) when(ex is JsonException or HttpRequestException)
+        catch(Exception ex) when(ex is JsonException or HttpRequestException or TimeoutException ||
+            ex is OperationCanceledException && !ct.IsCancellationRequested)
         {
             return null;
         }
@@ -249,16 +267,41 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
                             NotifyDelay(block);
                         else
                         {
+                            var policyMaturity = schedule.Maturity;
+                            if(schedule.Expiry.HasValue)
+                            {
+                                var parent = await ReadHeaderAsync(header.PreviousBlockHash, ct);
+                                // Re-read creation evidence after fetching its parent. Confirm
+                                // active membership and linkage even on pruned nodes. A reorg
+                                // during these calls withholds this cycle; no MTP is cached.
+                                var current = await ReadHeaderAsync(block.Hash, ct);
+                                if(parent?.Confirmations is not > 0 || parent.Height + 1 != header.Height ||
+                                    !parent.MedianTimePast.HasValue || current?.Confirmations is not > 0 ||
+                                    current.Height != header.Height || current.PreviousBlockHash != header.PreviousBlockHash)
+                                {
+                                    NotifyDelay(block);
+                                    result.Add(block);
+                                    continue;
+                                }
+                                header = current;
+                                policyMaturity = schedule.PolicyMaturity(header.Height, parent.MedianTimePast.Value);
+                                // Keep historical spend-height consensus independent
+                                // of policy expiry, including an unusually early MTP
+                                // cutoff. Never credit below either requirement.
+                                var spendHeight = (long) header.Height + Math.Min(transaction.Confirmations, header.Confirmations);
+                                policyMaturity = Math.Max(policyMaturity, schedule.ConsensusMaturity(
+                                    header.Height, spendHeight, parent.MedianTimePast.Value));
+                            }
                             var confirmations = Math.Min(transaction.Confirmations, header.Confirmations);
-                            var spendable = !immature && confirmations >= schedule.RequiredConfirmations(operatorConfirmations);
+                            var spendable = !immature && confirmations >= schedule.RequiredConfirmations(operatorConfirmations, policyMaturity);
                             block.Status = spendable ? BlockStatus.Confirmed : BlockStatus.Pending;
-                            block.ConfirmationProgress = schedule.Progress(confirmations, operatorConfirmations, immature);
+                            block.ConfirmationProgress = schedule.Progress(confirmations, operatorConfirmations, immature, policyMaturity);
                             block.Reward = reward;
                             block.BitcoinBlake2bCustodialEvidenceVerified = true;
                             block.NotifyBlockConfirmationProgressOnUpdate = !spendable;
                             block.NotifyBlockUnlockedOnUpdate = spendable;
                             ClearDelay(block);
-                            logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight}: wallet category {(immature ? "immature" : "generate")}, confirmations {confirmations}, remaining depth {schedule.Remaining(confirmations, operatorConfirmations)}, status {block.Status}");
+                            logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight}: wallet category {(immature ? "immature" : "generate")}, confirmations {confirmations}, remaining depth {schedule.Remaining(confirmations, operatorConfirmations, policyMaturity)}, status {block.Status}");
                         }
                     }
                     catch(Exception ex) when(ex is JsonException or OverflowException)

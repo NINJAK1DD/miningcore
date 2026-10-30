@@ -50,10 +50,14 @@ public class BitcoinBlake2bPayoutTests : TestBase
             ContractResolver = new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver(),
         }));
         internal JsonRpcError WalletError;
-        internal JObject Header = new() { ["hash"] = Hash, ["height"] = 30, ["confirmations"] = 101 };
+        internal JObject Header = new() { ["hash"] = Hash, ["height"] = 30, ["confirmations"] = 101,
+            ["previousblockhash"] = new string('d', 64) };
+        internal JObject Parent = new() { ["hash"] = new string('d', 64), ["height"] = 29,
+            ["confirmations"] = 102, ["mediantime"] = 1700000000 };
         internal bool HeaderUnavailable;
         internal bool HeaderMalformed;
         internal string Chain = "regtest";
+        internal int? Tip;
         internal int WalletRequests;
         internal string AttestationFailureKind;
         internal bool UseRealContractRpc;
@@ -74,14 +78,15 @@ public class BitcoinBlake2bPayoutTests : TestBase
             if(AttestationFailureKind == "malformed") throw new JsonSerializationException("private daemon credential");
             if(AttestationFailureKind == "rpc") return Task.FromResult(new RpcResponse<JObject>(null, new JsonRpcError(-500, "private daemon credential", null)));
             var coin = (BitcoinBlake2bTemplate) poolConfig.Template;
-            var deployment = Chain == "main" ? BitcoinBlake2bMaturityTests.Deployment(BitcoinBlake2bMaturity.Mainnet, 973439)
-                : new JObject { ["height"] = 130, ["deployments"] = new JObject() };
+            var deployment = Chain == "main" ? BitcoinBlake2bMaturityTests.Deployment(BitcoinBlake2bMaturity.Mainnet, Tip ?? 973439)
+                : new JObject { ["height"] = 130, ["hash"] = new string('c', 64), ["deployments"] = new JObject() };
             deployment["blake2b"] = new JObject { ["height"] = coin.Networks[Chain].Blake2bActivationHeight!.Value, ["active"] = true };
             if(AttestationFailureKind == "deployment") deployment["blake2b"]["height"] = 999;
             return Task.FromResult(new RpcResponse<JObject>(method switch
             {
-                "getnetworkinfo" => new JObject { ["version"] = 290402, ["subversion"] = AttestationFailureKind == "identity" ? "private daemon credential" : "/Satoshi:29.4.2(operator)/Knots:20260508/Miningcore:1/" },
-                "getblockchaininfo" => new JObject { ["chain"] = Chain, ["initialblockdownload"] = AttestationFailureKind == "syncing" },
+                "getnetworkinfo" => new JObject { ["version"] = 290403, ["subversion"] = AttestationFailureKind == "identity" ? "private daemon credential" : "/Satoshi:29.4.3(operator)/Knots:20260508/Miningcore:1/" },
+                "getblockchaininfo" => new JObject { ["chain"] = Chain, ["blocks"] = Tip ?? (Chain == "main" ? 973439 : 130),
+                    ["bestblockhash"] = new string('c', 64), ["initialblockdownload"] = AttestationFailureKind == "syncing" },
                 "getdeploymentinfo" => deployment,
                 _ => throw new InvalidOperationException(method),
             }));
@@ -95,6 +100,9 @@ public class BitcoinBlake2bPayoutTests : TestBase
         }
 
         protected override Task<RpcResponse<JObject>> GetBlockHeaderAsync(string hash, CancellationToken ct) =>
+            hash == new string('c', 64) ? Task.FromResult(new RpcResponse<JObject>(new JObject
+                { ["hash"] = hash, ["height"] = Tip ?? (Chain == "main" ? 973439 : 130), ["confirmations"] = 1 })) :
+            hash == new string('d', 64) ? Task.FromResult(new RpcResponse<JObject>(Parent)) :
             HeaderMalformed ? throw new JsonSerializationException("Malformed header") : Task.FromResult(HeaderUnavailable
                 ? new RpcResponse<JObject>(null, new JsonRpcError(-500, "Unavailable", null)) : new(Header));
 
@@ -106,6 +114,65 @@ public class BitcoinBlake2bPayoutTests : TestBase
             WalletRequests += blocks.Length;
             return Task.FromResult(blocks.Select(_ => new RpcResponse<JToken>(Wallet, WalletError)).ToArray());
         }
+    }
+
+    [Theory]
+    [InlineData(973439, 1819756799, 6480, false)]
+    [InlineData(973440, 1819756799, 6481, true)]
+    [InlineData(979918, 1819756799, 6481, true)]
+    [InlineData(979919, 1819756799, 6481, false)]
+    [InlineData(979919, 1819756799, 25920, false)]
+    [InlineData(979919, 1819756799, 25921, true)]
+    [InlineData(979920, 1819756800, 100, false)]
+    [InlineData(979920, 1819756800, 101, true)]
+    [InlineData(979920, 1819756801, 101, true)]
+    public async Task MainnetReward_SelectsCreationParentPolicyAndTruthfulProgress(int height, long parentMtp, int confirmations, bool mature)
+    {
+        var fixture = await Fixture();
+        fixture.Handler.Chain = "main";
+        fixture.Handler.Tip = height + confirmations - 1;
+        fixture.Handler.Header["height"] = height;
+        fixture.Handler.Header["confirmations"] = confirmations;
+        fixture.Handler.Header["mediantime"] = 1819756801; // own MTP is deliberately irrelevant
+        fixture.Handler.Header["time"] = 1819756801;
+        fixture.Handler.Parent["height"] = height - 1;
+        fixture.Handler.Parent["confirmations"] = confirmations + 1;
+        fixture.Handler.Parent["mediantime"] = parentMtp;
+        fixture.Handler.Wallet["confirmations"] = confirmations;
+        var block = Reward();
+        block.BlockHeight = (ulong) height;
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { block }, CancellationToken.None);
+        Assert.Equal(mature ? BlockStatus.Confirmed : BlockStatus.Pending, block.Status);
+        Assert.True(block.BitcoinBlake2bCustodialEvidenceVerified);
+        var depth = BitcoinBlake2bMaturity.Mainnet.PolicyMaturity((uint) height, parentMtp);
+        Assert.Equal(Math.Min(1.0, (double) confirmations / (depth + 1)), block.ConfirmationProgress, 12);
+    }
+
+    [Theory]
+    [InlineData("missing-mtp")]
+    [InlineData("wrong-height")]
+    [InlineData("wrong-hash")]
+    [InlineData("orphan-parent")]
+    [InlineData("missing-link")]
+    [InlineData("string-mtp")]
+    public async Task UnknownCreationParent_WithholdsEvenGenerateAtOrdinaryMaturity(string fault)
+    {
+        var fixture = await Fixture();
+        fixture.Handler.Chain = "main";
+        switch(fault)
+        {
+            case "missing-mtp": fixture.Handler.Parent.Remove("mediantime"); break;
+            case "wrong-height": fixture.Handler.Parent["height"] = 28; break;
+            case "wrong-hash": fixture.Handler.Parent["hash"] = new string('e', 64); break;
+            case "orphan-parent": fixture.Handler.Parent["confirmations"] = -1; break;
+            case "missing-link": fixture.Handler.Header.Remove("previousblockhash"); break;
+            case "string-mtp": fixture.Handler.Parent["mediantime"] = "1819756800"; break;
+        }
+        var block = Reward();
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { block }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.False(block.BitcoinBlake2bCustodialEvidenceVerified);
+        Assert.Equal(49m, block.Reward);
     }
 
     private static PoolConfig Config() => new()
@@ -432,7 +499,7 @@ public class BitcoinBlake2bPayoutTests : TestBase
             var coin = (BitcoinBlake2bTemplate) fixture.Pool.Config.Template;
             JToken result = current switch
             {
-                "getnetworkinfo" => new JObject { ["version"] = 290402, ["subversion"] = "/Satoshi:29.4.2/Knots:20260508/" },
+                "getnetworkinfo" => new JObject { ["version"] = 290403, ["subversion"] = "/Satoshi:29.4.3/Knots:20260508/" },
                 "getblockchaininfo" => new JObject { ["chain"] = "regtest", ["initialblockdownload"] = false },
                 "getdeploymentinfo" => new JObject { ["height"] = 130, ["deployments"] = new JObject(),
                     ["blake2b"] = new JObject { ["height"] = coin.Networks["regtest"].Blake2bActivationHeight!.Value, ["active"] = true } },

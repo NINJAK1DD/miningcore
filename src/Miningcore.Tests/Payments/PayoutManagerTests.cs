@@ -1136,16 +1136,20 @@ public class PayoutManagerTests
         Assert.Empty(fixture.MessageBus.ReceivedCalls());
     }
 
-    [Fact]
-    public async Task Blake2bClassificationLoad_RotatesBoundedOrphanBatchesWithoutDirectSchemaDependency()
+    [Theory]
+    [InlineData(20000UL, 0L)]
+    [InlineData(51840UL, 0L)]
+    [InlineData(100000UL, 48160L)]
+    public async Task Blake2bClassificationLoad_RotatesBoundedOrphanBatchesWithoutDirectSchemaDependency(ulong tip, long minimumHeight)
     {
         var fixture = CreateFixture();
         fixture.Pool.Template = new BitcoinBlake2bTemplate { Family = CoinFamily.BitcoinBlake2b };
-        fixture.MiningPool.NetworkStats.Returns(new BlockchainStats { BlockHeight = 20_000 });
+        Assert.Equal(2UL * 25920, PayoutManager.Blake2bOrphanReconciliationDepth);
+        fixture.MiningPool.NetworkStats.Returns(new BlockchainStats { BlockHeight = tip });
         var rows = Enumerable.Range(1, 130).Select(id => new Block { Id = id, Status = BlockStatus.Orphaned }).ToArray();
         fixture.BlockRepository.GetPendingBlocksForPoolAsync(fixture.Connection, fixture.Pool.Id).Returns(Array.Empty<Block>());
         fixture.BlockRepository.GetBitcoinBlake2bOrphanedBlocksForReconciliationAsync(fixture.Connection,
-            fixture.Pool.Id, 7_040, Arg.Any<long>(), 64, Arg.Any<CancellationToken>())
+            fixture.Pool.Id, Arg.Is<long>(height => height == minimumHeight), Arg.Any<long>(), 64, Arg.Any<CancellationToken>())
             .Returns(call => rows.Where(x => x.Id > call.ArgAt<long>(3)).Take(64).ToArray());
         var first = await fixture.Manager.LoadBlocksForClassificationAsync(fixture.MiningPool, CancellationToken.None);
         var second = await fixture.Manager.LoadBlocksForClassificationAsync(fixture.MiningPool, CancellationToken.None);

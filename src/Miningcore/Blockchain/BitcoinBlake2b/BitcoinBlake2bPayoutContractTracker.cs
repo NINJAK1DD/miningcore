@@ -11,7 +11,7 @@ public sealed class BitcoinBlake2bPayoutContractTracker
 
     internal void Attest(string poolId, string chain, BitcoinBlake2bMaturity schedule)
     {
-        var observed = $"{chain}:{schedule.Start}:{schedule.Enforce}:{schedule.Release}:{schedule.Maturity}";
+        var observed = $"{chain}:{schedule.Start}:{schedule.Enforce}:{schedule.Release}:{schedule.Maturity}:{schedule.RollingStart}:{schedule.RollingMaturity}:{schedule.Expiry}";
         if(contracts.GetOrAdd(poolId, observed) != observed)
             throw new InvalidOperationException("Bitcoin BLAKE2b payout chain or maturity contract changed; stop and reconcile before restarting");
     }
