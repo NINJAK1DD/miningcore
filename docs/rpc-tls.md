@@ -19,6 +19,21 @@ surfaces as a daemon error. [.NET redirect handling](https://learn.microsoft.com
 otherwise retains custom headers and can resend POST bodies when it
 automatically follows redirects, including to another HTTPS origin.
 
+### REST clients outside this change
+
+Beam explorer, Conceal and Warthog node REST requests use `SimpleRestClient`,
+not the JSON-RPC or generated clients described above. Their current base URLs
+are always plain HTTP and their default HTTP client can follow redirects, even
+when the daemon endpoint sets `ssl: true` or `http2: true`. For Warthog,
+`ssl: true` can protect its WSS subscription while its node REST traffic
+remains plaintext. Keep these REST endpoints on a trusted loopback or private
+path until [REST transport hardening #235](https://github.com/NINJAK1DD/miningcore/issues/235)
+is complete. Warthog's wallet check also places its configured private key in
+the REST URL and can include it in error text; see
+[Warthog key exposure #236](https://github.com/NINJAK1DD/miningcore/issues/236).
+Treat a key exposed through logs or an untrusted network path as compromised and
+replace it through the chain's supported wallet procedure.
+
 The trust configuration includes the operating system trust store available to
 the Miningcore service (inside its container when applicable). On Linux, .NET
 can also use the service account's `CurrentUser\Root` certificate store. For a

@@ -37,6 +37,10 @@ redirects, preventing Ergo/Alephium API-key headers and shared-client POST
 bodies from reaching a redirected origin. Configure the final daemon/proxy URL
 directly. See
 [daemon TLS compatibility and testing](rpc-tls.md).
+Beam explorer, Conceal and Warthog node REST requests still use plain HTTP and
+may follow redirects regardless of `ssl`; see [#235](https://github.com/NINJAK1DD/miningcore/issues/235).
+Warthog wallet-private-key exposure through REST URLs and error text is tracked
+in [#236](https://github.com/NINJAK1DD/miningcore/issues/236).
 
 ## Unreleased (after v0.3.0): native floating-point state on CryptoNote load
 
