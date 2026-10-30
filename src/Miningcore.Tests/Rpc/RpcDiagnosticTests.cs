@@ -832,12 +832,18 @@ public class RpcDiagnosticTests
     }
 
     [Fact]
-    public async Task TlsWarning_RearmsAfterSuccessfulSingleAndBatchRpc()
+    public async Task TlsWarning_RearmsAfterSingleAndBatchHttpResponses()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         using var logs = new CapturedLogs(NLog.LogLevel.Warn);
         await using var server = await Server.Start(async context =>
         {
+            if(context.Request.Path == "/unauthorized")
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            }
+
             using var reader = new StreamReader(context.Request.Body);
             var request = JToken.Parse(await reader.ReadToEndAsync(deadline.Token));
             static JObject Reply(JToken item) => new() { ["id"] = item["id"], ["result"] = "ok" };
@@ -845,8 +851,8 @@ public class RpcDiagnosticTests
             await context.Response.WriteAsync(reply.ToString(Formatting.None), deadline.Token);
         });
 
-        // The same client sees a failed TLS handshake, a decoded response,
-        // and another failure. No certificate or trust-store override is used.
+        // The same client sees failed handshakes, decoded and undecodable HTTP
+        // responses, then later failures. No trust-store override is used.
         var endpoint = server.Endpoint();
         var client = new RpcClient(endpoint, new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
         int Warnings() => logs.Messages.Count(message => message.Contains("\"failure\":\"tls-handshake\"", StringComparison.Ordinal));
@@ -867,12 +873,31 @@ public class RpcDiagnosticTests
         Assert.Equal(2, Warnings());
 
         endpoint.Ssl = false;
+        endpoint.HttpPath = "/unauthorized";
+        Assert.NotNull((await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error);
+        endpoint.HttpPath = null;
+        endpoint.Ssl = true;
+        Assert.Equal("tls-handshake", DiagnosticFailure.Category(
+            (await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error?.InnerException));
+        Assert.Equal(3, Warnings());
+
+        endpoint.Ssl = false;
         Assert.Null(Assert.Single(await client.ExecuteBatchAsync(logs.Logger, deadline.Token,
             new RpcRequest("getnetworkinfo"))).Error);
         endpoint.Ssl = true;
         Assert.Equal("tls-handshake", DiagnosticFailure.Category(
             (await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error?.InnerException));
-        Assert.Equal(3, Warnings());
+        Assert.Equal(4, Warnings());
+
+        endpoint.Ssl = false;
+        endpoint.HttpPath = "/unauthorized";
+        Assert.NotNull(Assert.Single(await client.ExecuteBatchAsync(logs.Logger, deadline.Token,
+            new RpcRequest("getnetworkinfo"))).Error);
+        endpoint.HttpPath = null;
+        endpoint.Ssl = true;
+        Assert.Equal("tls-handshake", DiagnosticFailure.Category(
+            (await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error?.InnerException));
+        Assert.Equal(5, Warnings());
         logs.AssertSafe();
     }
 

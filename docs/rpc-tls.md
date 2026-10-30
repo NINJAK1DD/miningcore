@@ -41,13 +41,20 @@ when the subscription must use TLS. If WSS certificate verification fails,
 Ethereum, Xelis and Warthog continue polling while subscription retries log an
 Error about every five seconds. Shares can still flow during this degraded mode.
 An HTTP TLS transport failure emits a structured Warning once per outage per
-daemon client; a successfully decoded response resets the warning state.
+daemon client; receiving an HTTP response resets the warning state even when
+the response body is invalid JSON-RPC. Overlapping requests can produce an
+additional warning if an earlier failure completes after a successful response.
 Alephium startup checks also warn once per outage. WSS emits an Error for each
 failed subscription attempt. The fixed `failure: "tls-handshake"` category
 means the handshake did not complete: certificate rejection, protocol mismatch,
 or a connection dropped during the handshake can produce it on any platform.
+The shared failure classifier also affects Stratum and payment diagnostic
+summaries when a TLS failure is wrapped by another exception.
 Inspect daemon trust, name, validity, network and protocol settings without
 copying credentials into logs.
+An expired certificate may not be reported until a pooled TLS connection is
+replaced and a new handshake occurs; monitor certificate expiry independently
+of Miningcore logs.
 
 No new application trust override or insecure-skip option is introduced.
 Platform TLS protocol defaults are retained. Certificate revocation is not

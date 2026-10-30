@@ -217,6 +217,9 @@ public class RpcClient
             // send request
             using(var response = await httpClient.SendAsync(request, ct))
             {
+                // A received HTTP response proves this handshake completed, even
+                // if its body cannot be decoded as JSON-RPC (for example, a 401).
+                Volatile.Write(ref tlsWarningEmitted, 0);
                 // read response
                 var responseContent = await response.Content.ReadAsStringAsync(ct);
 
@@ -227,9 +230,6 @@ public class RpcClient
 
                 var decoded = ReadResponse(responseContent, response.StatusCode);
                 var result = DecodeEnvelope(decoded, serializer);
-                // A decoded response ends the prior TLS outage. Later failures
-                // should be visible without warning on every retry.
-                Volatile.Write(ref tlsWarningEmitted, 0);
                 messageBus.SendTelemetry(poolId, TelemetryCategory.RpcRequest, RpcDiagnostics.Method(method), sw.Elapsed, response.IsSuccessStatusCode);
 
                 return result;
@@ -278,6 +278,8 @@ public class RpcClient
             // send request
             using(var response = await httpClient.SendAsync(request, ct))
             {
+                // Re-arm on HTTP response receipt, regardless of body decoding.
+                Volatile.Write(ref tlsWarningEmitted, 0);
                 // deserialize response
                 var responseContent = await response.Content.ReadAsStringAsync(ct);
 
@@ -290,8 +292,6 @@ public class RpcClient
                 if(decoded is not JArray items)
                     throw new JsonSerializationException("JSON-RPC batch response contract is incompatible");
                 var result = items.Select(item => DecodeEnvelope(item, serializer)).ToArray();
-                Volatile.Write(ref tlsWarningEmitted, 0);
-
                 messageBus.SendTelemetry(poolId, TelemetryCategory.RpcRequest, "batch",
                     sw.Elapsed, response.IsSuccessStatusCode);
 
