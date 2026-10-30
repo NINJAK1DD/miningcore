@@ -1,0 +1,49 @@
+name: Source container dependency cache
+
+on:
+  push:
+    branches: [ dev ]
+    paths:
+      - 'Dockerfile'
+      - 'scripts/release/container-apt-install.sh'
+      - '.github/workflows/source-container-cache.yml'
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-container-dependency-cache-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependencies:
+    name: Refresh source container dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - name: Refresh and export only dependency layers
+        timeout-minutes: 13
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          target: dependency-cache
+          outputs: type=cacheonly
+          push: false
+          pull: true
+          # Refresh archive/package availability; never certify it from a cache hit.
+          no-cache: true
+          build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420
+          cache-to: type=gha,mode=max,scope=source-container-dependencies,timeout=1m
