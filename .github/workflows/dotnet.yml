@@ -123,6 +123,8 @@ jobs:
         scripts/release/run-warning-audited-dotnet.sh
         scripts/release/test-cryptonote-abi-safety.sh
         scripts/release/test-linux-native-inventory.sh
+        scripts/release/test-native-load-fenv.sh
+        scripts/release/test-native-load-fenv-regressions.sh
         scripts/release/test-linux-native-symbol-contracts.sh
         scripts/release/test-native-cpu-portability.sh
         scripts/release/test-randomx-cpu-os-state.sh
@@ -138,6 +140,14 @@ jobs:
     - name: Test Linux native symbol contracts
       shell: bash
       run: bash scripts/release/test-linux-native-symbol-contracts.sh
+
+    - name: Test native floating-point load gate
+      shell: bash
+      run: bash scripts/release/test-native-load-fenv-regressions.sh
+
+    - name: Test floating-point diagnostic reporting
+      timeout-minutes: 1
+      run: python3 -B scripts/release/test-floating-point-diagnostics.py
 
     - name: Test warning-free build audit
       shell: bash
@@ -395,6 +405,11 @@ jobs:
       shell: bash
       run: bash scripts/release/test-native-cpu-portability.sh src/Miningcore/bin/Debug/net10.0 --avx2-userspace
 
+    - name: Test native load floating-point state
+      if: runner.os == 'Linux'
+      shell: bash
+      run: bash scripts/release/test-native-load-fenv.sh src/Miningcore/bin/Debug/net10.0 --cryptonote-vectors
+
     - name: Test RandomX CPU and OS dispatch
       shell: bash
       run: bash scripts/release/test-randomx-cpu-os-state.sh "${TMPDIR:-/tmp}"
@@ -424,6 +439,7 @@ jobs:
         echo "MININGCORE_TEST_XELISD=$xelis_root/x86_64-unknown-linux-gnu/xelis_daemon" >> "$GITHUB_ENV"
 
     - name: Test
+      id: linux_full_suite
       shell: bash
       env:
         LD_LIBRARY_PATH: ${{ github.workspace }}/src/Miningcore/bin/Debug/net10.0:${{ github.workspace }}/src/Miningcore.Tests/bin/Debug/net10.0
@@ -432,6 +448,11 @@ jobs:
         dotnet test --logger:"console;verbosity=detailed" --logger:"trx;LogFileName=linux-full.trx" \
           --results-directory "$GITHUB_WORKSPACE/build/ci-tests" --no-build --verbosity normal src
         python3 scripts/release/test-native-family-evidence.py --self-test "$GITHUB_WORKSPACE/build/ci-tests/linux-full.trx"
+
+    - name: Report captured floating-point diagnostics
+      if: ${{ always() && steps.linux_full_suite.outcome != 'skipped' }}
+      timeout-minutes: 1
+      run: python3 -B scripts/release/report-floating-point-diagnostics.py "$GITHUB_WORKSPACE/build/ci-tests/linux-full.trx"
 
   pps-postgres-compatibility:
     name: PPS schema on PostgreSQL ${{ matrix.postgres }}

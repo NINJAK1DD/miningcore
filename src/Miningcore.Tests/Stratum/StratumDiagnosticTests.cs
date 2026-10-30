@@ -32,6 +32,7 @@ using Miningcore.Diagnostics;
 using Miningcore.Rpc;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
+using Miningcore.Mining;
 using Miningcore.Nicehash;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
@@ -515,10 +516,12 @@ public class StratumDiagnosticTests
         var pool = new AuthorizationPool(container, logs.Logger, cache, authorized, ban);
         var worker = new BitcoinWorkerContext { UserAgent = Hostile };
         worker.Init(1, null, new StandardClock());
+        var authorization = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
         var server = new DiagnosticServer(container, Substitute.For<IMessageBus>(), logs.Logger)
         {
             Initialize = connection => connection.SetContext(worker),
-            Handler = pool.Authorize,
+            Handler = (connection, request, ct) =>
+                TrackAuthorization(() => pool.Authorize(connection, request, ct), authorization),
         };
         await using(var tcp = await TcpSession.Start(logs.Logger, server))
         {
@@ -541,10 +544,17 @@ public class StratumDiagnosticTests
                 Assert.Equal(authorized, response["result"].Value<bool>());
                 if(!authorized)
                     Assert.Equal((int) StratumError.UnauthorizedWorker, response["error"]["code"].Value<int>());
+                // The reply can arrive before post-reply assignment processing
+                // finishes. Closing now can cancel it and retire authorization.
+                // Retirement on cancellation is intended production behavior.
+                await authorization.Task.Unwrap().WaitAsync(Deadline);
             }
-            // Disconnect cleanup clears authorization. Check the handler's result
-            // while the successful session is still open, before disposing TCP.
             Assert.Equal(authorized, worker.IsAuthorized);
+        }
+        if(!ban)
+        {
+            Assert.Equal(0, server.Errors);
+            Assert.Equal(1, server.Completions);
         }
         Assert.Equal(Secret, worker.Miner);
         Assert.Equal(Hostile.Trim(), worker.Worker);
@@ -554,6 +564,165 @@ public class StratumDiagnosticTests
         pool.Bans.Received(ban ? 1 : 0).Ban(IPAddress.Loopback, TimeSpan.FromSeconds(10));
         if(ban)
             Assert.Contains(logs.Messages, x => x.Contains("Banning unauthorized worker (identity withheld)", StringComparison.Ordinal));
+        logs.AssertSafe();
+    }
+
+    // One-request test handoff: later invocations cannot replace the first task.
+    private static Task TrackAuthorization(Func<Task> handler, TaskCompletionSource<Task> authorization)
+    {
+        Task operation;
+        try { operation = handler(); }
+        catch(Exception failure) { operation = Task.FromException(failure); }
+        // Both dispatch and the waiter observe this same task. The handoff never
+        // faults, so the ban path creates no unobserved faulted completion task.
+        authorization.TrySetResult(operation);
+        return operation;
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AuthorizationTaskHandoff_PreservesHandlerFailureAndToleratesRepeatedSignal(bool synchronous)
+    {
+        var failure = new InvalidOperationException("authorization failed");
+        var authorization = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var dispatch = TrackAuthorization(() => synchronous ? throw failure : Task.FromException(failure), authorization);
+        Assert.True(authorization.Task.IsCompletedSuccessfully);
+        Assert.Same(dispatch, await authorization.Task);
+        Assert.Same(failure, await Record.ExceptionAsync(() => authorization.Task.Unwrap().WaitAsync(Deadline)));
+        Assert.Same(failure, await Record.ExceptionAsync(() => dispatch));
+        // A second invocation must not replace the first task or manufacture an
+        // InvalidOperationException from SetResult while reporting the handler.
+        await TrackAuthorization(() => Task.CompletedTask, authorization);
+        Assert.Same(dispatch, await authorization.Task);
+    }
+
+    [Fact]
+    public async Task Tcp_BitcoinAuthorization_PostReplyFailureReachesWaiterAndDispatch()
+    {
+        using var logs = new Capture();
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        builder.RegisterInstance(Substitute.For<IBlockRepository>());
+        builder.RegisterInstance(Substitute.For<IShareRepository>());
+        using var container = builder.Build();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var pool = new AuthorizationPool(container, logs.Logger, cache, true, false);
+        var worker = new BitcoinWorkerContext { UserAgent = Hostile };
+        worker.Init(1, null, new StandardClock());
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var authorization = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failure = new InvalidOperationException(Hostile);
+        pool.BeforeAssignmentReturn = async () =>
+        {
+            await release.Task.WaitAsync(Deadline);
+            throw failure;
+        };
+        StratumConnection observed = null;
+        var server = new DiagnosticServer(container, Substitute.For<IMessageBus>(), logs.Logger)
+        {
+            Initialize = value => { observed = value; value.SetContext(worker); },
+            Handler = (connection, request, ct) =>
+                TrackAuthorization(() => pool.DispatchRequest(connection, request, ct), authorization),
+        };
+        await using(var tcp = await TcpSession.Start(logs.Logger, server))
+        {
+            try
+            {
+                await tcp.Send(new JObject { ["id"] = 1, ["method"] = "mining.authorize",
+                    ["params"] = new JArray(Secret, Hostile) }.ToString(Formatting.None) + "\n");
+                Assert.True(JObject.Parse(await tcp.Reader.ReadLineAsync().WaitAsync(Deadline))["result"].Value<bool>());
+            }
+            finally { release.TrySetResult(); }
+            Assert.Same(failure, await Record.ExceptionAsync(() => authorization.Task.Unwrap().WaitAsync(Deadline)));
+            Assert.True(authorization.Task.IsCompletedSuccessfully);
+            await tcp.Dispatch.WaitAsync(Deadline);
+        }
+        Assert.Equal(1, server.Errors);
+        Assert.Equal(0, server.Completions);
+        Assert.True(observed.IsDisconnectRequested);
+        Assert.Single(logs.Records.Where(record => record["event"].Value<string>() ==
+            nameof(StratumDiagnostics.Event.AssignmentPublicationFailure)));
+        Assert.Equal(1, worker.AssignmentGate.CurrentCount);
+        pool.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
+        logs.AssertSafe();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Tcp_BitcoinAuthorization_PeerEofPinsAssignmentCancellationBoundary(bool beforeEntry)
+    {
+        using var logs = new Capture();
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(new JsonSerializerSettings());
+        builder.RegisterInstance(Substitute.For<IBlockRepository>());
+        builder.RegisterInstance(Substitute.For<IShareRepository>());
+        using var container = builder.Build();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var pool = new AuthorizationPool(container, logs.Logger, cache, true, false);
+        var worker = new BitcoinWorkerContext { UserAgent = Hostile };
+        worker.Init(1, null, new StandardClock());
+        var job = new DiagnosticBitcoinJob();
+        worker.AddJob(job, 1);
+        var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var acquired = false;
+        pool.AssignmentWaiting = () => reached.TrySetResult();
+        pool.AssignmentCancelled = () => cancelled.TrySetResult();
+        pool.BeforeAssignmentReturn = async () =>
+        {
+            acquired = true;
+            reached.TrySetResult();
+            await cancelled.Task.WaitAsync(Deadline);
+        };
+        StratumConnection connection = null;
+        var server = new DiagnosticServer(container, Substitute.For<IMessageBus>(), logs.Logger)
+        {
+            Initialize = value => { connection = value; value.SetContext(worker); },
+            Handler = pool.DispatchRequest,
+        };
+        await using(var tcp = await TcpSession.Start(logs.Logger, server))
+        {
+            var held = false;
+            try
+            {
+                if(beforeEntry)
+                {
+                    Assert.True(await worker.AssignmentGate.WaitAsync(Deadline));
+                    held = true;
+                }
+                await tcp.Send(new JObject { ["id"] = 1, ["method"] = "mining.authorize",
+                    ["params"] = new JArray(Secret, Hostile) }.ToString(Formatting.None) + "\n");
+                Assert.True(JObject.Parse(await tcp.Reader.ReadLineAsync().WaitAsync(Deadline))["result"].Value<bool>());
+                await reached.Task.WaitAsync(Deadline);
+                Assert.Same(job, worker.GetJob(job.JobId));
+                tcp.Client.Client.Shutdown(SocketShutdown.Send);
+                await cancelled.Task.WaitAsync(Deadline);
+                // Keep the gate held until the cancelled waiter has drained;
+                // releasing on the cancellation signal alone would race it.
+                if(beforeEntry)
+                    await tcp.Dispatch.WaitAsync(Deadline);
+            }
+            finally
+            {
+                if(held)
+                    worker.AssignmentGate.Release();
+            }
+            await tcp.Dispatch.WaitAsync(Deadline);
+            // Pre-entry cleanup currently retains the flag; clearing it in the
+            // future is allowed. Both paths must disconnect and close jobs.
+            if(!beforeEntry)
+                Assert.False(worker.IsAuthorized);
+            Assert.Equal(!beforeEntry, acquired);
+            Assert.True(connection.IsDisconnectRequested);
+            Assert.Null(worker.GetJob(job.JobId));
+            Assert.Throws<BitcoinJobRegistryClosedException>(() => worker.AddJob(job, 1));
+            Assert.Equal(1, worker.AssignmentGate.CurrentCount);
+        }
+        Assert.Equal(0, server.Errors);
+        Assert.Equal(1, server.Completions);
+        pool.Bans.DidNotReceiveWithAnyArgs().Ban(default, default);
         logs.AssertSafe();
     }
 
@@ -1054,9 +1223,17 @@ public class StratumDiagnosticTests
         return reservation;
     }
 
+    private sealed class DiagnosticBitcoinJob : BitcoinJob
+    {
+        internal DiagnosticBitcoinJob() => JobId = "diagnostic-job";
+    }
+
     private sealed class AuthorizationPool : BitcoinPool
     {
         private readonly bool authorized;
+        internal Action AssignmentWaiting;
+        internal Action AssignmentCancelled;
+        internal Func<Task> BeforeAssignmentReturn;
         public string Password { get; private set; }
         public IBanManager Bans { get; } = Substitute.For<IBanManager>();
         public AuthorizationPool(IComponentContext context, ILogger log, IMemoryCache cache, bool authorized, bool ban)
@@ -1074,6 +1251,31 @@ public class StratumDiagnosticTests
         }
         public Task Authorize(StratumConnection connection, JsonRpcRequest request, CancellationToken ct) =>
             OnAuthorizeAsync(connection, new Timestamped<JsonRpcRequest>(request, DateTimeOffset.UtcNow), ct);
+        public Task DispatchRequest(StratumConnection connection, JsonRpcRequest request, CancellationToken ct) =>
+            OnRequestAsync(connection, new Timestamped<JsonRpcRequest>(request, DateTimeOffset.UtcNow), ct);
+        // Waiting fires only for pending acquisition; Cancelled observes the
+        // token through acquisition and the hook. BeforeAssignmentReturn owns
+        // the lease, before RunAssignmentAsync activates it and checks the token.
+        internal override async ValueTask<WorkerAssignmentLease> EnterAssignmentAsync(StratumConnection connection,
+            CancellationToken ct, bool skipIfBusy = false)
+        {
+            using var registration = AssignmentCancelled != null ? ct.Register(AssignmentCancelled) : default;
+            var wait = base.EnterAssignmentAsync(connection, ct, skipIfBusy);
+            if(!wait.IsCompleted)
+                AssignmentWaiting?.Invoke();
+            var lease = await wait;
+            try
+            {
+                if(BeforeAssignmentReturn != null)
+                    await BeforeAssignmentReturn();
+                return lease;
+            }
+            catch
+            {
+                lease?.Release();
+                throw;
+            }
+        }
         public void RejectInvalidShares(StratumConnection connection)
         {
             poolConfig.Banning = new PoolShareBasedBanningConfig

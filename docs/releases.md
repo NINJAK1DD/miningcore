@@ -88,6 +88,31 @@ rebuild. `ProcessShare` and `ProcessShareInternal` return a share/template tuple
 `DifficultyToTarget(double)` is replaced by the exact `BigInteger` API. See the
 [extension migration table](xelis-target-validation.md#xelis-extension-api-changes).
 
+## Unreleased (after v0.3.0): native floating-point state on CryptoNote load
+
+CryptoNote's Linux shared-library link no longer passes `-Ofast` to the linker
+driver. GCC 12 and earlier, and affected Clang versions, can otherwise add startup
+code that enables FTZ/DAZ on the thread that first loads the library, including a
+managed thread making its first CryptoNote P/Invoke. Subnormal inputs or results
+can then become zero, affecting later arithmetic on that thread and threads it
+spawns. Ordinary configured mining difficulties have not been shown to fail.
+
+This affects earlier Ubuntu 22.04 compatibility archives and source builds with
+GCC 11/12, including Ubuntu 22.04 and Debian 12. Standard Ubuntu 24.04/26.04 GCC
+builds and the Ubuntu 26.04 release container do not have this startup mechanism:
+[GCC 13 changed shared-object fast-math startup behavior](https://gcc.gnu.org/gcc-13/changes.html).
+Custom toolchains still require validation. Windows prebuilt libraries are unchanged.
+
+Replace an affected installation with a fixed archive for the same supported host,
+or rebuild the native libraries from the fixed source using the documented build
+driver, then restart Miningcore to retire threads with inherited state. Do not mix
+archives built for different Ubuntu/glibc targets. Object optimization and hashing
+code are unchanged; `-s` now lives explicitly in `LDFLAGS`, preserving stripped
+CryptoNote artifacts. The Linux load/unload gate checks all 25 shipped libraries
+in eight floating-point modes before managed tests. This does not establish that
+every subsequent exported hashing call preserves state; see the
+[native contract and validation limits](native-cpu-portability.md#floating-point-environment-at-native-library-load).
+
 ## Unreleased (after v0.3.0): Ergo exact proof and network difficulty
 
 Ergo now derives proof difficulty, candidate credit limits and accepted-share
@@ -1502,8 +1527,12 @@ the unversioned `libzmq.so` symlink supplied by that package; `libzmq5` alone su
 including `libsodium-dev`, into the final image. This accepted size tradeoff keeps the loader name
 distro-managed instead of creating an application-owned symlink; the package list must not be read
 as guaranteeing that final images contain no development headers. Every release-affecting pull
-request builds both the source and packaged Dockerfiles, validates the current apt package names and
-`ldd -r` provider closure, and performs a managed ZeroMQ load inside each final image. Apt package
+request builds both the source and packaged Dockerfiles, checks `ldd -r` provider closure,
+and performs a managed ZeroMQ load inside each final image. An uncached dependency build
+validates the current apt package names; an APT layer cache hit validates only the previously
+installed snapshot, not current archive/package availability. The source dependency warmer
+refreshes with `pull` and `no-cache` on relevant pushes to `dev` and weekly on the default
+branch once merged. Apt package
 names are not OCI image references and therefore remain outside the digest-based release image-pin
 monitor.
 
