@@ -40,11 +40,14 @@ subscriptions select `ws://` or `wss://` from `ssl` alone. Set `ssl: true`
 when the subscription must use TLS. If WSS certificate verification fails,
 Ethereum, Xelis and Warthog continue polling while subscription retries log an
 Error about every five seconds. Shares can still flow during this degraded mode.
-An HTTP TLS transport failure emits a one-time structured Warning with
-`failure: "tls-handshake"`; WSS emits an Error with the same category. On
-Windows this category also covers TLS protocol negotiation failure, so it does
-not identify a specific certificate problem. Inspect daemon trust, name,
-validity and protocol settings without copying credentials into logs.
+An HTTP TLS transport failure emits a structured Warning once per outage per
+daemon client; a successfully decoded response resets the warning state.
+Alephium startup checks also warn once per outage. WSS emits an Error for each
+failed subscription attempt. The fixed `failure: "tls-handshake"` category
+means the handshake did not complete: certificate rejection, protocol mismatch,
+or a connection dropped during the handshake can produce it on any platform.
+Inspect daemon trust, name, validity, network and protocol settings without
+copying credentials into logs.
 
 No new application trust override or insecure-skip option is introduced.
 Platform TLS protocol defaults are retained. Certificate revocation is not

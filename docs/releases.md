@@ -30,8 +30,9 @@ shared client, plus the independent Ergo and Alephium HTTP clients, are affected
 Endpoints with expired, untrusted or mismatched
 certificates must renew/replace them or provision their independently verified
 private CA into the service/container trust store before upgrading. Restart to
-retire existing pooled connections. No database migration or insecure-skip
-option is added. See [daemon TLS compatibility and testing](rpc-tls.md).
+retire existing pooled connections. Look for `tls-handshake` in structured RPC
+Warning/Error diagnostics if a daemon fails to reconnect. No database migration
+or insecure-skip option is added. See [daemon TLS compatibility and testing](rpc-tls.md).
 
 ## Unreleased (after v0.3.0): native floating-point state on CryptoNote load
 

@@ -21,12 +21,18 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Autofac;
+using Miningcore.Blockchain;
+using AlephiumClient = Miningcore.Blockchain.Alephium.AlephiumClient;
+using AlephiumJobManager = Miningcore.Blockchain.Alephium.AlephiumJobManager;
+using SelfClique = Miningcore.Blockchain.Alephium.SelfClique;
 using Miningcore.Configuration;
 using Miningcore.Diagnostics;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Messaging;
 using Miningcore.Notifications.Messages;
+using Miningcore.Time;
 using Miningcore.Rpc;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -823,6 +829,107 @@ public class RpcDiagnosticTests
             RpcDiagnostics.Stage.Failure, failure: wrapped);
         logs.AssertSafe();
         Assert.Contains("\"failure\":\"tls-handshake\"", Assert.Single(logs.Messages));
+    }
+
+    [Fact]
+    public async Task TlsWarning_RearmsAfterSuccessfulSingleAndBatchRpc()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var logs = new CapturedLogs(NLog.LogLevel.Warn);
+        await using var server = await Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JToken.Parse(await reader.ReadToEndAsync(deadline.Token));
+            static JObject Reply(JToken item) => new() { ["id"] = item["id"], ["result"] = "ok" };
+            var reply = request is JArray items ? (JToken) new JArray(items.Select(Reply)) : Reply(request);
+            await context.Response.WriteAsync(reply.ToString(Formatting.None), deadline.Token);
+        });
+
+        // The same client sees a failed TLS handshake, a decoded response,
+        // and another failure. No certificate or trust-store override is used.
+        var endpoint = server.Endpoint();
+        var client = new RpcClient(endpoint, new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
+        int Warnings() => logs.Messages.Count(message => message.Contains("\"failure\":\"tls-handshake\"", StringComparison.Ordinal));
+
+        endpoint.Ssl = true; // HTTPS against the local HTTP-only listener.
+        for(var i = 0; i < 2; i++)
+        {
+            var failed = await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token);
+            Assert.Equal("tls-handshake", DiagnosticFailure.Category(failed.Error?.InnerException));
+        }
+        Assert.Equal(1, Warnings());
+
+        endpoint.Ssl = false;
+        Assert.Null((await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error);
+        endpoint.Ssl = true;
+        Assert.Equal("tls-handshake", DiagnosticFailure.Category(
+            (await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error?.InnerException));
+        Assert.Equal(2, Warnings());
+
+        endpoint.Ssl = false;
+        Assert.Null(Assert.Single(await client.ExecuteBatchAsync(logs.Logger, deadline.Token,
+            new RpcRequest("getnetworkinfo"))).Error);
+        endpoint.Ssl = true;
+        Assert.Equal("tls-handshake", DiagnosticFailure.Category(
+            (await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error?.InnerException));
+        Assert.Equal(3, Warnings());
+        logs.AssertSafe();
+    }
+
+    [Fact]
+    public async Task AlephiumStartupTlsWarning_RearmsAfterSuccessfulDaemonResponse()
+    {
+        using var logs = new CapturedLogs(NLog.LogLevel.Warn);
+        using var http = new HttpClient();
+        var tls = new HttpRequestException(HttpRequestError.SecureConnectionError, UnsafeText, null);
+        var client = new ScriptedAlephiumClient(http,
+            () => Task.FromException<SelfClique>(tls),
+            () => Task.FromException<SelfClique>(tls),
+            () => Task.FromException<SelfClique>(new IOException(UnsafeText)),
+            () => Task.FromResult(new SelfClique { SelfReady = false, Synced = false }),
+            () => Task.FromException<SelfClique>(tls));
+        var manager = new AlephiumTlsManagerProbe(logs.Logger, client);
+        int Warnings() => logs.Messages.Count(message => message.Contains("\"failure\":\"tls-handshake\"", StringComparison.Ordinal));
+
+        Assert.False(await manager.Healthy());
+        Assert.False(await manager.Healthy());
+        Assert.False(await manager.Healthy());
+        Assert.Equal(1, Warnings());
+        Assert.False(await manager.Healthy()); // Decoded, but not yet synced.
+        Assert.False(await manager.Healthy());
+        Assert.Equal(2, Warnings());
+        Assert.All(logs.Messages, message =>
+        {
+            Assert.StartsWith("RPC consumer diagnostic ", message);
+            Assert.DoesNotContain(Secret, message);
+            Assert.DoesNotContain(UnsafeText, message);
+            Assert.DoesNotContain(message, c => c is '\r' or '\n');
+            Assert.True(message.Length < 512);
+            Assert.Equal("tls-handshake", JObject.Parse(message["RPC consumer diagnostic ".Length..])
+                ["failure"]?.Value<string>());
+        });
+    }
+
+    private sealed class ScriptedAlephiumClient(HttpClient http, params Func<Task<SelfClique>>[] replies)
+        : AlephiumClient("http://localhost", http)
+    {
+        private readonly Queue<Func<Task<SelfClique>>> pending = new(replies);
+        public override Task<SelfClique> GetInfosSelfCliqueAsync(CancellationToken cancellationToken)
+            => pending.Dequeue()();
+    }
+
+    private sealed class AlephiumTlsManagerProbe : AlephiumJobManager
+    {
+        public AlephiumTlsManagerProbe(NLog.ILogger log, AlephiumClient client)
+            : base(Substitute.For<IComponentContext>(), Substitute.For<IMessageBus>(),
+                new StandardClock(), Substitute.For<IExtraNonceProvider>())
+        {
+            logger = log;
+            typeof(AlephiumJobManager).GetField("rpc", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(this, client);
+        }
+
+        public Task<bool> Healthy() => AreDaemonsHealthyAsync(CancellationToken.None);
     }
 
     [Fact]
