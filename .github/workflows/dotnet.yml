@@ -74,6 +74,7 @@ jobs:
       run: |
         python3 scripts/regtest/test-knots-maturity-gate.py
         python3 scripts/regtest/test-knots-rolling-maturity-gate.py
+        python3 scripts/regtest/test-knots-lab-helpers.py
 
     - name: Enforce workflow action pins
       shell: bash
@@ -131,6 +132,8 @@ jobs:
         scripts/release/test-ubuntu-source-build.sh
         scripts/release/update-config-diagnostics-snapshot.sh
         scripts/regtest/run-knots-29.4.3-lab.sh
+        scripts/regtest/knots-lab-helpers.sh
+        scripts/regtest/validate-knots-29.4.2-maturity.sh
         scripts/regtest/validate-knots-29.4.3-maturity.sh
 
     - name: Test Linux native symbol contracts

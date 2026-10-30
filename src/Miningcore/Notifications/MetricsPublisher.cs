@@ -72,12 +72,28 @@ public class MetricsPublisher : StartupGatedBackgroundService
     private Counter ppsLiabilityCounter;
     private Counter mergedMiningAttributionRejectionCounter;
     private Counter unsupportedShareRelayWireFormatCounter;
+    private Counter blake2bOrphanScannedCounter;
+    private Counter blake2bOrphanSweepCounter;
+    private Gauge blake2bOrphanCursorGauge;
+    private Gauge blake2bOrphanOldestBatchHeightGauge;
+    private Gauge blake2bOrphanNearHorizonBatchGauge;
     private readonly object sharePersistenceOverflowPublishGate = new();
     private long publishedPrimaryOverflowCount;
     private long publishedEmergencyOverflowCount;
 
     private void CreateMetrics(IMetricFactory metricFactory)
     {
+        var reconciliationLabels = new[] { "pool" };
+        blake2bOrphanScannedCounter = metricFactory.CreateCounter("miningcore_blake2b_orphan_rows_scanned_total",
+            "Orphan row visits in bounded reconciliation batches, not successful settlements", new CounterConfiguration { LabelNames = reconciliationLabels });
+        blake2bOrphanSweepCounter = metricFactory.CreateCounter("miningcore_blake2b_orphan_sweeps_total",
+            "Completed keyset sweeps of the eligible orphan window", new CounterConfiguration { LabelNames = reconciliationLabels });
+        blake2bOrphanCursorGauge = metricFactory.CreateGauge("miningcore_blake2b_orphan_cursor",
+            "Last visited orphan ID in the current keyset sweep", new GaugeConfiguration { LabelNames = reconciliationLabels });
+        blake2bOrphanOldestBatchHeightGauge = metricFactory.CreateGauge("miningcore_blake2b_orphan_batch_oldest_height",
+            "Oldest height in the last scan batch, zero for an empty batch; not the global backlog minimum", new GaugeConfiguration { LabelNames = reconciliationLabels });
+        blake2bOrphanNearHorizonBatchGauge = metricFactory.CreateGauge("miningcore_blake2b_orphan_batch_near_horizon_rows",
+            "Rows in the last batch within 2592 blocks of the recovery horizon", new GaugeConfiguration { LabelNames = reconciliationLabels });
         difficultyAssignmentCounter = metricFactory.CreateCounter("miningcore_difficulty_assignment_total",
             "Candidate assignment compatibility events",
             new CounterConfiguration { LabelNames = new[] { "pool", "outcome" } });
@@ -331,6 +347,15 @@ public class MetricsPublisher : StartupGatedBackgroundService
                 msg.AuxiliaryPoolId).Inc();
     }
 
+    internal void OnBlake2bReconciliationTelemetry(BitcoinBlake2bReconciliationTelemetry msg)
+    {
+        blake2bOrphanScannedCounter.WithLabels(msg.PoolId).Inc(msg.Rows);
+        if(msg.SweepCompleted) blake2bOrphanSweepCounter.WithLabels(msg.PoolId).Inc();
+        blake2bOrphanCursorGauge.WithLabels(msg.PoolId).Set(msg.Cursor);
+        blake2bOrphanOldestBatchHeightGauge.WithLabels(msg.PoolId).Set(msg.OldestBatchHeight);
+        blake2bOrphanNearHorizonBatchGauge.WithLabels(msg.PoolId).Set(msg.NearHorizonRows);
+    }
+
     private void OnShareAccountingTelemetry(ShareAccountingTelemetryEvent msg)
     {
         var outcome = msg.Outcome switch
@@ -460,10 +485,16 @@ public class MetricsPublisher : StartupGatedBackgroundService
                     ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "MetricsPublisher.OnUnsupportedShareRelayWireFormat", failure: ex)))
                 .Select(_ => Unit.Default);
 
+            var blake2bReconciliation = messageBus.Listen<BitcoinBlake2bReconciliationTelemetry>()
+                .ObserveOn(TaskPoolScheduler.Default)
+                .Do(x => Guard(() => OnBlake2bReconciliationTelemetry(x),
+                    ex => RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "MetricsPublisher.OnBlake2bReconciliationTelemetry", failure: ex)))
+                .Select(_ => Unit.Default);
+
             var processing = Observable.Merge(telemetryEvents, hashrateNotifications,
                     auxiliaryTemplateRpcTelemetry, auxiliaryTemplateStateTelemetry,
                     shareAccountingTelemetry, mergedMiningAttributionRejected,
-                    unsupportedShareRelayWireFormat)
+                    unsupportedShareRelayWireFormat, blake2bReconciliation)
                 .ToTask(ct);
             SignalStartupReady();
             return processing;

@@ -55,8 +55,18 @@ Rolling `active` and GBT `long_coinbase_maturity` remain present after expiry.
 They cannot unlock an individual reward.
 
 Separate chain/deployment RPCs may observe ordinary advancement across this
-transition. Miningcore verifies each observation's hash/height using active
-block-index headers. An orphaned snapshot withholds that cycle. The process binds
+transition. Miningcore permits at most six blocks of snapshot distance, verifies
+hash/height and immutable ancestry, then rechecks the higher snapshot's active
+membership. This proves that the two observations share a branch at the final
+read; independent positive confirmations on incompatible branches cannot attest.
+Identical snapshots require one header RPC; differing snapshots cost at most
+eight. A changing, incompatible or distant snapshot withholds the cycle with
+reason `ChainChanged (705)`, separately from `RpcUnavailable (701)` and contract
+drift. These observations do not promise an atomic view of subsequent RPCs.
+Startup chain attestation retries the complete identity/chain/deployment/header
+snapshot up to three times, waiting one and two seconds, honoring cancellation.
+Successful contradictory identity, chain or contract evidence fails immediately.
+The process binds
 the complete network schedule, including rolling constants, rather than binding
 the transient historical/rolling RPC phase. Configuration or chain changes still
 require a stop/reconcile/restart. Mining work is re-attested on the first poll
@@ -64,10 +74,17 @@ after a 30-second cache expires and following RPC outages; every GBT's rules are
 checked against its own height. Operators must keep RPC local/authenticated.
 RPC identity checks are compatibility gates, not cryptographic authentication.
 
-Payout classification reads the wallet, then the creation header, its linked
-parent, and the creation header again. Hash, height, active membership and parent
-MTP must match. The effective confirmation count is the smaller of fresh header
-and wallet counts. No creation-MTP result is cached across cycles or restarts.
+Payout classification reads fresh wallet data and a fresh creation header every
+cycle. On a cache miss it also reads the linked parent and the creation header
+again. The latter detects a reorg during the parent RPC that leaves the parent
+active while orphaning its child. Hash, height, active membership and parent MTP
+must match before caching. The process-wide LRU holds at most 32,768 immutable
+creation hash/height/parent/MTP entries across handler recreation. A warm pending
+reward needs one header RPC instead of three. Confirmations, active membership,
+wallet category, spendability and accounting decisions are never cached.
+Conflicting cached links withhold classification; proven orphaning or confirmation
+removes the entry. Process restart clears the cache. The effective confirmation
+count remains the smaller of fresh header and wallet counts.
 These are header RPCs, so pruning old block bodies does not require ordinary
 maturity assumptions. Missing, conflicting or stale evidence retains unresolved
 funds and uses the existing bounded reconciliation alert. Daemon identity and
@@ -196,6 +213,54 @@ End-to-end gateway/server/direct-reward testing remains required in #163.
 
 ## Reproducible validation
 
+### Review hardening
+
+Both independent reviews supplied on 30 October were addressed:
+
+| Finding | Resolution and regression evidence |
+| --- | --- |
+| Rolling regtest pre-start policy | Explicit `30:134:140` rolling schedules use 110 policy depth before height 30, ordinary consensus depth 100, and 111 wallet confirmations. Live height-29 checks cover 100/101/110/111 confirmations and API progress. |
+| Record identity encodes consensus rules | Explicit historical start/release and rolling enforcement metadata replace `this == Mainnet`. Process binding compares the complete schedule. |
+| Masked real-RPC errors | Every injected fault starts with a clean successful real-RpcClient attestation, including a real transported header response, and recovers afterward. No wallet submission is involved. |
+| Transient startup failure | Bounded fresh-snapshot retries cover one-shot header orphaning, RPC failure and timeout; persistent failure, cancellation and successful contradictions have separate tests. |
+| Sequential snapshot races | A six-block distance limit, verified ancestry and final active observation reject incompatible branches and mid-verification reorgs while allowing boundary advancement. Race alerts use reason 705. |
+| Repeated creation RPC load | Bounded immutable creation-evidence cache survives handler recreation. Tests cover LRU eviction, pool separation, conflicting links, fresh wallet/header evidence, orphan removal and a cold-lookup reorg. The cold final read is retained because that interleaving can invalidate the child while leaving the parent active. |
+| Dense orphan recovery | A 4,099-row test proves bounded pages, complete visitation and cursor wrap. Pool-scoped scan metrics and a read-only operator audit expose progress and horizon risk. |
+| Post-cutoff recovery | Live Knots fixture restarts the daemon, rescans the wallet, replaces the branch, and reclassifies the original orphan and a mature replacement. |
+| Upgrade payment uncertainty | Live Knots/PostgreSQL checks distinguish successful and wallet-only uncertain attempts. Mempool loss, restart, wallet rescan and original-transaction rebroadcast retain the original durable payment identity and produce one submission/debit/receipt. Existing durable payout-lease tests also retain ownership on uncertain outcomes. |
+| Lab and CI issues | Both pinned gate versions remain linted and share one offline test implementation. Numeric PostgreSQL version selection, missing binaries, bounded console diagnostics and success are tested. Expiry must exceed regtest genesis time `1296688602`, matching upstream. |
+
+### Recovery monitoring
+
+Each completed bounded scan logs rows, cursor, minimum eligible height, oldest
+batch height, near-horizon batch rows and sweep completion. Prometheus exposes
+the same progress with only a configured pool label:
+
+- `miningcore_blake2b_orphan_rows_scanned_total`: row visits, including repeated sweeps; use its rate for throughput.
+- `miningcore_blake2b_orphan_sweeps_total`: completed keyset sweeps. Compare sweep time with the remaining horizon margin.
+- `miningcore_blake2b_orphan_cursor`: last visited ID, including the first page after wrap.
+- `miningcore_blake2b_orphan_batch_oldest_height`: minimum height in the last batch, zero when empty.
+- `miningcore_blake2b_orphan_batch_near_horizon_rows`: last-batch rows within 2,592 blocks of the lower recovery boundary (about 18 days at target spacing).
+
+These are scan observations, not global backlog counts, recovered rewards or
+settlements. For the oldest eligible *remaining* row and full-window counts, run
+the explicit [read-only audit](../scripts/ops/audit_blake2b_reconciliation.sql)
+against the intended database with the verified current tip and logged cursor:
+
+```bash
+psql -X -v ON_ERROR_STOP=1 -v pool_id=POOL -v tip_height=HEIGHT -v cursor=ID \
+  -f scripts/ops/audit_blake2b_reconciliation.sql
+```
+
+The audit uses a read-only transaction and a five-second statement timeout; it
+does not run in the payout loop. Large databases may need an operator-planned
+maintenance query if the timeout is exceeded. Use the audit's oldest remaining
+height and remaining count with measured row throughput to detect a sweep that
+cannot finish before rows leave the 51,840-block window. ID order is not height
+order. Increasing payout frequency must respect daemon/database capacity; do not
+raise limits blindly. Very old and already credited rows still require the
+separate financial audit in the upgrade procedure.
+
 Use the Ubuntu WSL distribution `Ubuntu` (26.04.1), ordinary user `ubuntu`, with independent
 Linux Git metadata, loopback PostgreSQL and temporary regtest data directories.
 The new gate `scripts/regtest/validate-knots-29.4.3-maturity.sh` checksum-verifies
@@ -215,8 +280,10 @@ embedded schema resources and reused those unchanged, audited native libraries.
 The combined test build also built the current dev branch's native floating-point
 test helper; it completed with zero warnings/errors.
 
-The implementation based on `6fd2451bcd0e74531b49b0d1482fc8cc4659e347` passed the
-complete suite: **5153 passed, zero failed, one benchmark skipped**. It enabled
+The complete final reviewed source, incorporating current dev
+`f366acc877124a00f0207c1875db57a1422d7ec7`, passed the full suite:
+**5208 passed, zero failed, one benchmark skipped**, in 12 minutes 53 seconds.
+This supersedes the earlier partial final-validation boundary. It enabled
 real Knots/Core/Litecoin/Dogecoin, PostgreSQL accounting and isolated TLS/payment
 fixtures. It exercised production startup, real Stratum shares/candidates,
 accepted custodial blocks, all four supported accounting schemes, wallet payout
@@ -230,31 +297,19 @@ The unmodified signed-release upstream scripts all passed:
 `feature_rolling_coinbase_maturity.py`, and `feature_rolling_coinbase_upgrade.py`.
 The published `test_bitcoin` maturity suite passed all four cases, proving
 mainnet constants separately from isolated schedule/mocktime overrides.
-Both offline cache/failure gates passed (five tests each), along with ShellCheck,
-Markdown link/anchor checks and immutable workflow-action pin checks.
+Both offline cache/failure gates passed (five tests each), as did all four
+lab-helper tests, ShellCheck, Markdown link/anchor checks and immutable
+workflow-action pin checks. The final run includes all review regressions above,
+historical and rolling-pruned live fixtures, production payout/accounting and
+unchanged ASIC/header and other-family tests. The managed build completed with
+zero warnings/errors, reusing the unchanged audited production native libraries.
 
-Current dev `f366acc877124a00f0207c1875db57a1422d7ec7` was then merged cleanly
-(tested merge `c7e5e15dbd3366fa5fcd9ec64bdbb9b6da6fe5eb`). That combined run passed
-**5175 tests**, skipped the benchmark, and exposed one setup error in the new
-rolling-pruned fixture: handler recreation omitted its explicit expiry setting,
-so the contract guard correctly refused it. The fixture now retains the same
-reviewed template across recreation. Final review also made unscheduled regtest
-reject fabricated sentinel-valued deployments instead of accepting an RPC shape
-the released node never emits.
-
-After those corrections, the final affected suite passed **265/265 tests, zero
-failures or skips**, including both historical and rolling-pruned live fixtures,
-creation-parent MTP, maturity/expiry/reorg/recreation, persisted recovery and
-allocation quarantine, payout evidence, configuration and bounded orphan scans.
-There are no outstanding test failures. The final managed build again completed
-with zero warnings/errors. This final suite reuses the audited native build;
-production native sources did not change during dev integration.
-
-Reports remain in `/home/ubuntu/issue-230`: `upstream.log`,
-`miningcore/build/knots-29.4.3-lab/build.log`, `combined-build.log`,
-`final-contract-build.log`, and the TRX reports under
-`miningcore/build/knots-29.4.3-lab` (`knots-final.trx`, `knots-combined.trx`,
-`knots-final-contracts.trx`). This records isolated lab validation, not live
+Final reports are `miningcore/build/knots-29.4.3-lab/knots-review-full.trx` and
+`miningcore/build/knots-29.4.3-lab/upstream-review.log` under
+`/home/ubuntu/issue-230`; the final managed build log is
+`/tmp/issue230-review-build.log` and full console output is
+`/tmp/issue230-review-full.log`. Earlier development reports remain in that lab
+for traceability. This records isolated lab validation, not live
 mainnet settlement or certification of every binary platform or gateway.
 
 Example lab invocation (the password below belongs only to the disposable local lab):
@@ -270,6 +325,10 @@ The runner requires an ordinary user, explicit reviewed Knots and PostgreSQL
 inputs, and the lab's ordinary SHA256d/Litecoin/Dogecoin daemons under
 `/opt/miningcore-test-lab/bin`. It builds `src`, audits warnings, then runs the
 complete test suite. Reports are under `build/knots-29.4.3-lab`.
+Automatic PostgreSQL selection compares numeric versions (`18` wins over `9.6`);
+an explicit `MININGCORE_TEST_POSTGRES_BIN` takes precedence. An upstream-gate
+failure prints its exit status, log path and last 200 lines while preserving the
+complete log.
 Port 55433 is a separate disposable PostgreSQL 18 cluster initialized for this
 run under `/home/ubuntu/issue-230/postgres`, listening only on loopback. Its
 fixture login is a database administrator, as in CI, because the suite exercises

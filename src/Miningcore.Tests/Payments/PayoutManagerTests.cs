@@ -1162,6 +1162,37 @@ public class PayoutManagerTests
         await fixture.BlockRepository.DidNotReceive().HasBitcoinDirectSoloSchemaAsync(Arg.Any<IDbConnection>(), Arg.Any<CancellationToken>());
     }
 
+    [Fact]
+    public async Task Blake2bDenseBacklog_VisitsEveryRowAndWrapsWithoutStarvation()
+    {
+        var fixture = CreateFixture();
+        fixture.Pool.Template = new BitcoinBlake2bTemplate { Family = CoinFamily.BitcoinBlake2b };
+        fixture.MiningPool.NetworkStats.Returns(new BlockchainStats { BlockHeight = 100000 });
+        var rows = Enumerable.Range(1, 4099).Select(id => new Block
+            { Id = id * 3L, BlockHeight = (ulong) (48160 + id % 3000), Status = BlockStatus.Orphaned }).ToArray();
+        fixture.BlockRepository.GetPendingBlocksForPoolAsync(fixture.Connection, fixture.Pool.Id).Returns(Array.Empty<Block>());
+        fixture.BlockRepository.GetBitcoinBlake2bOrphanedBlocksForReconciliationAsync(fixture.Connection,
+            fixture.Pool.Id, Arg.Is<long>(x => x == 48160), Arg.Any<long>(), 64, Arg.Any<CancellationToken>())
+            .Returns(call => rows.Where(x => x.Id > call.ArgAt<long>(3)).Take(64).ToArray());
+        var visited = new HashSet<long>();
+        var wrapped = false;
+        for(var cycle = 0; cycle < 70; cycle++)
+        {
+            var batch = await fixture.Manager.LoadBlocksForClassificationAsync(fixture.MiningPool, CancellationToken.None);
+            Assert.InRange(batch.Length, 1, 64);
+            if(cycle > 0 && batch[0].Id == rows[0].Id) { wrapped = true; break; }
+            foreach(var row in batch) Assert.True(visited.Add(row.Id));
+        }
+        Assert.True(wrapped);
+        Assert.Equal(rows.Select(x => x.Id).OrderBy(x => x), visited.OrderBy(x => x));
+        var observations = fixture.MessageBus.ReceivedCalls().Select(x => x.GetArguments()[0])
+            .OfType<BitcoinBlake2bReconciliationTelemetry>().ToArray();
+        Assert.Equal(66, observations.Length);
+        Assert.True(observations[^1].SweepCompleted);
+        Assert.Equal(4099 + 64, observations.Sum(x => x.Rows));
+        Assert.All(observations, x => Assert.InRange(x.NearHorizonRows, 0, x.Rows));
+    }
+
     private static Block Blake2bBlock(Fixture fixture, BlockStatus status) => new()
     {
         Id = fixture.Block.Id, PoolId = fixture.Pool.Id, BlockHeight = 100,

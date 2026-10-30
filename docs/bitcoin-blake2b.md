@@ -82,6 +82,10 @@ historical field set before tip 979918. From tip 979918 it must instead report
 `coinbase_expiry_time: 1819756800` and `active: true`, with no `height_end`.
 `active` describes the next block. Miningcore validates each shape against its
 own snapshot height and proves active branch membership across separate calls.
+Snapshots must be within six blocks and share verified ancestry, with a final
+active observation of the higher snapshot. Startup chain attestation retries a
+transient race or RPC failure up to three times with one- and two-second delays;
+successful identity/chain/contract contradictions still fail immediately.
 GBT's unprefixed `long_coinbase_maturity` remains present after expiry alongside
 `!blake2b`; this is not a blanket unlock. Unknown mandatory rules and contradictory
 or malformed fields fail closed. A missing mainnet deployment never
@@ -106,6 +110,11 @@ wallet evidence can restore an orphan to Pending or Confirmed. The row-lock comm
 checks unchanged pool, height, hash, coinbase txid, miner and candidate metadata;
 already-confirmed custodial rows remain excluded from repeat settlement. This
 bounded recovery does not reverse booked liabilities or re-credit confirmed rows.
+Monitor scan throughput, cursor rotation and batches approaching the horizon.
+The [recovery monitoring guide](bitcoin-blake2b-knots-29.4.3-review.md#recovery-monitoring)
+lists pool-scoped metrics and a read-only, time-limited SQL audit for the oldest
+remaining eligible orphan and complete backlog counts. Batch metrics alone do
+not describe the whole backlog or prove successful settlement.
 For PROP/PPLNS, automatic confirmation is withheld if an ordinary custodial row
 with a later or equal creation timestamp is already Confirmed. A later allocation
 may have consumed the older reward's shares; equal timestamps have ambiguous order.
@@ -133,7 +142,9 @@ The API's `networkDifficulty` remains in that accounting scale. No stored shares
 balances, pool IDs, coin key (`bitcoin-blake2b`) or ledger symbol (`BTCB2B`) are renamed.
 
 Payout attestation records fixed diagnostic reason codes: `701 RpcUnavailable`,
-`702 Syncing`, `703 ContractDrift`, and `704 BindingMismatch`. RPC/synchronization
+`702 Syncing`, `703 ContractDrift`, `704 BindingMismatch`, and `705 ChainChanged`.
+Reason 705 identifies changing, distant or incompatible chain snapshots without
+inferring RPC unavailability or configuration drift. RPC/synchronization/chain-race
 failures alert after 30 minutes; successful contract contradictions and changed
 process bindings alert immediately. Notifications are bounded to one per continuous
 reason episode across handler recreation; a changed reason or complete recovery
@@ -295,7 +306,8 @@ enforce must be at least 2, release must exceed both, and release minus start mu
 exceed 100. Enforcement may precede the first covered coinbase, as Knots permits.
 Every mainnet override is refused.
 Rolling fixtures additionally match `-testcoinbasematuritylongexpiry=TIMESTAMP`
-using positive `blake2bMaturityExpiry` (at most `UINT32_MAX`). It requires the
+using `blake2bMaturityExpiry` strictly above regtest genesis time `1296688602`
+(at most `UINT32_MAX`). It requires the
 complete isolated-regtest schedule; it cannot override mainnet's cutoff.
 Omitting these fields uses the reviewed unscheduled regtest contract and refuses a
 node with an unexpected scheduled deployment. These are fixture settings, not pool

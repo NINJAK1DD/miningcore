@@ -25,6 +25,39 @@ internal sealed class BitcoinBlake2bResolutionFactAttribute : FactAttribute
 public class BitcoinBlake2bAllocationResolutionTests
 {
     [BitcoinBlake2bResolutionFact]
+    public async Task ReconciliationAudit_ReportsDenseRemainingBacklogWithoutFinancialWrites()
+    {
+        await using var db = await BitcoinBlake2bLedgerProbe.CreateAsync(fullSchema: true);
+        await db.Observer.ExecuteAsync(@"
+            INSERT INTO blocks(id,poolid,blockheight,networkdifficulty,status,type,transactionconfirmationdata,created)
+            SELECT i*3,'audit-pool',48161,1,'orphaned',NULL,'coinbase',now() FROM generate_series(1,4099) i;
+            INSERT INTO blocks(id,poolid,blockheight,networkdifficulty,status,type,transactionconfirmationdata,created)
+            VALUES(20000,'audit-pool',48159,1,'orphaned',NULL,'old',now()),
+                  (20001,'other-pool',48161,1,'orphaned',NULL,'other',now()),
+                  (20002,'audit-pool',48161,1,'orphaned','auxpow','aux',now());");
+        var script = await File.ReadAllTextAsync(PostgresTestScripts.OperatorPathFor("audit_blake2b_reconciliation.sql"));
+        script = script.Replace(":'pool_id'", "@pool", StringComparison.Ordinal)
+            .Replace(":'tip_height'", "@tip", StringComparison.Ordinal).Replace(":'cursor'", "@cursor", StringComparison.Ordinal);
+        var audit = await db.Observer.QuerySingleAsync<Audit>(script, new { pool = "audit-pool", tip = 100000L, cursor = 9000L });
+        Assert.Equal(4099, audit.eligible_orphans);
+        Assert.Equal(1099, audit.remaining_in_sweep);
+        Assert.Equal(48161, audit.oldest_remaining_height);
+        Assert.Equal(4099, audit.approaching_horizon);
+        Assert.Equal(4102, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM blocks"));
+        Assert.Equal(0, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM balance_changes"));
+        Assert.Equal(0, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM payments"));
+        Assert.Equal("off", await db.Observer.ExecuteScalarAsync<string>("SHOW transaction_read_only"));
+    }
+
+    private sealed class Audit
+    {
+        public long eligible_orphans { get; set; }
+        public long remaining_in_sweep { get; set; }
+        public long oldest_remaining_height { get; set; }
+        public long approaching_horizon { get; set; }
+    }
+
+    [BitcoinBlake2bResolutionFact]
     public async Task AuditedResolution_RealPsqlDryRunApplyReplayAndInvalidCasesPreserveFinancialState()
     {
         await using var db = await BitcoinBlake2bLedgerProbe.CreateAsync(fullSchema: true);

@@ -107,6 +107,7 @@ public class BitcoinBlake2bRollingMaturityTests
         {
             ["hash"] = hash, ["height"] = hash == oldHash ? 979917 : 979918,
             ["confirmations"] = orphan && hash == oldHash ? -1 : hash == oldHash ? 2 : 1,
+            ["previousblockhash"] = hash == newHash ? oldHash : new string('0', 64),
         }));
         Assert.True(await BitcoinBlake2bChainEvidence.VerifyAsync(chain, deployment, Header, "test"));
         orphan = true;
@@ -149,5 +150,92 @@ public class BitcoinBlake2bRollingMaturityTests
         }
         Assert.Throws<InvalidOperationException>(() => tracker.Attest("test", "regtest", BitcoinBlake2bMaturity.Regtest));
         Assert.Throws<InvalidOperationException>(() => tracker.Attest("test", "main", BitcoinBlake2bMaturity.Mainnet with { Expiry = Cutoff + 1 }));
+    }
+
+    [Fact]
+    public void RollingRegtest_PreStartWalletPolicyIsLongWhileConsensusIsOrdinary()
+    {
+        var coin = JObject.Parse(System.IO.File.ReadAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "coins.json")))["bitcoin-blake2b"].ToObject<Miningcore.Configuration.BitcoinBlake2bTemplate>();
+        var network = coin.Networks["regtest"];
+        network.Blake2bMaturityStart = 30;
+        network.Blake2bMaturityEnforce = 134;
+        network.Blake2bMaturityRelease = 140;
+        network.Blake2bMaturityExpiry = Cutoff;
+        var schedule = BitcoinBlake2bMaturity.ForNetwork(coin, "regtest", "test");
+        Assert.Equal(110, schedule.PolicyMaturity(29, Cutoff - 1));
+        Assert.Equal(111, schedule.RequiredConfirmations(1, schedule.PolicyMaturity(29, Cutoff - 1)));
+        Assert.Equal(100, schedule.ConsensusMaturity(29, 140, Cutoff - 1));
+        Assert.Equal(100, schedule.PolicyMaturity(29, Cutoff));
+        Assert.False(schedule.HistoricalActiveAt(134));
+        Assert.False(schedule.ActiveAt(133));
+        Assert.True(schedule.ActiveAt(134));
+        schedule.ValidateDeployment(BitcoinBlake2bMaturityTests.Deployment(schedule, 19), "test");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SnapshotReads_RejectMutuallyIncompatibleBranchesAndFinalReorg(bool finalReorg)
+    {
+        var low = new string('a', 64);
+        var high = new string('b', 64);
+        var chain = new JObject { ["blocks"] = 979917, ["bestblockhash"] = low };
+        var deployment = new JObject { ["height"] = 979918, ["hash"] = high };
+        var highReads = 0;
+        Task<RpcResponse<JObject>> Header(string hash)
+        {
+            if(hash == high) highReads++;
+            // Both snapshots are independently positive on different branches.
+            // With finalReorg, ancestry agrees but the higher snapshot becomes
+            // orphaned during verification. Neither interleaving may attest.
+            return Task.FromResult(new RpcResponse<JObject>(new JObject
+            {
+                ["hash"] = hash, ["height"] = hash == low ? 979917 : 979918,
+                ["confirmations"] = finalReorg && highReads == 2 ? -1 : 1,
+                ["previousblockhash"] = finalReorg ? low : new string('e', 64),
+            }));
+        }
+        Assert.Equal(BitcoinBlake2bChainObservation.ChainChanged,
+            await BitcoinBlake2bChainEvidence.ObserveAsync(chain, deployment, Header, "test"));
+        Assert.Equal(finalReorg ? 2 : 1, highReads);
+    }
+
+    [Fact]
+    public async Task SnapshotHeightWindow_RejectsStaleDeploymentWithoutUnboundedAncestryRpc()
+    {
+        var reads = 0;
+        var chain = new JObject { ["blocks"] = 979917, ["bestblockhash"] = new string('a', 64) };
+        var deployment = new JObject { ["height"] = 979924, ["hash"] = new string('b', 64) };
+        Task<RpcResponse<JObject>> Header(string _) { reads++; throw new InvalidOperationException(); }
+        Assert.Equal(BitcoinBlake2bChainObservation.ChainChanged,
+            await BitcoinBlake2bChainEvidence.ObserveAsync(chain, deployment, Header, "test"));
+        Assert.Equal(0, reads);
+    }
+
+    [Fact]
+    public void CreationCache_IsBoundedLruPoolScopedAndRejectsContradictoryLinks()
+    {
+        var tracker = new BitcoinBlake2bPayoutContractTracker(2);
+        BitcoinBlake2bBlockHeader Header(char value) => new(new string(value, 64), 30, 1, new string('d', 64), null);
+        var a = Header('a'); var b = Header('b'); var c = Header('c');
+        tracker.RememberCreation("pool", a, Cutoff - 1);
+        tracker.RememberCreation("pool", b, Cutoff);
+        Assert.True(tracker.TryCreation("pool", a with { Confirmations = 100 }, out var mtp, out var conflict));
+        Assert.Equal(Cutoff - 1, mtp);
+        Assert.False(conflict);
+        tracker.RememberCreation("pool", c, Cutoff + 1);
+        Assert.Equal(2, tracker.CachedCreationCount);
+        Assert.False(tracker.TryCreation("pool", b, out _, out _));
+        Assert.False(tracker.TryCreation("other", a, out _, out _));
+        Assert.False(tracker.TryCreation("pool", a with { PreviousBlockHash = new string('e', 64) }, out _, out conflict));
+        Assert.True(conflict);
+        tracker.ForgetCreation("pool", a.Hash);
+        Assert.Equal(1, tracker.CachedCreationCount);
+        for(var i = 0; i < 10000; i++)
+        {
+            tracker.RememberCreation("pool", a, Cutoff);
+            tracker.ForgetCreation("pool", a.Hash);
+        }
+        Assert.Equal(1, tracker.CachedCreationCount);
     }
 }

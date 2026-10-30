@@ -105,6 +105,32 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
     }
 
     [BitcoinBlake2bIntegrationFact]
+    public async Task RollingWallet_PreStartRewardUses111ConfirmationsIncludingRpcProgress()
+    {
+        const long cutoff = 1819756800;
+        await using var node = await Node.StartAsync(true,
+            Environment.GetEnvironmentVariable(BitcoinBlake2bIntegrationFactAttribute.BinaryEnvironmentVariable),
+            new[] { "-testactivationheight=blake2b@20", "-blake2b_headline=Miningcore BLAKE2b regtest",
+                "-testcoinbasematuritylong=30:134:140", $"-testcoinbasematuritylongexpiry={cutoff}",
+                $"-mocktime={cutoff - 10000}" }, 128);
+        var coin = Coin(30, 134, 140);
+        coin.Networks["regtest"].Blake2bMaturityExpiry = cutoff;
+        var fixture = await Handler(node, coin);
+        var reward = await Reward(node, 29);
+        foreach(var confirmations in new[] { 100, 101, 110, 111 })
+        {
+            var current = (await node.WalletRpcAsync("gettransaction", reward.TransactionConfirmationData))["confirmations"].Value<int>();
+            if(current < confirmations) await node.GenerateAsync(confirmations - current, CancellationToken.None);
+            var wallet = await node.WalletRpcAsync("gettransaction", reward.TransactionConfirmationData);
+            Assert.Equal(confirmations, wallet["confirmations"].Value<int>());
+            Assert.Equal(confirmations == 111 ? "generate" : "immature", wallet["details"][0]["category"].Value<string>());
+            await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { reward }, CancellationToken.None);
+            Assert.Equal(confirmations == 111 ? BlockStatus.Confirmed : BlockStatus.Pending, reward.Status);
+            Assert.Equal(confirmations / 111.0, reward.ConfirmationProgress, 12);
+        }
+    }
+
+    [BitcoinBlake2bIntegrationFact]
     public async Task RollingWallet_UsesCreationParentAcrossExpiryRestartAndReorg()
     {
         const long cutoff = 1819756800;
@@ -154,6 +180,25 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
         Assert.Equal(BlockStatus.Confirmed, covered.Status);
         Assert.Equal(BlockStatus.Confirmed, postCutoff.Status);
         Assert.Equal("generate", (await node.WalletRpcAsync("gettransaction", postCutoff.TransactionConfirmationData))["details"][0]["category"].Value<string>());
+        await node.RestartAsync(mockTime: cutoff + 1000);
+        await node.WalletRpcAsync("rescanblockchain", 0);
+        fixture = await Handler(node, coin);
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { postCutoff }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Confirmed, postCutoff.Status);
+        // Replace, rather than merely reconsider, the branch containing this
+        // post-cutoff reward. A fresh reward still uses ordinary wallet policy.
+        await node.RootRpcAsync("invalidateblock", postCutoff.Hash);
+        await node.RootRpcAsync("setmocktime", cutoff + 2000);
+        var heightBeforeReplacement = (await node.RootRpcAsync("getblockcount")).Value<int>();
+        await node.GenerateAsync(112, CancellationToken.None);
+        var replacement = await Reward(node, heightBeforeReplacement + 1);
+        Assert.NotEqual(postCutoff.Hash, replacement.Hash);
+        await node.WalletRpcAsync("rescanblockchain", 0);
+        fixture = await Handler(node, coin);
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { postCutoff, replacement }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Orphaned, postCutoff.Status);
+        Assert.Equal(BlockStatus.Confirmed, replacement.Status);
+        Assert.Equal("generate", (await node.WalletRpcAsync("gettransaction", replacement.TransactionConfirmationData))["details"][0]["category"].Value<string>());
     }
 
     [BitcoinBlake2bIntegrationFact]

@@ -21,12 +21,13 @@ public class BitcoinBlake2bMaturityTests
         ["height"] = tip,
         ["hash"] = new string('c', 64),
         ["blake2b"] = new JObject { ["height"] = 20, ["active"] = true },
-        ["deployments"] = new JObject { ["long_coinbase_maturity"] = schedule.RollingStart.HasValue && tip + 1 >= schedule.RollingStart.Value ? new JObject
+        ["deployments"] = new JObject { ["long_coinbase_maturity"] = schedule.RollingStart.HasValue &&
+            (!schedule.HistoricalStart.HasValue || tip + 1 >= schedule.RollingEnforce!.Value) ? new JObject
         {
-            ["type"] = "flagday", ["height"] = schedule.RollingStart.Value,
+            ["type"] = "flagday", ["height"] = schedule.RollingEnforce!.Value,
             ["coinbase_expiry_time"] = schedule.Expiry,
             ["coinbase_start_height"] = schedule.RollingStart.Value, ["maturity"] = schedule.RollingMaturity,
-            ["active"] = true,
+            ["active"] = schedule.ActiveAt((long) tip + 1),
         } : new JObject
         {
             ["type"] = "flagday", ["height"] = schedule.Enforce, ["height_end"] = schedule.Release - 1,
