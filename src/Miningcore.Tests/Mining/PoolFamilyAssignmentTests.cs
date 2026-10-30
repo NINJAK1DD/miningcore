@@ -211,6 +211,28 @@ public class PoolFamilyAssignmentTests : TestBase
         Assert.True(oldJob.IsRetired);
         fixture.AssertNoBan();
     }
+    [Theory]
+    [MemberData(nameof(XelisLifecycleTests.MalformedSubmissions), MemberType = typeof(XelisLifecycleTests))]
+    public async Task XelisMalformedSubmissionReturnsControlledErrorAndKeepsSession(string json)
+    {
+        await using var fixture = await Fixture.Create(this, "Xelis");
+        await fixture.Authorize();
+        await fixture.Flush();
+        var worker = fixture.Connection.ContextAs<XelisWorkerContext>();
+        var jobs = worker.validJobs.ToArray();
+        var calls = fixture.DaemonCalls;
+        await fixture.SubmitXelisParameters(json == null ? null : JToken.Parse(json), 100);
+        fixture.AssertError(100, StratumError.Other, "invalid params");
+        Assert.Equal(1, worker.Stats.InvalidShares);
+        Assert.Equal(0, worker.Stats.ValidShares);
+        Assert.False(fixture.Connection.IsDisconnectRequested);
+        Assert.True(worker.IsAuthorized);
+        Assert.Equal(jobs, worker.validJobs.ToArray());
+        Assert.Equal(calls, fixture.DaemonCalls);
+        fixture.AssertNoBan();
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
     public static IEnumerable<object[]> ManagedFamilies => Cases(false);
     public static IEnumerable<object[]> NativeFamilies => Cases(true);
     private static IEnumerable<object[]> Cases(bool native) => Families.Where(f => NeedsNative(f) == native)
@@ -1191,6 +1213,8 @@ public class PoolFamilyAssignmentTests : TestBase
         internal Task SubmitProgpow(object parameters, int id) => DispatchRequest(new JsonRpcRequest(ProgpowStratumMethods.SubmitShare, parameters, id));
         internal Task SubmitXelis(string jobId, int id) => DispatchRequest(new JsonRpcRequest(XelisStratumMethods.SubmitShare,
             new[] { "fixture", jobId, "0000000000000001" }, id));
+        internal Task SubmitXelisParameters(object parameters, int id) =>
+            DispatchRequest(new JsonRpcRequest(XelisStratumMethods.SubmitShare, parameters, id));
         internal async Task DispatchDisconnectingXelisRequest(string method)
         {
             requestHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

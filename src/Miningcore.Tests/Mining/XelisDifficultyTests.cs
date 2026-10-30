@@ -144,11 +144,41 @@ public class XelisDifficultyTests
         return result;
     }
 
-    internal static XelisJob Init(BigInteger difficulty)
+    [Theory]
+    [InlineData("xel/v1", "1")]
+    [InlineData("xel/v2", "1")]
+    [InlineData("xel/v1", "71135336520")]
+    [InlineData("xel/v2", "71135336520")]
+    [InlineData("xel/v1", "115792089237316195423570985008687907853269984665640564039457584007913129639935")]
+    [InlineData("xel/v2", "115792089237316195423570985008687907853269984665640564039457584007913129639935")]
+    public void ZeroProofIsCandidateWithFiniteAssignmentAndTargetBoundedCredit(string algorithm, string difficulty)
+    {
+        foreach(var assigned in new[] { 1d, 1e100 })
+        {
+            var job = Init(BigInteger.Parse(difficulty, CultureInfo.InvariantCulture), algorithm);
+            var template = job.BlockHeader.Template;
+            NonBitcoinCandidateCreditTests.Set(job, algorithm == "xel/v1" ? "xelisHash" : "xelisHashV2", new FixedHash(new byte[32]));
+            NonBitcoinCandidateCreditTests.Set(job, "blake3Hasher", new FixedHash(Bytes(42)));
+            var worker = Worker(assigned);
+            var issued = job.ForWorker(worker.ContextAs<XelisWorkerContext>());
+            var (share, solved) = issued.ProcessShare(worker, "0000000000000001");
+            Assert.True(share.IsBlockCandidate);
+            Assert.True(double.IsFinite(share.Difficulty));
+            Assert.Equal(Math.Min(assigned, Miningcore.Mining.CandidateShareCredit.Limit(issued)), share.Difficulty);
+            Assert.Equal((double) job.ExactDifficulty, share.NetworkDifficulty);
+            Assert.Equal(Convert.ToHexString(Bytes(42)).ToLowerInvariant(), share.BlockHash);
+            Assert.False(string.IsNullOrEmpty(solved));
+            Assert.Equal(template, job.BlockHeader.Template);
+            Assert.Equal(StratumError.DuplicateShare,
+                Assert.Throws<StratumException>(() => issued.ProcessShare(worker, "0000000000000001")).Code);
+        }
+    }
+
+    internal static XelisJob Init(BigInteger difficulty, string algorithm = "xel/v1")
     {
         var job = new XelisJob();
-        job.Init(new GetBlockHeaderResponse { Template = new string('0', 256), TopoHeight = 1, Difficulty = difficulty, Algorithm = "xel/v1" },
-            new GetBlockTemplateResponse { Template = new string('0', 224), Difficulty = difficulty, Algorithm = "xel/v1" },
+        job.Init(new GetBlockHeaderResponse { Template = new string('0', 256), TopoHeight = 1, Difficulty = difficulty, Algorithm = algorithm },
+            new GetBlockTemplateResponse { Template = new string('0', 224), Difficulty = difficulty, Algorithm = algorithm },
             "test", new MockMasterClock(), "stagenet", 1d, new string('0', 64));
         return job;
     }

@@ -208,6 +208,20 @@ separate #120 work. The live fixture below uses isolated **stagenet height 1**
 
 ## Reproducible validation
 
+A zero-valued 256-bit proof is valid against every positive target. Its proof
+difficulty is treated as positive infinity for admission only, avoiding division
+by zero; persisted share credit still comes from the finite issued assignment
+and the job's candidate-credit ceiling. Controlled zero-digest tests cover both
+hash algorithms, difficulty 1, a production target and U256's upper bound,
+duplicate rejection, immutable solved headers and manager-level RPC submission.
+
+Submission validation rejects null/non-array parameters, fewer than three fields,
+and missing, empty or non-string job IDs/nonces with a bounded Stratum error.
+Validation precedes job lookup, proof hashing and daemon submission. Additional
+trailing fields retain their existing compatibility behavior. TCP regressions
+verify the controlled error preserves the authorized session and jobs without
+daemon calls; ordinary invalid-share accounting still applies.
+
 `XelisDifficultyTests` contains independently calculated fixed vectors for
 difficulties 1, 2, 3, 128, 255, 256, 257, 1024, 71,135,336,520,
 `2^53-1`, `2^53+1`, and `2^256-1`. Reproduce any vector independently with Python:

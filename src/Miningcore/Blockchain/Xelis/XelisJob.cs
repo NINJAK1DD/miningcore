@@ -140,7 +140,11 @@ public class XelisJob : Miningcore.Mining.ICandidateCreditJob
         var hashCoinbaseBytesValue = new uint256(hashCoinbaseBytes.ToNewReverseArray());
 
         // calc share-diff
-        var shareDiff = (double) new BigRational(XelisConstants.Diff1Target, hashCoinbaseInteger) * shareMultiplier;
+        // Zero is a valid proof below every positive target. Its unbounded proof
+        // difficulty is used only for admission; stored credit remains finite,
+        // bounded by the issued assignment and the job's candidate target.
+        var shareDiff = hashCoinbaseInteger.IsZero ? double.PositiveInfinity :
+            (double) new BigRational(XelisConstants.Diff1Target, hashCoinbaseInteger) * shareMultiplier;
 
         // diff check
 

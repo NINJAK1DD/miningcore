@@ -367,17 +367,14 @@ public class XelisJobManager : JobManagerBase<XelisJob>
         CancellationToken ct)
     {
         Contract.RequiresNonNull(worker);
-        Contract.RequiresNonNull(submission);
         Volatile.Read(ref workEpoch).EnsureActive();
 
-        if(submission is not object[] submitParams)
+        if(submission is not object[] { Length: >= 3 } submitParams ||
+            submitParams[1] is not string jobId || string.IsNullOrEmpty(jobId) ||
+            submitParams[2] is not string nonce || string.IsNullOrEmpty(nonce))
             throw new StratumException(StratumError.Other, "invalid params");
 
         var context = worker.ContextAs<XelisWorkerContext>();
-
-        // extract params
-        var jobId = submitParams[1] as string;
-        var nonce = submitParams[2] as string;
 
         XelisJob job;
 

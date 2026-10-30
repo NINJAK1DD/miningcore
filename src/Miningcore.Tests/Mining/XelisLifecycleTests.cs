@@ -121,6 +121,30 @@ public class XelisLifecycleTests
     private static Task<Miningcore.Blockchain.Share> Submit(Fixture fixture, StratumConnection worker, string jobId, CancellationToken ct) =>
         fixture.Manager.SubmitShareAsync(worker, new object[] { "test", jobId, "0000000000000001" }, ct).AsTask();
 
+    public static System.Collections.Generic.IEnumerable<object[]> MalformedSubmissions => new[]
+    {
+        null, "null", "[]", "[\"fixture\"]", "[\"fixture\",\"job\"]", "{}", "42",
+        "[\"fixture\",null,\"0000000000000001\"]", "[\"fixture\",42,\"0000000000000001\"]",
+        "[\"fixture\",\"\",\"0000000000000001\"]", "[\"fixture\",\"job\",null]",
+        "[\"fixture\",\"job\",\"\"]", "[\"fixture\",\"job\",42]", "[\"fixture\",{},[]]",
+    }.Select(json => new object[] { json });
+
+    [Theory]
+    [MemberData(nameof(MalformedSubmissions))]
+    public async Task MalformedSubmissionIsControlledBeforeJobLookupOrRpc(string json)
+    {
+        await using var fixture = await Fixture.Start();
+        var worker = XelisDifficultyTests.Worker(1);
+        var token = json == null ? null : JToken.Parse(json);
+        object submission = token is JArray array ? array.ToObject<object[]>() : token;
+        var error = await Assert.ThrowsAsync<StratumException>(() =>
+            fixture.Manager.SubmitShareAsync(worker, submission, CancellationToken.None).AsTask());
+        Assert.Equal(StratumError.Other, error.Code);
+        Assert.Equal("invalid params", error.Message);
+        Assert.Equal(0, fixture.Submissions);
+        Assert.Empty(worker.ContextAs<XelisWorkerContext>().validJobs);
+    }
+
     [Theory]
     [InlineData("header-v3")] [InlineData("work-v3")] [InlineData("algorithm-mismatch")] [InlineData("difficulty-mismatch")]
     public async Task IncompatibleTransitionRetiresAllRecentJobsAndRecoveryNeverReopensThem(string fault)

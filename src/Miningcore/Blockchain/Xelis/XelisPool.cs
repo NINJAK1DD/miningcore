@@ -316,7 +316,14 @@ public class XelisPool : PoolBase
             else if(!context.IsSubscribed)
                 throw new StratumException(StratumError.NotSubscribed, "not subscribed");
 
-            var requestParams = request.ParamsAs<string[]>();
+            // Validate through the manager without casts/coercions that can
+            // throw ordinary exceptions for malformed miner-controlled JSON.
+            var requestParams = request.Params switch
+            {
+                Newtonsoft.Json.Linq.JArray values => values.ToObject<object[]>(),
+                object[] values => values,
+                _ => null,
+            };
 
             // submit
             var share = await manager.SubmitShareAsync(connection, requestParams, ct);

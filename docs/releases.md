@@ -30,6 +30,10 @@ targets. RPC difficulty remains exact even beyond double precision. Malformed
 or out-of-range values fail before new work is announced. Existing share and
 payout policies are retained; candidate classification and its target-derived
 credit ceiling now follow the corrected target. No database migration is needed.
+Zero-valued proof hashes remain valid block candidates without division by zero;
+their stored credit remains finite and capped by the issued assignment and target.
+Malformed or truncated submissions return a controlled Stratum error instead of
+an indexing/cast failure that terminates the session.
 Restart to replace cached jobs. See [validation and compatibility notes](xelis-target-validation.md)
 for pinned daemon/miner sources, live tests and the separate v3 modernization limit.
 

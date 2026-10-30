@@ -194,10 +194,10 @@ public class XelisReviewTests
         Assert.Null(response.Response);
     }
 
-    private sealed class ProofHash : IHashAlgorithm
+    private sealed class ProofHash(bool zero = false) : IHashAlgorithm
     {
         public void Digest(ReadOnlySpan<byte> data, Span<byte> result, params object[] extra)
-        { result.Clear(); result[^1] = 1; }
+        { result.Clear(); if(!zero) result[^1] = 1; }
     }
     private sealed class IdentityHash : IHashAlgorithm
     {
@@ -216,8 +216,9 @@ public class XelisReviewTests
         }
     }
 
-    [Fact]
-    public async Task ConcurrentWorkersSubmitTheirOwnHeadersAndNeverMutateSharedTemplate()
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public async Task ConcurrentWorkersSubmitTheirOwnHeadersAndNeverMutateSharedTemplate(bool zero)
     {
         var headers = new ConcurrentBag<string>();
         await using var server = await RpcDiagnosticTests.Server.Start(async context =>
@@ -234,7 +235,7 @@ public class XelisReviewTests
         var consumer = new ConcurrentConsumer(container, bus, new RpcClient(server.Endpoint(), new JsonSerializerSettings(), bus, "test"), logs.Logger);
         var job = XelisDifficultyTests.Init(1);
         var original = job.BlockHeader.Template;
-        NonBitcoinCandidateCreditTests.Set(job, "xelisHash", new ProofHash());
+        NonBitcoinCandidateCreditTests.Set(job, "xelisHash", new ProofHash(zero));
         NonBitcoinCandidateCreditTests.Set(job, "blake3Hasher", new IdentityHash());
         var a = XelisDifficultyTests.Worker(2);
         var b = XelisDifficultyTests.Worker(3);
@@ -263,6 +264,7 @@ public class XelisReviewTests
             Convert.FromHexString(extra).CopyTo(work, 48);
             Assert.Equal(Convert.ToHexString(SHA256.HashData(work)).ToLowerInvariant(), pair.Share.BlockHash);
             Assert.True(pair.Share.IsBlockCandidate);
+            Assert.Equal(1d, pair.Share.Difficulty);
         }
         Assert.Equal(original, job.BlockHeader.Template);
     }
