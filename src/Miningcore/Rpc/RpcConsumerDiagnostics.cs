@@ -9,7 +9,7 @@ namespace Miningcore.Rpc;
 internal static class RpcConsumerDiagnostics
 {
     internal static string Failure(Exception exception) => Diagnostics.DiagnosticFailure.Category(exception);
-    internal enum Stage { Connect, Request, Response, Rejected, Degraded, Unavailable }
+    internal enum Stage { Connect, Request, Response, Rejected, Degraded, Unavailable, Recovered }
 
     // No exception is ever attached to the NLog event. The finite catalogue also
     // rejects arbitrary labels from future/plugin callers.

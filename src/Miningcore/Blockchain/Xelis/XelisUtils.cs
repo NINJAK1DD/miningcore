@@ -1,27 +1,26 @@
 using System;
 using System.Numerics;
-using Miningcore.Extensions;
 
 namespace Miningcore.Blockchain.Xelis;
 
 public static class XelisUtils
 {
-    public static byte[] DifficultyToTarget(double difficulty)
+    internal static bool IsSupportedAlgorithm(string algorithm) =>
+        algorithm is XelisConstants.AlgorithmXelisHashV1 or XelisConstants.AlgorithmXelisHashV2;
+
+    internal static bool HasCompatibleConsensus(DaemonResponses.GetBlockHeaderResponse header, DaemonResponses.GetBlockTemplateResponse work) =>
+        IsSupportedAlgorithm(header.Algorithm) && header.Algorithm == work.Algorithm && header.Difficulty == work.Difficulty;
+
+    public static byte[] DifficultyToTarget(BigInteger difficulty)
     {
-        Span<byte> paddedBytes = stackalloc byte[XelisConstants.TargetPaddingLength];
+        if(difficulty < BigInteger.One || difficulty > XelisConstants.Diff1Target)
+            throw new ArgumentOutOfRangeException(nameof(difficulty), "Expected a positive 256-bit difficulty");
 
-        if(difficulty == 0.0)
-            return paddedBytes.ToArray();
-
-        var targetBigInteger = BigInteger.Multiply(BigInteger.Divide(XelisConstants.Diff1Target, new BigInteger((ulong) (difficulty * 255d))), new BigInteger(255));
-        var targetBytes = targetBigInteger.ToByteArray().AsSpan();
-
-        var padLength = paddedBytes.Length - targetBytes.Length;
-
-        if(padLength > 0)
-            targetBytes.CopyTo(paddedBytes[padLength..]);
-
-        return paddedBytes.ToArray();
+        // xelis_common::difficulty: U256::MAX / difficulty, rounded down.
+        var target = (XelisConstants.Diff1Target / difficulty).ToByteArray(isUnsigned: true, isBigEndian: true);
+        var result = new byte[XelisConstants.TargetPaddingLength];
+        target.CopyTo(result.AsSpan(result.Length - target.Length));
+        return result;
     }
 
     public static long UnixTimeStamp(DateTime date)
@@ -31,24 +30,4 @@ public static class XelisUtils
         return unixTimeStamp;
     }
 
-    public static bool CheckDiff(Span<byte> hashBytes, double difficulty)
-    {
-        byte[] targetBytes = DifficultyToTarget(difficulty);
-
-        return CheckDiff(hashBytes, targetBytes);
-    }
-
-    public static bool CheckDiff(Span<byte> hashBytes, byte[] targetBytes)
-    {
-        for (int i = 0; i < 32; i++)
-        {
-            if (hashBytes[i] < targetBytes[i])
-                return true;
-
-            if (hashBytes[i] > targetBytes[i])
-                return false;
-        }
-
-        return false;
-    }
 }

@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <iostream>
 
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(_M_X64)
   #include <emmintrin.h>
   #include <immintrin.h>
 #endif
@@ -19,7 +19,12 @@
 #include <arpa/inet.h>
 #endif
 
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(_M_X64)
+
+#if defined(_MSC_VER)
+// MSVC uses the scalar stage_2 below; GNU function multiversioning is unavailable.
+#define __builtin_prefetch(address, ...) _mm_prefetch(reinterpret_cast<const char *>(address), _MM_HINT_T0)
+#endif
 
 #define xelisrl64(x, a) (((x << a % 64) | (x >> (64 - a % 64))))
 
@@ -393,6 +398,7 @@ void stage_1(uint64_t *int_input, uint64_t *scratchPad,
   }
 }
 
+#if !defined(_MSC_VER)
 __attribute__((target("sse4.1"))) void stage_2(uint64_t *input, uint32_t *smallPad, unsigned char *indices, uint32_t *slots)
 {
   for (unsigned char iter = 0; iter < XELIS_ITERS; ++iter)
@@ -457,7 +463,9 @@ __attribute__((target("sse4.1"))) void stage_2(uint64_t *input, uint32_t *smallP
   std::copy(&slots[0], &slots[XELIS_SLOT_LENGTH], &smallPad[XELIS_MEMORY_SIZE * 2 - XELIS_SLOT_LENGTH]);
 }
 
-__attribute__((target("default"))) void stage_2(uint64_t *input, uint32_t *smallPad, unsigned char *indices, uint32_t *slots)
+__attribute__((target("default")))
+#endif
+void stage_2(uint64_t *input, uint32_t *smallPad, unsigned char *indices, uint32_t *slots)
 {
   for (unsigned char iter = 0; iter < XELIS_ITERS; ++iter)
   {

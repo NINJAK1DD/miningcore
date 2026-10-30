@@ -373,7 +373,7 @@ public class StratumServerTests
         {
             connected = true;
             server.AdmissionOpen = false;
-            throw new StratumException(StratumError.JobNotFound, "local admission closed");
+            throw new StratumAdmissionClosedException(StratumError.JobNotFound, "local admission closed");
         };
         using var stop = new CancellationTokenSource();
         var endpoint = new StratumEndpoint(new IPEndPoint(IPAddress.Loopback, GetFreePort()), new PoolEndpoint());
@@ -387,6 +387,46 @@ public class StratumServerTests
             Assert.Equal(0, server.TrackedConnectionTaskCount);
             Assert.DoesNotContain(target.Logs, line => line.StartsWith("Error|", StringComparison.Ordinal));
             Assert.DoesNotContain(target.Logs, line => line.Contains(nameof(StratumException), StringComparison.Ordinal));
+        }
+        finally { stop.Cancel(); await lifetime.WaitAsync(TestTimeout); }
+        using var rebound = StratumServer.CreateBoundSocket(endpoint.IPEndPoint);
+    }
+
+    [Theory]
+    [InlineData(true, true)] [InlineData(false, true)] [InlineData(false, false)]
+    public async Task RunAsync_RefusalClassificationPreservesUnrelatedFailuresWithAdmissionOpenOrClosed(bool expected, bool reopen)
+    {
+        using var logs = new LogFactory();
+        var target = new NLog.Targets.MemoryTarget { Layout = "${level}|${message}" };
+        var configuration = new NLog.Config.LoggingConfiguration();
+        configuration.AddRuleForAllLevels(target);
+        logs.Configuration = configuration;
+        var server = new TestStratumServer();
+        server.SetLogger(logs.GetLogger("admission-recovery-test"));
+        server.ConnectionInitializer = _ =>
+        {
+            server.AdmissionOpen = false;
+            // Reproduce recovery in the gap before the outer accept handler.
+            server.AdmissionOpen = reopen;
+            if(expected) throw new StratumAdmissionClosedException(StratumError.JobNotFound, "local admission closed");
+            if(!reopen) throw new StratumException(StratumError.Other, "unrelated setup rejection");
+            throw new InvalidOperationException("unrelated setup failure");
+        };
+        using var stop = new CancellationTokenSource();
+        var endpoint = new StratumEndpoint(new IPEndPoint(IPAddress.Loopback, GetFreePort()), new PoolEndpoint());
+        var lifetime = server.RunListenerAsync(stop.Token, endpoint);
+        try
+        {
+            using var client = new TcpClient(AddressFamily.InterNetwork);
+            await ConnectAndWaitForRejectionAsync(client, IPAddress.Loopback, endpoint.IPEndPoint.Port);
+            await server.WaitForNoConnectionsAsync(TestTimeout);
+            Assert.Equal(0, server.TrackedConnectionTaskCount);
+            Assert.Equal((0, 1), server.ConnectionAdmission.Snapshot); // Lease released; bounded idle identity retained.
+            // Finish the accept callback before inspecting its final diagnostic.
+            stop.Cancel();
+            await lifetime.WaitAsync(TestTimeout);
+            Assert.Equal(!expected, target.Logs.Any(line => line.StartsWith("Error|", StringComparison.Ordinal)));
+            if(expected) Assert.Contains(target.Logs, line => line.StartsWith("Debug|Connection refused", StringComparison.Ordinal));
         }
         finally { stop.Cancel(); await lifetime.WaitAsync(TestTimeout); }
         using var rebound = StratumServer.CreateBoundSocket(endpoint.IPEndPoint);

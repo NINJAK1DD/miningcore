@@ -22,7 +22,7 @@ static const uint8_t sbox[256] = {
 };
 
 // Helper function to perform GF(2^8) multiplication
-static uint8_t xtime(uint8_t x) {
+static uint8_t xelis_aes_xtime(uint8_t x) {
     return (x << 1) ^ ((x & 0x80) ? 0x1b : 0x00);
 }
 
@@ -32,7 +32,7 @@ static uint8_t gmul(uint8_t a, uint8_t b) {
         if (b & 1) {
             result ^= a;
         }
-        a = xtime(a);
+        a = xelis_aes_xtime(a);
         b >>= 1;
     }
     return result;

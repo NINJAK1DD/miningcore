@@ -22,6 +22,76 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased (after v0.3.0): Xelis difficulty targets
+
+Xelis block targets now follow the daemon's exact unsigned 256-bit integer
+division and big-endian byte order, including difficulty 1 and full-width
+targets. RPC difficulty remains exact even beyond double precision. Malformed
+or out-of-range values fail before new work is announced. Existing share and
+payout policies are retained; candidate classification and its target-derived
+credit ceiling now follow the corrected target. No database migration is needed.
+Zero-valued proof hashes remain valid block candidates without division by zero;
+their stored credit remains finite and capped by the issued assignment and target.
+Malformed or truncated submissions return a controlled Stratum error instead of
+an indexing/cast failure that terminates the session.
+Restart to replace cached jobs. See [validation and compatibility notes](xelis-target-validation.md)
+for pinned daemon/miner sources, live tests and the separate v3 modernization limit.
+
+The v1 native wrapper also fixes an 88-byte overrun beyond 112-byte MinerWork:
+the native function reads and mutates a 200-byte state. Previously, unrelated
+heap contents could affect proof hashes, and hashing could corrupt caller work
+before block identity was calculated. Historical v1 acceptance/rejection results
+cannot be certified from that validator alone; this release does not reconstruct
+or reprice historical shares. The corrected wrapper uses a private, aligned,
+zero-padded state and passes pinned upstream known-answer tests.
+
+Solved headers are now returned per share instead of overwriting shared job
+state. Difficulty/algorithm changes refresh work even with an unchanged work
+prefix. Unsupported algorithms (including v3), missing/inconsistent difficulty
+and malformed RPC responses fail before publication and produce redacted Error
+diagnostics. Only canonical `xel/v1` and `xel/v2` work is accepted.
+
+A confirmed unsupported algorithm or disagreement between header and miner-work
+consensus fields now retires all prior assignments, hides old work from new
+authorizations, and rejects obsolete submissions before proof processing or
+admission. The transition disconnects active sessions without IP bans so miners
+can fail over; new subscribe/authorize attempts disconnect before address RPCs.
+Suspended listener admission now closes new TCP sockets before Stratum/TLS setup;
+it reopens automatically after supported recovery. Miners without failover may
+reconnect repeatedly during suspension; that expected churn alone does not imply
+an attack. The first consensus mismatch still suspends immediately, with no
+second-response delay. Authorization racing retirement closes quietly without
+an assignment Error diagnostic.
+Expected local admission refusals now retain their Debug classification even if
+recovery reopens admission during cleanup; unrelated setup failures remain Error.
+Only explicit local-refusal markers receive that Debug classification. Generic
+Stratum setup errors stay visible at Error even while admission is closed;
+Bitcoin BLAKE2b's expected isolation refusal uses the explicit marker too.
+Retired-job rejections do not affect invalid-share counts or trigger bans,
+including after recovery. Supported recovery creates fresh assignments and never reactivates
+the retired jobs. Temporary RPC outages retain compatible work; caller-requested
+cancellation stays silent. Refresh failures log once per outage, with an Info
+recovery diagnostic carrying the consecutive failure count. Suspended refresh
+failures also emit a reminder at most once every ten minutes of monotonic elapsed
+time, unaffected by wall-clock changes. Shares and block
+RPCs admitted before retirement retain their subsequent accounting/acceptance
+results.
+The pinned real-daemon fixture also verifies acceptance of an originally issued
+timestamp after newer timestamp-only work is obtained. Template replacement
+semantics are retained; see the [freshness evidence and limits](xelis-target-validation.md#timestamp-only-template-freshness).
+
+Xelis startup now requires an x64 native library exporting both v1 and v2 hash
+functions. Unsupported architectures and the uncertified bundled Windows ABI
+fail pool startup instead of allowing miners to receive unusable work. The
+original five-argument generic `RpcClient.ExecuteAsync` CLR signature is retained;
+bounded calls use the separate `ExecuteBoundedAsync` API.
+
+**Xelis extension compatibility:** custom callers/subclasses must update and
+rebuild. `ProcessShare` and `ProcessShareInternal` return a share/template tuple;
+`SubmitBlockAsync` takes that serialized template instead of the shared header;
+`DifficultyToTarget(double)` is replaced by the exact `BigInteger` API. See the
+[extension migration table](xelis-target-validation.md#xelis-extension-api-changes).
+
 ## Unreleased (after v0.3.0): native floating-point state on CryptoNote load
 
 CryptoNote's Linux shared-library link no longer passes `-Ofast` to the linker
