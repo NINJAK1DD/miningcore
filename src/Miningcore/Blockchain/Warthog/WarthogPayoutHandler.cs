@@ -83,6 +83,12 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
         extraPoolPaymentProcessingConfig = pc.PaymentProcessing.Extra.SafeExtensionDataAs<WarthogPaymentProcessingConfigExtra>();
 
         maximumTransactionFees = extraPoolPaymentProcessingConfig?.MaximumTransactionFees ?? WarthogConstants.MinimumTransactionFees;
+
+        if(string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPrivateKey))
+            throw new ArgumentException("Configured Warthog wallet private key is missing");
+
+        ellipticPrivateKey = WarthogWalletAddress.ValidatePrivateKey(
+            extraPoolPaymentProcessingConfig.WalletPrivateKey, poolConfig.Address);
     
         logger = LogUtil.GetPoolScopedLogger(typeof(WarthogPayoutHandler), pc);
 
@@ -108,29 +114,6 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
         {
             logger.Warn(() => $"[{LogCategory}] '{WarthogCommands.DaemonName} - {WarthogCommands.GetBlockTemplate}' daemon does not seem to be running...");
             throw new Exception($"'{WarthogCommands.DaemonName}' returned error: {e}");
-        }
-
-        if(string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPrivateKey))
-            throw new Exception("WalletPrivateKey is mandatory for signing and sending transactions");
-        else
-        {
-            try
-            {
-                var responsePoolAddressWalletPrivateKey = await restClient.Get<WarthogWalletResponse>(WarthogCommands.GetWallet.Replace(WarthogCommands.DataLabel, extraPoolPaymentProcessingConfig?.WalletPrivateKey), ct);
-                if(responsePoolAddressWalletPrivateKey?.Error != null)
-                    throw new Exception($"Pool address private key '{extraPoolPaymentProcessingConfig?.WalletPrivateKey}': {responsePoolAddressWalletPrivateKey.Error} (Code {responsePoolAddressWalletPrivateKey?.Code})");
-
-                if(responsePoolAddressWalletPrivateKey.Data.Address != poolConfig.Address)
-                    throw new Exception($"Pool address private key '{extraPoolPaymentProcessingConfig?.WalletPrivateKey}' [{responsePoolAddressWalletPrivateKey.Data.Address}] does not match pool address: {poolConfig.Address}");
-            }
-
-            catch(Exception e)
-            {
-                logger.Warn(() => $"[{LogCategory}] '{WarthogCommands.DaemonName} - {WarthogCommands.GetWallet}' daemon does not seem to be running...");
-                throw new Exception($"'{WarthogCommands.DaemonName}' returned error: {e}");
-            }
-
-            ellipticPrivateKey = Context.Instance.CreateECPrivKey(extraPoolPaymentProcessingConfig.WalletPrivateKey.HexToByteArray());
         }
 
         minConfirmations = extraPoolPaymentProcessingConfig?.MinimumConfirmations ?? (network == "mainnet" ? 120 : 110);

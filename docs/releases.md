@@ -39,8 +39,10 @@ directly. See
 [daemon TLS compatibility and testing](rpc-tls.md).
 Beam explorer, Conceal and Warthog node REST requests still use plain HTTP and
 may follow redirects regardless of `ssl`; see [#235](https://github.com/NINJAK1DD/miningcore/issues/235).
-Warthog wallet-private-key exposure through REST URLs and error text is tracked
-in [#236](https://github.com/NINJAK1DD/miningcore/issues/236).
+Warthog wallet address checks now derive the address locally, removing the
+private key from daemon REST URLs and startup errors. If an older version may
+have exposed the key, follow the
+[Warthog key incident guidance](warthog-wallet-key-security.md).
 
 ## Unreleased (after v0.3.0): native floating-point state on CryptoNote load
 

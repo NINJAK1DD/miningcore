@@ -419,6 +419,24 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
         if(string.IsNullOrEmpty(poolConfig.Address))
             throw new TrustedPoolStartupException("Pool address is not configured", poolConfig.Id);
 
+        if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
+        {
+            if(string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPrivateKey))
+                throw new TrustedPoolStartupException("Pool address private key is not configured", poolConfig.Id);
+
+            // Validate locally before any daemon request. Parsing errors never contain
+            // the configured secret or become inner exceptions in startup diagnostics.
+            try
+            {
+                WarthogWalletAddress.ValidatePrivateKey(
+                    extraPoolPaymentProcessingConfig.WalletPrivateKey, poolConfig.Address);
+            }
+            catch(ArgumentException)
+            {
+                throw new TrustedPoolStartupException("Pool address private key check failed", poolConfig.Id);
+            }
+        }
+
         // test daemon
         try
         {
@@ -454,29 +472,6 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
         {
             logger.Warn(() => $"'{WarthogCommands.DaemonName} - {WarthogCommands.GetBlockTemplate}' daemon does not seem to be running...");
             throw new TrustedPoolStartupException($"Pool address check failed...", poolConfig.Id);
-        }
-
-        if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
-        {
-            // validate pool address privateKey
-            if(string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPrivateKey))
-                throw new TrustedPoolStartupException("Pool address private key is not configured", poolConfig.Id);
-
-            try
-            {
-                var responsePoolAddressWalletPrivateKey = await restClient.Get<WarthogWalletResponse>(WarthogCommands.GetWallet.Replace(WarthogCommands.DataLabel, extraPoolPaymentProcessingConfig?.WalletPrivateKey), ct);
-                if(responsePoolAddressWalletPrivateKey?.Error != null)
-                    throw new PoolStartupException($"Pool address private key '{extraPoolPaymentProcessingConfig?.WalletPrivateKey}': {responsePoolAddressWalletPrivateKey.Error} (Code {responsePoolAddressWalletPrivateKey?.Code})", poolConfig.Id);
-
-                if(responsePoolAddressWalletPrivateKey.Data.Address != poolConfig.Address)
-                    throw new PoolStartupException($"Pool address private key '{extraPoolPaymentProcessingConfig?.WalletPrivateKey}' [{responsePoolAddressWalletPrivateKey.Data.Address}] does not match pool address: {poolConfig.Address}", poolConfig.Id);
-            }
-
-            catch(Exception)
-            {
-                logger.Warn(() => $"'{WarthogCommands.DaemonName} - {WarthogCommands.GetWallet}' daemon does not seem to be running...");
-                throw new TrustedPoolStartupException($"Pool address private key check failed...", poolConfig.Id);
-            }
         }
 
         await UpdateNetworkStatsAsync(ct);
