@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using Miningcore.Tests.Blockchain;
 using Miningcore.Tests.Blockchain.Bitcoin;
 using Miningcore.Tests.Blockchain.BitcoinBlake2b;
 using Miningcore.Tests.Mining;
@@ -103,6 +104,8 @@ public class NonParallelCollectionTests
                 typeof(BitcoinVersionRollingRegtestTests), typeof(BitcoinBlake2bRegtestTests),
                 typeof(BitcoinBlake2bMaturityRegtestTests),
                 typeof(BitcoinBlake2bStartupTests), typeof(MergedMiningPayoutRegtestTests) } };
+        yield return new object[] { typeof(WarthogWalletSecrecyCollection),
+            new[] { typeof(WarthogWalletAddressTests) } };
         yield return new object[] { typeof(RpcDiagnosticCollection),
             new[] { typeof(RpcDiagnosticTests), typeof(RpcConsumerDiagnosticTests),
                 typeof(DaemonErrorCompatibilityTests) } };
