@@ -85,6 +85,11 @@ public class BitcoinBlake2bMaturityTests
         Assert.Throws<PoolStartupException>(() => new BitcoinBlake2bMaturity(2, 104, 106, 104).ValidateDeployment(info, "test"));
     }
 
+    [Fact]
+    public void UnscheduledRegtest_RejectsFabricatedSentinelDeployment() =>
+        Assert.Throws<PoolStartupException>(() => BitcoinBlake2bMaturity.Regtest.ValidateDeployment(
+            Deployment(BitcoinBlake2bMaturity.Regtest, 19), "test"));
+
     [Theory]
     [InlineData("null")]
     [InlineData("\"unexpected\"")]

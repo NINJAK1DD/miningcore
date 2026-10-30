@@ -65,6 +65,8 @@ internal sealed record BitcoinBlake2bMaturity(int Start, int Enforce, int Releas
             info["height"]?.Type == JTokenType.Integer &&
             long.TryParse(info["height"].ToString(), out var regtestTip) && regtestTip >= 0 && regtestTip < int.MaxValue)
             return;
+        if(this == Regtest)
+            throw new PoolStartupException("Unscheduled Bitcoin BLAKE2b regtest must omit the long-maturity deployment", poolId);
         if(info?["height"]?.Type != JTokenType.Integer ||
             !long.TryParse(info["height"].ToString(), out var tip) || tip < 0 || tip >= int.MaxValue)
             throw new PoolStartupException("Bitcoin BLAKE2b deployment tip is invalid", poolId);

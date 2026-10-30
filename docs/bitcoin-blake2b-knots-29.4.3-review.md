@@ -205,7 +205,57 @@ Functional tests use isolated schedule overrides/mocktime; mainnet constants
 are checked independently by upstream unit vectors and Miningcore boundary tests.
 Never run the overrides against an operator node or wallet.
 
-Validation results are recorded below after the complete production-path run.
+### Validation on 30 October 2026
+
+The lab used Ubuntu 26.04.1, .NET SDK 10.0.112, PostgreSQL 18.6,
+the verified Knots 29.4.3 binary above, ordinary Bitcoin Core 31.1,
+Litecoin 0.21.5.8 and Dogecoin 1.14.9. Production native sources built with
+zero warnings/errors and passed the warning audit. Final managed builds prepared
+embedded schema resources and reused those unchanged, audited native libraries.
+The combined test build also built the current dev branch's native floating-point
+test helper; it completed with zero warnings/errors.
+
+The implementation based on `6fd2451bcd0e74531b49b0d1482fc8cc4659e347` passed the
+complete suite: **5153 passed, zero failed, one benchmark skipped**. It enabled
+real Knots/Core/Litecoin/Dogecoin, PostgreSQL accounting and isolated TLS/payment
+fixtures. It exercised production startup, real Stratum shares/candidates,
+accepted custodial blocks, all four supported accounting schemes, wallet payout
+broadcast/confirmation, immutable accounting receipts, orphan recovery,
+PROP/PPLNS quarantine, existing PPS liabilities, outages and handler/manager
+recreation. Mainnet boundary, creation-parent MTP and wallet-margin vectors ran
+alongside the unchanged ASIC/header, target and other-family regressions.
+
+The unmodified signed-release upstream scripts all passed:
+`mempool_long_coinbase_maturity.py`, `feature_chainstate_revalidation.py`,
+`feature_rolling_coinbase_maturity.py`, and `feature_rolling_coinbase_upgrade.py`.
+The published `test_bitcoin` maturity suite passed all four cases, proving
+mainnet constants separately from isolated schedule/mocktime overrides.
+Both offline cache/failure gates passed (five tests each), along with ShellCheck,
+Markdown link/anchor checks and immutable workflow-action pin checks.
+
+Current dev `f366acc877124a00f0207c1875db57a1422d7ec7` was then merged cleanly
+(tested merge `c7e5e15dbd3366fa5fcd9ec64bdbb9b6da6fe5eb`). That combined run passed
+**5175 tests**, skipped the benchmark, and exposed one setup error in the new
+rolling-pruned fixture: handler recreation omitted its explicit expiry setting,
+so the contract guard correctly refused it. The fixture now retains the same
+reviewed template across recreation. Final review also made unscheduled regtest
+reject fabricated sentinel-valued deployments instead of accepting an RPC shape
+the released node never emits.
+
+After those corrections, the final affected suite passed **265/265 tests, zero
+failures or skips**, including both historical and rolling-pruned live fixtures,
+creation-parent MTP, maturity/expiry/reorg/recreation, persisted recovery and
+allocation quarantine, payout evidence, configuration and bounded orphan scans.
+There are no outstanding test failures. The final managed build again completed
+with zero warnings/errors. This final suite reuses the audited native build;
+production native sources did not change during dev integration.
+
+Reports remain in `/home/ubuntu/issue-230`: `upstream.log`,
+`miningcore/build/knots-29.4.3-lab/build.log`, `combined-build.log`,
+`final-contract-build.log`, and the TRX reports under
+`miningcore/build/knots-29.4.3-lab` (`knots-final.trx`, `knots-combined.trx`,
+`knots-final-contracts.trx`). This records isolated lab validation, not live
+mainnet settlement or certification of every binary platform or gateway.
 
 Example lab invocation (the password below belongs only to the disposable local lab):
 

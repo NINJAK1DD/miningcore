@@ -289,7 +289,7 @@ public class BitcoinBlake2bMaturityRegtestTests : TestBase
         Assert.NotNull((await node.TryWalletRpcAsync("getblock", reward.Hash)).Error);
         var tip = (await node.RootRpcAsync("getbestblockhash")).Value<string>();
         await node.RootRpcAsync("invalidateblock", tip);
-        fixture = await Handler(node, Coin(30, 1034, 1040));
+        fixture = await Handler(node, coin);
         await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { reward }, CancellationToken.None);
         Assert.Equal(BlockStatus.Pending, reward.Status);
         Assert.Equal(1010.0 / 1011, reward.ConfirmationProgress, 12);
