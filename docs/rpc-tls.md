@@ -29,7 +29,13 @@ negotiation; it works with `ssl: false`. REST paths start at `/`; `httpPath`
 continues to configure JSON-RPC routes (such as Conceal's `/json_rpc`), not a
 REST prefix. For Beam the applicable endpoint has category `explorer`; for
 Conceal and Warthog it is the uncategorized daemon endpoint. Both job and
-payout clients use this same contract.
+payout clients use this same contract. REST APIs must be exposed at the root
+of a dedicated host/port: `httpPath` cannot mount REST under a proxy sub-path.
+Warthog WebSocket settings are separate: `portWs`, `httpPathWs` and `sslWs`
+select its WS listener and security. Changing `ssl` or `http2` on the REST
+endpoint does not change Warthog's WS transport. When moving both through a
+TLS proxy, configure `sslWs: true` and the proxy's WS port/path separately;
+Warthog uses the daemon endpoint's `host` for both REST and WS.
 
 The published native APIs describe HTTP listeners for
 [Beam explorer](https://github.com/BeamMW/beam/wiki/Beam-Node-Explorer-API),
@@ -43,18 +49,25 @@ HTTPS listener and provision a certificate trusted by the Miningcore service
 whose SAN matches `host`. An HTTP-only endpoint will fail its HTTPS handshake;
 Miningcore will not fall back to plaintext. If HTTP/2 is requested, a proxy
 that only negotiates HTTP/1.1 will fail instead of silently downgrading.
+On Conceal, `http2: true` also affects `/json_rpc`, but that shared RPC client
+can negotiate HTTP/1.1 while the REST client requires HTTP/2. Ensure the
+proxy supports HTTP/2 for both routes, or leave `http2: false`.
 
 **Upgrade existing configurations before restarting.** Previously, `ssl: true`
 or `http2: true` did not protect these REST calls: they still used HTTP. They
 now take effect. For a native HTTP-only deployment, first configure the TLS
 proxy and update the endpoint host/port and service trust store. Test its final
 URL directly, without relying on an HTTP redirect. If you intentionally retain
-HTTP on a protected local/private path, set both flags false; review other RPC
-and WebSocket connections sharing that endpoint because those flags also affect
-their transport. A redirect response now surfaces as an error. Configure the
+HTTP on a protected local/private path, set both flags false; review RPC
+connections sharing that endpoint because those flags also affect their
+transport. A redirect response now surfaces as an error. Configure the
 final listener directly, including the final host and port. The REST handler
 refuses all redirects so a wallet-related URL, a payment POST body, or
 custom headers cannot be replayed to a different origin by a 3xx response.
+REST transport warnings identify the configured authority and fixed failure
+category without logging paths, query strings, response bodies or credentials.
+TLS and HTTP/2 negotiation warnings appear once per outage and rearm after a
+response; redirect warnings surface a refused 3xx status.
 
 Warthog's wallet address check runs locally and does not send the configured
 private key to the daemon; see
@@ -141,15 +154,18 @@ tests cover unchanged cleartext behavior.
 The REST transport matrix in `RpcTlsTests` exercises Beam, Conceal and
 Warthog paths over real loopback HTTPS with trusted, untrusted, expired and
 wrong-name certificates, plus HTTPS selected by `http2` with actual HTTP/2
-negotiation. Rejected handshakes deliver no request to the server. The
+negotiation. An HTTP/1.1-only HTTPS server cannot receive a request when
+`http2` is required. Rejected handshakes deliver no request to the server. The
 `DaemonRestTransportTests` fixture uses two real HTTP listeners to verify
 cleartext compatibility and that 301/302/303/307/308 responses never replay
-GET URLs, headers or POST payment data to another origin. Run these on the
+GET URLs, headers or POST payment data to another origin.
+`DaemonRestConsumerTests` exercises Beam explorer selection, Conceal's separate
+JSON-RPC path, and the actual Warthog payout POST. Run these on the
 documented Ubuntu test lab with:
 
 ```bash
 dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --no-restore \
-  --filter 'FullyQualifiedName~RpcTlsTests|FullyQualifiedName~DaemonRestTransportTests'
+  --filter 'FullyQualifiedName~RpcTlsTests|FullyQualifiedName~DaemonRestTransportTests|FullyQualifiedName~DaemonRestConsumerTests'
 ```
 
 Reproduce on the documented Linux lab after building the solution:

@@ -67,6 +67,11 @@ public class RpcTlsTests
     public async Task PlatformRejectsUntrustedDaemonCertificate(string transport)
         => await VerifyCertificateBeforeSendingRpc(transport, "untrusted");
 
+    [LinuxTrustTheory]
+    [InlineData("rest-http2-http1", "valid")]
+    public async Task RestHttp2DoesNotDowngradeToHttp1(string transport, string certificate)
+        => await VerifyCertificateBeforeSendingRpc(transport, certificate);
+
     private static async Task VerifyCertificateBeforeSendingRpc(string transport, string certificate)
     {
         var directory = Path.Combine(Path.GetTempPath(), "miningcore-rpc-tls-" + Guid.NewGuid().ToString("N"));
@@ -85,7 +90,8 @@ public class RpcTlsTests
             builder.Logging.ClearProviders();
             builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0, listener =>
             {
-                listener.Protocols = HttpProtocols.Http1AndHttp2;
+                listener.Protocols = transport == "rest-http2-http1"
+                    ? HttpProtocols.Http1 : HttpProtocols.Http1AndHttp2;
                 listener.UseHttps(serverCert);
             }));
             await using var app = builder.Build();
@@ -109,11 +115,12 @@ public class RpcTlsTests
                         Assert.Equal(transport switch
                         {
                             "rest-conceal" => "/getinfo",
-                            "rest-warthog" => "/chain/info",
+                            "rest-warthog" => "/chain/head",
                             _ => "/status",
                         }, context.Request.Path.Value);
                         Assert.Equal("synthetic-secret", context.Request.Headers["X-Synthetic"].ToString());
-                        if(transport == "rest-http2") Assert.Equal("HTTP/2", context.Request.Protocol);
+                        if(transport is "rest-http2" or "rest-http2-http1")
+                            Assert.Equal("HTTP/2", context.Request.Protocol);
                         await context.Response.WriteAsync("{\"value\":\"verified\"}");
                         return;
                     }
@@ -148,8 +155,8 @@ public class RpcTlsTests
                 var endpoint = new DaemonEndpointConfig
                 {
                     Host = certificate.StartsWith("dns-", StringComparison.Ordinal) ? "localhost" : address.Host,
-                    Port = address.Port, Ssl = transport is not ("http2" or "rest-http2"),
-                    Http2 = transport is "http2" or "rest-http2",
+                    Port = address.Port, Ssl = transport is not ("http2" or "rest-http2" or "rest-http2-http1"),
+                    Http2 = transport is "http2" or "rest-http2" or "rest-http2-http1",
                     User = "fixture", Password = "synthetic-secret",
                     HttpPath = transport == "rest-conceal" ? "/json_rpc" : null,
                     Extra = new Dictionary<string, object> { ["apiKey"] = "synthetic-api-key" },
@@ -188,7 +195,7 @@ public class RpcTlsTests
                         await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
                     }
                 }
-                var accepted = certificate is "valid" or "dns-valid";
+                var accepted = (certificate is "valid" or "dns-valid") && transport != "rest-http2-http1";
                 Assert.False(handlerFailure.Task.IsCompleted, handlerFailure.Task.IsCompleted ? handlerFailure.Task.Result.ToString() : null);
                 Assert.True(process.ExitCode == (accepted ? 0 : 20), $"TLS probe exit {process.ExitCode}: {await stdout}\n{await stderr}");
                 Assert.Equal(accepted ? "accepted" : "rejected", (await stdout).Trim());

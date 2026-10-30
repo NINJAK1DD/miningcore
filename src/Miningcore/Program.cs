@@ -275,8 +275,7 @@ public class Program : ProcessStatusBackgroundService
                 .ConfigureServices((ctx, services) =>
                 {
                     ConfigureHostShutdown(services);
-                    services.AddHttpClient();
-                    services.AddDaemonRestClient();
+                    AddHttpClients(services);
                     services.AddMemoryCache();
 
                     ConfigureBackgroundServices(services);
@@ -728,6 +727,12 @@ public class Program : ProcessStatusBackgroundService
         ArgumentNullException.ThrowIfNull(services);
         services.TryAddSingleton<Program>();
         services.AddHostedService(sp => sp.GetRequiredService<Program>());
+    }
+
+    internal static void AddHttpClients(IServiceCollection services)
+    {
+        services.AddHttpClient();
+        services.AddDaemonRestClient();
     }
 
     internal static void ConfigureHostShutdown(IServiceCollection services,

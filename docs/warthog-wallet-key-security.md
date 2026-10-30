@@ -12,9 +12,10 @@ cluster and the pool; a mixed-case address is then rejected at startup.
 The wallet key is still a signing secret in the pool configuration. Limit access
 to the configuration file, backups, process memory, and any system that can read
 them. Do not include a real key in an issue, test, support request or command
-line. Warthog REST transport and redirect hardening is tracked separately in
-[#235](https://github.com/NINJAK1DD/miningcore/issues/235). Until that work is
-complete, put the Warthog REST daemon on a trusted loopback or private path.
+line. Warthog REST now honors the endpoint TLS settings and refuses redirects;
+see the [REST migration guide](rpc-tls.md#beam-conceal-and-warthog-rest-endpoints).
+Keep the native HTTP daemon listener on a trusted loopback or private path,
+including the proxy-to-daemon segment when a TLS proxy is used.
 
 ## Response to previous exposure
 
@@ -49,9 +50,9 @@ transaction preparation, and payout submission. After this change, startup
 uses only the public pool address for `/chain/mine/{address}`; balance lookup
 uses `/account/{address}/balance`; transaction preparation requests chain and
 fee data; payout submission serializes the destination, amount, fee, nonce,
-pin, and signature. None sends or serializes the wallet key. `SimpleRestClient`
-may still follow redirects until #235 is completed, so keep the daemon on a
-trusted path; its Warthog requests contain no key for a redirect to replay.
+pin, and signature. None sends or serializes the wallet key. Daemon REST
+requests refuse redirects, so those fields are not replayed to a new origin
+by the HTTP client. Keep any native HTTP listener on a protected path.
 
 ## Repeat the live check
 

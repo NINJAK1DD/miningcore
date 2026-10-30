@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -15,10 +14,13 @@ public class SimpleRestClient
     {
     }
 
-    public SimpleRestClient(HttpClient client, string baseUrl)
+    public SimpleRestClient(HttpClient client, string baseUrl, Version requestVersion = null,
+        HttpVersionPolicy requestVersionPolicy = HttpVersionPolicy.RequestVersionOrLower)
     {
         this.baseUrl = baseUrl;
         httpClient = client;
+        this.requestVersion = requestVersion;
+        this.requestVersionPolicy = requestVersionPolicy;
     }
 
     protected virtual IEnumerable<KeyValuePair<string, string>> PrepareQueryParams(
@@ -30,11 +32,6 @@ public class SimpleRestClient
     protected virtual void PrepareRequest(HttpRequestMessage request,
         IEnumerable<KeyValuePair<string, string>> headers)
     {
-        if(httpClient.DefaultRequestVersion != HttpVersion.Version11)
-        {
-            request.Version = httpClient.DefaultRequestVersion;
-            request.VersionPolicy = httpClient.DefaultVersionPolicy;
-        }
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         if (headers != null)
@@ -46,6 +43,19 @@ public class SimpleRestClient
 
     protected readonly HttpClient httpClient;
     protected readonly string baseUrl;
+    private readonly Version requestVersion;
+    private readonly HttpVersionPolicy requestVersionPolicy;
+
+    private void PrepareGeneratedRequest(HttpRequestMessage request,
+        IEnumerable<KeyValuePair<string, string>> headers)
+    {
+        if(requestVersion != null)
+        {
+            request.Version = requestVersion;
+            request.VersionPolicy = requestVersionPolicy;
+        }
+        PrepareRequest(request, headers);
+    }
 
     protected readonly JsonSerializerOptions jsonSerializerOptions = new()
     {
@@ -158,7 +168,7 @@ public class SimpleRestClient
         var requestUri = BuildRequestUri(path, PrepareQueryParams(queryParams));
         var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
 
-        PrepareRequest(request, headers);
+        PrepareGeneratedRequest(request, headers);
 
         using var response = await httpClient.SendAsync(request, ct);
         var msg = await response.Content.ReadAsStringAsync(ct);
@@ -182,7 +192,7 @@ public class SimpleRestClient
             Content = GetJsonContent(data)
         };
 
-        PrepareRequest(request, headers);
+        PrepareGeneratedRequest(request, headers);
 
         return await httpClient.SendAsync(request, ct);
     }
@@ -200,7 +210,7 @@ public class SimpleRestClient
             Content = GetJsonContent(data)
         };
 
-        PrepareRequest(request, headers);
+        PrepareGeneratedRequest(request, headers);
 
         using var response = await httpClient.SendAsync(request, ct);
         var msg = await response.Content.ReadAsStringAsync(ct);
@@ -224,7 +234,7 @@ public class SimpleRestClient
             Content = GetJsonContent(data)
         };
 
-        PrepareRequest(request, headers);
+        PrepareGeneratedRequest(request, headers);
 
         var response = await httpClient.SendAsync(request, ct);
         var msg = await response.Content.ReadAsStringAsync(ct);
@@ -241,7 +251,7 @@ public class SimpleRestClient
         var requestUri = BuildRequestUri(path, PrepareQueryParams(queryParams));
         var request = new HttpRequestMessage(HttpMethod.Delete, requestUri);
 
-        PrepareRequest(request, headers);
+        PrepareGeneratedRequest(request, headers);
 
         return await httpClient.SendAsync(request, ct);
     }
@@ -255,7 +265,7 @@ public class SimpleRestClient
         var requestUri = BuildRequestUri(path, PrepareQueryParams(queryParams));
         var request = new HttpRequestMessage(HttpMethod.Delete, requestUri);
 
-        PrepareRequest(request, headers);
+        PrepareGeneratedRequest(request, headers);
 
         using var response = await httpClient.SendAsync(request, ct);
         var msg = await response.Content.ReadAsStringAsync(ct);
@@ -275,7 +285,7 @@ public class SimpleRestClient
         var requestUri = BuildRequestUri(path, PrepareQueryParams(queryParams));
         var request = new HttpRequestMessage(HttpMethod.Delete, requestUri);
 
-        PrepareRequest(request, headers);
+        PrepareGeneratedRequest(request, headers);
 
         var response = await httpClient.SendAsync(request, ct);
         var msg = await response.Content.ReadAsStringAsync(ct);

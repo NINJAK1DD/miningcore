@@ -10,13 +10,23 @@ namespace Miningcore.Rest;
 public static class DaemonRestClient
 {
     public const string ClientName = "daemon-rest";
+    // A missing named registration otherwise silently creates the default,
+    // redirect-following client. BaseAddress is replaced with the real endpoint
+    // before any request can be sent.
+    private static readonly Uri registrationMarker = new("http://daemon-rest-policy.invalid/");
 
-    public static IHttpClientBuilder AddDaemonRestClient(this IServiceCollection services) =>
-        services.AddHttpClient(ClientName)
-            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+    public static IHttpClientBuilder AddDaemonRestClient(this IServiceCollection services)
+    {
+        services.AddTransient<DaemonRestDiagnosticsHandler>();
+        return services.AddHttpClient(ClientName, client => client.BaseAddress = registrationMarker)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
                 AllowAutoRedirect = false,
-            });
+                UseCookies = false,
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            })
+            .AddHttpMessageHandler<DaemonRestDiagnosticsHandler>();
+    }
 
     public static SimpleRestClient Create(IHttpClientFactory factory, DaemonEndpointConfig endpoint)
     {
@@ -31,11 +41,11 @@ public static class DaemonRestClient
         var baseUrl = new UriBuilder(scheme, endpoint.Host, endpoint.Port).Uri
             .GetLeftPart(UriPartial.Authority);
         var client = factory.CreateClient(ClientName);
-        if(endpoint.Http2)
-        {
-            client.DefaultRequestVersion = HttpVersion.Version20;
-            client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
-        }
-        return new SimpleRestClient(client, baseUrl);
+        if(client.BaseAddress != registrationMarker)
+            throw new InvalidOperationException("Daemon REST HTTP policy is not registered");
+        client.BaseAddress = new Uri(baseUrl + "/");
+        return new SimpleRestClient(client, baseUrl,
+            endpoint.Http2 ? HttpVersion.Version20 : null,
+            endpoint.Http2 ? HttpVersionPolicy.RequestVersionExact : HttpVersionPolicy.RequestVersionOrLower);
     }
 }

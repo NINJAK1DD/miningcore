@@ -5,6 +5,9 @@ using System.Text;
 using Miningcore.Configuration;
 using Miningcore.Blockchain.Ergo;
 using Miningcore.Blockchain.Alephium;
+using Miningcore.Blockchain.Beam;
+using Miningcore.Blockchain.Conceal;
+using Miningcore.Blockchain.Warthog;
 using Miningcore.Messaging;
 using Miningcore.Rpc;
 using Miningcore.Rest;
@@ -38,10 +41,11 @@ internal static class RpcTlsProbe
                 var restClient = DaemonRestClient.Create(provider.GetRequiredService<IHttpClientFactory>(), endpoint);
                 var path = transport switch
                 {
-                    "rest-beam" => "status",
-                    "rest-conceal" => "getinfo",
-                    "rest-warthog" => "/chain/info",
-                    "rest-http2" => "status",
+                    "rest-beam" => BeamExplorerCommands.GetStatus,
+                    "rest-conceal" => ConcealConstants.DaemonRpcGetInfoLocation,
+                    "rest-warthog" => WarthogCommands.GetChainInfo,
+                    "rest-http2" => BeamExplorerCommands.GetStatus,
+                    "rest-http2-http1" => BeamExplorerCommands.GetStatus,
                     _ => throw new ArgumentOutOfRangeException(nameof(transport)),
                 };
                 try
@@ -51,6 +55,11 @@ internal static class RpcTlsProbe
                     return response.GetValueOrDefault("value") == "verified" ? Report(true) : 2;
                 }
                 catch(Exception ex) when(IsTlsHandshake(ex))
+                {
+                    return Report(false);
+                }
+                catch(HttpRequestException ex) when(transport == "rest-http2-http1" &&
+                    ex.HttpRequestError == HttpRequestError.VersionNegotiationError)
                 {
                     return Report(false);
                 }
