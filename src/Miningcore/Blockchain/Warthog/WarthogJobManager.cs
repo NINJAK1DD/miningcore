@@ -203,6 +203,26 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
             .ToArray();
 
         base.Configure(pc, cc);
+
+        // Configure runs before StartAsync performs daemon reachability/sync checks.
+        if(string.IsNullOrEmpty(pc.Address))
+            throw new TrustedPoolStartupException("Pool address is not configured", pc.Id);
+
+        if(cc.PaymentProcessing?.Enabled == true && pc.PaymentProcessing?.Enabled == true)
+        {
+            if(string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPrivateKey))
+                throw new TrustedPoolStartupException("Pool address private key is not configured", pc.Id);
+
+            try
+            {
+                using var key = WarthogWalletAddress.ValidatePrivateKey(
+                    extraPoolPaymentProcessingConfig.WalletPrivateKey, pc.Address);
+            }
+            catch(ArgumentException ex)
+            {
+                throw new TrustedPoolStartupException(ex.Message, pc.Id);
+            }
+        }
     }
 
     public object[] GetSubscriberData(StratumConnection worker)
@@ -415,28 +435,6 @@ public class WarthogJobManager : JobManagerBase<WarthogJob>
 
     protected override async Task PostStartInitAsync(CancellationToken ct)
     {
-        // validate pool address
-        if(string.IsNullOrEmpty(poolConfig.Address))
-            throw new TrustedPoolStartupException("Pool address is not configured", poolConfig.Id);
-
-        if(clusterConfig.PaymentProcessing?.Enabled == true && poolConfig.PaymentProcessing?.Enabled == true)
-        {
-            if(string.IsNullOrEmpty(extraPoolPaymentProcessingConfig?.WalletPrivateKey))
-                throw new TrustedPoolStartupException("Pool address private key is not configured", poolConfig.Id);
-
-            // Validate locally before any daemon request. Parsing errors never contain
-            // the configured secret or become inner exceptions in startup diagnostics.
-            try
-            {
-                WarthogWalletAddress.ValidatePrivateKey(
-                    extraPoolPaymentProcessingConfig.WalletPrivateKey, poolConfig.Address);
-            }
-            catch(ArgumentException)
-            {
-                throw new TrustedPoolStartupException("Pool address private key check failed", poolConfig.Id);
-            }
-        }
-
         // test daemon
         try
         {

@@ -33,7 +33,7 @@ namespace Miningcore.Blockchain.Warthog;
 
 [CoinFamily(CoinFamily.Warthog)]
 public class WarthogPayoutHandler : PayoutHandlerBase,
-    IPayoutHandler
+    IPayoutHandler, IDisposable
 {
     public WarthogPayoutHandler(
         IComponentContext ctx,
@@ -78,6 +78,9 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
     {
         Contract.RequiresNonNull(pc);
 
+        ellipticPrivateKey?.Dispose();
+        ellipticPrivateKey = null;
+
         poolConfig = pc;
         clusterConfig = cc;
         extraPoolPaymentProcessingConfig = pc.PaymentProcessing.Extra.SafeExtensionDataAs<WarthogPaymentProcessingConfigExtra>();
@@ -117,6 +120,12 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
         }
 
         minConfirmations = extraPoolPaymentProcessingConfig?.MinimumConfirmations ?? (network == "mainnet" ? 120 : 110);
+    }
+
+    public void Dispose()
+    {
+        ellipticPrivateKey?.Dispose();
+        ellipticPrivateKey = null;
     }
 
     public virtual async Task<Block[]> ClassifyBlocksAsync(IMiningPool pool, Block[] blocks, CancellationToken ct)
@@ -209,7 +218,7 @@ public class WarthogPayoutHandler : PayoutHandlerBase,
 
                         // we only need the block reward(s) related to our pool address
                         var blockRewards = response.Data.Body.BlockReward
-                            .Where(x => x.ToAddress.Contains(poolConfig.Address))
+                            .Where(x => string.Equals(x.ToAddress, poolConfig.Address, StringComparison.Ordinal))
                             .ToList();
 
                         foreach (var blockReward in blockRewards)

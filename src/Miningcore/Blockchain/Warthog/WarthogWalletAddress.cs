@@ -39,12 +39,21 @@ public static class WarthogWalletAddress
         }
         catch(Exception)
         {
+            key.Dispose();
             throw new ArgumentException("Configured Warthog wallet private key is invalid");
         }
 
-        if(!string.Equals(derivedAddress, poolAddress,
-            StringComparison.OrdinalIgnoreCase))
+        if(!string.Equals(poolAddress, poolAddress?.ToLowerInvariant(), StringComparison.Ordinal))
+        {
+            key.Dispose();
+            throw new ArgumentException("Configured Warthog pool address must be lowercase hex");
+        }
+
+        if(!string.Equals(derivedAddress, poolAddress, StringComparison.Ordinal))
+        {
+            key.Dispose();
             throw new ArgumentException("Configured Warthog wallet private key does not match the pool address");
+        }
 
         return key;
     }

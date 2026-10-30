@@ -200,6 +200,7 @@ public class PayoutManager : ProcessStatusBackgroundService
                     .First(x => x.Value.Metadata.SupportedFamilies.Contains(family)).Value;
 
                 var handler = handlerImpl.Value;
+                using var handlerLifetime = handler as IDisposable;
                 await handler.ConfigureAsync(clusterConfig, poolConfig, ct);
 
                 // resolve payout scheme
