@@ -25,6 +25,7 @@ using Xunit;
 
 namespace Miningcore.Tests.Rpc;
 
+[Collection(RpcDiagnosticCollection.Name)]
 public class DaemonRestTransportTests
 {
     [Theory]
@@ -323,6 +324,8 @@ public class DaemonRestTransportTests
                 Version = HttpVersion.Version20,
                 VersionPolicy = HttpVersionPolicy.RequestVersionExact,
             };
+            request.Options.Set(DaemonRestDiagnosticsHandler.PoolIdOption, "pool-1");
+            request.Options.Set(DaemonRestDiagnosticsHandler.EndpointIndexOption, 2);
             if(i == 2)
             {
                 using var response = await client.SendAsync(request);
@@ -383,7 +386,7 @@ public class DaemonRestTransportTests
         public RestLogCapture()
         {
             var config = new LoggingConfiguration();
-            config.AddRule(NLog.LogLevel.Warn, NLog.LogLevel.Fatal, target);
+            config.AddRule(NLog.LogLevel.Warn, NLog.LogLevel.Fatal, target, "pool-1");
             NLog.LogManager.Configuration = config;
         }
 

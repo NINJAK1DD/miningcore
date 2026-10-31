@@ -37,6 +37,7 @@ using Xunit;
 
 namespace Miningcore.Tests.Rpc;
 
+[Collection(RpcDiagnosticCollection.Name)]
 public class DaemonRestConsumerTests
 {
     [Fact]
@@ -107,6 +108,7 @@ public class DaemonRestConsumerTests
         Assert.Equal(JTokenType.Null, record["method"].Type);
         Assert.DoesNotContain("127.0.0.1", warnings.Warnings.Single());
         Assert.Contains(warnings.Warnings.Single(), warnings.ReadPoolLog());
+        Assert.Contains(warnings.Warnings.Single(), warnings.ReadMainLog());
     }
 
     [Fact]
@@ -243,6 +245,7 @@ public class DaemonRestConsumerTests
         private readonly NLog.Targets.MemoryTarget target = new("pool-capture") { Layout = "${message}" };
         private readonly string directory = Path.Combine(Path.GetTempPath(), "miningcore-rest-log-" + Guid.NewGuid().ToString("N"));
         public string PoolLogPath { get; }
+        public string MainLogPath => Path.Combine(directory, "main.log");
 
         public PoolLogCapture(string poolId)
         {
@@ -250,7 +253,8 @@ public class DaemonRestConsumerTests
             Directory.CreateDirectory(directory);
             var config = Miningcore.Program.CreateLoggingConfiguration(new ClusterLoggingConfig
             {
-                Level = "Warn", PerPoolLogFile = true, LogBaseDirectory = directory,
+                Level = "Warn", PerPoolLogFile = true, LogFile = "main.log",
+                LogBaseDirectory = directory,
             }, false, new[] { new PoolConfig { Id = poolId } });
             var poolRule = Assert.Single(config.LoggingRules.Where(rule => rule.LoggerNamePattern == poolId));
             config.AddTarget(target);
@@ -266,6 +270,8 @@ public class DaemonRestConsumerTests
             NLog.LogManager.Configuration = previous;
             return File.ReadAllText(PoolLogPath);
         }
+
+        public string ReadMainLog() => File.ReadAllText(MainLogPath);
 
         public void Dispose()
         {

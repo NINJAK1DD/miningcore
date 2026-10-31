@@ -108,7 +108,8 @@ public class NonParallelCollectionTests
             new[] { typeof(WarthogWalletAddressTests) } };
         yield return new object[] { typeof(RpcDiagnosticCollection),
             new[] { typeof(RpcDiagnosticTests), typeof(RpcConsumerDiagnosticTests),
-                typeof(DaemonErrorCompatibilityTests) } };
+                typeof(DaemonErrorCompatibilityTests), typeof(DaemonRestTransportTests),
+                typeof(DaemonRestConsumerTests) } };
         yield return new object[] { typeof(PayoutManagerLoggingCollection), new[] { typeof(PayoutManagerLoggingTests) } };
         yield return new object[] { typeof(IPAccessWhitelistLoggingCollection), new[] { typeof(IPAccessWhitelistLoggingTests) } };
         yield return new object[] { typeof(ShareRecoveryLoggingCollection),
