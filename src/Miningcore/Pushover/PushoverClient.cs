@@ -6,6 +6,11 @@ namespace Miningcore.Pushover;
 
 public class PushoverClient
 {
+    // Pushover asks clients to keep at most two requests in flight. Reserve one
+    // slot for critical durability alerts when ordinary traffic is active.
+    private static readonly SemaphoreSlim Requests = new(2, 2);
+    private static readonly SemaphoreSlim OrdinaryRequests = new(1, 1);
+
     public PushoverClient(ClusterConfig clusterConfig, IHttpClientFactory httpClientFactory)
     {
         config = clusterConfig?.Notifications?.Pushover;
@@ -15,8 +20,12 @@ public class PushoverClient
     private readonly SimpleRestClient client;
     private readonly PushoverConfig config;
 
-    public async Task<PushoverReponse> PushMessage(string title, string message,
-        PushoverMessagePriority priority, CancellationToken ct)
+    public Task<PushoverReponse> PushMessage(string title, string message,
+        PushoverMessagePriority priority, CancellationToken ct) =>
+        PushMessage(title, message, priority, false, ct);
+
+    internal async Task<PushoverReponse> PushMessage(string title, string message,
+        PushoverMessagePriority priority, bool critical, CancellationToken ct)
     {
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(title));
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(message));
@@ -25,12 +34,35 @@ public class PushoverClient
         {
             User = config.User,
             Token = config.Token,
-            Title = title,
-            Message = message,
+            Title = PushoverMessagePolicy.Title(title),
+            Message = PushoverMessagePolicy.Message(message),
             Priority = (int) priority,
             Timestamp = (int) DateTimeOffset.Now.ToUnixTimeSeconds(),
         };
 
-        return await client.Post<PushoverReponse>("/messages.json", msg, ct);
+        var ordinaryHeld = false;
+        var requestHeld = false;
+        try
+        {
+            if(!critical)
+            {
+                await OrdinaryRequests.WaitAsync(ct);
+                ordinaryHeld = true;
+            }
+
+            await Requests.WaitAsync(ct);
+            requestHeld = true;
+            var response = await client.Post<PushoverReponse>("/messages.json", msg, ct);
+            if(response?.Status != 1)
+                throw new IOException("Pushover did not confirm message acceptance");
+            return response;
+        }
+        finally
+        {
+            if(requestHeld)
+                Requests.Release();
+            if(ordinaryHeld)
+                OrdinaryRequests.Release();
+        }
     }
 }

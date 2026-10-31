@@ -1265,19 +1265,6 @@ public class Program : ProcessStatusBackgroundService
                 throw new PoolStartupException(
                     $"API listener port {listenerConflict.Value} is also assigned to an enabled Stratum endpoint");
 
-            if(!recoveryMode &&
-               config.Notifications?.Admin?.Enabled == true)
-            {
-                if(string.IsNullOrEmpty(config.Notifications?.Email?.FromName))
-                    throw new PoolStartupException($"Notifications are enabled but email sender name is not configured (notifications.email.fromName)");
-
-                if(string.IsNullOrEmpty(config.Notifications?.Email?.FromAddress))
-                    throw new PoolStartupException($"Notifications are enabled but email sender address name is not configured (notifications.email.fromAddress)");
-
-                if(string.IsNullOrEmpty(config.Notifications?.Admin?.EmailAddress))
-                    throw new PoolStartupException($"Admin notifications are enabled but recipient address is not configured (notifications.admin.emailAddress)");
-            }
-
             if(string.IsNullOrEmpty(config.Logging?.LogFile))
             {
                 // emit a newline before regular logging output starts

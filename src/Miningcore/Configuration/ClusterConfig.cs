@@ -1322,12 +1322,20 @@ public class RewardRecipient
 
 public partial class EmailSenderConfig : AuthenticatedNetworkEndpointConfig
 {
+    /// <summary>Required SMTP transport policy: startTls, implicitTls, or localPlaintext.</summary>
+    [JsonConverter(typeof(SmtpTlsModeConverter))]
+    public SmtpTlsMode? TlsMode { get; set; }
     public string FromAddress { get; set; }
     public string FromName { get; set; }
+
+    // These configuration fields are scalar or immutable strings. Copy inherited
+    // fields as well so policy validation and delivery use the same values.
+    internal EmailSenderConfig Snapshot() => (EmailSenderConfig) MemberwiseClone();
 }
 
 public class PushoverConfig
 {
+    [Description("Enable Pushover delivery when notifications.admin.enabled is true; requires nonblank user and token.")]
     public bool Enabled { get; set; }
     public string User { get; set; }
     public string Token { get; set; }
@@ -1335,7 +1343,9 @@ public class PushoverConfig
 
 public partial class AdminNotifications
 {
+    [Description("Authoritative switch for administrative email and Pushover notifications, including critical alerts.")]
     public bool Enabled { get; set; }
+    [Description("Nonblank address enables email delivery when admin.enabled is true; requires notifications.email. Blank disables email when Pushover is enabled.")]
     public string EmailAddress { get; set; }
     public bool NotifyBlockFound { get; set; }
     public bool NotifyPaymentSuccess { get; set; }
@@ -1343,6 +1353,7 @@ public partial class AdminNotifications
 
 public partial class NotificationsConfig
 {
+    [Description("Deprecated compatibility field: ignored for activation and validation. Use admin.enabled and the email recipient or pushover.enabled.")]
     public bool Enabled { get; set; }
 
     public EmailSenderConfig Email { get; set; }

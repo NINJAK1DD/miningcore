@@ -269,7 +269,8 @@ public class BitcoinBlake2bPool : BitcoinPool, IIsolatedMiningPool
         {
             messageBus.NotifyPoolStatus(this, PoolStatus.Offline);
             messageBus.SendMessage(new AdminNotification("Bitcoin BLAKE2b pool faulted",
-                $"Pool '{poolConfig.Id}' stopped issuing and accepting mining work after a local failure. Other pools remain running. Inspect its logs and review daemon compatibility before restarting. Already-owned accounting operations are retained."));
+                $"Pool '{poolConfig.Id}' stopped issuing and accepting mining work after a local failure. Other pools remain running. Inspect its logs and review daemon compatibility before restarting. Already-owned accounting operations are retained.",
+                AdminNotificationImportance.FinancialOrSecurity, poolConfig.Id));
         }
         catch(Exception notificationError)
         {

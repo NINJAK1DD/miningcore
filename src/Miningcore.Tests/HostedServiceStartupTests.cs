@@ -546,7 +546,9 @@ public class HostedServiceStartupTests
         Assert.NotSame(hostedNotification, criticalSender);
         var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
             host.StartAsync(CancellationToken.None).WaitAsync(timeout.Token));
-        Assert.Contains("notifications.email", error.Message);
+        Assert.Contains(recipient == "admin@example.invalid"
+            ? "notifications.email"
+            : "notifications.admin.emailAddress", error.Message);
         await laterService.DidNotReceive().StartAsync(Arg.Any<CancellationToken>());
         messageBus.DidNotReceive().Listen<AdminNotification>();
         messageBus.DidNotReceive().Listen<BlockFoundNotification>();
@@ -610,7 +612,6 @@ public class HostedServiceStartupTests
             sender.SendCriticalAdminNotificationAsync(new AdminNotification("test", "recovery"), timeout.Token));
         var transport = Assert.IsType<IOException>(Assert.Single(aggregate.InnerExceptions));
         var error = Assert.IsType<InvalidOperationException>(transport.InnerException);
-        Assert.Contains("Email delivery", error.Message);
         Assert.Contains("notifications.email", error.Message);
         messageBus.DidNotReceive().Listen<AdminNotification>();
         messageBus.DidNotReceive().Listen<BlockFoundNotification>();
@@ -633,8 +634,10 @@ public class HostedServiceStartupTests
             Notifications = new NotificationsConfig
             {
                 Admin = new AdminNotifications { Enabled = true },
-                Email = new EmailSenderConfig(),
-                Pushover = new PushoverConfig(),
+                Pushover = new PushoverConfig
+                {
+                    Enabled = true, User = "test-user", Token = "test-token",
+                },
             },
         }, null, messageBus);
         using var timeout = new CancellationTokenSource(
@@ -667,8 +670,10 @@ public class HostedServiceStartupTests
             Notifications = new NotificationsConfig
             {
                 Admin = new AdminNotifications { Enabled = true },
-                Email = new EmailSenderConfig(),
-                Pushover = new PushoverConfig(),
+                Pushover = new PushoverConfig
+                {
+                    Enabled = true, User = "test-user", Token = "test-token",
+                },
             },
         }, null, messageBus);
         using var canceled = new CancellationTokenSource();

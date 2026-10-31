@@ -15,6 +15,7 @@ using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Notifications.Messages;
 using Miningcore.Rpc;
 using Miningcore.Tests.Util;
 using Miningcore.Time;
@@ -529,8 +530,9 @@ public class BitcoinJobManagerBaseTests
                 return new DirectBlockSubmissionPreparation();
             });
         using var container = BuildContainer();
+        var notificationBus = Substitute.For<IMessageBus>();
         var manager = new TestBitcoinJobManager(container,
-            MockMasterClock.FromTicks(638010200200475015), new MessageBus(),
+            MockMasterClock.FromTicks(638010200200475015), notificationBus,
             Substitute.For<IExtraNonceProvider>(), recorder)
         {
             DirectSubmissionException = new IOException(
@@ -570,6 +572,11 @@ public class BitcoinJobManagerBaseTests
 
         Assert.False(result.Accepted);
         Assert.True(result.Ambiguous);
+        notificationBus.Received(1).SendMessage(
+            Arg.Is<AdminNotification>(notification =>
+                notification.Subject.Contains("outcome is uncertain") &&
+                notification.Importance == AdminNotificationImportance.FinancialOrSecurity &&
+                notification.PoolId == "btc-direct"), Arg.Any<string>());
         Assert.True(manager.SubmissionStartedAfterPersistence);
         Assert.True(candidate.BlockRecordEmitted);
         Assert.Equal(candidate.BlockHash,

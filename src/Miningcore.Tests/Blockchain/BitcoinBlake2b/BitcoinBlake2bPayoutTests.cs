@@ -467,6 +467,10 @@ public class BitcoinBlake2bPayoutTests : TestBase
         await Fail(replacement.Handler);
         var alert = Assert.Single(fixture.Messages.ReceivedCalls()).GetArguments()[0] as AdminNotification;
         Assert.Contains(code.ToString(), alert.Message);
+        Assert.Equal(AdminNotificationImportance.FinancialOrSecurity, alert.Importance);
+        Assert.Equal(fixture.Pool.Config.Id, alert.PoolId);
+        if(kind == "chain-race")
+            Assert.Contains("no configuration drift is inferred", alert.Message);
         Assert.DoesNotContain("private daemon credential", alert.Message);
         Assert.Contains(logs.Messages, x => x.Contains("BitcoinBlake2bPayoutHandler.AttestAsync", StringComparison.Ordinal) && x.Contains(code.ToString(), StringComparison.Ordinal));
         Assert.All(logs.Messages, x => Assert.DoesNotContain("private daemon credential", x));

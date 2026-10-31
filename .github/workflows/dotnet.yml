@@ -423,6 +423,13 @@ jobs:
         --filter "FullyQualifiedName~Miningcore.Tests.Mining.ShareReceiverTests"
         src/Miningcore.Tests/Miningcore.Tests.csproj
 
+    - name: Verify SMTP TLS fail-closed transport
+      shell: bash
+      run: >-
+        dotnet test --no-build --verbosity normal
+        --filter "FullyQualifiedName~Miningcore.Tests.Notifications.SmtpTransportTests"
+        src/Miningcore.Tests/Miningcore.Tests.csproj
+
     - name: Test
       id: linux_full_suite
       shell: bash
@@ -705,6 +712,14 @@ jobs:
         --configuration Release
         --framework net10.0
         --filter "FullyQualifiedName~Miningcore.Tests.Rpc.RpcTlsTests.PlatformRejectsUntrustedDaemonCertificate"
+
+    - name: Verify SMTP TLS transport on Windows
+      run: >-
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
+        --no-restore
+        --configuration Release
+        --framework net10.0
+        --filter "FullyQualifiedName~Miningcore.Tests.Notifications.SmtpTransportTests"
 
     - name: Test Windows Stratum listener lifecycle
       run: >-

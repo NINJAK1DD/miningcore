@@ -151,20 +151,25 @@
 
   // Email, administrative and Pushover event delivery.
   "notifications": {
-    // Master notification switch. Individual channels also have their own settings.
+    // Deprecated compatibility field; ignored. Use admin.enabled below.
     "enabled": false,
     "email": {
       // SMTP server used for email notifications.
       "host": "smtp.example.com",
       "port": 587,
+      // Required: startTls for 25/587; implicitTls for 465. See docs/configuration.md.
+      "tlsMode": "startTls",
       "user": "CHANGE_ME_SMTP_USER",
       "password": "CHANGE_ME_SMTP_PASSWORD",
       "fromAddress": "pool@example.com",
       "fromName": "Miningcore operator"
     },
     "admin": {
-      // Operational alerts for block, payment and persistence events.
+      // Authoritative switch for administrative, block, payment and critical
+      // persistence alerts. Requires a nonblank emailAddress or enabled Pushover.
       "enabled": false,
+      // Nonblank opts into email and requires the email provider above.
+      // Omit or blank for Pushover-only delivery.
       "emailAddress": "operator@example.com",
       "notifyBlockFound": true,
       "notifyPaymentSuccess": true

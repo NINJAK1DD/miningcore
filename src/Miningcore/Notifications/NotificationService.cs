@@ -1,11 +1,12 @@
 using Miningcore.Rpc;
 using System.Net;
+using System.Net.Security;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
-using System.Text;
 using MailKit.Net.Smtp;
+using MailKit.Security;
 using MimeKit;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
@@ -15,51 +16,196 @@ using Miningcore.Notifications.Messages;
 using Miningcore.Payments;
 using Miningcore.Pushover;
 using NLog;
-using static Miningcore.Util.ActionUtils;
 
 namespace Miningcore.Notifications;
 
 public class NotificationService : StartupGatedBackgroundService,
     ICriticalNotificationSender
 {
+    internal TimeSpan OrdinaryTransportTimeout { get; set; } =
+        TimeSpan.FromSeconds(15);
+
     public NotificationService(
         ClusterConfig clusterConfig,
         PushoverClient pushoverClient,
-        IMessageBus messageBus)
+        IMessageBus messageBus) : this(clusterConfig, pushoverClient, messageBus,
+        LogManager.GetCurrentClassLogger())
+    {
+    }
+
+    internal NotificationService(ClusterConfig clusterConfig,
+        PushoverClient pushoverClient, IMessageBus messageBus, ILogger logger)
     {
         Contract.RequiresNonNull(clusterConfig);
         Contract.RequiresNonNull(messageBus);
+        Contract.RequiresNonNull(logger);
 
         this.clusterConfig = clusterConfig;
-        emailSenderConfig = clusterConfig.Notifications?.Email;
         this.messageBus = messageBus;
         this.pushoverClient = pushoverClient;
+        this.logger = logger;
+        activation = new NotificationActivation(clusterConfig.Notifications);
 
         poolConfigs = clusterConfig.Pools.ToDictionary(x => x.Id, x => x);
-
-        adminEmail = clusterConfig.Notifications?.Admin?.EmailAddress;
     }
 
-    private readonly ILogger logger = LogManager.GetCurrentClassLogger();
+    private readonly ILogger logger;
     private readonly ClusterConfig clusterConfig;
     private readonly Dictionary<string, PoolConfig> poolConfigs;
-    private readonly string adminEmail;
+    private readonly NotificationActivation activation;
     private readonly IMessageBus messageBus;
-    private readonly EmailSenderConfig emailSenderConfig;
     private readonly PushoverClient pushoverClient;
+    internal Action<PaymentNotification> BeforePaymentFormat { get; set; }
 
     public string FormatAmount(decimal amount, string poolId)
     {
         return $"{amount:0.#####} {poolConfigs[poolId].Template.Symbol}";
     }
 
-    private async Task OnAdminNotificationAsync(AdminNotification notification, CancellationToken ct)
-    {
-        if(!string.IsNullOrEmpty(adminEmail))
-            await Guard(()=> SendEmailAsync(adminEmail, notification.Subject, notification.Message, ct), LogGuarded);
+    private enum OrdinaryImportance { Routine, PayoutIncident, FinancialOrSecurityAdmin }
 
-        if(clusterConfig.Notifications?.Pushover?.Enabled == true)
-            await Guard(()=> pushoverClient.PushMessage(notification.Subject, notification.Message, PushoverMessagePriority.None, ct), LogGuarded);
+    private sealed record OrdinaryNotification(string Subject, string EmailMessage,
+        string PushoverMessage, OrdinaryImportance Importance,
+        string PoolId = null);
+    private sealed record OrdinaryEnvelope(Func<OrdinaryNotification> Format,
+        OrdinaryImportance Importance, string PoolId);
+
+    // Cap both the scheduler handoff and each transport's serial queue.
+    internal int MaxPendingOrdinaryNotifications { get; set; } = 256;
+    private int pendingFormatting;
+    private int pendingEmail;
+    private int pendingPushover;
+    private long droppedFormatting;
+    private long droppedEmail;
+    private long droppedPushover;
+    internal int PendingFormatting => Volatile.Read(ref pendingFormatting);
+    internal int PendingEmail => Volatile.Read(ref pendingEmail);
+    internal int PendingPushover => Volatile.Read(ref pendingPushover);
+    internal long DroppedFormatting => Volatile.Read(ref droppedFormatting);
+    internal long DroppedEmail => Volatile.Read(ref droppedEmail);
+    internal long DroppedPushover => Volatile.Read(ref droppedPushover);
+
+    private static OrdinaryNotification FormatAdminNotification(
+        AdminNotification notification) =>
+        new(notification.Subject, notification.Message, notification.Message,
+            notification.Importance == AdminNotificationImportance.FinancialOrSecurity
+                ? OrdinaryImportance.FinancialOrSecurityAdmin
+                : OrdinaryImportance.Routine,
+            notification.PoolId);
+
+    private static bool IsFinancialIncident(PaymentNotification notification) =>
+        notification.Outcome != PaymentNotificationOutcome.Success ||
+        !string.IsNullOrEmpty(notification.Error);
+
+    private static PayoutReconciliationTotals SummarizeReconciliation(
+        PayoutReconciliation reconciliation)
+    {
+        if(reconciliation == null) return null;
+
+        static PayoutBucketTotal Total(PayoutReconciliationEntry[] entries)
+        {
+            if(entries == null || entries.Length == 0) return null;
+            var count = 0;
+            decimal? amount = 0;
+            foreach(var entry in entries)
+            {
+                if(entry == null) continue;
+                count++;
+                if(amount.HasValue)
+                {
+                    try { amount += entry.Amount; }
+                    catch(OverflowException) { amount = null; }
+                }
+            }
+            return count == 0 ? null : new PayoutBucketTotal(count, amount);
+        }
+
+        return new PayoutReconciliationTotals(Total(reconciliation.Accepted),
+            Total(reconciliation.Failed), Total(reconciliation.Uncertain),
+            Total(reconciliation.NotAttempted));
+    }
+
+    private PaymentNotification CompactOversizedPayment(PaymentNotification notification)
+    {
+        const int maxItems = 2048;
+        const int maxCharacters = 512 * 1024;
+        long items = 0;
+        long characters = 0;
+
+        void Add(string value) => characters += value?.Length ?? 0;
+        bool Oversized() => items > maxItems || characters > maxCharacters;
+        bool AddStrings(string[] values)
+        {
+            if(values == null) return false;
+            items += values.Length;
+            if(Oversized()) return true;
+            foreach(var value in values)
+            {
+                Add(value);
+                if(Oversized()) return true;
+            }
+            return false;
+        }
+        bool AddEntries(PayoutReconciliationEntry[] entries)
+        {
+            if(entries == null) return false;
+            items += entries.Length;
+            if(Oversized()) return true;
+            foreach(var entry in entries)
+            {
+                if(entry == null) continue;
+                Add(entry.Address);
+                Add(entry.TransactionId);
+                Add(entry.Detail);
+                if(Oversized() || AddStrings(entry.TransactionIds)) return true;
+            }
+            return false;
+        }
+        bool AddChains(PaymentRecipientTransactionChain[] chains)
+        {
+            if(chains == null) return false;
+            items += chains.Length;
+            if(Oversized()) return true;
+            foreach(var chain in chains)
+            {
+                if(chain == null) continue;
+                Add(chain.Address);
+                Add(chain.CanonicalTransactionId);
+                if(Oversized() || AddStrings(chain.TransactionIds)) return true;
+            }
+            return false;
+        }
+
+        Add(notification.PoolId);
+        Add(notification.Symbol);
+        Add(notification.Error);
+        if(Oversized() || AddStrings(notification.TxIds) ||
+            AddStrings(notification.TxExplorerLinks) ||
+            AddChains(notification.RecipientTransactionChains) ||
+            AddEntries(notification.Reconciliation?.Accepted) ||
+            AddEntries(notification.Reconciliation?.Failed) ||
+            AddEntries(notification.Reconciliation?.Uncertain) ||
+            AddEntries(notification.Reconciliation?.NotAttempted))
+        {
+            logger.Warn("Oversized payout notification for pool {0} reduced to an operator summary; consult retained payout evidence and wallet history",
+                notification.PoolId);
+            return new PaymentNotification(notification.PoolId, null,
+                notification.Amount, notification.Symbol)
+            {
+                Outcome = IsFinancialIncident(notification)
+                    ? notification.Outcome == PaymentNotificationOutcome.Uncertain
+                        ? PaymentNotificationOutcome.Uncertain
+                        : PaymentNotificationOutcome.Failure
+                    : PaymentNotificationOutcome.Success,
+                RecipientsCount = notification.RecipientsCount,
+                SubmittedAmount = notification.SubmittedAmount,
+                PrecisionAdjustment = notification.PrecisionAdjustment,
+                SummaryOnly = true,
+                SummaryTotals = SummarizeReconciliation(notification.Reconciliation),
+            };
+        }
+
+        return notification;
     }
 
     public async Task SendCriticalAdminNotificationAsync(AdminNotification notification,
@@ -67,87 +213,153 @@ public class NotificationService : StartupGatedBackgroundService,
     {
         ArgumentNullException.ThrowIfNull(notification);
 
-        if(clusterConfig.Notifications?.Admin?.Enabled != true)
+        if(!activation.AdminEnabled)
             return;
 
-        var errors = new List<Exception>();
+        if(!activation.EmailEnabled && !activation.PushoverEnabled)
+            throw new InvalidOperationException(
+                "Enabled critical notifications have no configured email recipient or Pushover transport");
 
-        if(!string.IsNullOrWhiteSpace(adminEmail))
-        {
-            try
-            {
-                await SendEmailAsync(adminEmail, notification.Subject,
-                    notification.Message, ct);
-            }
-            catch(Exception ex)
-            {
-                errors.Add(new IOException(
-                    "Critical administrative email delivery failed", ex));
-            }
-        }
+        // Start both selected transports before awaiting either one. A slow SMTP
+        // connection must not consume the caller's entire durability-alert timeout
+        // before Pushover has a chance to send.
+        var attempts = new List<Task<Exception>>();
+        if(activation.EmailEnabled)
+            attempts.Add(AttemptCriticalTransportAsync(
+                () => SendEmailAsync(activation.EmailRecipient, notification.Subject,
+                    notification.Message, ct),
+                "Critical administrative email delivery failed"));
 
-        if(clusterConfig.Notifications?.Pushover?.Enabled == true)
-        {
-            try
+        if(activation.PushoverEnabled)
+            attempts.Add(AttemptCriticalTransportAsync(async () =>
             {
+                activation.ValidatePushoverProvider();
                 await pushoverClient.PushMessage(notification.Subject,
-                    notification.Message, PushoverMessagePriority.None, ct);
-            }
-            catch(Exception ex)
-            {
-                errors.Add(new IOException(
-                    "Critical administrative Pushover delivery failed", ex));
-            }
-        }
+                    notification.Message, PushoverMessagePriority.None, true, ct);
+            }, "Critical administrative Pushover delivery failed"));
 
-        if(errors.Count > 0)
+        var errors = (await Task.WhenAll(attempts))
+            .Where(error => error != null).ToArray();
+        if(errors.Length > 0)
             throw new AggregateException(
                 "One or more critical administrative notification transports failed",
                 errors);
     }
 
-    private async Task OnBlockFoundNotificationAsync(BlockFoundNotification notification, CancellationToken ct)
+    private static async Task<Exception> AttemptCriticalTransportAsync(
+        Func<Task> send, string failureMessage)
     {
-        const string subject = "Block Notification";
-        var message = $"Pool {notification.PoolId} found block candidate {notification.BlockHeight}";
-
-        if(clusterConfig.Notifications?.Admin?.NotifyBlockFound == true)
+        // Do not let synchronous work in one transport delay the other one's start.
+        await Task.Yield();
+        try
         {
-            await Guard(() => SendEmailAsync(adminEmail, subject, message, ct), LogGuarded);
-
-            if(clusterConfig.Notifications?.Pushover?.Enabled == true)
-                await Guard(() => pushoverClient.PushMessage(subject, message, PushoverMessagePriority.None, ct), LogGuarded);
+            await send();
+            return null;
+        }
+        catch(Exception ex)
+        {
+            return new IOException(failureMessage, ex);
         }
     }
 
-    private async Task OnPaymentNotificationAsync(PaymentNotification notification, CancellationToken ct)
+    private async Task AttemptOrdinaryTransportAsync(string transport,
+        Func<CancellationToken, Task> send, CancellationToken ct)
     {
+        await Task.Yield();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        try
+        {
+            timeout.CancelAfter(OrdinaryTransportTimeout);
+            await send(timeout.Token).WaitAsync(timeout.Token);
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            // Host shutdown is expected and must not produce a delivery error.
+        }
+        catch(OperationCanceledException ex) when(timeout.IsCancellationRequested)
+        {
+            var failure = new TimeoutException(
+                $"Ordinary {transport} delivery exceeded {OrdinaryTransportTimeout.TotalSeconds:g} s", ex);
+            logger.Error("Ordinary {0} delivery exceeded {1:g} s ({2})",
+                transport, OrdinaryTransportTimeout.TotalSeconds,
+                RpcConsumerDiagnostics.Failure(failure));
+        }
+        catch(Exception ex)
+        {
+            logger.Error("Ordinary {0} delivery failed ({1})", transport,
+                RpcConsumerDiagnostics.Failure(ex));
+        }
+    }
+
+    private OrdinaryNotification FormatBlockFoundNotification(
+        BlockFoundNotification notification)
+    {
+        if(clusterConfig.Notifications?.Admin?.NotifyBlockFound != true)
+            return null;
+
+        const string subject = "Block Notification";
+        var message = $"Pool {notification.PoolId} found block candidate {notification.BlockHeight}";
+        return new OrdinaryNotification(subject, message, message,
+            OrdinaryImportance.Routine, notification.PoolId);
+    }
+
+    private OrdinaryNotification PreparePaymentNotification(
+        PaymentNotification notification)
+    {
+        BeforePaymentFormat?.Invoke(notification);
         var coin = poolConfigs[notification.PoolId].Template;
-        var (subject, emailMessage, pushoverMessage, isSuccess) =
+        var (subject, emailMessage, pushoverMessage, _) =
             FormatPaymentNotification(notification,
-            coin.Symbol, coin.ExplorerTxLink);
+            coin.Symbol, coin.ExplorerTxLink, activation.EmailEnabled);
 
-        if(isSuccess && clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess != true)
-            return;
-
-        await Guard(()=> SendEmailAsync(adminEmail, subject, emailMessage, ct), LogGuarded);
-
-        if(clusterConfig.Notifications?.Pushover?.Enabled == true)
-            await Guard(()=> pushoverClient.PushMessage(subject, pushoverMessage,
-                PushoverMessagePriority.None, ct), LogGuarded);
+        return new OrdinaryNotification(subject, emailMessage, pushoverMessage,
+            IsFinancialIncident(notification) ? OrdinaryImportance.PayoutIncident :
+                OrdinaryImportance.Routine, notification.PoolId);
     }
 
     internal static (string Subject, string EmailMessage, string PushoverMessage,
         bool IsSuccess)
         FormatPaymentNotification(PaymentNotification notification, string symbol,
-        string explorerTxLink)
+            string explorerTxLink, bool emailSelected = false)
     {
         var outcome = notification.Outcome;
 
         // Preserve the legacy object-initializer contract where Error alone represented failure.
-        if(outcome == PaymentNotificationOutcome.Success &&
-            !string.IsNullOrEmpty(notification.Error))
+        if(outcome == PaymentNotificationOutcome.Success && IsFinancialIncident(notification))
             outcome = PaymentNotificationOutcome.Failure;
+
+        if(notification.SummaryOnly)
+        {
+            var subject = outcome switch
+            {
+                PaymentNotificationOutcome.Success => "Payout Success Notification",
+                PaymentNotificationOutcome.Uncertain => "Payout Outcome Uncertain Notification",
+                _ => "Payout Failure Notification",
+            };
+            var state = outcome switch
+            {
+                PaymentNotificationOutcome.Success => "completed",
+                PaymentNotificationOutcome.Uncertain => "has an uncertain outcome",
+                _ => "failed",
+            };
+            var guidance = outcome == PaymentNotificationOutcome.Uncertain
+                ? "Reconcile wallet history before retrying or releasing ownership."
+                : outcome == PaymentNotificationOutcome.Failure
+                    ? "Check operation diagnostics before retrying."
+                    : string.Empty;
+            var emailMessage = $"Payout batch {FormatExactHtmlAmount(notification.Amount, symbol)} " +
+                $"from pool {HtmlEncode(notification.PoolId)} {state}. " +
+                "Per-recipient detail was omitted from this alert because the notification payload was large. " +
+                FormatCompactTotals(notification.SummaryTotals, symbol, true) +
+                "Consult retained private payout evidence and wallet history. " + guidance;
+            var pushoverMessage = $"Payout batch {FormatExactAmount(notification.Amount, symbol)} " +
+                $"from pool {notification.PoolId} {state}. " +
+                "Per-recipient detail was omitted from this alert because the notification payload was large. " +
+                FormatCompactTotals(notification.SummaryTotals, symbol, false) +
+                "Consult retained private payout evidence and wallet history. " + guidance;
+            return (subject, emailMessage, pushoverMessage,
+                outcome == PaymentNotificationOutcome.Success);
+        }
 
         if(outcome == PaymentNotificationOutcome.Success)
         {
@@ -166,7 +378,7 @@ public class NotificationService : StartupGatedBackgroundService,
                 $"from pool {notification.PoolId} to {notification.RecipientsCount} " +
                 $"recipients in transaction(s) {string.Join(", ", txLinks)}";
 
-            return (subject, emailMessage, TruncateForPushover(pushoverMessage), true);
+            return (subject, emailMessage, pushoverMessage, true);
         }
 
         if(outcome == PaymentNotificationOutcome.Uncertain)
@@ -210,12 +422,14 @@ public class NotificationService : StartupGatedBackgroundService,
                 "Uncertain", notification.Reconciliation?.Uncertain, symbol);
             AppendPushoverReconciliationSummary(pushoverSections,
                 "Not attempted", notification.Reconciliation?.NotAttempted, symbol);
-            pushoverSections.Add("See email for the recipient/transaction reconciliation summary. Consult retained private reconciliation evidence and wallet history for withheld error details.");
             if(notification.FailureDiagnostic != null)
                 pushoverSections.Add(notification.FailureDiagnostic.Summary);
+            pushoverSections.Add("Consult retained private payout reconciliation evidence and wallet history for per-recipient details and withheld error information.");
+            if(emailSelected)
+                pushoverSections.Add("If the separate email alert was delivered, it includes the per-recipient summary.");
 
             return (subject, string.Join("<br/>", sections),
-                TruncateForPushover(string.Join("\n", pushoverSections)), false);
+                string.Join("\n", pushoverSections), false);
         }
 
         // Conclusive failures do not carry the uncertain-outcome reconciliation
@@ -231,7 +445,30 @@ public class NotificationService : StartupGatedBackgroundService,
             $"from pool {notification.PoolId}: {conclusiveFailureGuidance}" +
             (failureSummary == null ? string.Empty : " " + failureSummary);
         return ("Payout Failure Notification", emailFailureMessage,
-            TruncateForPushover(pushoverFailureMessage), false);
+            pushoverFailureMessage, false);
+    }
+
+    private static string FormatCompactTotals(PayoutReconciliationTotals totals,
+        string symbol, bool html)
+    {
+        if(totals == null) return string.Empty;
+        var sections = new List<string>();
+        Add("Accepted/persisted", totals.Accepted);
+        Add("Failed", totals.Failed);
+        Add("Uncertain", totals.Uncertain);
+        Add("Not attempted", totals.NotAttempted);
+        return sections.Count == 0 ? string.Empty :
+            string.Join(html ? "<br/>" : "\n", sections) + (html ? "<br/>" : "\n");
+
+        void Add(string heading, PayoutBucketTotal bucket)
+        {
+            if(bucket == null) return;
+            var amount = bucket.Amount.HasValue
+                ? html ? FormatExactHtmlAmount(bucket.Amount.Value, symbol)
+                    : FormatExactAmount(bucket.Amount.Value, symbol)
+                : "amount unavailable";
+            sections.Add($"{heading}: {bucket.Count} recipient(s), {amount}.");
+        }
     }
 
     private static void AppendReconciliationSection(List<string> sections, string heading,
@@ -409,37 +646,43 @@ public class NotificationService : StartupGatedBackgroundService,
         return WebUtility.HtmlEncode(value);
     }
 
-    internal static string TruncateForPushover(string message)
+    private static readonly RemoteCertificateValidationCallback StrictCertificateValidation =
+        (_, _, _, errors) => SmtpTransportPolicy.CertificateIsValid(errors);
+
+    public Task SendEmailAsync(string recipient, string subject, string body, CancellationToken ct) =>
+        SendEmailAsync(recipient, subject, body, ct, StrictCertificateValidation);
+
+    // The internal overload permits tests to use an isolated certificate trust root.
+    // Every production caller uses the strict platform validation callback above.
+    internal async Task SendEmailAsync(string recipient, string subject, string body,
+        CancellationToken ct, RemoteCertificateValidationCallback certificateValidation)
     {
-        const int maxCharacters = 1024;
-        var characters = message.EnumerateRunes().ToArray();
-
-        if(characters.Length <= maxCharacters)
-            return message;
-
-        return string.Concat(characters.Take(maxCharacters - 1)
-            .Select(x => x.ToString())) + "…";
-    }
-
-    public async Task SendEmailAsync(string recipient, string subject, string body, CancellationToken ct)
-    {
+        ArgumentNullException.ThrowIfNull(certificateValidation);
         // The critical-sender singleton is separate from the hosted instance under the
         // current Autofac registrations, even in normal operation. Recovery also resolves
         // it without hosting. Delivery cannot rely on the hosted startup validation.
-        if(emailSenderConfig == null)
-            throw new InvalidOperationException("Email delivery requires notifications.email configuration");
+        NotificationActivation.RequireAddress(recipient,
+            "notifications.admin.emailAddress");
+        // Validate and send from one consistent copy of the configuration.
+        var (email, socketOptions) = activation.ValidateEmailProvider();
         logger.Info(() => $"Sending '{subject.ToLower()}' email to {recipient}");
 
         var message = new MimeMessage();
-        message.From.Add(new MailboxAddress(emailSenderConfig.FromName, emailSenderConfig.FromAddress));
+        message.From.Add(new MailboxAddress(email.FromName, email.FromAddress));
         message.To.Add(new MailboxAddress("", recipient));
         message.Subject = subject;
         message.Body = new TextPart("html") { Text = body };
 
         using(var client = new SmtpClient())
         {
-            await client.ConnectAsync(emailSenderConfig.Host, emailSenderConfig.Port, cancellationToken: ct);
-            await client.AuthenticateAsync(emailSenderConfig.User, emailSenderConfig.Password, ct);
+            client.CheckCertificateRevocation = true;
+            client.ServerCertificateValidationCallback = certificateValidation;
+            await client.ConnectAsync(email.Host, email.Port,
+                socketOptions, ct);
+            if(socketOptions != SecureSocketOptions.None && !client.IsSecure)
+                throw new InvalidOperationException("SMTP TLS negotiation did not complete");
+            if(socketOptions != SecureSocketOptions.None && !string.IsNullOrEmpty(email.User))
+                await client.AuthenticateAsync(email.User, email.Password, ct);
             await client.SendAsync(message, ct);
             await client.DisconnectAsync(true, ct);
         }
@@ -452,40 +695,185 @@ public class NotificationService : StartupGatedBackgroundService,
         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "NotificationService.LogGuarded", failure: ex);
     }
 
-    private IObservable<IObservable<Unit>> Subscribe<T>(Func<T, CancellationToken, Task> handler, CancellationToken ct)
+    private bool TryReserve(ref int pending, ref long dropped,
+        string queue, OrdinaryImportance importance, string poolId)
+    {
+        var limit = Math.Max(1, MaxPendingOrdinaryNotifications);
+        // Leave capacity for incidents even when routine publishers are noisy.
+        var routineLimit = limit > 1
+            ? limit - Math.Min(32, Math.Max(1, limit / 8))
+            : limit;
+        while(true)
+        {
+            var current = Volatile.Read(ref pending);
+            if(current >= (importance == OrdinaryImportance.Routine ? routineLimit : limit))
+            {
+                var total = Interlocked.Increment(ref dropped);
+                if(importance == OrdinaryImportance.PayoutIncident)
+                    logger.Error("Ordinary {0} queue full; payout failure or uncertain outcome not queued for pool {1}; dropped count {2}",
+                        queue, poolId, total);
+                else if(importance == OrdinaryImportance.FinancialOrSecurityAdmin)
+                    logger.Error("Ordinary {0} queue full; financial or security administrative alert not queued for {1}; dropped count {2}",
+                        queue, poolId == null ? "the cluster" : $"pool {poolId}", total);
+                else if(total == 1 || total % 100 == 0)
+                    logger.Warn("Ordinary {0} queue full; routine alert omitted; dropped count {1}",
+                        queue, total);
+                return false;
+            }
+
+            if(Interlocked.CompareExchange(ref pending, current + 1, current) == current)
+                return true;
+        }
+    }
+
+    private IObservable<OrdinaryEnvelope> ListenForFormatting<T>(
+        Func<T, OrdinaryNotification> format,
+        Func<T, bool> eligible,
+        Func<T, OrdinaryImportance> importance,
+        Func<T, string> poolId,
+        Func<T, T> compact = null)
     {
         return messageBus.Listen<T>()
-            .Select(msg => Observable.FromAsync(() =>
-                Guard(()=> handler(msg, ct), LogGuarded)));
+            .Select(msg =>
+            {
+                var reserved = false;
+                try
+                {
+                    if(msg is null)
+                        throw new ArgumentNullException(nameof(msg));
+                    if(!eligible(msg))
+                        return null;
+
+                    var level = importance(msg);
+                    var affectedPool = poolId(msg);
+                    if(!TryReserve(ref pendingFormatting, ref droppedFormatting,
+                        "formatting", level, affectedPool))
+                        return null;
+                    reserved = true;
+
+                    // Only admitted payout payloads are scanned on the
+                    // publisher thread. Full formatting runs after ObserveOn.
+                    var retained = compact == null ? msg : compact(msg);
+                    return new OrdinaryEnvelope(() => format(retained),
+                        level, affectedPool);
+                }
+                catch(Exception ex)
+                {
+                    if(reserved)
+                        Interlocked.Decrement(ref pendingFormatting);
+                    LogGuarded(ex);
+                    return null;
+                }
+            })
+            .Where(envelope => envelope != null);
+    }
+
+    private OrdinaryNotification FormatSafely(
+        OrdinaryEnvelope envelope, CancellationToken ct)
+    {
+        try
+        {
+            return envelope.Format();
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch(Exception ex)
+        {
+            LogGuarded(ex);
+            return null;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref pendingFormatting);
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         try
         {
-            var obs = new List<IObservable<IObservable<Unit>>>();
+            // Also validate the actual hosted instance: it is distinct from the
+            // Autofac critical sender and can be constructed without Program.ValidateConfig.
+            var validationErrors = activation.GetValidationErrors();
+            if(validationErrors.Count > 0)
+                throw new PoolStartupException(string.Join("; ", validationErrors));
 
-            if(clusterConfig.Notifications?.Admin?.Enabled == true)
+            if(clusterConfig.Notifications?.Enabled == true &&
+                !activation.AdminEnabled)
+                logger.Warn("notifications.enabled is deprecated and ignored; notifications.admin.enabled is false, so administrative alerts are inactive");
+            if(activation.AdminEnabled)
             {
-                // Normal non-recovery validation already requires email configuration.
-                // Validate before subscriptions/readiness, not in the constructor where
-                // Autofac would wrap the named startup error. Block/payment delivery can
-                // use the sender even when the recipient is absent or whitespace.
-                // Keep this aligned with the policy consolidation tracked in issue #148.
-                if(emailSenderConfig == null)
-                    throw new PoolStartupException("Admin email notifications require notifications.email configuration");
-                obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));
-                obs.Add(Subscribe<BlockFoundNotification>(OnBlockFoundNotificationAsync, ct));
-                obs.Add(Subscribe<PaymentNotification>(OnPaymentNotificationAsync, ct));
-            }
-
-            if(obs.Count > 0)
-            {
-                var processing = obs
+                // Both channels see the same ordered events, but each drains its
+                // own serial queue. A stalled email cannot hold later pushes.
+                var events = new[]
+                    {
+                        ListenForFormatting<AdminNotification>(FormatAdminNotification,
+                            _ => true,
+                            msg => msg.Importance == AdminNotificationImportance.FinancialOrSecurity
+                                ? OrdinaryImportance.FinancialOrSecurityAdmin : OrdinaryImportance.Routine,
+                            msg => msg.PoolId),
+                        ListenForFormatting<BlockFoundNotification>(FormatBlockFoundNotification,
+                            _ => clusterConfig.Notifications?.Admin?.NotifyBlockFound == true,
+                            _ => OrdinaryImportance.Routine, msg => msg.PoolId),
+                        ListenForFormatting<PaymentNotification>(PreparePaymentNotification,
+                            msg => IsFinancialIncident(msg) ||
+                                clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess == true,
+                            msg => IsFinancialIncident(msg) ? OrdinaryImportance.PayoutIncident :
+                                OrdinaryImportance.Routine,
+                            msg => msg.PoolId,
+                            CompactOversizedPayment),
+                    }
                     .Merge()
                     .ObserveOn(TaskPoolScheduler.Default)
-                    .Concat()
-                    .ToTask(ct);
+                    .Select(envelope => FormatSafely(envelope, ct))
+                    .Where(notification => notification != null)
+                    .Publish();
+
+                var channels = new List<IObservable<Unit>>();
+                if(activation.EmailEnabled)
+                    channels.Add(events
+                        .Where(notification => TryReserve(ref pendingEmail,
+                            ref droppedEmail, "email", notification.Importance,
+                            notification.PoolId))
+                        .Select(notification => Observable.FromAsync(async () =>
+                        {
+                            try
+                            {
+                                await AttemptOrdinaryTransportAsync("email", token =>
+                                    SendEmailAsync(activation.EmailRecipient,
+                                        notification.Subject, notification.EmailMessage, token), ct);
+                            }
+                            finally
+                            {
+                                Interlocked.Decrement(ref pendingEmail);
+                            }
+                        }))
+                        .Concat());
+                if(activation.PushoverEnabled)
+                    channels.Add(events
+                        .Where(notification => TryReserve(ref pendingPushover,
+                            ref droppedPushover, "Pushover", notification.Importance,
+                            notification.PoolId))
+                        .Select(notification => Observable.FromAsync(async () =>
+                        {
+                            try
+                            {
+                                await AttemptOrdinaryTransportAsync("Pushover", token =>
+                                    pushoverClient.PushMessage(notification.Subject,
+                                        notification.PushoverMessage,
+                                        PushoverMessagePriority.None, token), ct);
+                            }
+                            finally
+                            {
+                                Interlocked.Decrement(ref pendingPushover);
+                            }
+                        }))
+                        .Concat());
+
+                var processing = channels.Merge().ToTask(ct);
+                using var connection = events.Connect();
 
                 SignalStartupReady();
                 await processing;

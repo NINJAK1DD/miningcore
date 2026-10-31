@@ -95,11 +95,12 @@ public sealed class ShareRecoveryFailureHandler : IShareRecoveryFailureHandler
 
         var notification = new AdminNotification(
             "Fatal share-recovery fallback failure",
+            $"Fatal state: {fatalState.FatalStateFilename}. " +
             $"Miningcore is stopping with exit status " +
             $"{ProcessExitCodes.UnreconciledShareDurabilityLoss} because neither PostgreSQL " +
-            $"nor the recovery journal durably stored {shares.Count} share(s) for pool(s) " +
-            $"{poolSummary}. Recovery file: {absoluteRecoveryFilename}. Fatal state: " +
-            $"{fatalState.FatalStateFilename}. Preserve both files, investigate database and " +
+            $"nor the recovery journal durably stored {shares.Count} share(s). " +
+            $"Recovery file: {absoluteRecoveryFilename}. Pool(s): {poolSummary}. " +
+            "Preserve both files, investigate database and " +
             $"storage health. {ShareRecoveryFatalState.OperatorAcknowledgementInstruction}");
 
         try

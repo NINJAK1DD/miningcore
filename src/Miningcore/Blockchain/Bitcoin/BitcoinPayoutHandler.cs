@@ -1019,7 +1019,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
         try
         {
-            messageBus.SendMessage(new AdminNotification(subject, message));
+            messageBus.SendMessage(new AdminNotification(subject, message,
+                AdminNotificationImportance.FinancialOrSecurity, poolConfig.Id));
             activeBlockGracePeriodTracker.MarkNotificationSent(block.PoolId,
                 block.Id, block.Hash, episodeType);
         }
@@ -1055,7 +1056,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
         try
         {
-            messageBus.SendMessage(new AdminNotification(subject, message));
+            messageBus.SendMessage(new AdminNotification(subject, message,
+                AdminNotificationImportance.FinancialOrSecurity, poolConfig.Id));
             activeBlockGracePeriodTracker.MarkNotificationSent(block.PoolId, block.Id,
                 block.Hash, block.Type);
         }
