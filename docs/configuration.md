@@ -205,7 +205,9 @@ secrets. Restrict the file to the service account.
 
 Set `notifications.email.tlsMode` explicitly before upgrading any installation that
 sends email. Active notification senders are checked at startup, and every delivery
-checks the setting again; omitted or unknown values stop delivery. Use `"implicitTls"` for port 465 (TLS begins before the
+checks the setting again. An omitted mode stops startup when administrative email is
+enabled; an unrecognised value is rejected when the configuration is loaded, even if
+email is disabled. Use `"implicitTls"` for port 465 (TLS begins before the
 SMTP greeting) and `"startTls"` for ports 25 and 587 (STARTTLS is mandatory). Explicit
 TLS modes may use a custom port, but ports 25/587 cannot use implicit TLS and port 465
 cannot use STARTTLS. The server certificate must have a trusted, valid chain and match

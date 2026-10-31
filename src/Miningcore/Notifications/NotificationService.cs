@@ -443,16 +443,7 @@ public class NotificationService : StartupGatedBackgroundService,
         // Snapshot the mutable configuration before validating it. Use this same
         // snapshot for connection and authentication so concurrent changes cannot
         // turn a validated local relay into a credentialed plaintext send.
-        var email = new EmailSenderConfig
-        {
-            Host = emailSenderConfig.Host,
-            Port = emailSenderConfig.Port,
-            TlsMode = emailSenderConfig.TlsMode,
-            User = emailSenderConfig.User,
-            Password = emailSenderConfig.Password,
-            FromAddress = emailSenderConfig.FromAddress,
-            FromName = emailSenderConfig.FromName,
-        };
+        var email = emailSenderConfig.Snapshot();
         var socketOptions = SmtpTransportPolicy.Resolve(email);
         logger.Info(() => $"Sending '{subject.ToLower()}' email to {recipient}");
 
@@ -506,7 +497,14 @@ public class NotificationService : StartupGatedBackgroundService,
                 // Keep this aligned with the policy consolidation tracked in issue #148.
                 if(emailSenderConfig == null)
                     throw new PoolStartupException("Admin email notifications require notifications.email configuration");
-                SmtpTransportPolicy.Resolve(emailSenderConfig);
+                try
+                {
+                    SmtpTransportPolicy.Resolve(emailSenderConfig);
+                }
+                catch(InvalidOperationException ex)
+                {
+                    throw new PoolStartupException(ex.Message, ex);
+                }
                 obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));
                 obs.Add(Subscribe<BlockFoundNotification>(OnBlockFoundNotificationAsync, ct));
                 obs.Add(Subscribe<PaymentNotification>(OnPaymentNotificationAsync, ct));

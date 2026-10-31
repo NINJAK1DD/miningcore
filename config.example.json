@@ -151,7 +151,7 @@
 
   // Email, administrative and Pushover event delivery.
   "notifications": {
-    // Notification setting; administrative email delivery follows admin.enabled.
+    // Currently unused; see #148. Administrative email delivery follows admin.enabled.
     "enabled": false,
     "email": {
       // SMTP server used for email notifications.

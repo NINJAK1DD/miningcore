@@ -707,6 +707,14 @@ jobs:
         --framework net10.0
         --filter "FullyQualifiedName~Miningcore.Tests.Rpc.RpcTlsTests.PlatformRejectsUntrustedDaemonCertificate"
 
+    - name: Verify SMTP TLS transport on Windows
+      run: >-
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
+        --no-restore
+        --configuration Release
+        --framework net10.0
+        --filter "FullyQualifiedName~Miningcore.Tests.Notifications.SmtpTransportTests"
+
     - name: Test Windows Stratum listener lifecycle
       run: >-
         dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj

@@ -115,6 +115,15 @@ public class SmtpTransportTests
     }
 
     [Fact]
+    public void CertificateValidationOverrideIsNotPublic()
+    {
+        Assert.DoesNotContain(typeof(NotificationService).GetMethods(), method =>
+            method.Name == nameof(NotificationService.SendEmailAsync) &&
+            method.GetParameters().Any(parameter =>
+                parameter.ParameterType == typeof(RemoteCertificateValidationCallback)));
+    }
+
+    [Fact]
     public void StartupValidationRequiresExplicitTlsMode()
     {
         var config = Config(null, 587);
@@ -201,8 +210,9 @@ public class SmtpTransportTests
             },
         }, null, messageBus);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
             sender.StartAsync(CancellationToken.None));
+        Assert.Contains("tlsMode", error.Message);
         messageBus.DidNotReceive().Listen<Miningcore.Notifications.Messages.AdminNotification>();
     }
 
@@ -500,8 +510,6 @@ public class SmtpTransportTests
             }, timeout.Token);
 
             var config = Config(mode, ((IPEndPoint) listener.LocalEndpoint).Port);
-            if(mode == "implicitTls")
-                config.Host = "localhost";
             using var sender = Sender(config);
             try
             {
@@ -531,6 +539,8 @@ public class SmtpTransportTests
     [InlineData("expired")]
     public async Task InvalidTrustedCertificateFailsBeforeAuthentication(string failure)
     {
+        // Expiry is checked by the isolated test trust callback; the hostname case
+        // exercises MailKit's production name check against the configured host.
         var (root, certificate) = CreateSignedCertificate(
             expired: failure == "expired", wrongHost: failure == "hostname");
         using(root)
