@@ -36,12 +36,22 @@ event filters, but respect `admin.enabled` and the transport choices. Email
 and Pushover attempts are independent: failure of one does not prevent an
 attempt through the other. Ordinary delivery starts both selected transports
 independently and limits each attempt to 15 seconds; a stalled SMTP server
-does not hold up Pushover. Pushover titles and messages are kept within its
+does not hold up Pushover. Each transport processes events in order in its own
+queue, so later Pushover alerts also proceed while email is stalled. A timeout
+bounds the wait, but does not prove the remote service rejected the message;
+check provider and reconciliation evidence before retrying a payout alert.
+Pushover requests share a two-request gate within a Miningcore process across
+hosted and critical senders,
+with one slot reserved for critical alerts when ordinary traffic is active.
+No automatic retry is made after an uncertain API outcome. Pushover titles and
+messages are kept within its
 250 and 1024 character limits, preserving the incident summary and trailing
 operator instruction when detail is truncated. An HTTP response counts as
-accepted only when Pushover confirms `status: 1`. Uncertain-payout Pushover
+accepted only when Pushover confirms `status: 1`, which means the provider
+queued the request rather than a person reading it. Uncertain-payout Pushover
 alerts point to retained reconciliation evidence and wallet history even if
-email is not delivered. Host shutdown cancellation is not logged as a delivery
+email is not delivered. If email is configured, the alert mentions its
+per-recipient summary only conditionally on receipt. Host shutdown cancellation is not logged as a delivery
 error; a channel timeout is logged with its transport name. An active critical
 sender with no usable transport
 reports an error to its caller instead of reporting successful delivery.

@@ -53,6 +53,11 @@ response. The `-rs` importer still ignores live notification settings.
 Uncertain-payout Pushover alerts now direct operators to retained evidence and
 wallet history even when email is unavailable. Ordinary timeouts identify the
 failed channel, while cancellation during host shutdown is treated as expected.
+Each channel now processes its own ordered event queue, so stalled email does
+not delay later Pushover alerts. Pushover requests share a two-request gate
+that keeps one slot available to critical alerts during ordinary traffic.
+Timeouts bound the local wait and do not prove the provider rejected a message;
+Pushover `status: 1` confirms queueing by the provider, not human receipt.
 See [notification activation and migration](notifications.md).
 
 ## Unreleased (after v0.3.0): verify daemon RPC TLS certificates

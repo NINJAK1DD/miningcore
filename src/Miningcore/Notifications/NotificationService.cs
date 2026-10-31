@@ -5,7 +5,6 @@ using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
-using System.Text;
 using MailKit.Net.Smtp;
 using MailKit.Security;
 using MimeKit;
@@ -17,7 +16,6 @@ using Miningcore.Notifications.Messages;
 using Miningcore.Payments;
 using Miningcore.Pushover;
 using NLog;
-using static Miningcore.Util.ActionUtils;
 
 namespace Miningcore.Notifications;
 
@@ -63,11 +61,12 @@ public class NotificationService : StartupGatedBackgroundService,
         return $"{amount:0.#####} {poolConfigs[poolId].Template.Symbol}";
     }
 
-    private async Task OnAdminNotificationAsync(AdminNotification notification, CancellationToken ct)
-    {
-        await SendOrdinaryAsync(notification.Subject, notification.Message,
-            notification.Message, ct);
-    }
+    private sealed record OrdinaryNotification(string Subject, string EmailMessage,
+        string PushoverMessage);
+
+    private static OrdinaryNotification FormatAdminNotification(
+        AdminNotification notification) =>
+        new(notification.Subject, notification.Message, notification.Message);
 
     public async Task SendCriticalAdminNotificationAsync(AdminNotification notification,
         CancellationToken ct)
@@ -96,7 +95,8 @@ public class NotificationService : StartupGatedBackgroundService,
             {
                 activation.ValidatePushoverProvider();
                 await pushoverClient.PushMessage(notification.Subject,
-                    notification.Message, PushoverMessagePriority.None, ct);
+                    notification.Message, PushoverMessagePriority.None, ct,
+                    critical: true);
             }, "Critical administrative Pushover delivery failed"));
 
         var errors = (await Task.WhenAll(attempts))
@@ -123,21 +123,6 @@ public class NotificationService : StartupGatedBackgroundService,
         }
     }
 
-    private async Task SendOrdinaryAsync(string subject, string emailMessage,
-        string pushoverMessage, CancellationToken ct)
-    {
-        var attempts = new List<Task>();
-        if(activation.EmailEnabled)
-            attempts.Add(AttemptOrdinaryTransportAsync("email", token =>
-                SendEmailAsync(activation.EmailRecipient, subject, emailMessage,
-                    token), ct));
-        if(activation.PushoverEnabled)
-            attempts.Add(AttemptOrdinaryTransportAsync("Pushover", token =>
-                pushoverClient.PushMessage(subject, pushoverMessage,
-                    PushoverMessagePriority.None, token), ct));
-        await Task.WhenAll(attempts);
-    }
-
     private async Task AttemptOrdinaryTransportAsync(string transport,
         Func<CancellationToken, Task> send, CancellationToken ct)
     {
@@ -154,44 +139,48 @@ public class NotificationService : StartupGatedBackgroundService,
         }
         catch(OperationCanceledException ex) when(timeout.IsCancellationRequested)
         {
-            logger.Error("Ordinary {0} delivery exceeded {1:g} s",
-                transport, OrdinaryTransportTimeout.TotalSeconds);
-            LogGuarded(new TimeoutException(
-                $"Ordinary {transport} delivery exceeded {OrdinaryTransportTimeout.TotalSeconds:g} s", ex));
+            var failure = new TimeoutException(
+                $"Ordinary {transport} delivery exceeded {OrdinaryTransportTimeout.TotalSeconds:g} s", ex);
+            logger.Error("Ordinary {0} delivery exceeded {1:g} s ({2})",
+                transport, OrdinaryTransportTimeout.TotalSeconds,
+                RpcConsumerDiagnostics.Failure(failure));
         }
         catch(Exception ex)
         {
-            logger.Error("Ordinary {0} delivery failed", transport);
-            LogGuarded(ex);
+            logger.Error("Ordinary {0} delivery failed ({1})", transport,
+                RpcConsumerDiagnostics.Failure(ex));
         }
     }
 
-    private async Task OnBlockFoundNotificationAsync(BlockFoundNotification notification, CancellationToken ct)
+    private OrdinaryNotification FormatBlockFoundNotification(
+        BlockFoundNotification notification)
     {
+        if(clusterConfig.Notifications?.Admin?.NotifyBlockFound != true)
+            return null;
+
         const string subject = "Block Notification";
         var message = $"Pool {notification.PoolId} found block candidate {notification.BlockHeight}";
-
-        if(clusterConfig.Notifications?.Admin?.NotifyBlockFound == true)
-            await SendOrdinaryAsync(subject, message, message, ct);
+        return new OrdinaryNotification(subject, message, message);
     }
 
-    private async Task OnPaymentNotificationAsync(PaymentNotification notification, CancellationToken ct)
+    private OrdinaryNotification FormatPaymentNotification(
+        PaymentNotification notification)
     {
         var coin = poolConfigs[notification.PoolId].Template;
         var (subject, emailMessage, pushoverMessage, isSuccess) =
             FormatPaymentNotification(notification,
-            coin.Symbol, coin.ExplorerTxLink);
+            coin.Symbol, coin.ExplorerTxLink, activation.EmailEnabled);
 
         if(isSuccess && clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess != true)
-            return;
+            return null;
 
-        await SendOrdinaryAsync(subject, emailMessage, pushoverMessage, ct);
+        return new OrdinaryNotification(subject, emailMessage, pushoverMessage);
     }
 
     internal static (string Subject, string EmailMessage, string PushoverMessage,
         bool IsSuccess)
         FormatPaymentNotification(PaymentNotification notification, string symbol,
-        string explorerTxLink)
+            string explorerTxLink, bool emailSelected = false)
     {
         var outcome = notification.Outcome;
 
@@ -264,6 +253,8 @@ public class NotificationService : StartupGatedBackgroundService,
             if(notification.FailureDiagnostic != null)
                 pushoverSections.Add(notification.FailureDiagnostic.Summary);
             pushoverSections.Add("Consult retained private payout reconciliation evidence and wallet history for per-recipient details and withheld error information.");
+            if(emailSelected)
+                pushoverSections.Add("If the separate email alert was delivered, it includes the per-recipient summary.");
 
             return (subject, string.Join("<br/>", sections),
                 string.Join("\n", pushoverSections), false);
@@ -509,24 +500,32 @@ public class NotificationService : StartupGatedBackgroundService,
         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "NotificationService.LogGuarded", failure: ex);
     }
 
-    private IObservable<IObservable<Unit>> Subscribe<T>(Func<T, CancellationToken, Task> handler, CancellationToken ct)
+    private IObservable<OrdinaryNotification> Prepare<T>(
+        Func<T, OrdinaryNotification> format, CancellationToken ct)
     {
         return messageBus.Listen<T>()
-            .Select(msg => Observable.FromAsync(() =>
-                Guard(()=> handler(msg, ct), ex =>
+            .Select(msg =>
+            {
+                try
                 {
-                    if(ex is OperationCanceledException && ct.IsCancellationRequested)
-                        return;
+                    return format(msg);
+                }
+                catch(OperationCanceledException) when(ct.IsCancellationRequested)
+                {
+                    return null;
+                }
+                catch(Exception ex)
+                {
                     LogGuarded(ex);
-                })));
+                    return null;
+                }
+            });
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         try
         {
-            var obs = new List<IObservable<IObservable<Unit>>>();
-
             // Also validate the actual hosted instance: it is distinct from the
             // Autofac critical sender and can be constructed without Program.ValidateConfig.
             var validationErrors = activation.GetValidationErrors();
@@ -538,18 +537,36 @@ public class NotificationService : StartupGatedBackgroundService,
                 logger.Warn("notifications.enabled is deprecated and ignored; notifications.admin.enabled is false, so administrative alerts are inactive");
             if(activation.AdminEnabled)
             {
-                obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));
-                obs.Add(Subscribe<BlockFoundNotification>(OnBlockFoundNotificationAsync, ct));
-                obs.Add(Subscribe<PaymentNotification>(OnPaymentNotificationAsync, ct));
-            }
-
-            if(obs.Count > 0)
-            {
-                var processing = obs
+                // Both channels see the same ordered events, but each drains its
+                // own serial queue. A stalled email cannot hold later pushes.
+                var events = new[]
+                    {
+                        Prepare<AdminNotification>(FormatAdminNotification, ct),
+                        Prepare<BlockFoundNotification>(FormatBlockFoundNotification, ct),
+                        Prepare<PaymentNotification>(FormatPaymentNotification, ct),
+                    }
                     .Merge()
+                    .Where(notification => notification != null)
                     .ObserveOn(TaskPoolScheduler.Default)
-                    .Concat()
-                    .ToTask(ct);
+                    .Publish();
+
+                var channels = new List<IObservable<Unit>>();
+                if(activation.EmailEnabled)
+                    channels.Add(events.Select(notification => Observable.FromAsync(() =>
+                        AttemptOrdinaryTransportAsync("email", token =>
+                            SendEmailAsync(activation.EmailRecipient,
+                                notification.Subject, notification.EmailMessage, token), ct)))
+                        .Concat());
+                if(activation.PushoverEnabled)
+                    channels.Add(events.Select(notification => Observable.FromAsync(() =>
+                        AttemptOrdinaryTransportAsync("Pushover", token =>
+                            pushoverClient.PushMessage(notification.Subject,
+                                notification.PushoverMessage,
+                                PushoverMessagePriority.None, token), ct)))
+                        .Concat());
+
+                var processing = channels.Merge().ToTask(ct);
+                using var connection = events.Connect();
 
                 SignalStartupReady();
                 await processing;

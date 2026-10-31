@@ -1715,6 +1715,13 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Contains("retained private payout reconciliation evidence",
             rendered.PushoverMessage);
         Assert.DoesNotContain("See email", rendered.PushoverMessage);
+
+        var emailSelected = NotificationService.FormatPaymentNotification(
+            notification, "DOGE", null, emailSelected: true);
+        Assert.Contains("If the separate email alert was delivered",
+            emailSelected.PushoverMessage);
+        Assert.DoesNotContain("If the separate email alert was delivered",
+            rendered.PushoverMessage);
     }
 
     [Fact]

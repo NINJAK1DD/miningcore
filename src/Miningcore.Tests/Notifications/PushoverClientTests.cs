@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -16,6 +17,49 @@ namespace Miningcore.Tests.Notifications;
 
 public class PushoverClientTests
 {
+    [Fact]
+    public async Task SharedGateReservesCapacityForCriticalAlerts()
+    {
+        var handler = new BlockingHandler();
+        using var http = new HttpClient(handler);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        var config = new ClusterConfig
+        {
+            Notifications = new NotificationsConfig
+            {
+                Pushover = new PushoverConfig
+                {
+                    Enabled = true, User = "user", Token = "token",
+                },
+            },
+        };
+        var firstClient = new PushoverClient(config, factory);
+        var secondClient = new PushoverClient(config, factory);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        var first = firstClient.PushMessage("ordinary-1", "message",
+            PushoverMessagePriority.None, deadline.Token);
+        await handler.WaitForStartAsync(deadline.Token);
+        var second = secondClient.PushMessage("ordinary-2", "message",
+            PushoverMessagePriority.None, deadline.Token);
+        var critical = secondClient.PushMessage("critical", "message",
+            PushoverMessagePriority.None, deadline.Token, critical: true);
+        await handler.WaitForStartAsync(deadline.Token);
+
+        Assert.Equal(2, handler.Active);
+        Assert.Contains("critical", handler.StartedTitles);
+        Assert.DoesNotContain("ordinary-2", handler.StartedTitles);
+        handler.Release("ordinary-1");
+        await handler.WaitForStartAsync(deadline.Token);
+        Assert.Equal(2, handler.Active);
+        Assert.True(handler.Peak <= 2);
+        handler.Release("critical");
+        handler.Release("ordinary-2");
+        await Task.WhenAll(first, second, critical).WaitAsync(deadline.Token);
+        Assert.Equal(0, handler.Active);
+    }
+
     [Fact]
     public async Task OversizedTitleAndMessageKeepIncidentSummaryAndInstruction()
     {
@@ -87,6 +131,56 @@ public class PushoverClientTests
             {
                 Content = new StringContent(response),
             };
+        }
+    }
+
+    private sealed class BlockingHandler : HttpMessageHandler
+    {
+        private readonly ConcurrentDictionary<string, TaskCompletionSource> releases = new();
+        private readonly ConcurrentQueue<string> titles = new();
+        private readonly SemaphoreSlim started = new(0);
+        private int active;
+        private int peak;
+
+        public int Active => Volatile.Read(ref active);
+        public int Peak => Volatile.Read(ref peak);
+        public string[] StartedTitles => titles.ToArray();
+
+        public Task WaitForStartAsync(CancellationToken ct) => started.WaitAsync(ct);
+
+        public void Release(string title) => releases[title].SetResult();
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            using var document = JsonDocument.Parse(
+                await request.Content.ReadAsStringAsync(cancellationToken));
+            var title = document.RootElement.GetProperty("title").GetString();
+            var release = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            releases[title] = release;
+            titles.Enqueue(title);
+            var current = Interlocked.Increment(ref active);
+            int previous;
+            do
+            {
+                previous = Volatile.Read(ref peak);
+                if(previous >= current)
+                    break;
+            } while(Interlocked.CompareExchange(ref peak, current, previous) != previous);
+            started.Release();
+            try
+            {
+                await release.Task.WaitAsync(cancellationToken);
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"status\":1}"),
+                };
+            }
+            finally
+            {
+                Interlocked.Decrement(ref active);
+            }
         }
     }
 }

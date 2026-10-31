@@ -402,8 +402,62 @@ public class NotificationActivationTests
         Assert.Equal(2, requests.Count);
         Assert.Contains("Ordinary email delivery exceeded",
             string.Join("\n", logs.Target.Logs));
+        Assert.All(logs.Target.Logs, entry =>
+            Assert.Contains("Ordinary email delivery exceeded", entry));
         Assert.DoesNotContain(logs.Target.Logs, entry =>
             entry.Contains("Ordinary Pushover delivery exceeded"));
+    }
+
+    [Fact]
+    public async Task LaterOrdinaryPushDoesNotWaitForEarlierEmailTimeout()
+    {
+        using var smtp = new TcpListener(IPAddress.Loopback, 0);
+        smtp.Start();
+        var email = ValidEmail();
+        email.Port = ((IPEndPoint) smtp.LocalEndpoint).Port;
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications
+            {
+                Enabled = true, EmailAddress = "operator@example.invalid",
+            },
+            Email = email,
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        var admin = new Subject<AdminNotification>();
+        var bus = Substitute.For<IMessageBus>();
+        bus.Listen<AdminNotification>().Returns(admin);
+        bus.Listen<BlockFoundNotification>().Returns(new Subject<BlockFoundNotification>());
+        bus.Listen<PaymentNotification>().Returns(new Subject<PaymentNotification>());
+        var requests = new RecordingPushoverHandler();
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var logs = new TestLogs(LogLevel.Error);
+        using var service = new NotificationService(config,
+            new PushoverClient(config, factory), bus, logs.Logger)
+        {
+            OrdinaryTransportTimeout = TimeSpan.FromSeconds(5),
+        };
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        var accepted = smtp.AcceptTcpClientAsync(deadline.Token).AsTask();
+
+        await service.StartAsync(deadline.Token).WaitAsync(deadline.Token);
+        admin.OnNext(new AdminNotification("first", "first incident"));
+        using var peer = await accepted.WaitAsync(deadline.Token);
+        while(requests.Count < 1)
+            await Task.Delay(10, deadline.Token);
+        admin.OnNext(new AdminNotification("second", "second incident"));
+        while(requests.Count < 2)
+            await Task.Delay(10, deadline.Token);
+        using var sent = JsonDocument.Parse(requests.LastBody);
+        Assert.Equal("second", sent.RootElement.GetProperty("title").GetString());
+        Assert.DoesNotContain(logs.Target.Logs, entry =>
+            entry.Contains("Ordinary email delivery exceeded"));
+        await service.StopAsync(deadline.Token);
     }
 
     [Fact]
@@ -473,6 +527,7 @@ public class NotificationActivationTests
 
         Assert.Contains("Ordinary Pushover delivery failed",
             string.Join("\n", logs.Target.Logs));
+        Assert.Single(logs.Target.Logs);
     }
 
     [Fact]
@@ -650,8 +705,8 @@ public class NotificationActivationTests
         var status = new ProcessStatus();
         var lifetime = Substitute.For<IHostApplicationLifetime>();
         var fatalState = Substitute.For<IShareRecoveryFatalState>();
-        fatalState.FatalStateFilename.Returns(
-            "/protected/recovery.fatal" + new string('f', 450));
+        var fatalPath = "/protected/recovery.fatal" + new string('f', 450);
+        fatalState.FatalStateFilename.Returns(fatalPath);
         var handler = new CandidatePersistenceFailureHandler(
             new MiningFailStopCoordinator(status, lifetime),
             new Lazy<ICriticalNotificationSender>(() => sender), fatalState);
@@ -670,6 +725,7 @@ public class NotificationActivationTests
         var message = document.RootElement.GetProperty("message").GetString();
         Assert.True(message.EnumerateRunes().Count() <= 1024);
         Assert.Contains("Fatal state: /protected/recovery.fatal", message);
+        Assert.Contains(fatalPath, message);
         Assert.Contains("details omitted", message);
         Assert.EndsWith("Preserve PostgreSQL and recovery evidence; see Miningcore logs for full details.",
             message);
@@ -736,8 +792,8 @@ public class NotificationActivationTests
         using var sender = new NotificationService(config,
             new PushoverClient(config, factory), Substitute.For<IMessageBus>());
         var fatalState = Substitute.For<IShareRecoveryFatalState>();
-        fatalState.FatalStateFilename.Returns(
-            "/protected/recovery.fatal" + new string('f', 450));
+        var fatalPath = "/protected/recovery.fatal" + new string('f', 450);
+        fatalState.FatalStateFilename.Returns(fatalPath);
         var handler = new ShareRecoveryFailureHandler(
             new MiningFailStopCoordinator(new ProcessStatus(),
                 Substitute.For<IHostApplicationLifetime>()),
@@ -756,6 +812,7 @@ public class NotificationActivationTests
         var message = document.RootElement.GetProperty("message").GetString();
         Assert.True(message.EnumerateRunes().Count() <= 1024);
         Assert.Contains("details omitted", message);
+        Assert.Contains(fatalPath, message);
         Assert.Contains(ShareRecoveryFatalState.OperatorAcknowledgementInstruction,
             message);
     }
