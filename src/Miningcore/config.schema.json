@@ -344,6 +344,18 @@
         "port": {
           "type": "integer"
         },
+        "tlsMode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            null,
+            "startTls",
+            "implicitTls",
+            "localPlaintext"
+          ]
+        },
         "user": {
           "type": [
             "string",

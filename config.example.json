@@ -151,12 +151,14 @@
 
   // Email, administrative and Pushover event delivery.
   "notifications": {
-    // Master notification switch. Individual channels also have their own settings.
+    // Currently unused; see #148. Administrative email delivery follows admin.enabled.
     "enabled": false,
     "email": {
       // SMTP server used for email notifications.
       "host": "smtp.example.com",
       "port": 587,
+      // Required: startTls for 25/587; implicitTls for 465. See docs/configuration.md.
+      "tlsMode": "startTls",
       "user": "CHANGE_ME_SMTP_USER",
       "password": "CHANGE_ME_SMTP_PASSWORD",
       "fromAddress": "pool@example.com",

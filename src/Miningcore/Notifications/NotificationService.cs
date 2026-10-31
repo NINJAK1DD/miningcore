@@ -1,11 +1,13 @@
 using Miningcore.Rpc;
 using System.Net;
+using System.Net.Security;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using System.Text;
 using MailKit.Net.Smtp;
+using MailKit.Security;
 using MimeKit;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
@@ -421,25 +423,44 @@ public class NotificationService : StartupGatedBackgroundService,
             .Select(x => x.ToString())) + "…";
     }
 
-    public async Task SendEmailAsync(string recipient, string subject, string body, CancellationToken ct)
+    private static readonly RemoteCertificateValidationCallback StrictCertificateValidation =
+        (_, _, _, errors) => SmtpTransportPolicy.CertificateIsValid(errors);
+
+    public Task SendEmailAsync(string recipient, string subject, string body, CancellationToken ct) =>
+        SendEmailAsync(recipient, subject, body, ct, StrictCertificateValidation);
+
+    // The internal overload permits tests to use an isolated certificate trust root.
+    // Every production caller uses the strict platform validation callback above.
+    internal async Task SendEmailAsync(string recipient, string subject, string body,
+        CancellationToken ct, RemoteCertificateValidationCallback certificateValidation)
     {
+        ArgumentNullException.ThrowIfNull(certificateValidation);
         // The critical-sender singleton is separate from the hosted instance under the
         // current Autofac registrations, even in normal operation. Recovery also resolves
         // it without hosting. Delivery cannot rely on the hosted startup validation.
         if(emailSenderConfig == null)
             throw new InvalidOperationException("Email delivery requires notifications.email configuration");
+        // Validate and send from one consistent copy of the configuration.
+        var email = emailSenderConfig.Snapshot();
+        var socketOptions = SmtpTransportPolicy.Resolve(email);
         logger.Info(() => $"Sending '{subject.ToLower()}' email to {recipient}");
 
         var message = new MimeMessage();
-        message.From.Add(new MailboxAddress(emailSenderConfig.FromName, emailSenderConfig.FromAddress));
+        message.From.Add(new MailboxAddress(email.FromName, email.FromAddress));
         message.To.Add(new MailboxAddress("", recipient));
         message.Subject = subject;
         message.Body = new TextPart("html") { Text = body };
 
         using(var client = new SmtpClient())
         {
-            await client.ConnectAsync(emailSenderConfig.Host, emailSenderConfig.Port, cancellationToken: ct);
-            await client.AuthenticateAsync(emailSenderConfig.User, emailSenderConfig.Password, ct);
+            client.CheckCertificateRevocation = true;
+            client.ServerCertificateValidationCallback = certificateValidation;
+            await client.ConnectAsync(email.Host, email.Port,
+                socketOptions, ct);
+            if(socketOptions != SecureSocketOptions.None && !client.IsSecure)
+                throw new InvalidOperationException("SMTP TLS negotiation did not complete");
+            if(socketOptions != SecureSocketOptions.None && !string.IsNullOrEmpty(email.User))
+                await client.AuthenticateAsync(email.User, email.Password, ct);
             await client.SendAsync(message, ct);
             await client.DisconnectAsync(true, ct);
         }
@@ -474,6 +495,14 @@ public class NotificationService : StartupGatedBackgroundService,
                 // Keep this aligned with the policy consolidation tracked in issue #148.
                 if(emailSenderConfig == null)
                     throw new PoolStartupException("Admin email notifications require notifications.email configuration");
+                try
+                {
+                    SmtpTransportPolicy.Resolve(emailSenderConfig);
+                }
+                catch(InvalidOperationException ex)
+                {
+                    throw new PoolStartupException(ex.Message, ex);
+                }
                 obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));
                 obs.Add(Subscribe<BlockFoundNotification>(OnBlockFoundNotificationAsync, ct));
                 obs.Add(Subscribe<PaymentNotification>(OnPaymentNotificationAsync, ct));

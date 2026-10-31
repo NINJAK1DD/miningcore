@@ -612,7 +612,11 @@ public class HostedServiceStartupTests
             Notifications = new NotificationsConfig
             {
                 Admin = new AdminNotifications { Enabled = true },
-                Email = new EmailSenderConfig(),
+                Email = new EmailSenderConfig
+                {
+                    Host = "127.0.0.1", Port = 2525,
+                    TlsMode = SmtpTlsMode.LocalPlaintext,
+                },
                 Pushover = new PushoverConfig(),
             },
         }, null, messageBus);
@@ -646,7 +650,11 @@ public class HostedServiceStartupTests
             Notifications = new NotificationsConfig
             {
                 Admin = new AdminNotifications { Enabled = true },
-                Email = new EmailSenderConfig(),
+                Email = new EmailSenderConfig
+                {
+                    Host = "127.0.0.1", Port = 2525,
+                    TlsMode = SmtpTlsMode.LocalPlaintext,
+                },
                 Pushover = new PushoverConfig(),
             },
         }, null, messageBus);

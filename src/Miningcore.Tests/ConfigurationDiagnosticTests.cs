@@ -162,7 +162,8 @@ public class ConfigurationDiagnosticTests
         var supported = new HashSet<Type>(objects)
         {
             typeof(bool), typeof(byte), typeof(int), typeof(double), typeof(decimal), typeof(DateTime),
-            typeof(PayoutScheme), typeof(BanManagerKind), typeof(PostgresSslMode), typeof(PoolConfig[]),
+            typeof(PayoutScheme), typeof(BanManagerKind), typeof(PostgresSslMode),
+            typeof(SmtpTlsMode), typeof(PoolConfig[]),
             typeof(DaemonEndpointConfig[]), typeof(RewardRecipient[]),
             typeof(ShareRelayEndpointConfig[]), typeof(Dictionary<int, PoolEndpoint>),
         };
@@ -414,7 +415,7 @@ public class ConfigurationDiagnosticTests
         Assert.All(config.DescendantsAndSelf().OfType<JValue>()
                 .Where(value => value.Type == JTokenType.String),
             value => Assert.Contains(value.Value<string>(),
-                new[] { "PPLNS", "PROP", "SOLO", "PPS", "PPBS", "PPLNSBF", "Integrated", "IpTables", "[omitted]", "[set]", "[blank]", "other" }));
+                new[] { "PPLNS", "PROP", "SOLO", "PPS", "PPBS", "PPLNSBF", "Integrated", "IpTables", "startTls", "implicitTls", "localPlaintext", "[omitted]", "[set]", "[blank]", "other" }));
     }
 
     [Theory]
@@ -655,7 +656,7 @@ public class ConfigurationDiagnosticTests
         // extension keys, etc.) are sensitive too. Only bounded enums survive.
         foreach(var value in document.Descendants().OfType<JValue>().ToArray())
             if(value.Type == JTokenType.String &&
-               (value.Parent is not JProperty property || property.Name is not ("manager" or "payoutScheme")))
+               (value.Parent is not JProperty property || property.Name is not ("manager" or "payoutScheme" or "tlsMode")))
                 value.Value = Secret + "\r\n\u2028";
         return document;
     }

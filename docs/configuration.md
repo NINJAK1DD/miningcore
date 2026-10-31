@@ -201,6 +201,32 @@ and [Json.NET extension-data serialization](https://www.newtonsoft.com/json/help
 Do not store a production configuration in Git. It contains database, daemon, mail and possibly TLS
 secrets. Restrict the file to the service account.
 
+### SMTP transport migration
+
+Set `notifications.email.tlsMode` explicitly before upgrading any installation that
+sends email. Active notification senders are checked at startup, and every delivery
+checks the setting again. An omitted mode stops startup when administrative email is
+enabled; an unrecognised value is rejected when the configuration is loaded, even if
+email is disabled. Use `"implicitTls"` for port 465 (TLS begins before the
+SMTP greeting) and `"startTls"` for ports 25 and 587 (STARTTLS is mandatory). Explicit
+TLS modes may use a custom port, but ports 25/587 cannot use implicit TLS and port 465
+cannot use STARTTLS. The server certificate must have a trusted, valid chain and match
+the configured host. A missing STARTTLS extension, failed upgrade, or invalid
+certificate stops delivery before SMTP authentication. No automatic fallback occurs.
+Certificate revocation checking remains enabled. Ensure the service can reach
+the certificate authority's CRL or OCSP endpoints; a failed check may stop
+delivery, and revocation lookups may outlast the critical alert's short timeout.
+
+For a deliberately unauthenticated relay on the same host, use `"localPlaintext"` with
+`host` set to a numeric loopback address such as `127.0.0.1` or `::1` and omit both `user`
+and `password`. This mode rejects other destinations and credentials. A relay that
+requires credentials must provide TLS instead. If changing from a DNS name to a
+loopback address for a TLS relay, ensure its certificate covers the address, or keep
+the matching DNS name with `startTls`/`implicitTls`.
+Relays in separate Docker containers normally have non-loopback addresses and
+therefore need TLS; only relays sharing the same network namespace can use the
+loopback plaintext mode.
+
 `persistence.postgres.commandTimeout` accepts whole seconds from **1 to 86,400**;
 omitted/null uses **300 seconds**, while the shipped example explicitly uses
 **60 seconds**. Explicit **zero (unlimited) is rejected**, as are

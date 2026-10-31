@@ -1318,8 +1318,15 @@ public class RewardRecipient
 
 public partial class EmailSenderConfig : AuthenticatedNetworkEndpointConfig
 {
+    /// <summary>Required SMTP transport policy: startTls, implicitTls, or localPlaintext.</summary>
+    [JsonConverter(typeof(SmtpTlsModeConverter))]
+    public SmtpTlsMode? TlsMode { get; set; }
     public string FromAddress { get; set; }
     public string FromName { get; set; }
+
+    // These configuration fields are scalar or immutable strings. Copy inherited
+    // fields as well so policy validation and delivery use the same values.
+    internal EmailSenderConfig Snapshot() => (EmailSenderConfig) MemberwiseClone();
 }
 
 public class PushoverConfig

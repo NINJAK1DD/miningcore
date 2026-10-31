@@ -6,10 +6,22 @@ namespace Miningcore.Configuration;
 
 #region Validators
 
-public class EmailSenderConfigValidator : AuthenticatedNetworkEndpointConfigValidator<EmailSenderConfig>
+public class EmailSenderConfigValidator : AbstractValidator<EmailSenderConfig>
 {
     public EmailSenderConfigValidator()
     {
+        RuleFor(j => j).Custom((config, context) =>
+        {
+            try
+            {
+                SmtpTransportPolicy.Resolve(config);
+            }
+            catch(InvalidOperationException error)
+            {
+                context.AddFailure(error.Message);
+            }
+        });
+
         RuleFor(j => j.FromAddress)
             .NotNull()
             .NotEmpty()
@@ -34,9 +46,9 @@ public class NotificationsConfigValidator : AbstractValidator<NotificationsConfi
     public NotificationsConfigValidator()
     {
         RuleFor(j => j.Email)
-            .NotNull()
-            .When(x => x.Enabled)
-            .WithMessage("You must configure at least one notifications provider when notifications are enabled");
+            .SetValidator(new EmailSenderConfigValidator())
+            .When(j => j.Email != null &&
+                j.Admin?.Enabled == true);
     }
 }
 
@@ -448,6 +460,10 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
         RuleFor(j => j.Api)
             .SetValidator(new ApiConfigValidator())
             .When(j => !recoveryMode && j.Api?.Enabled == true);
+
+        RuleFor(j => j.Notifications)
+            .SetValidator(new NotificationsConfigValidator())
+            .When(j => j.Notifications != null);
 
         // ensure pool ids are unique
         RuleFor(j => j.Pools)
