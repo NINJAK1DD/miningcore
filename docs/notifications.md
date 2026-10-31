@@ -39,7 +39,11 @@ independently and limits each attempt to 15 seconds; a stalled SMTP server
 does not hold up Pushover. Pushover titles and messages are kept within its
 250 and 1024 character limits, preserving the incident summary and trailing
 operator instruction when detail is truncated. An HTTP response counts as
-accepted only when Pushover confirms `status: 1`. An active critical sender with no usable transport
+accepted only when Pushover confirms `status: 1`. Uncertain-payout Pushover
+alerts point to retained reconciliation evidence and wallet history even if
+email is not delivered. Host shutdown cancellation is not logged as a delivery
+error; a channel timeout is logged with its transport name. An active critical
+sender with no usable transport
 reports an error to its caller instead of reporting successful delivery.
 
 Normal startup validates this policy before notification readiness and

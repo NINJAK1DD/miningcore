@@ -38,8 +38,8 @@ before enabling alerts. See the [SMTP transport migration guide](configuration.m
 `notifications.admin.enabled` now consistently controls validation, event
 subscriptions and critical delivery. The legacy top-level
 `notifications.enabled` field is deprecated and ignored; a `true` legacy value
-with disabled admin notifications now logs a startup warning. Bundled examples
-omit the legacy field. An active admin
+with disabled admin notifications now logs a startup warning. The `examples/`
+configurations omit the legacy field. An active admin
 configuration must have at least one usable transport: a nonblank recipient
 with SMTP settings, Pushover with user and token, or both. Sender and recipient
 email addresses must be plain addresses, and a whitespace-only sender name is
@@ -50,6 +50,9 @@ upgrading. Ordinary email and Pushover attempts start independently with a
 15-second limit per channel. Pushover messages and titles are bounded to its
 1024 and 250 character limits, and HTTP success requires `status: 1` in the
 response. The `-rs` importer still ignores live notification settings.
+Uncertain-payout Pushover alerts now direct operators to retained evidence and
+wallet history even when email is unavailable. Ordinary timeouts identify the
+failed channel, while cancellation during host shutdown is treated as expected.
 See [notification activation and migration](notifications.md).
 
 ## Unreleased (after v0.3.0): verify daemon RPC TLS certificates

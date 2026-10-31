@@ -1687,7 +1687,7 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
-    public void PaymentNotification_PushoverSummary_IsPlainTextAndBounded()
+    public void PaymentNotification_PushoverSummary_IsPlainTextAndIndependentOfEmail()
     {
         var notification = new PaymentNotification("doge-test", "unknown", 1, "DOGE")
         {
@@ -1712,12 +1712,9 @@ public class BitcoinPayoutHandlerTests : TestBase
         Assert.Contains("<br/>", rendered.EmailMessage);
         Assert.DoesNotContain("<br/>", rendered.PushoverMessage);
         Assert.Contains("Uncertain: 1 DOGE (1 recipient(s))", rendered.PushoverMessage);
-        Assert.True(rendered.PushoverMessage.EnumerateRunes().Count() <= 1024);
-
-        var truncated = NotificationService.TruncateForPushover(new string('x', 1100));
-        Assert.Equal(1024, truncated.EnumerateRunes().Count());
-        Assert.Contains("details omitted", truncated);
-        Assert.EndsWith("x", truncated);
+        Assert.Contains("retained private payout reconciliation evidence",
+            rendered.PushoverMessage);
+        Assert.DoesNotContain("See email", rendered.PushoverMessage);
     }
 
     [Fact]

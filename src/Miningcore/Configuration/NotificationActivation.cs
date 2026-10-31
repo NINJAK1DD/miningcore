@@ -43,14 +43,11 @@ internal sealed class NotificationActivation
             {
                 errors.Add(ex.Message);
             }
-            try
-            {
-                ValidateEmailProvider();
-            }
-            catch(InvalidOperationException ex)
-            {
-                errors.Add(ex.Message);
-            }
+            var email = config?.Email?.Snapshot();
+            if(email == null)
+                errors.Add("notifications.admin.emailAddress requires notifications.email configuration");
+            else
+                errors.AddRange(GetEmailProviderErrors(email, out _));
         }
 
         if(PushoverEnabled)
@@ -70,10 +67,45 @@ internal sealed class NotificationActivation
         // Validate and return one snapshot for the eventual SMTP send.
         var email = config?.Email?.Snapshot() ?? throw new InvalidOperationException(
             "notifications.admin.emailAddress requires notifications.email configuration");
-        var socketOptions = SmtpTransportPolicy.Resolve(email);
-        Require(email.FromName, "notifications.email.fromName");
-        RequireAddress(email.FromAddress, "notifications.email.fromAddress");
+        var errors = GetEmailProviderErrors(email, out var socketOptions);
+        if(errors.Count > 0)
+            throw new InvalidOperationException(string.Join("; ", errors));
         return (email, socketOptions);
+    }
+
+    private static IReadOnlyList<string> GetEmailProviderErrors(
+        EmailSenderConfig email, out SecureSocketOptions socketOptions)
+    {
+        var errors = new List<string>();
+        socketOptions = SecureSocketOptions.None;
+        try
+        {
+            socketOptions = SmtpTransportPolicy.Resolve(email);
+        }
+        catch(InvalidOperationException ex)
+        {
+            errors.Add(ex.Message);
+        }
+
+        try
+        {
+            Require(email.FromName, "notifications.email.fromName");
+        }
+        catch(InvalidOperationException ex)
+        {
+            errors.Add(ex.Message);
+        }
+
+        try
+        {
+            RequireAddress(email.FromAddress, "notifications.email.fromAddress");
+        }
+        catch(InvalidOperationException ex)
+        {
+            errors.Add(ex.Message);
+        }
+
+        return errors;
     }
 
     public void ValidatePushoverProvider()

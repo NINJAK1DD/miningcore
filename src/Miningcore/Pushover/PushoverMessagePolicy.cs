@@ -9,7 +9,7 @@ internal static class PushoverMessagePolicy
     internal const int MaxMessageCharacters = 1024;
     internal const int MaxTitleCharacters = 250;
     private const string Omission =
-        "\n… [details omitted; see Miningcore logs and recovery evidence]\n";
+        "\n… [details omitted; see Miningcore logs]\n";
 
     internal static string Title(string title)
     {

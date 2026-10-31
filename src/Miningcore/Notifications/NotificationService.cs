@@ -24,26 +24,34 @@ namespace Miningcore.Notifications;
 public class NotificationService : StartupGatedBackgroundService,
     ICriticalNotificationSender
 {
-    internal static readonly TimeSpan OrdinaryTransportTimeout =
+    internal TimeSpan OrdinaryTransportTimeout { get; set; } =
         TimeSpan.FromSeconds(15);
 
     public NotificationService(
         ClusterConfig clusterConfig,
         PushoverClient pushoverClient,
-        IMessageBus messageBus)
+        IMessageBus messageBus) : this(clusterConfig, pushoverClient, messageBus,
+        LogManager.GetCurrentClassLogger())
+    {
+    }
+
+    internal NotificationService(ClusterConfig clusterConfig,
+        PushoverClient pushoverClient, IMessageBus messageBus, ILogger logger)
     {
         Contract.RequiresNonNull(clusterConfig);
         Contract.RequiresNonNull(messageBus);
+        Contract.RequiresNonNull(logger);
 
         this.clusterConfig = clusterConfig;
         this.messageBus = messageBus;
         this.pushoverClient = pushoverClient;
+        this.logger = logger;
         activation = new NotificationActivation(clusterConfig.Notifications);
 
         poolConfigs = clusterConfig.Pools.ToDictionary(x => x.Id, x => x);
     }
 
-    private readonly ILogger logger = LogManager.GetCurrentClassLogger();
+    private readonly ILogger logger;
     private readonly ClusterConfig clusterConfig;
     private readonly Dictionary<string, PoolConfig> poolConfigs;
     private readonly NotificationActivation activation;
@@ -120,24 +128,42 @@ public class NotificationService : StartupGatedBackgroundService,
     {
         var attempts = new List<Task>();
         if(activation.EmailEnabled)
-            attempts.Add(AttemptOrdinaryTransportAsync(token =>
+            attempts.Add(AttemptOrdinaryTransportAsync("email", token =>
                 SendEmailAsync(activation.EmailRecipient, subject, emailMessage,
                     token), ct));
         if(activation.PushoverEnabled)
-            attempts.Add(AttemptOrdinaryTransportAsync(token =>
+            attempts.Add(AttemptOrdinaryTransportAsync("Pushover", token =>
                 pushoverClient.PushMessage(subject, pushoverMessage,
                     PushoverMessagePriority.None, token), ct));
         await Task.WhenAll(attempts);
     }
 
-    private async Task AttemptOrdinaryTransportAsync(
+    private async Task AttemptOrdinaryTransportAsync(string transport,
         Func<CancellationToken, Task> send, CancellationToken ct)
     {
         await Task.Yield();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(OrdinaryTransportTimeout);
-        await Guard(async () => await send(timeout.Token).WaitAsync(timeout.Token),
-            LogGuarded);
+        try
+        {
+            await send(timeout.Token).WaitAsync(timeout.Token);
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            // Host shutdown is expected and must not produce a delivery error.
+        }
+        catch(OperationCanceledException ex) when(timeout.IsCancellationRequested)
+        {
+            logger.Error("Ordinary {0} delivery exceeded {1:g} s",
+                transport, OrdinaryTransportTimeout.TotalSeconds);
+            LogGuarded(new TimeoutException(
+                $"Ordinary {transport} delivery exceeded {OrdinaryTransportTimeout.TotalSeconds:g} s", ex));
+        }
+        catch(Exception ex)
+        {
+            logger.Error("Ordinary {0} delivery failed", transport);
+            LogGuarded(ex);
+        }
     }
 
     private async Task OnBlockFoundNotificationAsync(BlockFoundNotification notification, CancellationToken ct)
@@ -191,7 +217,7 @@ public class NotificationService : StartupGatedBackgroundService,
                 $"from pool {notification.PoolId} to {notification.RecipientsCount} " +
                 $"recipients in transaction(s) {string.Join(", ", txLinks)}";
 
-            return (subject, emailMessage, TruncateForPushover(pushoverMessage), true);
+            return (subject, emailMessage, pushoverMessage, true);
         }
 
         if(outcome == PaymentNotificationOutcome.Uncertain)
@@ -235,12 +261,12 @@ public class NotificationService : StartupGatedBackgroundService,
                 "Uncertain", notification.Reconciliation?.Uncertain, symbol);
             AppendPushoverReconciliationSummary(pushoverSections,
                 "Not attempted", notification.Reconciliation?.NotAttempted, symbol);
-            pushoverSections.Add("See email for the recipient/transaction reconciliation summary. Consult retained private reconciliation evidence and wallet history for withheld error details.");
             if(notification.FailureDiagnostic != null)
                 pushoverSections.Add(notification.FailureDiagnostic.Summary);
+            pushoverSections.Add("Consult retained private payout reconciliation evidence and wallet history for per-recipient details and withheld error information.");
 
             return (subject, string.Join("<br/>", sections),
-                TruncateForPushover(string.Join("\n", pushoverSections)), false);
+                string.Join("\n", pushoverSections), false);
         }
 
         // Conclusive failures do not carry the uncertain-outcome reconciliation
@@ -256,7 +282,7 @@ public class NotificationService : StartupGatedBackgroundService,
             $"from pool {notification.PoolId}: {conclusiveFailureGuidance}" +
             (failureSummary == null ? string.Empty : " " + failureSummary);
         return ("Payout Failure Notification", emailFailureMessage,
-            TruncateForPushover(pushoverFailureMessage), false);
+            pushoverFailureMessage, false);
     }
 
     private static void AppendReconciliationSection(List<string> sections, string heading,
@@ -434,11 +460,6 @@ public class NotificationService : StartupGatedBackgroundService,
         return WebUtility.HtmlEncode(value);
     }
 
-    internal static string TruncateForPushover(string message)
-    {
-        return PushoverMessagePolicy.Message(message);
-    }
-
     private static readonly RemoteCertificateValidationCallback StrictCertificateValidation =
         (_, _, _, errors) => SmtpTransportPolicy.CertificateIsValid(errors);
 
@@ -492,7 +513,12 @@ public class NotificationService : StartupGatedBackgroundService,
     {
         return messageBus.Listen<T>()
             .Select(msg => Observable.FromAsync(() =>
-                Guard(()=> handler(msg, ct), LogGuarded)));
+                Guard(()=> handler(msg, ct), ex =>
+                {
+                    if(ex is OperationCanceledException && ct.IsCancellationRequested)
+                        return;
+                    LogGuarded(ex);
+                })));
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)

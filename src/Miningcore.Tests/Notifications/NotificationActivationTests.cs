@@ -19,6 +19,9 @@ using Miningcore.Mining;
 using Miningcore.Notifications;
 using Miningcore.Notifications.Messages;
 using Miningcore.Pushover;
+using NLog;
+using NLog.Config;
+using NLog.Targets;
 using NSubstitute;
 using Xunit;
 
@@ -116,6 +119,8 @@ public class NotificationActivationTests
     {
         var email = ValidEmail();
         email.TlsMode = null;
+        email.FromName = " \t ";
+        email.FromAddress = "not-an-address";
         var config = new NotificationsConfig
         {
             Admin = new AdminNotifications
@@ -128,6 +133,8 @@ public class NotificationActivationTests
 
         var errors = new NotificationsConfigValidator().Validate(config).Errors;
         Assert.Contains(errors, error => error.ErrorMessage.Contains("tlsMode"));
+        Assert.Contains(errors, error => error.ErrorMessage.Contains("email.fromName"));
+        Assert.Contains(errors, error => error.ErrorMessage.Contains("email.fromAddress"));
         Assert.Contains(errors, error => error.ErrorMessage.Contains("pushover.user"));
         Assert.Contains(errors, error => error.ErrorMessage.Contains("pushover.token"));
     }
@@ -203,8 +210,9 @@ public class NotificationActivationTests
         using var client = new HttpClient(requests);
         var factory = Substitute.For<IHttpClientFactory>();
         factory.CreateClient(Arg.Any<string>()).Returns(client);
+        using var logs = new TestLogs(LogLevel.Error);
         using var service = new NotificationService(config,
-            new PushoverClient(config, factory), bus);
+            new PushoverClient(config, factory), bus, logs.Logger);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         await service.StartAsync(timeout.Token).WaitAsync(timeout.Token);
@@ -220,6 +228,7 @@ public class NotificationActivationTests
 
         Assert.Equal(3, requests.Count);
         Assert.False(smtp.Pending());
+        Assert.Empty(logs.Target.Logs);
     }
 
     [Theory]
@@ -292,6 +301,178 @@ public class NotificationActivationTests
         Assert.Equal(1, requests.Count);
         Assert.False(smtp.Pending());
         await service.StopAsync(timeout.Token);
+    }
+
+    [Fact]
+    public async Task PushoverOnlyUncertainPayoutNeverPointsToEmail()
+    {
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications { Enabled = true },
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        config.Pools = new[]
+        {
+            new PoolConfig
+            {
+                Id = "test", Template = new BitcoinTemplate { Symbol = "BTC" },
+            },
+        };
+        var payments = new Subject<PaymentNotification>();
+        var bus = Substitute.For<IMessageBus>();
+        bus.Listen<AdminNotification>().Returns(new Subject<AdminNotification>());
+        bus.Listen<BlockFoundNotification>().Returns(new Subject<BlockFoundNotification>());
+        bus.Listen<PaymentNotification>().Returns(payments);
+        var requests = new RecordingPushoverHandler();
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var service = new NotificationService(config,
+            new PushoverClient(config, factory), bus);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        await service.StartAsync(timeout.Token).WaitAsync(timeout.Token);
+        payments.OnNext(new PaymentNotification("test", "private failure", 1, "BTC")
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+        });
+        while(requests.Count == 0)
+            await Task.Delay(10, timeout.Token);
+        await service.StopAsync(timeout.Token);
+
+        using var document = JsonDocument.Parse(requests.LastBody);
+        var message = document.RootElement.GetProperty("message").GetString();
+        Assert.Contains("retained private payout reconciliation evidence", message);
+        Assert.DoesNotContain("email", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task StalledOrdinaryEmailTimesOutAndNextPushIsDelivered()
+    {
+        using var smtp = new TcpListener(IPAddress.Loopback, 0);
+        smtp.Start();
+        var email = ValidEmail();
+        email.Port = ((IPEndPoint) smtp.LocalEndpoint).Port;
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications
+            {
+                Enabled = true, EmailAddress = "operator@example.invalid",
+            },
+            Email = email,
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        var admin = new Subject<AdminNotification>();
+        var bus = Substitute.For<IMessageBus>();
+        bus.Listen<AdminNotification>().Returns(admin);
+        bus.Listen<BlockFoundNotification>().Returns(new Subject<BlockFoundNotification>());
+        bus.Listen<PaymentNotification>().Returns(new Subject<PaymentNotification>());
+        var requests = new RecordingPushoverHandler();
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var logs = new TestLogs(LogLevel.Error);
+        using var service = new NotificationService(config,
+            new PushoverClient(config, factory), bus, logs.Logger)
+        {
+            OrdinaryTransportTimeout = TimeSpan.FromMilliseconds(250),
+        };
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var accepted = smtp.AcceptTcpClientAsync(deadline.Token).AsTask();
+
+        await service.StartAsync(deadline.Token).WaitAsync(deadline.Token);
+        admin.OnNext(new AdminNotification("first", "first incident"));
+        using var peer = await accepted.WaitAsync(deadline.Token);
+        while(requests.Count == 0)
+            await Task.Delay(10, deadline.Token);
+        admin.OnNext(new AdminNotification("second", "second incident"));
+        while(requests.Count < 2)
+            await Task.Delay(10, deadline.Token);
+        while(!logs.Target.Logs.Any(entry =>
+                  entry.Contains("Ordinary email delivery exceeded")))
+            await Task.Delay(10, deadline.Token);
+        await service.StopAsync(deadline.Token);
+
+        Assert.Equal(2, requests.Count);
+        Assert.Contains("Ordinary email delivery exceeded",
+            string.Join("\n", logs.Target.Logs));
+        Assert.DoesNotContain(logs.Target.Logs, entry =>
+            entry.Contains("Ordinary Pushover delivery exceeded"));
+    }
+
+    [Fact]
+    public async Task HostShutdownCancelsOrdinaryEmailWithoutErrorLog()
+    {
+        using var smtp = new TcpListener(IPAddress.Loopback, 0);
+        smtp.Start();
+        var email = ValidEmail();
+        email.Port = ((IPEndPoint) smtp.LocalEndpoint).Port;
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications
+            {
+                Enabled = true, EmailAddress = "operator@example.invalid",
+            },
+            Email = email,
+        });
+        var admin = new Subject<AdminNotification>();
+        var bus = Substitute.For<IMessageBus>();
+        bus.Listen<AdminNotification>().Returns(admin);
+        bus.Listen<BlockFoundNotification>().Returns(new Subject<BlockFoundNotification>());
+        bus.Listen<PaymentNotification>().Returns(new Subject<PaymentNotification>());
+        using var logs = new TestLogs(LogLevel.Error);
+        using var service = new NotificationService(config, null, bus, logs.Logger);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var accepted = smtp.AcceptTcpClientAsync(deadline.Token).AsTask();
+
+        await service.StartAsync(deadline.Token).WaitAsync(deadline.Token);
+        admin.OnNext(new AdminNotification("incident", "failure"));
+        using var peer = await accepted.WaitAsync(deadline.Token);
+        await service.StopAsync(deadline.Token);
+
+        Assert.True(logs.Target.Logs.Count == 0,
+            string.Join("\n", logs.Target.Logs));
+    }
+
+    [Fact]
+    public async Task OrdinaryPushoverFailureLogNamesTheTransport()
+    {
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications { Enabled = true },
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        var admin = new Subject<AdminNotification>();
+        var bus = Substitute.For<IMessageBus>();
+        bus.Listen<AdminNotification>().Returns(admin);
+        bus.Listen<BlockFoundNotification>().Returns(new Subject<BlockFoundNotification>());
+        bus.Listen<PaymentNotification>().Returns(new Subject<PaymentNotification>());
+        var requests = new RecordingPushoverHandler(HttpStatusCode.ServiceUnavailable);
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var logs = new TestLogs(LogLevel.Error);
+        using var service = new NotificationService(config,
+            new PushoverClient(config, factory), bus, logs.Logger);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        await service.StartAsync(deadline.Token).WaitAsync(deadline.Token);
+        admin.OnNext(new AdminNotification("incident", "failure"));
+        while(logs.Target.Logs.Count == 0)
+            await Task.Delay(10, deadline.Token);
+        await service.StopAsync(deadline.Token);
+
+        Assert.Contains("Ordinary Pushover delivery failed",
+            string.Join("\n", logs.Target.Logs));
     }
 
     [Fact]
@@ -469,7 +650,8 @@ public class NotificationActivationTests
         var status = new ProcessStatus();
         var lifetime = Substitute.For<IHostApplicationLifetime>();
         var fatalState = Substitute.For<IShareRecoveryFatalState>();
-        fatalState.FatalStateFilename.Returns("/protected/recovery.fatal");
+        fatalState.FatalStateFilename.Returns(
+            "/protected/recovery.fatal" + new string('f', 450));
         var handler = new CandidatePersistenceFailureHandler(
             new MiningFailStopCoordinator(status, lifetime),
             new Lazy<ICriticalNotificationSender>(() => sender), fatalState);
@@ -487,8 +669,10 @@ public class NotificationActivationTests
         using var document = JsonDocument.Parse(requests.LastBody);
         var message = document.RootElement.GetProperty("message").GetString();
         Assert.True(message.EnumerateRunes().Count() <= 1024);
-        Assert.Contains("/protected/recovery.fatal", message);
+        Assert.Contains("Fatal state: /protected/recovery.fatal", message);
         Assert.Contains("details omitted", message);
+        Assert.EndsWith("Preserve PostgreSQL and recovery evidence; see Miningcore logs for full details.",
+            message);
         Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
             status.ExitCode);
     }
@@ -532,6 +716,68 @@ public class NotificationActivationTests
         Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
             status.ExitCode);
         lifetime.Received(1).StopApplication();
+    }
+
+    [Fact]
+    public async Task OversizedRecoveryAlertKeepsFullOperatorInstruction()
+    {
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications { Enabled = true },
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        var requests = new RecordingPushoverHandler();
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var sender = new NotificationService(config,
+            new PushoverClient(config, factory), Substitute.For<IMessageBus>());
+        var fatalState = Substitute.For<IShareRecoveryFatalState>();
+        fatalState.FatalStateFilename.Returns(
+            "/protected/recovery.fatal" + new string('f', 450));
+        var handler = new ShareRecoveryFailureHandler(
+            new MiningFailStopCoordinator(new ProcessStatus(),
+                Substitute.For<IHostApplicationLifetime>()),
+            new Lazy<ICriticalNotificationSender>(() => sender), fatalState);
+        var shares = Enumerable.Range(0, 12)
+            .Select(index => new Miningcore.Blockchain.Share
+            {
+                PoolId = $"pool-{index}-" + new string('p', 70),
+                Miner = "miner",
+            }).ToArray();
+
+        await handler.StopClusterAsync(shares, "/protected/recovery.txt",
+            new IOException("database"), new IOException("journal"));
+
+        using var document = JsonDocument.Parse(requests.LastBody);
+        var message = document.RootElement.GetProperty("message").GetString();
+        Assert.True(message.EnumerateRunes().Count() <= 1024);
+        Assert.Contains("details omitted", message);
+        Assert.Contains(ShareRecoveryFatalState.OperatorAcknowledgementInstruction,
+            message);
+    }
+
+    [Fact]
+    public async Task DeprecatedTopLevelEnabledWarnsWhenAdminIsInactive()
+    {
+        var config = Config(new NotificationsConfig
+        {
+            Enabled = true,
+            Admin = new AdminNotifications { Enabled = false },
+        });
+        using var logs = new TestLogs(LogLevel.Warn);
+        using var service = new NotificationService(config, null,
+            Substitute.For<IMessageBus>(), logs.Logger);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        await service.StartAsync(deadline.Token).WaitAsync(deadline.Token);
+        await service.StopAsync(deadline.Token);
+
+        Assert.Contains(logs.Target.Logs, entry =>
+            entry.Contains("notifications.enabled is deprecated and ignored"));
     }
 
     [Fact]
@@ -623,5 +869,25 @@ public class NotificationActivationTests
                 Content = new StringContent("{\"status\":1}"),
             };
         }
+    }
+
+    private sealed class TestLogs : IDisposable
+    {
+        private readonly LogFactory factory = new();
+        public MemoryTarget Target { get; } = new()
+        {
+            Layout = "${level}|${message}|${exception:format=message}",
+        };
+        public ILogger Logger { get; }
+
+        public TestLogs(LogLevel minimum)
+        {
+            var configuration = new LoggingConfiguration(factory);
+            configuration.AddRule(minimum, LogLevel.Fatal, Target);
+            factory.Configuration = configuration;
+            Logger = factory.GetLogger("NotificationServiceTests");
+        }
+
+        public void Dispose() => factory.Dispose();
     }
 }

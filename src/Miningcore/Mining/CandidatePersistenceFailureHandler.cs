@@ -102,8 +102,8 @@ public sealed class CandidatePersistenceFailureHandler :
                 : string.Empty) +
             $"{durability} Fatal state: " +
             $"{(journalSucceeded ? "(not required; journal succeeded)" : fatalState.FatalStateFilename)}. " +
-            "Preserve PostgreSQL and recovery evidence; see Miningcore logs for full details. " +
-            $"Candidates: {candidateDetails}");
+            $"Candidates: {candidateDetails}. " +
+            "Preserve PostgreSQL and recovery evidence; see Miningcore logs for full details.");
 
         try
         {
