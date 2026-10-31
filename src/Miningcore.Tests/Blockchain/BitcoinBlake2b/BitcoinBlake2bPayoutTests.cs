@@ -228,8 +228,10 @@ public class BitcoinBlake2bPayoutTests : TestBase
     [Fact]
     public async Task CreationCache_MidLookupReorgCannotPoisonCacheOrCreditReward()
     {
+        var now = DateTime.UtcNow;
+        var clock = Substitute.For<IMasterClock>(); clock.Now.Returns(_ => now);
         var contracts = new BitcoinBlake2bPayoutContractTracker();
-        var fixture = await Fixture(contracts: contracts);
+        var fixture = await Fixture(clock: clock, contracts: contracts);
         fixture.Handler.Chain = "main";
         fixture.Handler.AfterHeader = hash =>
         {
@@ -248,6 +250,13 @@ public class BitcoinBlake2bPayoutTests : TestBase
         fixture.Handler.Header["previousblockhash"] = new string('e', 64);
         await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { block }, CancellationToken.None);
         Assert.False(block.BitcoinBlake2bCustodialEvidenceVerified);
+        now = now.AddMinutes(31);
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { block }, CancellationToken.None);
+        Assert.False(block.BitcoinBlake2bCustodialEvidenceVerified);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.Equal(1, contracts.CachedCreationCount);
+        var alert = Assert.Single(fixture.Messages.ReceivedCalls().Select(x => x.GetArguments()[0]).OfType<AdminNotification>());
+        Assert.Contains("Restarting Miningcore clears this process cache", alert.Message);
     }
 
     private async Task<(Handler Handler, IMiningPool Pool, IMessageBus Messages)> Fixture(

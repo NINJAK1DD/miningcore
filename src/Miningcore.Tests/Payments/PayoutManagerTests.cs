@@ -1238,6 +1238,29 @@ public class PayoutManagerTests
     }
 
     [Fact]
+    public async Task Blake2bEmptyRecoveryWindow_CompletesEverySuccessfulSweepWithoutScanningRows()
+    {
+        var fixture = CreateFixture();
+        fixture.Pool.Template = new BitcoinBlake2bTemplate();
+        fixture.MiningPool.NetworkStats.Returns(new BlockchainStats { BlockHeight = 100000 });
+        fixture.BlockRepository.GetPendingBlocksForPoolAsync(fixture.Connection, fixture.Pool.Id).Returns(Array.Empty<Block>());
+        fixture.BlockRepository.GetBitcoinBlake2bOrphanedBlocksForReconciliationAsync(fixture.Connection,
+            fixture.Pool.Id, 48160, 0, 64, Arg.Any<CancellationToken>()).Returns(Array.Empty<Block>());
+        for(var cycle = 0; cycle < 2; cycle++)
+            Assert.Empty(await fixture.Manager.LoadBlocksForClassificationAsync(fixture.MiningPool, CancellationToken.None));
+        var observations = fixture.MessageBus.ReceivedCalls().Select(x => x.GetArguments()[0])
+            .OfType<BitcoinBlake2bReconciliationTelemetry>().ToArray();
+        Assert.Equal(2, observations.Length);
+        Assert.All(observations, x =>
+        {
+            Assert.True(x.SweepCompleted);
+            Assert.Equal(0, x.Rows);
+            Assert.Equal(0, x.Cursor);
+            Assert.Equal(0, x.NearHorizonRows);
+        });
+    }
+
+    [Fact]
     public async Task Blake2bDenseBacklog_VisitsEveryRowAndWrapsWithoutStarvation()
     {
         var fixture = CreateFixture();

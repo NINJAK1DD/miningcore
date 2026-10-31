@@ -10,6 +10,7 @@ using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Rpc;
 using Miningcore.Time;
+using Microsoft.AspNetCore.Http;
 using Newtonsoft.Json.Linq;
 using NSubstitute;
 using Xunit;
@@ -27,11 +28,18 @@ public partial class BitcoinBlake2bStartupTests
         internal int HeaderReads;
         internal readonly List<int> Delays = new();
         internal CancellationTokenSource CancelOnDelay;
+        internal CancellationTokenSource CancelIdentity;
+        internal Task SyncAsync(CancellationToken ct) => EnsureDaemonsSynchedAsync(ct);
 
         protected override Task<RpcResponse<JObject>> ReadDaemonAttestationAsync(string method, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
             if(method == "getnetworkinfo") Attempts++;
+            if(method == "getnetworkinfo" && Fault == "warmup" && Attempts == 1)
+            {
+                CancelIdentity?.Cancel();
+                return Task.FromResult(new RpcResponse<JObject>(null, new JsonRpcError(-28, "private warmup detail", null)));
+            }
             var response = method switch
             {
                 "getnetworkinfo" => new JObject { ["version"] = Fault == "version" ? 290402 : 290403,
@@ -47,6 +55,9 @@ public partial class BitcoinBlake2bStartupTests
         protected override Task<RpcResponse<JObject>> GetAttestationHeaderAsync(string hash, CancellationToken ct)
         {
             HeaderReads++;
+            if(Fault == "missing-header-method") return Task.FromResult(new RpcResponse<JObject>(null, new JsonRpcError(-32601, "private RPC detail", null)));
+            if(Fault == "header-conversion") return Task.FromResult(new RpcResponse<JObject>(null,
+                new JsonRpcError(-500, "private RPC detail", null, new Newtonsoft.Json.JsonSerializationException("private RPC detail"))));
             if(FailuresRemaining-- > 0)
             {
                 if(Fault == "timeout") throw new TimeoutException("private transport detail");
@@ -100,6 +111,8 @@ public partial class BitcoinBlake2bStartupTests
     [InlineData("version")]
     [InlineData("deployment")]
     [InlineData("header-contract")]
+    [InlineData("missing-header-method")]
+    [InlineData("header-conversion")]
     public async Task StartupAttestation_ContradictorySuccessFailsImmediately(string fault)
     {
         var manager = StartupManager(fault);
@@ -125,5 +138,32 @@ public partial class BitcoinBlake2bStartupTests
         manager.CancelOnDelay = stop;
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => manager.AttestStartupAsync(stop.Token));
         Assert.Equal(1, manager.Attempts);
+    }
+
+    [Theory]
+    [InlineData("warmup", false)]
+    [InlineData("version", false)]
+    [InlineData("warmup", true)]
+    public async Task StartupIdentity_WarmupReachesSyncButContradictionsAndCancellationDoNot(string fault, bool cancel)
+    {
+        var syncCalls = 0;
+        await using var server = await Miningcore.Tests.Rpc.RpcDiagnosticTests.Server.Start(async context =>
+        {
+            using var reader = new System.IO.StreamReader(context.Request.Body);
+            var request = JObject.Parse(await reader.ReadToEndAsync());
+            Assert.Equal("getblocktemplate", request["method"].Value<string>());
+            Interlocked.Increment(ref syncCalls);
+            await context.Response.WriteAsync(new JObject { ["result"] = new JObject(), ["error"] = null, ["id"] = request["id"] }.ToString());
+        });
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var manager = new StartupAttestationManager(container) { Fault = fault, CancelIdentity = cancel ? stop : null };
+        var config = LifecycleConfig(); config.Daemons = new[] { server.Endpoint() };
+        manager.Configure(config, new ClusterConfig());
+        if(cancel) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => manager.SyncAsync(stop.Token));
+        else if(fault == "version") await Assert.ThrowsAsync<PoolStartupException>(() => manager.SyncAsync(stop.Token));
+        else await manager.SyncAsync(stop.Token);
+        Assert.Equal(fault == "warmup" && !cancel ? 1 : 0, syncCalls);
+        Assert.Equal(fault == "warmup" && !cancel ? 2 : 1, manager.Attempts);
+        Assert.Equal(fault == "warmup" && !cancel ? 1 : 0, manager.HeaderReads);
     }
 }

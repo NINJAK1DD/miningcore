@@ -212,6 +212,26 @@ public class BitcoinBlake2bRollingMaturityTests
         Assert.Equal(0, reads);
     }
 
+    [Theory]
+    [InlineData(979917)]
+    [InlineData(979919)]
+    public async Task SameHashAtDifferentHeights_CannotAttestEvenIfFirstHeaderWouldMatch(int deploymentHeight)
+    {
+        var hash = new string('a', 64);
+        var chain = new JObject { ["blocks"] = 979918, ["bestblockhash"] = hash };
+        var deployment = new JObject { ["height"] = deploymentHeight, ["hash"] = hash.ToUpperInvariant() };
+        var reads = 0;
+        Task<RpcResponse<JObject>> Header(string requested)
+        {
+            reads++;
+            return Task.FromResult(new RpcResponse<JObject>(new JObject
+                { ["hash"] = requested, ["height"] = 979918, ["confirmations"] = 1 }));
+        }
+        Assert.Equal(BitcoinBlake2bChainObservation.ChainChanged,
+            await BitcoinBlake2bChainEvidence.ObserveAsync(chain, deployment, Header, "test"));
+        Assert.Equal(0, reads);
+    }
+
     [Fact]
     public void CreationCache_IsBoundedLruPoolScopedAndRejectsContradictoryLinks()
     {

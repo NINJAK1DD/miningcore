@@ -63,9 +63,19 @@ Identical snapshots require one header RPC; differing snapshots cost at most
 eight. A changing, incompatible or distant snapshot withholds the cycle with
 reason `ChainChanged (705)`, separately from `RpcUnavailable (701)` and contract
 drift. These observations do not promise an atomic view of subsequent RPCs.
+The same hash associated with different snapshot heights is also rejected before
+any header RPC; a valid block hash cannot have two creation heights.
 Startup chain attestation retries the complete identity/chain/deployment/header
 snapshot up to three times, waiting one and two seconds, honoring cancellation.
 Successful contradictory identity, chain or contract evidence fails immediately.
+An RPC error during the preliminary identity check allows the ordinary daemon
+sync wait to run; identity is checked again by mandatory full attestation after
+sync. A successful incompatible identity still fails before the sync wait.
+At runtime, header RPC errors (including missing methods and conversion failures)
+withhold fresh work and back off like the three metadata RPCs. Successfully
+decoded but contradictory identity/header/deployment fields remain terminal.
+Startup and payout attestation continue to reject missing or malformed RPC
+contracts; runtime retry does not permit a payout or a fresh unverified job.
 The process binds
 the complete network schedule, including rolling constants, rather than binding
 the transient historical/rolling RPC phase. Configuration or chain changes still
@@ -85,6 +95,8 @@ wallet category, spendability and accounting decisions are never cached.
 Conflicting cached links withhold classification; proven orphaning or confirmation
 removes the entry. Process restart clears the cache. The effective confirmation
 count remains the smaller of fresh header and wallet counts.
+The delayed conflict alert explains that restart clears the process cache and
+requires node/chain evidence to be reconciled before restarting.
 These are header RPCs, so pruning old block bodies does not require ordinary
 maturity assumptions. Missing, conflicting or stale evidence retains unresolved
 funds and uses the existing bounded reconciliation alert. Daemon identity and
@@ -233,12 +245,13 @@ operational protections, with regression evidence for each:
 
 ### Recovery monitoring
 
-Each completed bounded scan logs rows, cursor, minimum eligible height, oldest
-batch height, near-horizon batch rows and sweep completion. Prometheus exposes
+Each completed bounded scan logs rows, cursor, configured recovery depth, minimum
+eligible height, oldest batch height, near-horizon batch rows and sweep completion.
+Nonempty batches use Info; empty scans use Debug. Prometheus exposes
 the same progress with only a configured pool label:
 
 - `miningcore_blake2b_orphan_rows_scanned_total`: row visits, including repeated sweeps; use its rate for throughput.
-- `miningcore_blake2b_orphan_sweeps_total`: completed keyset sweeps. Compare sweep time with the remaining horizon margin.
+- `miningcore_blake2b_orphan_sweeps_total`: completed keyset sweeps, including successful empty scans. Healthy pools with no eligible orphans still advance this counter. Compare sweep time with the remaining horizon margin.
 - `miningcore_blake2b_orphan_cursor`: last visited ID, including the first page after wrap.
 - `miningcore_blake2b_orphan_batch_oldest_height`: minimum height in the last batch, zero when empty.
 - `miningcore_blake2b_orphan_batch_near_horizon_rows`: last-batch rows within 2,592 blocks of the lower recovery boundary (about 18 days at target spacing).
@@ -246,10 +259,12 @@ the same progress with only a configured pool label:
 These are scan observations, not global backlog counts, recovered rewards or
 settlements. For the oldest eligible *remaining* row and full-window counts, run
 the explicit [read-only audit](../scripts/ops/audit_blake2b_reconciliation.sql)
-against the intended database with the verified current tip and logged cursor:
+against the intended database with the verified current tip, logged cursor and
+`recovery depth` from the running version's scan log (currently 51840):
 
 ```bash
 psql -X -v ON_ERROR_STOP=1 -v pool_id=POOL -v tip_height=HEIGHT -v cursor=ID \
+  -v recovery_depth=DEPTH \
   -f scripts/ops/audit_blake2b_reconciliation.sql
 ```
 
@@ -261,6 +276,10 @@ cannot finish before rows leave the 51,840-block window. ID order is not height
 order. Increasing payout frequency must respect daemon/database capacity; do not
 raise limits blindly. Very old and already credited rows still require the
 separate financial audit in the upgrade procedure.
+The runtime and metric help text share one recovery policy. The SQL requires an
+explicit depth, has no embedded depth default, and derives its warning margin as
+5% of that depth, matching the runtime. PostgreSQL boundary tests bind the C#
+policy values and exercise alternate depths so drift cannot silently pass.
 
 Use the Ubuntu WSL distribution `Ubuntu` (26.04.1), ordinary user `ubuntu`, with independent
 Linux Git metadata, loopback PostgreSQL and temporary regtest data directories.
@@ -271,7 +290,7 @@ Functional tests use isolated schedule overrides/mocktime; mainnet constants
 are checked independently by upstream unit vectors and Miningcore boundary tests.
 Never run the overrides against an operator node or wallet.
 
-### Validation on 30 October 2026
+### Historical local validation on 30 October 2026
 
 The lab used Ubuntu 26.04.1, .NET SDK 10.0.112, PostgreSQL 18.6,
 the verified Knots 29.4.3 binary above, ordinary Bitcoin Core 31.1,
@@ -281,7 +300,7 @@ embedded schema resources and reused those unchanged, audited native libraries.
 The combined test build also built the current dev branch's native floating-point
 test helper; it completed with zero warnings/errors.
 
-The final implementation, incorporating current dev
+The implementation at that time, incorporating dev
 `f366acc877124a00f0207c1875db57a1422d7ec7`, passed the full suite:
 **5208 passed, zero failed, one benchmark skipped**, in 12 minutes 53 seconds.
 The run enabled
@@ -300,7 +319,7 @@ The published `test_bitcoin` maturity suite passed all four cases, proving
 mainnet constants separately from isolated schedule/mocktime overrides.
 Both offline cache/failure gates passed (five tests each), as did all four
 lab-helper tests, ShellCheck, Markdown link/anchor checks and immutable
-workflow-action pin checks. The final run includes all regressions listed above,
+workflow-action pin checks. That run included the then-current regressions,
 historical and rolling-pruned live fixtures, production payout/accounting and
 unchanged ASIC/header and other-family tests. The managed build completed with
 zero warnings/errors, reusing the unchanged audited production native libraries.

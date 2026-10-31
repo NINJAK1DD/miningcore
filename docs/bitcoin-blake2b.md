@@ -86,6 +86,10 @@ Snapshots must be within six blocks and share verified ancestry, with a final
 active observation of the higher snapshot. Startup chain attestation retries a
 transient race or RPC failure up to three times with one- and two-second delays;
 successful identity/chain/contract contradictions still fail immediately.
+The same hash at different snapshot heights is contradictory. Runtime header RPC
+errors back off like metadata RPC errors, while contradictory successful header
+fields remain terminal. Preliminary identity RPC errors let the node finish its
+normal sync wait; full attestation after sync still requires the exact identity.
 GBT's unprefixed `long_coinbase_maturity` remains present after expiry alongside
 `!blake2b`; this is not a blanket unlock. Unknown mandatory rules and contradictory
 or malformed fields fail closed. A missing mainnet deployment never

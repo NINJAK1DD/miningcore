@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Dapper;
 using Miningcore.Tests.Util.Postgres;
+using Miningcore.Blockchain.BitcoinBlake2b;
 using Npgsql;
 using Xunit;
 
@@ -28,22 +29,42 @@ public class BitcoinBlake2bAllocationResolutionTests
     public async Task ReconciliationAudit_ReportsDenseRemainingBacklogWithoutFinancialWrites()
     {
         await using var db = await BitcoinBlake2bLedgerProbe.CreateAsync(fullSchema: true);
+        var depth = (long) BitcoinBlake2bReconciliationPolicy.RecoveryDepth;
+        var warningEdge = 100000L - depth + (long) BitcoinBlake2bReconciliationPolicy.HorizonWarningDepth;
         await db.Observer.ExecuteAsync(@"
             INSERT INTO blocks(id,poolid,blockheight,networkdifficulty,status,type,transactionconfirmationdata,created)
             SELECT i*3,'audit-pool',48161,1,'orphaned',NULL,'coinbase',now() FROM generate_series(1,4099) i;
             INSERT INTO blocks(id,poolid,blockheight,networkdifficulty,status,type,transactionconfirmationdata,created)
             VALUES(20000,'audit-pool',48159,1,'orphaned',NULL,'old',now()),
                   (20001,'other-pool',48161,1,'orphaned',NULL,'other',now()),
-                  (20002,'audit-pool',48161,1,'orphaned','auxpow','aux',now());");
+                  (20002,'audit-pool',48161,1,'orphaned','auxpow','aux',now()),
+                  (20003,'audit-pool',@warningEdge,1,'orphaned',NULL,'edge',now()),
+                  (20004,'audit-pool',@warningEdge+1,1,'orphaned',NULL,'beyond-edge',now());", new { warningEdge });
         var script = await File.ReadAllTextAsync(PostgresTestScripts.OperatorPathFor("audit_blake2b_reconciliation.sql"));
-        script = script.Replace(":'pool_id'", "@pool", StringComparison.Ordinal)
-            .Replace(":'tip_height'", "@tip", StringComparison.Ordinal).Replace(":'cursor'", "@cursor", StringComparison.Ordinal);
-        var audit = await db.Observer.QuerySingleAsync<Audit>(script, new { pool = "audit-pool", tip = 100000L, cursor = 9000L });
-        Assert.Equal(4099, audit.eligible_orphans);
-        Assert.Equal(1099, audit.remaining_in_sweep);
+        script = script.Replace("\\set ON_ERROR_STOP on", string.Empty, StringComparison.Ordinal)
+            .Replace(":'pool_id'", "@pool", StringComparison.Ordinal)
+            .Replace(":'tip_height'", "@tip", StringComparison.Ordinal).Replace(":'cursor'", "@cursor", StringComparison.Ordinal)
+            .Replace(":'recovery_depth'", "@depth", StringComparison.Ordinal);
+        var audit = await db.Observer.QuerySingleAsync<Audit>(script, new { pool = "audit-pool", tip = 100000L, cursor = 9000L, depth });
+        Assert.Equal(4101, audit.eligible_orphans);
+        Assert.Equal(1101, audit.remaining_in_sweep);
         Assert.Equal(48161, audit.oldest_remaining_height);
-        Assert.Equal(4099, audit.approaching_horizon);
-        Assert.Equal(4102, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM blocks"));
+        Assert.Equal(4100, audit.approaching_horizon);
+        // The operator-supplied depth changes both eligibility and the 5%
+        // warning margin; the SQL must not retain old embedded constants.
+        var wider = await db.Observer.QuerySingleAsync<Audit>(script, new { pool = "audit-pool", tip = 100000L, cursor = 9000L, depth = 60000L });
+        Assert.Equal(4102, wider.eligible_orphans);
+        Assert.Equal(0, wider.approaching_horizon);
+        var narrower = await db.Observer.QuerySingleAsync<Audit>(script, new { pool = "audit-pool", tip = 100000L, cursor = 9000L, depth = 50000L });
+        Assert.Equal(2, narrower.eligible_orphans);
+        var schema = await db.Observer.ExecuteScalarAsync<string>("SELECT current_schema()");
+        var inputs = new Dictionary<string, string>
+        { ["pool_id"] = "audit-pool", ["tip_height"] = "100000", ["cursor"] = "9000", ["recovery_depth"] = depth.ToString(System.Globalization.CultureInfo.InvariantCulture) };
+        var executed = await RunPsql(schema, inputs, null, "audit_blake2b_reconciliation.sql");
+        Assert.True(executed.ExitCode == 0, executed.Output);
+        inputs.Remove("recovery_depth");
+        Assert.NotEqual(0, (await RunPsql(schema, inputs, null, "audit_blake2b_reconciliation.sql")).ExitCode);
+        Assert.Equal(4104, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM blocks"));
         Assert.Equal(0, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM balance_changes"));
         Assert.Equal(0, await db.Observer.ExecuteScalarAsync<int>("SELECT count(*) FROM payments"));
         Assert.Equal("off", await db.Observer.ExecuteScalarAsync<string>("SHOW transaction_read_only"));
@@ -168,7 +189,8 @@ public class BitcoinBlake2bAllocationResolutionTests
         await AssertFinancialState();
     }
 
-    private static async Task<(int ExitCode, string Output)> RunPsql(string schema, Dictionary<string, string> inputs, bool? apply)
+    private static async Task<(int ExitCode, string Output)> RunPsql(string schema, Dictionary<string, string> inputs, bool? apply,
+        string script = "resolve_blake2b_allocation_hold.sql")
     {
         var settings = new NpgsqlConnectionStringBuilder(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"));
         var binary = Path.Combine(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES_BIN"), OperatingSystem.IsWindows() ? "psql.exe" : "psql");
@@ -182,7 +204,7 @@ public class BitcoinBlake2bAllocationResolutionTests
         { start.ArgumentList.Add("-v"); start.ArgumentList.Add(pair.Key + "=" + pair.Value); }
         if(apply.HasValue)
         { start.ArgumentList.Add("-v"); start.ArgumentList.Add("apply=" + (apply.Value ? "true" : "false")); }
-        start.ArgumentList.Add("-f"); start.ArgumentList.Add(PostgresTestScripts.OperatorPathFor("resolve_blake2b_allocation_hold.sql"));
+        start.ArgumentList.Add("-f"); start.ArgumentList.Add(PostgresTestScripts.OperatorPathFor(script));
         using var process = Process.Start(start);
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();

@@ -104,7 +104,9 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
                 hash => GetBlockHeaderAsync(hash, ct), poolConfig.Id, ct);
             if(observation != BitcoinBlake2bChainObservation.Verified)
                 throw AttestationFailure(observation == BitcoinBlake2bChainObservation.ChainChanged
-                    ? BitcoinBlake2bPayoutAttestationReason.ChainChanged : BitcoinBlake2bPayoutAttestationReason.RpcUnavailable);
+                    ? BitcoinBlake2bPayoutAttestationReason.ChainChanged
+                    : observation == BitcoinBlake2bChainObservation.RpcContractInvalid
+                        ? BitcoinBlake2bPayoutAttestationReason.ContractDrift : BitcoinBlake2bPayoutAttestationReason.RpcUnavailable);
         }
         catch(PoolStartupException)
         {
@@ -294,7 +296,7 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
                                         !parent.MedianTimePast.HasValue || current?.Confirmations is not > 0 ||
                                         current.Height != header.Height || !string.Equals(current.PreviousBlockHash, header.PreviousBlockHash, StringComparison.OrdinalIgnoreCase))
                                     {
-                                        NotifyDelay(block);
+                                        NotifyDelay(block, conflict);
                                         result.Add(block);
                                         continue;
                                     }
@@ -358,14 +360,15 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
 
     private void ClearDelay(Block block) => grace.Clear(block.PoolId, block.Id, block.Hash, ReconciliationEpisode);
 
-    private void NotifyDelay(Block block)
+    private void NotifyDelay(Block block, bool creationConflict = false)
     {
         if(!grace.TryAcquireNotification(block.PoolId, block.Id, block.Hash, ReconciliationEpisode, clock.Now, AlertAfter)) return;
         try
         {
             messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}] Bitcoin BLAKE2b block reconciliation delayed",
                 $"Pool {poolConfig.Id} block {block.BlockHeight} has lacked matching active-chain header and wallet coinbase evidence for at least {(int) AlertAfter.TotalMinutes} minutes. " +
-                "The stored reward remains unresolved. Check getblockheader/gettransaction, wallet indexing, synchronization and RPC proxies. Sensitive verification detail is withheld.",
+                "The stored reward remains unresolved. Check getblockheader/gettransaction, wallet indexing, synchronization and RPC proxies. Sensitive verification detail is withheld." +
+                (creationConflict ? " Conflicting cached creation evidence stays withheld. Restarting Miningcore clears this process cache; reconcile the node and chain evidence before restarting." : string.Empty),
                 AdminNotificationImportance.FinancialOrSecurity, poolConfig.Id));
             grace.MarkNotificationSent(block.PoolId, block.Id, block.Hash, ReconciliationEpisode);
         }

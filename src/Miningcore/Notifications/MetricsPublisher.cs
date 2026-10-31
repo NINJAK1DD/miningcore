@@ -87,13 +87,13 @@ public class MetricsPublisher : StartupGatedBackgroundService
         blake2bOrphanScannedCounter = metricFactory.CreateCounter("miningcore_blake2b_orphan_rows_scanned_total",
             "Orphan row visits in bounded reconciliation batches, not successful settlements", new CounterConfiguration { LabelNames = reconciliationLabels });
         blake2bOrphanSweepCounter = metricFactory.CreateCounter("miningcore_blake2b_orphan_sweeps_total",
-            "Completed keyset sweeps of the eligible orphan window", new CounterConfiguration { LabelNames = reconciliationLabels });
+            "Completed keyset sweeps, including successful scans of an empty eligible orphan window", new CounterConfiguration { LabelNames = reconciliationLabels });
         blake2bOrphanCursorGauge = metricFactory.CreateGauge("miningcore_blake2b_orphan_cursor",
             "Last visited orphan ID in the current keyset sweep", new GaugeConfiguration { LabelNames = reconciliationLabels });
         blake2bOrphanOldestBatchHeightGauge = metricFactory.CreateGauge("miningcore_blake2b_orphan_batch_oldest_height",
             "Oldest height in the last scan batch, zero for an empty batch; not the global backlog minimum", new GaugeConfiguration { LabelNames = reconciliationLabels });
         blake2bOrphanNearHorizonBatchGauge = metricFactory.CreateGauge("miningcore_blake2b_orphan_batch_near_horizon_rows",
-            "Rows in the last batch within 2592 blocks of the recovery horizon", new GaugeConfiguration { LabelNames = reconciliationLabels });
+            $"Rows in the last batch within {Miningcore.Blockchain.BitcoinBlake2b.BitcoinBlake2bReconciliationPolicy.HorizonWarningDepth} blocks of the recovery horizon", new GaugeConfiguration { LabelNames = reconciliationLabels });
         difficultyAssignmentCounter = metricFactory.CreateCounter("miningcore_difficulty_assignment_total",
             "Candidate assignment compatibility events",
             new CounterConfiguration { LabelNames = new[] { "pool", "outcome" } });

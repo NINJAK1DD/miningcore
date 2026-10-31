@@ -40,10 +40,11 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
 
     protected override async Task EnsureDaemonsSynchedAsync(CancellationToken ct)
     {
-        var response = await rpc.ExecuteAsync<JObject>(logger,
-            BitcoinCommands.GetNetworkInfo, ct);
-        ValidateDaemonIdentity(response.Error == null ? response.Response : null,
-            poolConfig.Id);
+        var response = await ReadDaemonAttestationAsync(BitcoinCommands.GetNetworkInfo, ct);
+        ct.ThrowIfCancellationRequested();
+        // A warming-up node has not supplied identity evidence yet. Let the
+        // ordinary sync wait finish; full attestation is mandatory afterward.
+        if(response.Error == null) ValidateDaemonIdentity(response.Response, poolConfig.Id);
         await base.EnsureDaemonsSynchedAsync(ct);
         await AttestStartupAsync(ct);
     }
@@ -90,8 +91,11 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
                             var schedule = BitcoinBlake2bMaturity.ForNetwork(blake2bCoin, name, poolConfig.Id);
                             ValidateDeployment(deployment.Response, blake2bCoin.Networks[name].Blake2bActivationHeight!.Value, poolConfig.Id);
                             schedule.ValidateDeployment(deployment.Response, poolConfig.Id);
-                            if(await BitcoinBlake2bChainEvidence.ObserveAsync(chain.Response, deployment.Response,
-                                hash => GetAttestationHeaderAsync(hash, ct), poolConfig.Id, ct) == BitcoinBlake2bChainObservation.Verified)
+                            var observation = await BitcoinBlake2bChainEvidence.ObserveAsync(chain.Response, deployment.Response,
+                                hash => GetAttestationHeaderAsync(hash, ct), poolConfig.Id, ct);
+                            if(observation == BitcoinBlake2bChainObservation.RpcContractInvalid)
+                                throw new PoolStartupException("Bitcoin BLAKE2b startup header RPC contract is invalid", poolConfig.Id);
+                            if(observation == BitcoinBlake2bChainObservation.Verified)
                             {
                                 maturity = schedule;
                                 attestedChain = name;
@@ -211,6 +215,9 @@ public class BitcoinBlake2bJobManager : BitcoinJobManager
             blake2bCoin.Networks[expectedChain].Blake2bActivationHeight!.Value, poolConfig.Id);
         maturity = BitcoinBlake2bMaturity.ForNetwork(blake2bCoin, expectedChain, poolConfig.Id);
         maturity.ValidateDeployment(deployment.Response, poolConfig.Id);
+        // Header RPC errors, including missing methods and result-conversion
+        // failures, back off like the sibling metadata RPCs. A successful
+        // response with contradictory header fields remains terminal.
         if(await BitcoinBlake2bChainEvidence.ObserveAsync(chain.Response, deployment.Response,
             hash => GetAttestationHeaderAsync(hash, ct), poolConfig.Id, ct) != BitcoinBlake2bChainObservation.Verified)
         {

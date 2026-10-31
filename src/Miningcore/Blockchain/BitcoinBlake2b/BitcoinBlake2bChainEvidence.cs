@@ -4,7 +4,7 @@ using Newtonsoft.Json.Linq;
 
 namespace Miningcore.Blockchain.BitcoinBlake2b;
 
-internal enum BitcoinBlake2bChainObservation { Verified, RpcUnavailable, ChainChanged }
+internal enum BitcoinBlake2bChainObservation { Verified, RpcUnavailable, ChainChanged, RpcContractInvalid }
 
 internal static class BitcoinBlake2bChainEvidence
 {
@@ -28,6 +28,7 @@ internal static class BitcoinBlake2bChainEvidence
             deployment?["height"]?.Type != JTokenType.Integer || !int.TryParse(deployment["height"].ToString(), out var deploymentHeight) || deploymentHeight < 0)
             throw new PoolStartupException("Bitcoin BLAKE2b chain snapshot metadata is invalid", poolId);
         if(Math.Abs((long) chainHeight - deploymentHeight) > MaximumSnapshotDistance ||
+            chainHeight != deploymentHeight && string.Equals(chainHash, deploymentHash, StringComparison.OrdinalIgnoreCase) ||
             chainHeight == deploymentHeight && !string.Equals(chainHash, deploymentHash, StringComparison.OrdinalIgnoreCase))
             return BitcoinBlake2bChainObservation.ChainChanged;
 
@@ -41,7 +42,7 @@ internal static class BitcoinBlake2bChainEvidence
             { return (null, BitcoinBlake2bChainObservation.RpcUnavailable); }
             ct.ThrowIfCancellationRequested();
             if(response?.Error?.Code == -32601 || response?.Error?.InnerException is Newtonsoft.Json.JsonSerializationException)
-                throw new PoolStartupException("Bitcoin BLAKE2b header RPC contract is invalid", poolId);
+                return (null, BitcoinBlake2bChainObservation.RpcContractInvalid);
             if(response == null || response.Error != null) return (null, BitcoinBlake2bChainObservation.RpcUnavailable);
             if(response.Response == null) throw new PoolStartupException("Bitcoin BLAKE2b header RPC result is empty", poolId);
             var header = response.Response;
