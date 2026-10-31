@@ -357,10 +357,11 @@ public class XelisLifecycleTests
     [Fact]
     public void NativeCapabilityRejectsUnsupportedArchitecturesAndMissingExportsBeforeAnyHash()
     {
-        Assert.False(XelisNativeCapability.IsAvailable(Architecture.Arm64, _ => throw new Exception("must not load ARM stub")));
-        Assert.False(XelisNativeCapability.IsAvailable(Architecture.X64, name => name == "xelis_hash_export"));
-        Assert.False(XelisNativeCapability.IsAvailable(Architecture.X64, _ => false));
-        Assert.True(XelisNativeCapability.IsAvailable(Architecture.X64, _ => true));
+        var unused = new Proof { BeforeHash = () => throw new Exception("must not hash") };
+        Assert.False(XelisNativeCapability.IsAvailable(Architecture.Arm64, _ => throw new Exception("must not load ARM stub"), unused, unused));
+        Assert.False(XelisNativeCapability.IsAvailable(Architecture.X64, name => name == "xelis_hash_export", unused, unused));
+        Assert.False(XelisNativeCapability.IsAvailable(Architecture.X64, _ => false, unused, unused));
+        Assert.Equal(0, unused.Calls);
         if(OperatingSystem.IsLinux() && RuntimeInformation.ProcessArchitecture == Architecture.X64)
             Assert.True(XelisNativeCapability.IsAvailable());
         if(!XelisNativeCapability.IsAvailable())
@@ -371,6 +372,40 @@ public class XelisLifecycleTests
             var manager = new RpcConsumerDiagnosticTests.XelisConsumer(container, bus,
                 new RpcClient(new DaemonEndpointConfig(), new JsonSerializerSettings(), bus, "test"), logs.Logger);
             Assert.Throws<Miningcore.Mining.TrustedPoolStartupException>(() => manager.Configure(new PoolConfig { Id = "test" }, new ClusterConfig()));
+        }
+    }
+
+    [Theory]
+    [InlineData(1, "zero")] [InlineData(2, "zero")]
+    [InlineData(1, "unwritten")] [InlineData(2, "unwritten")]
+    [InlineData(1, "wrong")] [InlineData(2, "wrong")]
+    [InlineData(1, "missing")] [InlineData(2, "missing")]
+    [InlineData(0, "valid")]
+    public void NativeCapabilityRequiresBothKnownAnswers(int brokenVersion, string mode)
+    {
+        var v1 = new KnownAnswerHasher(1, brokenVersion == 1 ? mode : "valid");
+        var v2 = new KnownAnswerHasher(2, brokenVersion == 2 ? mode : "valid");
+        Assert.Equal(brokenVersion == 0,
+            XelisNativeCapability.IsAvailable(Architecture.X64, _ => true, v1, v2));
+        Assert.Equal(1, v1.Calls);
+        Assert.Equal(brokenVersion == 1 ? 0 : 1, v2.Calls);
+    }
+
+    private sealed class KnownAnswerHasher(int version, string mode) : IHashAlgorithm
+    {
+        internal int Calls;
+        public void Digest(ReadOnlySpan<byte> data, Span<byte> result, params object[] extra)
+        {
+            Calls++;
+            Assert.Equal(new byte[112], data.ToArray());
+            if(mode == "missing") throw new EntryPointNotFoundException("synthetic loader failure");
+            if(mode == "unwritten") return;
+            if(mode == "zero") { result.Clear(); return; }
+            var expected = Convert.FromHexString(version == 1
+                ? "0ebbbd8a31edadfe098f2d770d84b719588675ab88a0a17067d00a8f36182265"
+                : "7edb70f0748573902728a4691e9e2d7e4043ee34c823a11390d3d6e15fbe921b");
+            if(mode == "wrong") expected[0] ^= 1;
+            expected.CopyTo(result);
         }
     }
 }

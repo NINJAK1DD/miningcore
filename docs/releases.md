@@ -81,7 +81,9 @@ timestamp after newer timestamp-only work is obtained. Template replacement
 semantics are retained; see the [freshness evidence and limits](xelis-target-validation.md#timestamp-only-template-freshness).
 
 Xelis startup now requires an x64 native library exporting both v1 and v2 hash
-functions. Unsupported architectures and the uncertified bundled Windows ABI
+functions and passing both pinned known-answer self-tests. Zeroing, unwritten
+or incorrect native hash output refuses startup before work can be issued.
+Unsupported architectures and the uncertified bundled Windows ABI
 fail pool startup instead of allowing miners to receive unusable work. The
 original five-argument generic `RpcClient.ExecuteAsync` CLR signature is retained;
 bounded calls use the separate `ExecuteBoundedAsync` API.

@@ -83,6 +83,11 @@ refresh during a prolonged RPC outage; preserving compatible cached work does
 not establish that daemon work is fresh. Count a successfully validated unchanged
 template as a successful acquisition; age since the last new job ID or block
 height is not a substitute for RPC freshness monitoring.
+For production pools using WebSocket notifications, configure a positive
+`blockRefreshInterval` (milliseconds) so HTTP polling continues as a fallback.
+With zero or an omitted interval, polling stops after the first template and an
+extended subscription outage can leave old work active. Automatic fallback and a
+bounded cached-work freshness policy are tracked in [#243](https://github.com/NINJAK1DD/miningcore/issues/243).
 Block RPCs already admitted before retirement can complete and retain an accepted
 network receipt; retirement does not erase an already submitted block outcome.
 Likewise, shares admitted at the final epoch check may finish publication and
@@ -285,8 +290,18 @@ the scalar stage with unchanged hash math. The existing bundled Windows
 remains Linux-only. Source-vector success does not certify that bundled Windows
 pool runtime; updating and packaging its Xelis ABI remains #120 work.
 The job manager now refuses startup unless the process is x64 and the native
-library exports both `xelis_hash_export` and `xelis_hash_v2_export`. The ARM v1
-stub is never invoked by a configured Xelis pool. Windows CI includes managed
+library exports both `xelis_hash_export` and `xelis_hash_v2_export` and passes
+both known-answer self-tests before issuing work. Once per process, the production
+managed wrappers hash 112 zero bytes and compare all 32 result bytes against
+the pinned upstream [v1](https://github.com/xelis-project/xelis-hash/blob/f48262b931438fdbf2932711613e020c02f1ea04/src/v1.rs)
+and [v2](https://github.com/xelis-project/xelis-hash/blob/f48262b931438fdbf2932711613e020c02f1ea04/src/v2.rs)
+`test_zero_hash` vectors. A zeroing, unwritten or incorrect result refuses startup;
+restart after replacing the native library. This detects broken implementations
+at startup; it is not an integrity guarantee against a malicious library or
+corruption occurring later. Genuine zero-valued share proofs remain valid, with
+finite assignment-bounded credit. Managed native tests also check v2's independent
+nonzero `test_verify_output` vector, repeatability and caller-input preservation.
+The ARM v1 stub is never invoked by a configured Xelis pool. Windows CI includes managed
 startup/ABI and RPC timeout/compatibility tests alongside the source-built vectors.
 
 ## Initial lab results, 25 October 2026 (before review hardening)

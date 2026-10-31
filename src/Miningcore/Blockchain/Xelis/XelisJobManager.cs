@@ -299,7 +299,7 @@ public class XelisJobManager : JobManagerBase<XelisJob>
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         if(!XelisNativeCapability.IsAvailable())
-            throw new TrustedPoolStartupException("Xelis requires an x64 native runtime with both v1 and v2 hash exports", pc.Id);
+            throw new TrustedPoolStartupException("Xelis requires an x64 native runtime with both v1 and v2 hash exports passing known-answer self-tests", pc.Id);
         coin = pc.Template.As<XelisCoinTemplate>();
 
         extraPoolConfig = pc.Extra.SafeExtensionDataAs<XelisPoolConfigExtra>();
