@@ -38,26 +38,41 @@ public class PushoverClientTests
         var secondClient = new PushoverClient(config, factory);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
-        var first = firstClient.PushMessage("ordinary-1", "message",
-            PushoverMessagePriority.None, deadline.Token);
-        await handler.WaitForStartAsync(deadline.Token);
-        var second = secondClient.PushMessage("ordinary-2", "message",
-            PushoverMessagePriority.None, deadline.Token);
-        var critical = secondClient.PushMessage("critical", "message",
-            PushoverMessagePriority.None, deadline.Token, critical: true);
-        await handler.WaitForStartAsync(deadline.Token);
+        Task<PushoverReponse> first = null;
+        Task<PushoverReponse> second = null;
+        Task<PushoverReponse> critical = null;
+        try
+        {
+            first = firstClient.PushMessage("ordinary-1", "message",
+                PushoverMessagePriority.None, deadline.Token);
+            await handler.WaitForStartAsync(deadline.Token);
+            second = secondClient.PushMessage("ordinary-2", "message",
+                PushoverMessagePriority.None, deadline.Token);
+            critical = secondClient.PushMessage("critical", "message",
+                PushoverMessagePriority.None, true, deadline.Token);
+            await handler.WaitForStartAsync(deadline.Token);
 
-        Assert.Equal(2, handler.Active);
-        Assert.Contains("critical", handler.StartedTitles);
-        Assert.DoesNotContain("ordinary-2", handler.StartedTitles);
-        handler.Release("ordinary-1");
-        await handler.WaitForStartAsync(deadline.Token);
-        Assert.Equal(2, handler.Active);
-        Assert.True(handler.Peak <= 2);
-        handler.Release("critical");
-        handler.Release("ordinary-2");
-        await Task.WhenAll(first, second, critical).WaitAsync(deadline.Token);
-        Assert.Equal(0, handler.Active);
+            Assert.Equal(2, handler.Active);
+            Assert.Contains("critical", handler.StartedTitles);
+            Assert.DoesNotContain("ordinary-2", handler.StartedTitles);
+            handler.Release("ordinary-1");
+            await handler.WaitForStartAsync(deadline.Token);
+            Assert.Equal(2, handler.Active);
+            Assert.True(handler.Peak <= 2);
+            handler.Release("critical");
+            handler.Release("ordinary-2");
+            await Task.WhenAll(first, second, critical).WaitAsync(deadline.Token);
+            Assert.Equal(0, handler.Active);
+        }
+        finally
+        {
+            // A failed assertion must not strand the process-wide gate for
+            // every other Pushover test in this process.
+            deadline.Cancel();
+            handler.ReleaseAll();
+            await Task.WhenAll(new[] { first, second, critical }
+                .Where(task => task != null)).ContinueWith(_ => { });
+        }
     }
 
     [Fact]
@@ -149,6 +164,12 @@ public class PushoverClientTests
         public Task WaitForStartAsync(CancellationToken ct) => started.WaitAsync(ct);
 
         public void Release(string title) => releases[title].SetResult();
+
+        public void ReleaseAll()
+        {
+            foreach(var release in releases.Values)
+                release.TrySetResult();
+        }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)

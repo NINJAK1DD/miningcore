@@ -350,6 +350,172 @@ public class NotificationActivationTests
     }
 
     [Fact]
+    public async Task RealMessageBusPublisherDoesNotWaitForPayoutFormatting()
+    {
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications { Enabled = true },
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        config.Pools = new[]
+        {
+            new PoolConfig
+            {
+                Id = "test", Template = new BitcoinTemplate { Symbol = "BTC" },
+            },
+        };
+        var bus = new MessageBus();
+        var requests = new RecordingPushoverHandler();
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var service = new NotificationService(config,
+            new PushoverClient(config, factory), bus);
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        service.BeforePaymentFormat = _ =>
+        {
+            entered.Set();
+            release.Wait(deadline.Token);
+        };
+
+        await service.StartAsync(deadline.Token).WaitAsync(deadline.Token);
+        var publish = Task.Run(() => bus.SendMessage(
+            new PaymentNotification("test", "private failure", 1, "BTC")
+            {
+                Outcome = PaymentNotificationOutcome.Uncertain,
+            }));
+        try
+        {
+            await Task.Run(() => entered.Wait(deadline.Token), deadline.Token);
+            await publish.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(0, requests.Count);
+        }
+        finally
+        {
+            release.Set();
+            await publish.WaitAsync(deadline.Token);
+        }
+
+        while(requests.Count == 0)
+            await Task.Delay(10, deadline.Token);
+        await service.StopAsync(deadline.Token);
+    }
+
+    [Fact]
+    public async Task BoundedFormattingQueueReportsEveryDroppedPayoutIncident()
+    {
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications { Enabled = true },
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        config.Pools = new[]
+        {
+            new PoolConfig
+            {
+                Id = "test", Template = new BitcoinTemplate { Symbol = "BTC" },
+            },
+        };
+        var bus = new MessageBus();
+        var requests = new RecordingPushoverHandler();
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var logs = new TestLogs(LogLevel.Error);
+        using var service = new NotificationService(config,
+            new PushoverClient(config, factory), bus, logs.Logger)
+        {
+            MaxPendingOrdinaryNotifications = 2,
+        };
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        service.BeforePaymentFormat = _ =>
+        {
+            entered.Set();
+            release.Wait(deadline.Token);
+        };
+
+        await service.StartAsync(deadline.Token).WaitAsync(deadline.Token);
+        try
+        {
+            bus.SendMessage(new PaymentNotification("test", "private failure", 1, "BTC")
+            {
+                Outcome = PaymentNotificationOutcome.Uncertain,
+            });
+            await Task.Run(() => entered.Wait(deadline.Token), deadline.Token);
+            for(var index = 0; index < 4; index++)
+                bus.SendMessage(new PaymentNotification("test", "private failure", 1, "BTC")
+                {
+                    Outcome = PaymentNotificationOutcome.Uncertain,
+                });
+
+            Assert.Equal(2, service.PendingFormatting);
+            Assert.Equal(3, service.DroppedFormatting);
+            Assert.Equal(3, logs.Target.Logs.Count);
+            Assert.All(logs.Target.Logs, entry =>
+                Assert.Contains("payout failure or uncertain outcome not queued", entry));
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        while(requests.Count < 2)
+            await Task.Delay(10, deadline.Token);
+        await service.StopAsync(deadline.Token);
+    }
+
+    [Fact]
+    public async Task BoundedEmailQueueReportsRoutineOverflow()
+    {
+        using var smtp = new TcpListener(IPAddress.Loopback, 0);
+        smtp.Start();
+        var email = ValidEmail();
+        email.Port = ((IPEndPoint) smtp.LocalEndpoint).Port;
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications
+            {
+                Enabled = true, EmailAddress = "operator@example.invalid",
+            },
+            Email = email,
+        });
+        var bus = new MessageBus();
+        using var logs = new TestLogs(LogLevel.Warn);
+        using var service = new NotificationService(config, null, bus, logs.Logger)
+        {
+            MaxPendingOrdinaryNotifications = 2,
+            OrdinaryTransportTimeout = TimeSpan.FromSeconds(5),
+        };
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var accepted = smtp.AcceptTcpClientAsync(deadline.Token).AsTask();
+
+        await service.StartAsync(deadline.Token).WaitAsync(deadline.Token);
+        bus.SendMessage(new AdminNotification("first", "message"));
+        using var peer = await accepted.WaitAsync(deadline.Token);
+        bus.SendMessage(new AdminNotification("second", "message"));
+        while(service.PendingEmail < 2)
+            await Task.Delay(10, deadline.Token);
+        bus.SendMessage(new AdminNotification("third", "message"));
+        while(service.DroppedEmail == 0)
+            await Task.Delay(10, deadline.Token);
+        await service.StopAsync(deadline.Token);
+
+        Assert.Equal(1, service.DroppedEmail);
+        Assert.Contains(logs.Target.Logs, entry =>
+            entry.Contains("email queue full; nonfinancial alert omitted"));
+    }
+
+    [Fact]
     public async Task StalledOrdinaryEmailTimesOutAndNextPushIsDelivered()
     {
         using var smtp = new TcpListener(IPAddress.Loopback, 0);

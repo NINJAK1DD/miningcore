@@ -55,6 +55,7 @@ public class NotificationService : StartupGatedBackgroundService,
     private readonly NotificationActivation activation;
     private readonly IMessageBus messageBus;
     private readonly PushoverClient pushoverClient;
+    internal Action<PaymentNotification> BeforePaymentFormat { get; set; }
 
     public string FormatAmount(decimal amount, string poolId)
     {
@@ -62,7 +63,24 @@ public class NotificationService : StartupGatedBackgroundService,
     }
 
     private sealed record OrdinaryNotification(string Subject, string EmailMessage,
-        string PushoverMessage);
+        string PushoverMessage, bool FinancialIncident = false);
+    private sealed record OrdinaryEnvelope(Func<OrdinaryNotification> Format,
+        bool FinancialIncident);
+
+    // Cap both the scheduler handoff and each transport's serial queue.
+    internal int MaxPendingOrdinaryNotifications { get; set; } = 256;
+    private int pendingFormatting;
+    private int pendingEmail;
+    private int pendingPushover;
+    private long droppedFormatting;
+    private long droppedEmail;
+    private long droppedPushover;
+    internal int PendingFormatting => Volatile.Read(ref pendingFormatting);
+    internal int PendingEmail => Volatile.Read(ref pendingEmail);
+    internal int PendingPushover => Volatile.Read(ref pendingPushover);
+    internal long DroppedFormatting => Volatile.Read(ref droppedFormatting);
+    internal long DroppedEmail => Volatile.Read(ref droppedEmail);
+    internal long DroppedPushover => Volatile.Read(ref droppedPushover);
 
     private static OrdinaryNotification FormatAdminNotification(
         AdminNotification notification) =>
@@ -95,8 +113,7 @@ public class NotificationService : StartupGatedBackgroundService,
             {
                 activation.ValidatePushoverProvider();
                 await pushoverClient.PushMessage(notification.Subject,
-                    notification.Message, PushoverMessagePriority.None, ct,
-                    critical: true);
+                    notification.Message, PushoverMessagePriority.None, true, ct);
             }, "Critical administrative Pushover delivery failed"));
 
         var errors = (await Task.WhenAll(attempts))
@@ -128,9 +145,9 @@ public class NotificationService : StartupGatedBackgroundService,
     {
         await Task.Yield();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(OrdinaryTransportTimeout);
         try
         {
+            timeout.CancelAfter(OrdinaryTransportTimeout);
             await send(timeout.Token).WaitAsync(timeout.Token);
         }
         catch(OperationCanceledException) when(ct.IsCancellationRequested)
@@ -163,9 +180,10 @@ public class NotificationService : StartupGatedBackgroundService,
         return new OrdinaryNotification(subject, message, message);
     }
 
-    private OrdinaryNotification FormatPaymentNotification(
+    private OrdinaryNotification PreparePaymentNotification(
         PaymentNotification notification)
     {
+        BeforePaymentFormat?.Invoke(notification);
         var coin = poolConfigs[notification.PoolId].Template;
         var (subject, emailMessage, pushoverMessage, isSuccess) =
             FormatPaymentNotification(notification,
@@ -174,7 +192,8 @@ public class NotificationService : StartupGatedBackgroundService,
         if(isSuccess && clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess != true)
             return null;
 
-        return new OrdinaryNotification(subject, emailMessage, pushoverMessage);
+        return new OrdinaryNotification(subject, emailMessage, pushoverMessage,
+            !isSuccess);
     }
 
     internal static (string Subject, string EmailMessage, string PushoverMessage,
@@ -500,26 +519,63 @@ public class NotificationService : StartupGatedBackgroundService,
         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "NotificationService.LogGuarded", failure: ex);
     }
 
-    private IObservable<OrdinaryNotification> Prepare<T>(
-        Func<T, OrdinaryNotification> format, CancellationToken ct)
+    private bool TryReserve(ref int pending, ref long dropped,
+        string queue, bool financialIncident)
+    {
+        while(true)
+        {
+            var current = Volatile.Read(ref pending);
+            if(current >= Math.Max(1, MaxPendingOrdinaryNotifications))
+            {
+                var total = Interlocked.Increment(ref dropped);
+                if(financialIncident)
+                    logger.Error("Ordinary {0} queue full; payout failure or uncertain outcome not queued; dropped count {1}",
+                        queue, total);
+                else if(total == 1 || total % 100 == 0)
+                    logger.Warn("Ordinary {0} queue full; nonfinancial alert omitted; dropped count {1}",
+                        queue, total);
+                return false;
+            }
+
+            if(Interlocked.CompareExchange(ref pending, current + 1, current) == current)
+                return true;
+        }
+    }
+
+    private IObservable<OrdinaryEnvelope> ListenForFormatting<T>(
+        Func<T, OrdinaryNotification> format)
     {
         return messageBus.Listen<T>()
-            .Select(msg =>
-            {
-                try
-                {
-                    return format(msg);
-                }
-                catch(OperationCanceledException) when(ct.IsCancellationRequested)
-                {
-                    return null;
-                }
-                catch(Exception ex)
-                {
-                    LogGuarded(ex);
-                    return null;
-                }
-            });
+            // Only capture the event on the publisher's scheduler. Formatting
+            // runs after ObserveOn in ExecuteAsync.
+            .Select(msg => new OrdinaryEnvelope(() => format(msg),
+                msg is PaymentNotification payout &&
+                (payout.Outcome != PaymentNotificationOutcome.Success ||
+                    !string.IsNullOrEmpty(payout.Error))))
+            .Where(envelope => TryReserve(ref pendingFormatting,
+                ref droppedFormatting, "formatting", envelope.FinancialIncident));
+    }
+
+    private OrdinaryNotification FormatSafely(
+        OrdinaryEnvelope envelope, CancellationToken ct)
+    {
+        try
+        {
+            return envelope.Format();
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch(Exception ex)
+        {
+            LogGuarded(ex);
+            return null;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref pendingFormatting);
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -541,28 +597,53 @@ public class NotificationService : StartupGatedBackgroundService,
                 // own serial queue. A stalled email cannot hold later pushes.
                 var events = new[]
                     {
-                        Prepare<AdminNotification>(FormatAdminNotification, ct),
-                        Prepare<BlockFoundNotification>(FormatBlockFoundNotification, ct),
-                        Prepare<PaymentNotification>(FormatPaymentNotification, ct),
+                        ListenForFormatting<AdminNotification>(FormatAdminNotification),
+                        ListenForFormatting<BlockFoundNotification>(FormatBlockFoundNotification),
+                        ListenForFormatting<PaymentNotification>(PreparePaymentNotification),
                     }
                     .Merge()
-                    .Where(notification => notification != null)
                     .ObserveOn(TaskPoolScheduler.Default)
+                    .Select(envelope => FormatSafely(envelope, ct))
+                    .Where(notification => notification != null)
                     .Publish();
 
                 var channels = new List<IObservable<Unit>>();
                 if(activation.EmailEnabled)
-                    channels.Add(events.Select(notification => Observable.FromAsync(() =>
-                        AttemptOrdinaryTransportAsync("email", token =>
-                            SendEmailAsync(activation.EmailRecipient,
-                                notification.Subject, notification.EmailMessage, token), ct)))
+                    channels.Add(events
+                        .Where(notification => TryReserve(ref pendingEmail,
+                            ref droppedEmail, "email", notification.FinancialIncident))
+                        .Select(notification => Observable.FromAsync(async () =>
+                        {
+                            try
+                            {
+                                await AttemptOrdinaryTransportAsync("email", token =>
+                                    SendEmailAsync(activation.EmailRecipient,
+                                        notification.Subject, notification.EmailMessage, token), ct);
+                            }
+                            finally
+                            {
+                                Interlocked.Decrement(ref pendingEmail);
+                            }
+                        }))
                         .Concat());
                 if(activation.PushoverEnabled)
-                    channels.Add(events.Select(notification => Observable.FromAsync(() =>
-                        AttemptOrdinaryTransportAsync("Pushover", token =>
-                            pushoverClient.PushMessage(notification.Subject,
-                                notification.PushoverMessage,
-                                PushoverMessagePriority.None, token), ct)))
+                    channels.Add(events
+                        .Where(notification => TryReserve(ref pendingPushover,
+                            ref droppedPushover, "Pushover", notification.FinancialIncident))
+                        .Select(notification => Observable.FromAsync(async () =>
+                        {
+                            try
+                            {
+                                await AttemptOrdinaryTransportAsync("Pushover", token =>
+                                    pushoverClient.PushMessage(notification.Subject,
+                                        notification.PushoverMessage,
+                                        PushoverMessagePriority.None, token), ct);
+                            }
+                            finally
+                            {
+                                Interlocked.Decrement(ref pendingPushover);
+                            }
+                        }))
                         .Concat());
 
                 var processing = channels.Merge().ToTask(ct);

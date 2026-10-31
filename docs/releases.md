@@ -56,6 +56,9 @@ failed channel, while cancellation during host shutdown is treated as expected.
 Each channel now processes its own ordered event queue, so stalled email does
 not delay later Pushover alerts. Pushover requests share a two-request gate
 that keeps one slot available to critical alerts during ordinary traffic.
+Payout alert formatting now runs after the scheduler handoff. Ordinary queue
+depth is capped at 256 for formatting and each transport; overload logs counted
+omissions, with payout failures and uncertain outcomes reported at Error level.
 Timeouts bound the local wait and do not prove the provider rejected a message;
 Pushover `status: 1` confirms queueing by the provider, not human receipt.
 See [notification activation and migration](notifications.md).

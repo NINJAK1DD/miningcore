@@ -40,6 +40,12 @@ does not hold up Pushover. Each transport processes events in order in its own
 queue, so later Pushover alerts also proceed while email is stalled. A timeout
 bounds the wait, but does not prove the remote service rejected the message;
 check provider and reconciliation evidence before retrying a payout alert.
+The formatting handoff and each channel retain at most 256 pending ordinary
+alerts. On overflow, Miningcore omits new routine alerts and logs a counted
+warning. Every omitted payout failure or uncertain outcome is logged at Error
+level with its queue and dropped count; inspect the retained payout and wallet
+evidence if such an overload occurs. Critical persistence alerts bypass these
+ordinary queues.
 Pushover requests share a two-request gate within a Miningcore process across
 hosted and critical senders,
 with one slot reserved for critical alerts when ordinary traffic is active.

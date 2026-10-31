@@ -96,8 +96,7 @@ public sealed class CandidatePersistenceFailureHandler :
             escalated
                 ? "Escalated block-candidate durability loss"
                 : "Fatal block-candidate persistence failure",
-            $"Fatal state: " +
-            $"{(journalSucceeded ? "(not required; journal succeeded)" : fatalState.FatalStateFilename)}. " +
+            (journalSucceeded ? string.Empty : $"Fatal state: {fatalState.FatalStateFilename}. ") +
             $"Miningcore is stopping with exit status {exitCode}. " +
             (escalated
                 ? "This escalates an earlier journalled-candidate shutdown: "

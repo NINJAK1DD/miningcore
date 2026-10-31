@@ -20,9 +20,12 @@ public class PushoverClient
     private readonly SimpleRestClient client;
     private readonly PushoverConfig config;
 
-    public async Task<PushoverReponse> PushMessage(string title, string message,
-        PushoverMessagePriority priority, CancellationToken ct,
-        bool critical = false)
+    public Task<PushoverReponse> PushMessage(string title, string message,
+        PushoverMessagePriority priority, CancellationToken ct) =>
+        PushMessage(title, message, priority, false, ct);
+
+    internal async Task<PushoverReponse> PushMessage(string title, string message,
+        PushoverMessagePriority priority, bool critical, CancellationToken ct)
     {
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(title));
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(message));
