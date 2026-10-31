@@ -55,6 +55,7 @@
         "host": "[set]",
         "password": "[set]",
         "port": 587,
+        "tlsMode": "[set]",
         "user": "[set]"
       },
       "enabled": false,
