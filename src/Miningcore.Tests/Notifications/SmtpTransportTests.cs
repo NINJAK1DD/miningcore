@@ -98,7 +98,15 @@ public class SmtpTransportTests
     {
         var config = Config("startTls", 0);
         config.Host = null;
-        var result = new EmailSenderConfigValidator().Validate(config);
+        var result = new NotificationsConfigValidator().Validate(
+            new NotificationsConfig
+            {
+                Admin = new AdminNotifications
+                {
+                    Enabled = true, EmailAddress = "operator@example.invalid",
+                },
+                Email = config,
+            });
         Assert.Single(result.Errors);
         Assert.DoesNotContain("user", result.Errors[0].ErrorMessage,
             StringComparison.OrdinalIgnoreCase);

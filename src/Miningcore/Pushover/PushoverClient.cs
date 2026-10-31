@@ -25,12 +25,15 @@ public class PushoverClient
         {
             User = config.User,
             Token = config.Token,
-            Title = title,
-            Message = message,
+            Title = PushoverMessagePolicy.Title(title),
+            Message = PushoverMessagePolicy.Message(message),
             Priority = (int) priority,
             Timestamp = (int) DateTimeOffset.Now.ToUnixTimeSeconds(),
         };
 
-        return await client.Post<PushoverReponse>("/messages.json", msg, ct);
+        var response = await client.Post<PushoverReponse>("/messages.json", msg, ct);
+        if(response?.Status != 1)
+            throw new IOException("Pushover did not confirm message acceptance");
+        return response;
     }
 }

@@ -590,7 +590,7 @@ public class HostedServiceStartupTests
         var aggregate = await Assert.ThrowsAsync<AggregateException>(() =>
             sender.SendCriticalAdminNotificationAsync(new AdminNotification("test", "recovery"), timeout.Token));
         var transport = Assert.IsType<IOException>(Assert.Single(aggregate.InnerExceptions));
-        var error = Assert.IsType<PoolStartupException>(transport.InnerException);
+        var error = Assert.IsType<InvalidOperationException>(transport.InnerException);
         Assert.Contains("notifications.email", error.Message);
         messageBus.DidNotReceive().Listen<AdminNotification>();
         messageBus.DidNotReceive().Listen<BlockFoundNotification>();

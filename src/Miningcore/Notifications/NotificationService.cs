@@ -24,6 +24,9 @@ namespace Miningcore.Notifications;
 public class NotificationService : StartupGatedBackgroundService,
     ICriticalNotificationSender
 {
+    internal static readonly TimeSpan OrdinaryTransportTimeout =
+        TimeSpan.FromSeconds(15);
+
     public NotificationService(
         ClusterConfig clusterConfig,
         PushoverClient pushoverClient,
@@ -38,7 +41,6 @@ public class NotificationService : StartupGatedBackgroundService,
         activation = new NotificationActivation(clusterConfig.Notifications);
 
         poolConfigs = clusterConfig.Pools.ToDictionary(x => x.Id, x => x);
-
     }
 
     private readonly ILogger logger = LogManager.GetCurrentClassLogger();
@@ -55,11 +57,8 @@ public class NotificationService : StartupGatedBackgroundService,
 
     private async Task OnAdminNotificationAsync(AdminNotification notification, CancellationToken ct)
     {
-        if(activation.EmailEnabled)
-            await Guard(()=> SendEmailAsync(activation.EmailRecipient, notification.Subject, notification.Message, ct), LogGuarded);
-
-        if(activation.PushoverEnabled)
-            await Guard(()=> pushoverClient.PushMessage(notification.Subject, notification.Message, PushoverMessagePriority.None, ct), LogGuarded);
+        await SendOrdinaryAsync(notification.Subject, notification.Message,
+            notification.Message, ct);
     }
 
     public async Task SendCriticalAdminNotificationAsync(AdminNotification notification,
@@ -103,6 +102,8 @@ public class NotificationService : StartupGatedBackgroundService,
     private static async Task<Exception> AttemptCriticalTransportAsync(
         Func<Task> send, string failureMessage)
     {
+        // Do not let synchronous work in one transport delay the other one's start.
+        await Task.Yield();
         try
         {
             await send();
@@ -114,19 +115,38 @@ public class NotificationService : StartupGatedBackgroundService,
         }
     }
 
+    private async Task SendOrdinaryAsync(string subject, string emailMessage,
+        string pushoverMessage, CancellationToken ct)
+    {
+        var attempts = new List<Task>();
+        if(activation.EmailEnabled)
+            attempts.Add(AttemptOrdinaryTransportAsync(token =>
+                SendEmailAsync(activation.EmailRecipient, subject, emailMessage,
+                    token), ct));
+        if(activation.PushoverEnabled)
+            attempts.Add(AttemptOrdinaryTransportAsync(token =>
+                pushoverClient.PushMessage(subject, pushoverMessage,
+                    PushoverMessagePriority.None, token), ct));
+        await Task.WhenAll(attempts);
+    }
+
+    private async Task AttemptOrdinaryTransportAsync(
+        Func<CancellationToken, Task> send, CancellationToken ct)
+    {
+        await Task.Yield();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(OrdinaryTransportTimeout);
+        await Guard(async () => await send(timeout.Token).WaitAsync(timeout.Token),
+            LogGuarded);
+    }
+
     private async Task OnBlockFoundNotificationAsync(BlockFoundNotification notification, CancellationToken ct)
     {
         const string subject = "Block Notification";
         var message = $"Pool {notification.PoolId} found block candidate {notification.BlockHeight}";
 
         if(clusterConfig.Notifications?.Admin?.NotifyBlockFound == true)
-        {
-            if(activation.EmailEnabled)
-                await Guard(() => SendEmailAsync(activation.EmailRecipient, subject, message, ct), LogGuarded);
-
-            if(activation.PushoverEnabled)
-                await Guard(() => pushoverClient.PushMessage(subject, message, PushoverMessagePriority.None, ct), LogGuarded);
-        }
+            await SendOrdinaryAsync(subject, message, message, ct);
     }
 
     private async Task OnPaymentNotificationAsync(PaymentNotification notification, CancellationToken ct)
@@ -139,12 +159,7 @@ public class NotificationService : StartupGatedBackgroundService,
         if(isSuccess && clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess != true)
             return;
 
-        if(activation.EmailEnabled)
-            await Guard(()=> SendEmailAsync(activation.EmailRecipient, subject, emailMessage, ct), LogGuarded);
-
-        if(activation.PushoverEnabled)
-            await Guard(()=> pushoverClient.PushMessage(subject, pushoverMessage,
-                PushoverMessagePriority.None, ct), LogGuarded);
+        await SendOrdinaryAsync(subject, emailMessage, pushoverMessage, ct);
     }
 
     internal static (string Subject, string EmailMessage, string PushoverMessage,
@@ -421,14 +436,7 @@ public class NotificationService : StartupGatedBackgroundService,
 
     internal static string TruncateForPushover(string message)
     {
-        const int maxCharacters = 1024;
-        var characters = message.EnumerateRunes().ToArray();
-
-        if(characters.Length <= maxCharacters)
-            return message;
-
-        return string.Concat(characters.Take(maxCharacters - 1)
-            .Select(x => x.ToString())) + "…";
+        return PushoverMessagePolicy.Message(message);
     }
 
     private static readonly RemoteCertificateValidationCallback StrictCertificateValidation =
@@ -446,11 +454,10 @@ public class NotificationService : StartupGatedBackgroundService,
         // The critical-sender singleton is separate from the hosted instance under the
         // current Autofac registrations, even in normal operation. Recovery also resolves
         // it without hosting. Delivery cannot rely on the hosted startup validation.
-        if(string.IsNullOrWhiteSpace(recipient))
-            throw new InvalidOperationException("Email delivery requires a nonblank recipient");
+        NotificationActivation.RequireAddress(recipient,
+            "notifications.admin.emailAddress");
         // Validate and send from one consistent copy of the configuration.
-        var email = activation.ValidateEmailProvider();
-        var socketOptions = SmtpTransportPolicy.Resolve(email);
+        var (email, socketOptions) = activation.ValidateEmailProvider();
         logger.Info(() => $"Sending '{subject.ToLower()}' email to {recipient}");
 
         var message = new MimeMessage();
@@ -496,7 +503,13 @@ public class NotificationService : StartupGatedBackgroundService,
 
             // Also validate the actual hosted instance: it is distinct from the
             // Autofac critical sender and can be constructed without Program.ValidateConfig.
-            activation.ValidateForNormalHost();
+            var validationErrors = activation.GetValidationErrors();
+            if(validationErrors.Count > 0)
+                throw new PoolStartupException(string.Join("; ", validationErrors));
+
+            if(clusterConfig.Notifications?.Enabled == true &&
+                !activation.AdminEnabled)
+                logger.Warn("notifications.enabled is deprecated and ignored; notifications.admin.enabled is false, so administrative alerts are inactive");
             if(activation.AdminEnabled)
             {
                 obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));

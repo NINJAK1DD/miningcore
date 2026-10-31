@@ -1,40 +1,10 @@
 using FluentValidation;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
-using Miningcore.Notifications;
 
 namespace Miningcore.Configuration;
 
 #region Validators
-
-public class EmailSenderConfigValidator : AbstractValidator<EmailSenderConfig>
-{
-    public EmailSenderConfigValidator()
-    {
-        RuleFor(j => j).Custom((config, context) =>
-        {
-            try
-            {
-                SmtpTransportPolicy.Resolve(config);
-            }
-            catch(InvalidOperationException error)
-            {
-                context.AddFailure(error.Message);
-            }
-        });
-
-        RuleFor(j => j.FromAddress)
-            .NotNull()
-            .NotEmpty()
-            .WithMessage("EmailSender fromAddress missing or empty");
-    }
-}
-
-public class AdminNotificationsValidator : AbstractValidator<AdminNotifications>
-{
-    // Transport validation needs the parent NotificationsConfig. A Pushover-only
-    // administrator has no email recipient.
-}
 
 public class NotificationsConfigValidator : AbstractValidator<NotificationsConfig>
 {
@@ -42,14 +12,8 @@ public class NotificationsConfigValidator : AbstractValidator<NotificationsConfi
     {
         RuleFor(x => x).Custom((config, context) =>
         {
-            try
-            {
-                new NotificationActivation(config).ValidateForNormalHost();
-            }
-            catch(Miningcore.Mining.PoolStartupException ex)
-            {
-                context.AddFailure(ex.Message);
-            }
+            foreach(var error in new NotificationActivation(config).GetValidationErrors())
+                context.AddFailure(error);
         });
     }
 }
@@ -465,6 +429,8 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
         RuleFor(j => j.Notifications)
             .SetValidator(new NotificationsConfigValidator())
+            // The recovery reader drops notifications before binding. Keep direct
+            // recovery-mode validation equally independent of live alert settings.
             .When(j => !recoveryMode && j.Notifications != null);
 
         // ensure pool ids are unique

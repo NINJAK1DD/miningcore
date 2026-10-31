@@ -4,6 +4,8 @@
 notifications. The older `notifications.enabled` field is deprecated and ignored.
 Its value does not enable or suppress delivery. Set `admin.enabled` explicitly
 when migrating an existing configuration; do not rely on the old field.
+If the old field is `true` while `admin.enabled` is `false`, startup logs a
+warning about the mismatch.
 
 | `notifications` | `admin.enabled` | `admin.emailAddress` | `pushover.enabled` | Normal host result |
 | --- | --- | --- | --- | --- |
@@ -18,7 +20,9 @@ An empty `admin` or `pushover` object is equivalent to omitted flags. A
 nonblank `admin.emailAddress` opts into email even if `notifications.email` is
 absent; normal startup then reports the missing provider. To use Pushover only,
 remove or blank that address. When email is active, SMTP host, port,
-`tlsMode`, sender name and sender address must be usable. SMTP credentials
+`tlsMode`, sender name and sender address must be usable. The sender name must
+not be whitespace, and sender and recipient must be plain email addresses.
+SMTP credentials
 must be both present or both absent under the
 [verified TLS policy](configuration.md#smtp-transport-migration). When Pushover is
 active, user and token must be nonblank. Inactive providers are not validated.
@@ -30,7 +34,12 @@ events. `notifyBlockFound` controls block-found alerts and
 uncertain outcomes remain eligible. Critical persistence alerts ignore these
 event filters, but respect `admin.enabled` and the transport choices. Email
 and Pushover attempts are independent: failure of one does not prevent an
-attempt through the other. An active critical sender with no usable transport
+attempt through the other. Ordinary delivery starts both selected transports
+independently and limits each attempt to 15 seconds; a stalled SMTP server
+does not hold up Pushover. Pushover titles and messages are kept within its
+250 and 1024 character limits, preserving the incident summary and trailing
+operator instruction when detail is truncated. An HTTP response counts as
+accepted only when Pushover confirms `status: 1`. An active critical sender with no usable transport
 reports an error to its caller instead of reporting successful delivery.
 
 Normal startup validates this policy before notification readiness and

@@ -1,9 +1,12 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Reactive.Subjects;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
@@ -86,6 +89,50 @@ public class NotificationActivationTests
     }
 
     [Theory]
+    [InlineData("not-an-address", "pool@example.invalid", "admin.emailAddress")]
+    [InlineData("operator@example.invalid", "not-an-address", "email.fromAddress")]
+    [InlineData(" operator@example.invalid ", "pool@example.invalid", "admin.emailAddress")]
+    public void ActiveEmailRequiresPlainAddressSyntax(string recipient,
+        string senderAddress, string expectedPath)
+    {
+        var email = ValidEmail();
+        email.FromAddress = senderAddress;
+        var config = new NotificationsConfig
+        {
+            Admin = new AdminNotifications
+            {
+                Enabled = true, EmailAddress = recipient,
+            },
+            Email = email,
+        };
+
+        var result = new NotificationsConfigValidator().Validate(config);
+        Assert.Contains(result.Errors, error =>
+            error.ErrorMessage.Contains(expectedPath));
+    }
+
+    [Fact]
+    public void ValidationReportsEmailAndPushoverFailuresTogether()
+    {
+        var email = ValidEmail();
+        email.TlsMode = null;
+        var config = new NotificationsConfig
+        {
+            Admin = new AdminNotifications
+            {
+                Enabled = true, EmailAddress = "operator@example.invalid",
+            },
+            Email = email,
+            Pushover = new PushoverConfig { Enabled = true },
+        };
+
+        var errors = new NotificationsConfigValidator().Validate(config).Errors;
+        Assert.Contains(errors, error => error.ErrorMessage.Contains("tlsMode"));
+        Assert.Contains(errors, error => error.ErrorMessage.Contains("pushover.user"));
+        Assert.Contains(errors, error => error.ErrorMessage.Contains("pushover.token"));
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData(" \t ")]
@@ -119,6 +166,10 @@ public class NotificationActivationTests
     public async Task PushoverOnlyHostDeliversAdminBlockAndPaymentWithoutEmail(
         string recipient)
     {
+        using var smtp = new TcpListener(IPAddress.Loopback, 0);
+        smtp.Start();
+        var email = ValidEmail();
+        email.Port = ((IPEndPoint) smtp.LocalEndpoint).Port;
         var config = Config(new NotificationsConfig
         {
             Enabled = false,
@@ -127,6 +178,8 @@ public class NotificationActivationTests
                 Enabled = true, EmailAddress = recipient,
                 NotifyBlockFound = true, NotifyPaymentSuccess = true,
             },
+            // A valid provider must still receive no connection for blank recipients.
+            Email = email,
             Pushover = new PushoverConfig
             {
                 Enabled = true, User = "test-user", Token = "test-token",
@@ -166,10 +219,83 @@ public class NotificationActivationTests
         await service.StopAsync(timeout.Token);
 
         Assert.Equal(3, requests.Count);
+        Assert.False(smtp.Pending());
+    }
+
+    [Theory]
+    [InlineData("admin")]
+    [InlineData("block")]
+    [InlineData("payment")]
+    public async Task NonblankRecipientAttemptsEmailAndPushWithoutWaitingForSmtp(
+        string eventType)
+    {
+        using var smtp = new TcpListener(IPAddress.Loopback, 0);
+        smtp.Start();
+        var email = ValidEmail();
+        email.Port = ((IPEndPoint) smtp.LocalEndpoint).Port;
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications
+            {
+                Enabled = true, EmailAddress = "operator@example.invalid",
+                NotifyBlockFound = true, NotifyPaymentSuccess = true,
+            },
+            Email = email,
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        config.Pools = new[]
+        {
+            new PoolConfig
+            {
+                Id = "test", Template = new BitcoinTemplate { Symbol = "BTC" },
+            },
+        };
+        var admin = new Subject<AdminNotification>();
+        var blocks = new Subject<BlockFoundNotification>();
+        var payments = new Subject<PaymentNotification>();
+        var bus = Substitute.For<IMessageBus>();
+        bus.Listen<AdminNotification>().Returns(admin);
+        bus.Listen<BlockFoundNotification>().Returns(blocks);
+        bus.Listen<PaymentNotification>().Returns(payments);
+        var requests = new RecordingPushoverHandler();
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var service = new NotificationService(config,
+            new PushoverClient(config, factory), bus);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var accepted = smtp.AcceptTcpClientAsync(timeout.Token).AsTask();
+
+        await service.StartAsync(timeout.Token).WaitAsync(timeout.Token);
+        switch(eventType)
+        {
+            case "admin":
+                admin.OnNext(new AdminNotification("incident", "message"));
+                break;
+            case "block":
+                blocks.OnNext(new BlockFoundNotification
+                {
+                    PoolId = "test", BlockHeight = 1,
+                });
+                break;
+            default:
+                payments.OnNext(new PaymentNotification("test", "failed", 1, "BTC"));
+                break;
+        }
+
+        using var peer = await accepted.WaitAsync(timeout.Token);
+        while(requests.Count == 0)
+            await Task.Delay(10, timeout.Token);
+        Assert.Equal(1, requests.Count);
+        Assert.False(smtp.Pending());
+        await service.StopAsync(timeout.Token);
     }
 
     [Fact]
-    public async Task UnhostedCriticalSenderAttemptsPushAfterEmailFailure()
+    public async Task UnhostedCriticalSenderAttemptsPushDespiteEmailFailure()
     {
         var config = Config(new NotificationsConfig
         {
@@ -324,6 +450,91 @@ public class NotificationActivationTests
     }
 
     [Fact]
+    public async Task MultiCandidateCriticalPushKeepsFatalStateWithinLimit()
+    {
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications { Enabled = true },
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        var requests = new RecordingPushoverHandler();
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var sender = new NotificationService(config,
+            new PushoverClient(config, factory), Substitute.For<IMessageBus>());
+        var status = new ProcessStatus();
+        var lifetime = Substitute.For<IHostApplicationLifetime>();
+        var fatalState = Substitute.For<IShareRecoveryFatalState>();
+        fatalState.FatalStateFilename.Returns("/protected/recovery.fatal");
+        var handler = new CandidatePersistenceFailureHandler(
+            new MiningFailStopCoordinator(status, lifetime),
+            new Lazy<ICriticalNotificationSender>(() => sender), fatalState);
+        var candidates = Enumerable.Range(0, 10)
+            .Select(index => new Miningcore.Blockchain.Share
+            {
+                PoolId = "btc", Miner = "bc1q" + new string('m', 75),
+                BlockHeight = index + 1,
+                BlockType = "bitcoin", BlockHash = new string('a', 64),
+            }).ToArray();
+
+        await handler.StopClusterAsync(candidates, new IOException("database"),
+            new IOException("journal"), false);
+
+        using var document = JsonDocument.Parse(requests.LastBody);
+        var message = document.RootElement.GetProperty("message").GetString();
+        Assert.True(message.EnumerateRunes().Count() <= 1024);
+        Assert.Contains("/protected/recovery.fatal", message);
+        Assert.Contains("details omitted", message);
+        Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+            status.ExitCode);
+    }
+
+    [Fact]
+    public async Task RecoveryHandlerKeepsFatalOutcomeWhenBothTransportsFail()
+    {
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications
+            {
+                Enabled = true, EmailAddress = "operator@example.invalid",
+            },
+            Email = ValidEmail(),
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        var requests = new RecordingPushoverHandler(HttpStatusCode.ServiceUnavailable);
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var sender = new NotificationService(config,
+            new PushoverClient(config, factory), Substitute.For<IMessageBus>());
+        var status = new ProcessStatus();
+        var lifetime = Substitute.For<IHostApplicationLifetime>();
+        var fatalState = Substitute.For<IShareRecoveryFatalState>();
+        fatalState.FatalStateFilename.Returns("/protected/recovery.fatal");
+        var handler = new ShareRecoveryFailureHandler(
+            new MiningFailStopCoordinator(status, lifetime),
+            new Lazy<ICriticalNotificationSender>(() => sender), fatalState);
+
+        await handler.StopClusterAsync(new[]
+        {
+            new Miningcore.Blockchain.Share { PoolId = "btc", Miner = "miner" },
+        }, "/protected/recovery.txt", new IOException("database failure"),
+            new IOException("journal failure"));
+
+        Assert.Equal(1, requests.Count);
+        Assert.Equal(ProcessExitCodes.UnreconciledShareDurabilityLoss,
+            status.ExitCode);
+        lifetime.Received(1).StopApplication();
+    }
+
+    [Fact]
     public async Task InactiveTopLevelConflictHasNoHostedSubscriptionsOrCriticalDelivery()
     {
         var config = Config(new NotificationsConfig
@@ -377,29 +588,40 @@ public class NotificationActivationTests
         Notifications = notifications,
     };
 
-    private static EmailSenderConfig ValidEmail() => new()
+    private static EmailSenderConfig ValidEmail()
     {
-        Host = "127.0.0.1", Port = 1, TlsMode = SmtpTlsMode.StartTls,
-        User = "test-user",
-        Password = "test-password", FromName = "Operator",
-        FromAddress = "pool@example.invalid",
-    };
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var closedPort = ((IPEndPoint) listener.LocalEndpoint).Port;
+        listener.Stop();
+        return new EmailSenderConfig
+        {
+            Host = "127.0.0.1", Port = closedPort,
+            TlsMode = SmtpTlsMode.StartTls,
+            User = "test-user", Password = "test-password",
+            FromName = "Operator", FromAddress = "pool@example.invalid",
+        };
+    }
 
     private sealed class RecordingPushoverHandler(
         HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
     {
         private int count;
+        private string lastBody;
         public int Count => Volatile.Read(ref count);
+        public string LastBody => Volatile.Read(ref lastBody);
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Assert.Equal(HttpMethod.Post, request.Method);
+            Volatile.Write(ref lastBody,
+                await request.Content.ReadAsStringAsync(cancellationToken));
             Interlocked.Increment(ref count);
-            return Task.FromResult(new HttpResponseMessage(status)
+            return new HttpResponseMessage(status)
             {
                 Content = new StringContent("{\"status\":1}"),
-            });
+            };
         }
     }
 }

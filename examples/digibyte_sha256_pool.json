@@ -17,7 +17,6 @@
         "banOnLoginFailure": true
     },
     "notifications": {
-        "enabled": false,
         "email": {
             "host": "smtp.example.com",
             "port": 587,

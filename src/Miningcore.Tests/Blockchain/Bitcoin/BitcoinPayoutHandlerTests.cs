@@ -1716,7 +1716,8 @@ public class BitcoinPayoutHandlerTests : TestBase
 
         var truncated = NotificationService.TruncateForPushover(new string('x', 1100));
         Assert.Equal(1024, truncated.EnumerateRunes().Count());
-        Assert.EndsWith("…", truncated);
+        Assert.Contains("details omitted", truncated);
+        Assert.EndsWith("x", truncated);
     }
 
     [Fact]

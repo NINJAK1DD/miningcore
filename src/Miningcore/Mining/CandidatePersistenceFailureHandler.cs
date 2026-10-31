@@ -100,9 +100,10 @@ public sealed class CandidatePersistenceFailureHandler :
             (escalated
                 ? "This escalates an earlier journalled-candidate shutdown: "
                 : string.Empty) +
-            $"{durability} " +
-            $"Candidates: {candidateDetails} Fatal state: " +
-            $"{(journalSucceeded ? "(not required; journal succeeded)" : fatalState.FatalStateFilename)}");
+            $"{durability} Fatal state: " +
+            $"{(journalSucceeded ? "(not required; journal succeeded)" : fatalState.FatalStateFilename)}. " +
+            "Preserve PostgreSQL and recovery evidence; see Miningcore logs for full details. " +
+            $"Candidates: {candidateDetails}");
 
         try
         {

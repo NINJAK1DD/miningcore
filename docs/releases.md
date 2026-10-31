@@ -37,12 +37,19 @@ before enabling alerts. See the [SMTP transport migration guide](configuration.m
 
 `notifications.admin.enabled` now consistently controls validation, event
 subscriptions and critical delivery. The legacy top-level
-`notifications.enabled` field is deprecated and ignored. An active admin
+`notifications.enabled` field is deprecated and ignored; a `true` legacy value
+with disabled admin notifications now logs a startup warning. Bundled examples
+omit the legacy field. An active admin
 configuration must have at least one usable transport: a nonblank recipient
-with SMTP settings, Pushover with user and token, or both. Blank recipients no
+with SMTP settings, Pushover with user and token, or both. Sender and recipient
+email addresses must be plain addresses, and a whitespace-only sender name is
+invalid when email is selected. Blank recipients no
 longer trigger email attempts; an enabled critical alert with no transport
 reports an error. Review conflicting flags and provider fields before
-upgrading. The `-rs` importer still ignores live notification settings.
+upgrading. Ordinary email and Pushover attempts start independently with a
+15-second limit per channel. Pushover messages and titles are bounded to its
+1024 and 250 character limits, and HTTP success requires `status: 1` in the
+response. The `-rs` importer still ignores live notification settings.
 See [notification activation and migration](notifications.md).
 
 ## Unreleased (after v0.3.0): verify daemon RPC TLS certificates
