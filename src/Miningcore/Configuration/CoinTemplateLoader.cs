@@ -26,7 +26,7 @@ public static class CoinTemplateLoader
     private const string OdoCryptIntervalProperty =
         "odoCryptShapeChangeInterval";
     internal const string BitcoinBlake2bProtocol =
-        "knots-29.4.2-header-v2";
+        "knots-29.4.3-header-v2";
 
     private static void RejectUnsupportedMetadata(string filename, string coinId,
         JToken template)
@@ -442,7 +442,7 @@ public static class CoinTemplateLoader
                        !int.TryParse(field.Value.ToString(), out var boundary) || boundary < 0)
                         Reject($"'{field.Name}' must be a nonnegative in-range JSON integer");
                 }
-                else if(field.Name is "blake2bActivationHeight" or "blake2bTargetShift")
+                else if(field.Name is "blake2bActivationHeight" or "blake2bTargetShift" or "blake2bMaturityExpiry")
                 {
                     if(field.Value.Type != JTokenType.Integer ||
                        !ulong.TryParse(field.Value.ToString(), out var number) ||
@@ -501,7 +501,7 @@ public static class CoinTemplateLoader
             throw new PoolStartupException(
                 $"Invalid coin-template '{coinId}' in file '{filename}': " +
                 "mainnet activation metadata does not match reviewed Bitcoin " +
-                "Knots v29.4.2.knots20260508 consensus parameters");
+                "Knots v29.4.3.knots20260508 consensus parameters");
         }
     }
 

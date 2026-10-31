@@ -113,7 +113,7 @@ public class BitcoinDirectSoloIntegrationTests
                 SearchPath = $"{schema},public",
             };
             var manager = new PayoutManager(
-                Substitute.For<IComponentContext>(),
+                Substitute.For<ILifetimeScope>(),
                 new PgConnectionFactory(builder.ConnectionString), repository,
                 Substitute.For<IShareRepository>(),
                 Substitute.For<IBalanceRepository>(), new ClusterConfig

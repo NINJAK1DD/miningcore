@@ -7,12 +7,14 @@
       ],
       "properties": {
         "emailAddress": {
+          "description": "Nonblank address enables email delivery when admin.enabled is true; requires notifications.email. Blank disables email when Pushover is enabled.",
           "type": [
             "string",
             "null"
           ]
         },
         "enabled": {
+          "description": "Authoritative switch for administrative email and Pushover notifications, including critical alerts.",
           "type": "boolean"
         },
         "notifyBlockFound": {
@@ -344,6 +346,18 @@
         "port": {
           "type": "integer"
         },
+        "tlsMode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            null,
+            "startTls",
+            "implicitTls",
+            "localPlaintext"
+          ]
+        },
         "user": {
           "type": [
             "string",
@@ -376,6 +390,7 @@
           "$ref": "#/definitions/EmailSenderConfig"
         },
         "enabled": {
+          "description": "Deprecated compatibility field: ignored for activation and validation. Use admin.enabled and the email recipient or pushover.enabled.",
           "type": "boolean"
         },
         "pushover": {
@@ -779,6 +794,7 @@
       ],
       "properties": {
         "enabled": {
+          "description": "Enable Pushover delivery when notifications.admin.enabled is true; requires nonblank user and token.",
           "type": "boolean"
         },
         "token": {

@@ -908,7 +908,8 @@ public class BitcoinPool : PoolBase
 
         Guard(() => messageBus.SendMessage(new AdminNotification(
             "Bitcoin direct-SOLO job delivery stopped",
-            $"Pool {poolConfig.Id} invalidated all jobs and is stopping because a direct-coinbase template could not be constructed safely. Operator investigation and restart are required. {RpcConsumerDiagnostics.WithheldError}")));
+            $"Pool {poolConfig.Id} invalidated all jobs and is stopping because a direct-coinbase template could not be constructed safely. Operator investigation and restart are required. {RpcConsumerDiagnostics.WithheldError}",
+            AdminNotificationImportance.FinancialOrSecurity, poolConfig.Id)));
 
         void InvalidateWork()
         {

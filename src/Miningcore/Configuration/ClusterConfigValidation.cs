@@ -6,37 +6,15 @@ namespace Miningcore.Configuration;
 
 #region Validators
 
-public class EmailSenderConfigValidator : AuthenticatedNetworkEndpointConfigValidator<EmailSenderConfig>
-{
-    public EmailSenderConfigValidator()
-    {
-        RuleFor(j => j.FromAddress)
-            .NotNull()
-            .NotEmpty()
-            .WithMessage("EmailSender fromAddress missing or empty");
-    }
-}
-
-public class AdminNotificationsValidator : AbstractValidator<AdminNotifications>
-{
-    public AdminNotificationsValidator()
-    {
-        RuleFor(j => j.EmailAddress)
-            .NotNull()
-            .NotEmpty()
-            .When(x => x.Enabled)
-            .WithMessage("Admin notification recipient missing or empty");
-    }
-}
-
 public class NotificationsConfigValidator : AbstractValidator<NotificationsConfig>
 {
     public NotificationsConfigValidator()
     {
-        RuleFor(j => j.Email)
-            .NotNull()
-            .When(x => x.Enabled)
-            .WithMessage("You must configure at least one notifications provider when notifications are enabled");
+        RuleFor(x => x).Custom((config, context) =>
+        {
+            foreach(var error in new NotificationActivation(config).GetValidationErrors())
+                context.AddFailure(error);
+        });
     }
 }
 
@@ -448,6 +426,12 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
         RuleFor(j => j.Api)
             .SetValidator(new ApiConfigValidator())
             .When(j => !recoveryMode && j.Api?.Enabled == true);
+
+        RuleFor(j => j.Notifications)
+            .SetValidator(new NotificationsConfigValidator())
+            // The recovery reader drops notifications before binding. Keep direct
+            // recovery-mode validation equally independent of live alert settings.
+            .When(j => !recoveryMode && j.Notifications != null);
 
         // ensure pool ids are unique
         RuleFor(j => j.Pools)

@@ -12,13 +12,13 @@ later hard fork is implemented by the pinned Knots sources listed below.
 ## Compatibility boundary
 
 - A Miningcore build containing this feature is required; v0.3.0 does not contain it.
-- **Upgrade both Knots and Miningcore before mainnet height 973440.** From that
-  height, 29.4.1 templates can include premature coinbase spends rejected by
-  enforcing 29.4.2 nodes. If the height has already been reached, keep mining and
+- **Upgrade both Knots and Miningcore before mainnet height 979919.** Old 29.4.2
+  validation can diverge from 980019 and its mining policy can produce incompatible
+  spends from 986399. If the upgrade height has already been reached, keep mining and
   payouts stopped until the reviewed daemon has revalidated/synchronized its chain
   and pending rewards have been reconciled using the upgrade runbook.
-- The reviewed node is **Bitcoin Knots v29.4.2.knots20260508**, commit
-  `58398baf33e588779685ead478e6397bb28ed3d6`. Startup requires its version and Knots identifier,
+- The reviewed node is **Bitcoin Knots v29.4.3.knots20260508**, commit
+  `a7c4617524c334f542484bfef3919b9f12573840`. Startup requires its version and Knots identifier,
   an active deployment with the expected activation height, and mandatory GBT rule `!blake2b`.
   Version strings are compatibility checks, not proof of binary authenticity: independently
   verify the upstream release checksums and signatures.
@@ -37,7 +37,7 @@ later hard fork is implemented by the pinned Knots sources listed below.
   reviewed source/build update, not merely an acknowledged version string; the safe upgrade
   policy is tracked in [#151](https://github.com/NINJAK1DD/miningcore/issues/151).
   Attestation shares the serialized polling loop, not a background timer: a cache-expiring
-  update can pay three additional sequential RPCs. Ordinary template polling refreshes the
+  update performs identity/deployment RPCs plus active-header evidence checks. Ordinary template polling refreshes the
   cache even without a new block. This deliberate latency/safety trade-off avoids concurrent
   attestation-state races; it does not promise zero added new-tip latency.
 - Mainnet first uses header-v2 at height **961640**. Its activation coinbase headline is
@@ -47,7 +47,7 @@ later hard fork is implemented by the pinned Knots sources listed below.
   The parent-only comparison is restricted to mainnet carry-forward heights. At a retarget
   boundary or on min-difficulty regtest, the daemon owns difficulty selection; Miningcore
   still validates GBT target/bits and rejects malformed parent metadata. See the pinned
-  [Knots difficulty selection](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/pow.cpp#L32-L89).
+  [Knots difficulty selection](https://github.com/bitcoinknots/bitcoin/blob/a7c4617524c334f542484bfef3919b9f12573840/src/pow.cpp#L32-L89).
 - Only mainnet and isolated regtest are configured. Testnet4 and signet are not advertised.
   The regtest fixture uses activation 20 and shift 20; its headline is
   `Miningcore BLAKE2b regtest`. These are a test contract, not mainnet settings.
@@ -60,27 +60,39 @@ later hard fork is implemented by the pinned Knots sources listed below.
 
 ## Reward maturity and RPC units
 
-The current baseline is `knots-29.4.2-header-v2`; 29.4.1 is retired from the accepted
+The current baseline is `knots-29.4.3-header-v2`; 29.4.1 and 29.4.2 are retired from the accepted
 current daemon matrix. Knots 29.4.2 removes `getdifficulty`. The typed BLAKE2b manager
 skips that startup call and remains PoW even if legacy stake-shaped data is supplied.
 Other Bitcoin-family/PoS pools retain their legacy RPC behavior.
 
-Mainnet consensus requires 6480 blocks of depth for coinbases created from 973440
-when the **spending block** is between 973440 and 979919 inclusive. Before that
-coinbase height, or at spending height 979920 onward, ordinary 100-block consensus
-maturity applies. This release's wallet and mempool independently require **6480
-blocks for all coinbases**, including earlier ones, without expiring at 979920.
-Wallet category `generate` requires **6481 RPC confirmations**: remaining wallet
-depth is `max(0, 6481 - confirmations)`. These heights are the released block rules;
-45 days is an estimate at 600 seconds per block.
+Historical consensus requires 6480 blocks for rewards created from 973440 through
+979918 when spending through 979919 inclusive; this historical consensus ends at
+979920 exclusive. Rewards created from **979919** with creation-parent MTP below
+**1819756800** require **25920** blocks, retained even after expiry. Newly created
+rewards whose parent MTP reaches the cutoff use ordinary 100-block maturity.
+Wallet policy requires **6481 RPC confirmations** for historical rewards,
+**25921** for rolling-covered rewards, and **101** for post-cutoff rewards,
+before stricter operator limits. The cutoff uses the creation parent's MTP, never
+wall clock or the reward block's own time/MTP. See the exact source vectors and
+upgrade/reconciliation procedure in the [current review](bitcoin-blake2b-knots-29.4.3-review.md).
 
 `getdeploymentinfo.deployments.long_coinbase_maturity` must report the reviewed
-`flagday`, enforcement height, inclusive `height_end: 979919`, covered coinbase
-height, maturity and `active` value. `active` describes the next block. Miningcore
-validates its field contract and next-height semantics at startup and runtime;
-each GBT must advertise unprefixed `long_coinbase_maturity` exactly while that
-schedule enforces, alongside `!blake2b`. Unknown mandatory rules and proposed
-MTP/phased-release RPC contracts fail closed. A missing mainnet deployment never
+historical field set before tip 979918. From tip 979918 it must instead report
+`height: 979919`, `coinbase_start_height: 979919`, `maturity: 25920`,
+`coinbase_expiry_time: 1819756800` and `active: true`, with no `height_end`.
+`active` describes the next block. Miningcore validates each shape against its
+own snapshot height and proves active branch membership across separate calls.
+Snapshots must be within six blocks and share verified ancestry, with a final
+active observation of the higher snapshot. Startup chain attestation retries a
+transient race or RPC failure up to three times with one- and two-second delays;
+successful identity/chain/contract contradictions still fail immediately.
+The same hash at different snapshot heights is contradictory. Runtime header RPC
+errors back off like metadata RPC errors, while contradictory successful header
+fields remain terminal. Preliminary identity RPC errors let the node finish its
+normal sync wait; full attestation after sync still requires the exact identity.
+GBT's unprefixed `long_coinbase_maturity` remains present after expiry alongside
+`!blake2b`; this is not a blanket unlock. Unknown mandatory rules and contradictory
+or malformed fields fail closed. A missing mainnet deployment never
 selects ordinary maturity. Unscheduled regtest alone has an explicitly reviewed
 absent deployment and 100-block wallet policy.
 
@@ -94,14 +106,19 @@ threshold, an active matching block and the expected generated wallet transactio
 Classification and wallet payment both revalidate daemon identity, chain and maturity.
 Outage/reindexing or missing wallet entries keep active or unverified blocks pending;
 a proven inactive block is orphaned. Alongside pending rows, each payout cycle
-reloads up to 64 custodial orphan rows within 12960 blocks of the observed tip
-(two mainnet wallet-maturity intervals). An ID cursor advances and wraps so one
+reloads up to 64 custodial orphan rows within 51840 blocks of the observed tip
+(two rolling maturity intervals). An ID cursor advances and wraps so one
 permanently unavailable row cannot starve later rows. Restart resets that cursor;
 the persisted statuses/evidence remain authoritative. Matching active header and
 wallet evidence can restore an orphan to Pending or Confirmed. The row-lock commit
 checks unchanged pool, height, hash, coinbase txid, miner and candidate metadata;
 already-confirmed custodial rows remain excluded from repeat settlement. This
 bounded recovery does not reverse booked liabilities or re-credit confirmed rows.
+Monitor scan throughput, cursor rotation and batches approaching the horizon.
+The [recovery monitoring guide](bitcoin-blake2b-knots-29.4.3-review.md#recovery-monitoring)
+lists pool-scoped metrics and a read-only, time-limited SQL audit for the oldest
+remaining eligible orphan and complete backlog counts. Batch metrics alone do
+not describe the whole backlog or prove successful settlement.
 For PROP/PPLNS, automatic confirmation is withheld if an ordinary custodial row
 with a later or equal creation timestamp is already Confirmed. A later allocation
 may have consumed the older reward's shares; equal timestamps have ambiguous order.
@@ -129,7 +146,9 @@ The API's `networkDifficulty` remains in that accounting scale. No stored shares
 balances, pool IDs, coin key (`bitcoin-blake2b`) or ledger symbol (`BTCB2B`) are renamed.
 
 Payout attestation records fixed diagnostic reason codes: `701 RpcUnavailable`,
-`702 Syncing`, `703 ContractDrift`, and `704 BindingMismatch`. RPC/synchronization
+`702 Syncing`, `703 ContractDrift`, `704 BindingMismatch`, and `705 ChainChanged`.
+Reason 705 identifies changing, distant or incompatible chain snapshots without
+inferring RPC unavailability or configuration drift. RPC/synchronization/chain-race
 failures alert after 30 minutes; successful contract contradictions and changed
 process bindings alert immediately. Notifications are bounded to one per continuous
 reason episode across handler recreation; a changed reason or complete recovery
@@ -270,12 +289,13 @@ quoted pool IDs, wrong identities/status/type/pool, duplicate/missing/fractional
 IDs, conflicting cases and invalid totals. The financial values remain unchanged by
 the closure script. It cannot certify the external entitlement or funding audit.
 
-Before upgrading, drain and confirm broadcasts while still on 29.4.1, within the
-973440 upgrade deadline. The new wallet/mempool policy re-locks existing coinbases
-at depths 101–6480 and can evict their unconfirmed payouts or make change unavailable;
+Before upgrading, stop admission and payouts before the **979919** upgrade
+height. Reconcile all unconfirmed payouts/change against the revalidated branch.
+Rolling policy can re-lock previously credited rewards at depths below 25921
+and can evict their unconfirmed payouts or make change unavailable;
 already-credited balances retain their liability while losing liquid backing. After
 upgrade, compare `getbalances`, payout confirmations/conflicts, usable change and
-outstanding balances before resuming. See the [upgrade runbook](bitcoin-blake2b-knots-29.4.2-review.md#stop-upgrade-reconcile-restart)
+outstanding balances before resuming. See the [upgrade runbook](bitcoin-blake2b-knots-29.4.3-review.md#stop-upgrade-reconcile-restart)
 for unresolved broadcasts that cannot confirm safely before the deadline.
 
 For PPS, use mature, spendable reserves sufficient for the longer immature period;
@@ -289,12 +309,16 @@ network**. All three are required, below `INT_MAX`: start must be nonnegative,
 enforce must be at least 2, release must exceed both, and release minus start must
 exceed 100. Enforcement may precede the first covered coinbase, as Knots permits.
 Every mainnet override is refused.
+Rolling fixtures additionally match `-testcoinbasematuritylongexpiry=TIMESTAMP`
+using `blake2bMaturityExpiry` strictly above regtest genesis time `1296688602`
+(at most `UINT32_MAX`). It requires the
+complete isolated-regtest schedule; it cannot override mainnet's cutoff.
 Omitting these fields uses the reviewed unscheduled regtest contract and refuses a
 node with an unexpected scheduled deployment. These are fixture settings, not pool
 confirmation controls. The CI fixtures use distinct boundaries; do not add the
 regtest switch to a mainnet daemon.
 
-[Upgrade/release verification and live test evidence](bitcoin-blake2b-knots-29.4.2-review.md)
+[Upgrade/release verification and live test evidence](bitcoin-blake2b-knots-29.4.3-review.md)
 cover the reviewed transition and remaining DATUM work in #163.
 
 ## Node and wallet isolation
@@ -922,7 +946,7 @@ independently of actual proof strength, so a harder miner-selected assignment
 cannot inflate PPS liability or PPLNS weight. Ordinary shares retain their
 immutable issued credit. See [minimum-difficulty and candidate credit](bitcoin-minimum-difficulty.md#candidate-credit).
 
-Daemon/RPC/maturity baseline rechecked on 2026-10-05. Historical header vector provenance remains 29.4.1 because the header primitives, PoW and vectors did not change in 29.4.2:
+Daemon/RPC/maturity baseline rechecked on 2026-10-30. Historical header vector provenance remains 29.4.1 because the header primitives, PoW and vectors did not change in 29.4.2 or 29.4.3:
 
 Loader constants enforce this reviewed compatibility boundary; they are not independent
 proof of upstream consensus. That evidence is the pinned source audit, official vectors
@@ -930,17 +954,17 @@ and accepted-block integration tests. Changes to these constants require renewed
 
 | Contract | Reviewed source |
 | --- | --- |
-| Stable node and release | [Knots v29.4.2.knots20260508](https://github.com/bitcoinknots/bitcoin/tree/58398baf33e588779685ead478e6397bb28ed3d6) |
-| Header layout | [src/primitives/block.h](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/primitives/block.h) |
-| H1/H2, ASIC profiles, PoW, XOR | [src/primitives/block.cpp](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/primitives/block.cpp) |
-| Official vectors | [block_header_v2.json](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/test/data/block_header_v2.json) |
-| GBT rules and version | [src/rpc/mining.cpp](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/rpc/mining.cpp) |
-| Activation parameters and target shift | [chainparams.cpp](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/kernel/chainparams.cpp), [pow.cpp](https://github.com/bitcoinknots/bitcoin/blob/58398baf33e588779685ead478e6397bb28ed3d6/src/pow.cpp) |
+| Stable node and release | [Knots v29.4.3.knots20260508](https://github.com/bitcoinknots/bitcoin/tree/a7c4617524c334f542484bfef3919b9f12573840) |
+| Header layout | [src/primitives/block.h](https://github.com/bitcoinknots/bitcoin/blob/a7c4617524c334f542484bfef3919b9f12573840/src/primitives/block.h) |
+| H1/H2, ASIC profiles, PoW, XOR | [src/primitives/block.cpp](https://github.com/bitcoinknots/bitcoin/blob/a7c4617524c334f542484bfef3919b9f12573840/src/primitives/block.cpp) |
+| Official vectors | [block_header_v2.json](https://github.com/bitcoinknots/bitcoin/blob/a7c4617524c334f542484bfef3919b9f12573840/src/test/data/block_header_v2.json) |
+| GBT rules and version | [src/rpc/mining.cpp](https://github.com/bitcoinknots/bitcoin/blob/a7c4617524c334f542484bfef3919b9f12573840/src/rpc/mining.cpp) |
+| Activation parameters and target shift | [chainparams.cpp](https://github.com/bitcoinknots/bitcoin/blob/a7c4617524c334f542484bfef3919b9f12573840/src/kernel/chainparams.cpp), [pow.cpp](https://github.com/bitcoinknots/bitcoin/blob/a7c4617524c334f542484bfef3919b9f12573840/src/pow.cpp) |
 | Miner work and target accounting | [CONVOY datum_pow.c](https://github.com/CONVOYMining/datum_gateway/blob/b9ea7dc3eb91352565ab487ec55ed6ee5964a440/src/datum_pow.c) |
 | Miner notify, submit and payout coinbase selection | [CONVOY datum_stratum.c](https://github.com/CONVOYMining/datum_gateway/blob/b9ea7dc3eb91352565ab487ec55ed6ee5964a440/src/datum_stratum.c) |
 
-The Knots default head remained the 29.4.2 pin at this recheck. CONVOY now has revision
-`ac9b70c8b361f14e90e2c963b429a9bbb414aecb`; the old CONVOY links above preserve the
-original miner-layout/accounting review. See the [29.4.2 review and DATUM handoff](bitcoin-blake2b-knots-29.4.2-review.md)
-for the updated gateway references, license boundary and required interoperability tests.
+CONVOY research now pins `69c61a95cb941c35138c30b8d738e789ad8cdac1`, advertising
+`v0.5.0-beta`; the old CONVOY links above preserve the original miner-layout review.
+See the [current review and DATUM handoff](bitcoin-blake2b-knots-29.4.3-review.md)
+for protocol/capability, coinbaser budget and difficulty-unit test requirements.
 Re-audit upstream before merge and before accepting another daemon revision.

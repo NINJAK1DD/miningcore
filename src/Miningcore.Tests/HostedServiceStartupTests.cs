@@ -32,6 +32,27 @@ namespace Miningcore.Tests;
 public class HostedServiceStartupTests
 {
     [Fact]
+    public async Task MetricsPublisher_Blake2bScanVisitsAreDistinctFromFinancialSettlements()
+    {
+        var registry = Metrics.NewCustomRegistry();
+        using var publisher = new MetricsPublisher(Substitute.For<IMessageBus>(), null,
+            Metrics.WithCustomRegistry(registry), registry);
+        publisher.OnBlake2bReconciliationTelemetry(new("review", 64, 192, 48160, 48161, 2, false));
+        publisher.OnBlake2bReconciliationTelemetry(new("review", 5, 207, 48160, 48162, 5, false));
+        publisher.OnBlake2bReconciliationTelemetry(new("review", 0, 0, 48160, 0, 0, true));
+        for(var scrape = 0; scrape < 2; scrape++)
+        {
+            await using var output = new MemoryStream();
+            await registry.CollectAndExportAsTextAsync(output);
+            var text = Encoding.UTF8.GetString(output.ToArray());
+            Assert.Contains("miningcore_blake2b_orphan_rows_scanned_total{pool=\"review\"} 69", text);
+            Assert.Contains("miningcore_blake2b_orphan_sweeps_total{pool=\"review\"} 1", text);
+            Assert.Contains("miningcore_blake2b_orphan_cursor{pool=\"review\"} 0", text);
+            Assert.Contains("miningcore_blake2b_orphan_batch_near_horizon_rows{pool=\"review\"} 0", text);
+        }
+    }
+
+    [Fact]
     public async Task MetricsPublisher_StratumAdmissionExportsOnlyBoundedOutcomes()
     {
         var telemetry = new Subject<TelemetryEvent>();
@@ -525,7 +546,9 @@ public class HostedServiceStartupTests
         Assert.NotSame(hostedNotification, criticalSender);
         var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
             host.StartAsync(CancellationToken.None).WaitAsync(timeout.Token));
-        Assert.Contains("notifications.email", error.Message);
+        Assert.Contains(recipient == "admin@example.invalid"
+            ? "notifications.email"
+            : "notifications.admin.emailAddress", error.Message);
         await laterService.DidNotReceive().StartAsync(Arg.Any<CancellationToken>());
         messageBus.DidNotReceive().Listen<AdminNotification>();
         messageBus.DidNotReceive().Listen<BlockFoundNotification>();
@@ -589,7 +612,6 @@ public class HostedServiceStartupTests
             sender.SendCriticalAdminNotificationAsync(new AdminNotification("test", "recovery"), timeout.Token));
         var transport = Assert.IsType<IOException>(Assert.Single(aggregate.InnerExceptions));
         var error = Assert.IsType<InvalidOperationException>(transport.InnerException);
-        Assert.Contains("Email delivery", error.Message);
         Assert.Contains("notifications.email", error.Message);
         messageBus.DidNotReceive().Listen<AdminNotification>();
         messageBus.DidNotReceive().Listen<BlockFoundNotification>();
@@ -612,8 +634,10 @@ public class HostedServiceStartupTests
             Notifications = new NotificationsConfig
             {
                 Admin = new AdminNotifications { Enabled = true },
-                Email = new EmailSenderConfig(),
-                Pushover = new PushoverConfig(),
+                Pushover = new PushoverConfig
+                {
+                    Enabled = true, User = "test-user", Token = "test-token",
+                },
             },
         }, null, messageBus);
         using var timeout = new CancellationTokenSource(
@@ -646,8 +670,10 @@ public class HostedServiceStartupTests
             Notifications = new NotificationsConfig
             {
                 Admin = new AdminNotifications { Enabled = true },
-                Email = new EmailSenderConfig(),
-                Pushover = new PushoverConfig(),
+                Pushover = new PushoverConfig
+                {
+                    Enabled = true, User = "test-user", Token = "test-token",
+                },
             },
         }, null, messageBus);
         using var canceled = new CancellationTokenSource();

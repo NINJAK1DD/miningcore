@@ -55,9 +55,11 @@ withdrawals, payout fees and an emergency shutdown. Reward-recipient percentages
 basis but do not replace a solvency policy. Never use future block income as the only available
 liquidity for already credited balances.
 
-For Bitcoin BLAKE2b Knots 29.4.2, wallet/mempool policy holds **all** coinbase funds
-for 6480 blocks (6481 RPC confirmations), even after the temporary consensus interval
-ends. Estimate at least 45 days of payout demand at a 600-second block interval, plus
+For Bitcoin BLAKE2b Knots 29.4.3, wallet/mempool policy holds newly covered rewards
+for **25920 blocks (25921 RPC confirmations)**, about **180 days** at the target
+interval. Historical rewards retain 6481 confirmations; rewards created with parent
+MTP at/after the cutoff require 101. Covered rewards remain locked after expiry.
+Estimate at least 180 days of payout demand for newly locked income, plus
 variance, outage/revalidation time, transaction fees and an emergency buffer. Validate
 this against current liabilities and independently monitored mature wallet liquidity;
 `immature` wallet balances and pending block rewards are not spendable reserves.
@@ -65,6 +67,7 @@ Miningcore has no automatic solvency guarantee or reserve admission circuit brea
 Stop new PPS admission if mature liquidity cannot cover the reserve policy, preserve
 accepted shares and liabilities, and reconcile pending rewards before resuming.
 Upgrading or orphaning a block never authorizes automatic reversal of booked PPS credit.
+See the [29.4.3 maturity and upgrade runbook](bitcoin-blake2b-knots-29.4.3-review.md).
 
 ## Database prerequisites
 

@@ -89,3 +89,13 @@ jobs:
         --framework net10.0
         --property:MiningcoreStratumListenerSmoke=true
         --filter "FullyQualifiedName~Miningcore.Tests.Stratum.StratumListenerPortabilityTests"
+
+    - name: Test macOS daemon TLS rejection
+      # Managed-only mode skips native source builds; this test uses real TLS.
+      run: >-
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
+        --no-restore
+        --configuration Release
+        --framework net10.0
+        --property:MiningcoreStratumListenerSmoke=true
+        --filter "FullyQualifiedName~Miningcore.Tests.Rpc.RpcTlsTests.PlatformRejectsUntrustedDaemonCertificate"

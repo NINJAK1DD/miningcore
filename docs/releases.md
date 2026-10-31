@@ -92,6 +92,97 @@ rebuild. `ProcessShare` and `ProcessShareInternal` return a share/template tuple
 `DifficultyToTarget(double)` is replaced by the exact `BigInteger` API. See the
 [extension migration table](xelis-target-validation.md#xelis-extension-api-changes).
 
+## Unreleased (after v0.3.0): SMTP notification TLS migration
+
+Before upgrading a pool with administrative email enabled, set
+`notifications.email.tlsMode` to `"startTls"` on ports 25/587 or `"implicitTls"` on
+port 465. The SMTP relay must present a trusted, valid certificate whose name
+matches `notifications.email.host`. Missing STARTTLS and certificate failures stop
+delivery; there is no automatic fallback to plaintext. For an unauthenticated
+relay on the same host, the explicit `"localPlaintext"` mode accepts only a
+numeric loopback address and no SMTP credentials. Update copied example files
+before enabling alerts. See the [SMTP transport migration guide](configuration.md#smtp-transport-migration).
+
+## Unreleased: administrative notification activation
+
+`notifications.admin.enabled` now consistently controls validation, event
+subscriptions and critical delivery. The legacy top-level
+`notifications.enabled` field is deprecated and ignored; a `true` legacy value
+with disabled admin notifications now logs a startup warning. The `examples/`
+configurations omit the legacy field. An active admin
+configuration must have at least one usable transport: a nonblank recipient
+with SMTP settings, Pushover with user and token, or both. Sender and recipient
+email addresses must be plain addresses, and a whitespace-only sender name is
+invalid when email is selected. Blank recipients no
+longer trigger email attempts; an enabled critical alert with no transport
+reports an error. Review conflicting flags and provider fields before
+upgrading. Ordinary email and Pushover attempts start independently with a
+15-second limit per channel. Pushover messages and titles are bounded to its
+1024 and 250 character limits, and HTTP success requires `status: 1` in the
+response. The `-rs` importer still ignores live notification settings.
+Uncertain-payout Pushover alerts now direct operators to retained evidence and
+wallet history even when email is unavailable. Ordinary timeouts identify the
+failed channel, while cancellation during host shutdown is treated as expected.
+Each channel now processes its own ordered event queue, so stalled email does
+not delay later Pushover alerts. Pushover requests share a two-request gate
+that keeps one slot available to critical alerts during ordinary traffic.
+Payout alert formatting now runs after the scheduler handoff. Ordinary queue
+depth is capped at 256 for formatting and each transport; overload logs counted
+omissions. Disabled events do not occupy slots, routine alerts leave 32 slots
+for incidents, and omitted payout or marked financial/security alerts report
+their pool at Error level. Oversized payout events use compact operator summaries
+before queueing, retaining per-outcome aggregate counts and amounts. Share
+Recorder policy-fallback alerts no longer depend on successful-payment alerts.
+Timeouts bound the local wait and do not prove the provider rejected a message;
+Pushover `status: 1` confirms queueing by the provider, not human receipt.
+See [notification activation and migration](notifications.md).
+
+## Unreleased (after v0.3.0): verify daemon RPC TLS certificates
+
+HTTPS/HTTP2 and WSS daemon RPC transports now use platform certificate validation
+instead of accepting arbitrary server certificates. All coin families using the
+shared client, plus the independent Ergo and Alephium HTTP clients, are affected.
+Endpoints with expired, untrusted or mismatched
+certificates must renew/replace them or provision their independently verified
+private CA into the service/container trust store before upgrading. Restart to
+retire existing pooled connections. Look for `tls-handshake` in structured RPC
+Warning/Error diagnostics if a daemon fails to reconnect. No database migration
+or insecure-skip option is added. Daemon JSON-RPC HTTP clients no longer follow
+redirects, preventing Ergo/Alephium API-key headers and shared-client POST
+bodies from reaching a redirected origin. Configure the final daemon/proxy URL
+directly. See
+[daemon TLS compatibility and testing](rpc-tls.md).
+
+## Unreleased (after v0.3.0): daemon REST TLS and redirects
+
+Beam explorer, Conceal and Warthog node REST calls now honor the selected
+endpoint's `ssl` and `http2` settings and refuse redirects. Existing
+`ssl: true` or `http2: true` configurations that previously sent REST over
+HTTP will now require a trusted HTTPS endpoint. An HTTP-only daemon or a proxy
+that cannot negotiate the requested HTTP/2 version will fail without a
+plaintext or HTTP/1.1 fallback. **Upgrade the endpoint before restarting the
+pool**: place a trusted TLS proxy in front of a native HTTP listener, point
+`host` and `port` at its final HTTPS address, and provision certificate trust
+for the Miningcore service. HTTP redirects cannot perform this migration.
+See the [daemon REST migration guide](rpc-tls.md#beam-conceal-and-warthog-rest-endpoints).
+Before restarting production pools, verify certificate trust and name, HTTP/2
+ALPN when enabled, REST root paths, and proxy-to-daemon isolation on staging;
+check Warthog's separately configured WebSocket listener as well.
+If a daemon does not reconnect, look for `RPC diagnostic` Warnings with
+`transport: "Rest"` and `failure` of `tls-handshake`, `http2-negotiation` or
+`redirect-refused`. The record identifies the pool and daemon index without
+logging the host, port or wallet URL.
+With `perPoolLogFile` enabled, the warning also appears in that pool's log.
+
+## Unreleased (after v0.3.0): Warthog wallet private key secrecy
+
+Warthog wallet address checks now derive the address locally, removing the
+private key from daemon REST URLs and startup errors. Invalid keys and
+non-lowercase pool addresses fail before daemon startup checks when payment
+processing is enabled for both the cluster and pool. If an older version ran
+with Warthog payments enabled, follow the
+[Warthog key incident guidance](warthog-wallet-key-security.md).
+
 ## Unreleased (after v0.3.0): native floating-point state on CryptoNote load
 
 CryptoNote's Linux shared-library link no longer passes `-Ofast` to the linker
@@ -923,9 +1014,12 @@ The current compatibility update removes the BLAKE2b startup dependency on the r
 and payout checks enforce the reviewed long-maturity deployment and GBT transition
 contract. Wallet-aware progress and active-chain verification keep immature or
 unverified rewards pending without rescaling shares or reversing PPS liabilities.
-See the [29.4.2 review, upgrade and DATUM handoff](bitcoin-blake2b-knots-29.4.2-review.md).
-Upgrade both the daemon and Miningcore **before mainnet height 973440**. Old templates
-can include premature coinbase spends rejected by enforcing nodes after that boundary;
+The current node is exactly **Knots 29.4.3.knots20260508**. Rolling rewards use their
+creation-parent MTP and require 25921 wallet confirmations; historical/post-cutoff
+thresholds remain 6481/101. Expiry does not release already covered rewards.
+See the [29.4.3 review, upgrade and DATUM handoff](bitcoin-blake2b-knots-29.4.3-review.md).
+Upgrade both the daemon and Miningcore **before mainnet height 979919**. Old 29.4.2
+validation may diverge from 980019 and mining policy can produce incompatible spends from 986399;
 keep admission stopped if revalidation/synchronization and reconciliation are incomplete.
 The dedicated payout handler verifies retained block headers on pruned nodes, preserves
 immature wallet credit, alerts on prolonged contradictory evidence and quarantines

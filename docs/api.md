@@ -16,6 +16,15 @@ This guide describes the API implemented by the current repository. The root URL
 For status-code triage and safe evidence collection, use
 [Troubleshooting](troubleshooting.md#api-administration-and-metrics).
 
+Block `confirmationProgress` measures progress toward the reward's wallet/operator
+confirmation threshold. For the reviewed Bitcoin BLAKE2b Knots 29.4.3 contract,
+historical rewards require 6481 confirmations, rolling-covered rewards 25921,
+and rewards created with parent MTP at/after the cutoff 101, before stricter
+operator limits. Immature rewards stay below one. Creation-parent evidence,
+wallet category and active branch membership are required; expiry and deployment
+`active` do not prove spendability. Progress is not a payment receipt or reserve
+balance. See the [maturity contract](bitcoin-blake2b-knots-29.4.3-review.md).
+
 ## Configuration
 
 ```json

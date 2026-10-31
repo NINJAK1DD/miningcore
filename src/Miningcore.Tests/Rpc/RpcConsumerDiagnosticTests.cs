@@ -55,6 +55,7 @@ public class RpcConsumerDiagnosticTests
         // xUnit 2.4.2 runs DisableParallelization collections after awaiting all
         // parallel collections. Different collection names do not defeat that rule.
         foreach(var type in new[] { typeof(RpcConsumerDiagnosticTests),
+            typeof(DaemonRestLoggingTests), typeof(DaemonRestConsumerTests),
             typeof(Miningcore.Tests.Payments.PayoutManagerLoggingTests),
             typeof(IPAccessWhitelistLoggingTests), typeof(Miningcore.Tests.Mining.ShareRecorderTests) })
             CollectionAssertions.NonParallelDefinition(type);
@@ -441,8 +442,10 @@ public class RpcConsumerDiagnosticTests
                     .Where(x => !x.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar)))
         {
             var source = File.ReadAllText(file);
+            // Alephium's edge-triggered TLS warning selects a level before
+            // forwarding its fixed operation label to the same diagnostic sink.
             foreach(Match match in Regex.Matches(source,
-                        "RpcConsumerDiagnostics\\.Write\\([^,]+,\\s*[^,]+,\\s*\"([^\"]+)\""))
+                        "(?:RpcConsumerDiagnostics\\.Write\\([^,]+,\\s*[^,]+,\\s*|ReportDaemonStartupFailure\\()\"([^\"]+)\""))
             {
                 Assert.Contains(match.Groups[1].Value, RpcConsumerOperations.All);
                 operations.Add(match.Groups[1].Value);

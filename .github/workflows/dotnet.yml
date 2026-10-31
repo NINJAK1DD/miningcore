@@ -78,7 +78,10 @@ jobs:
       run: python3 scripts/release/test-doc-links.py
 
     - name: Test Knots source cache and failure diagnostics offline
-      run: python3 scripts/regtest/test-knots-maturity-gate.py
+      run: |
+        python3 scripts/regtest/test-knots-maturity-gate.py
+        python3 scripts/regtest/test-knots-rolling-maturity-gate.py
+        python3 scripts/regtest/test-knots-lab-helpers.py
 
     - name: Enforce workflow action pins
       shell: bash
@@ -135,7 +138,10 @@ jobs:
         scripts/release/test-release-install-docs.sh
         scripts/release/test-ubuntu-source-build.sh
         scripts/release/update-config-diagnostics-snapshot.sh
+        scripts/regtest/run-knots-29.4.3-lab.sh
+        scripts/regtest/knots-lab-helpers.sh
         scripts/regtest/validate-knots-29.4.2-maturity.sh
+        scripts/regtest/validate-knots-29.4.3-maturity.sh
 
     - name: Test Linux native symbol contracts
       shell: bash
@@ -234,8 +240,8 @@ jobs:
     - name: Install pinned Bitcoin BLAKE2b Knots regtest dependency
       shell: bash
       env:
-        KNOTS_VERSION: 29.4.2.knots20260508
-        KNOTS_SHA256: b59d0445a317e21a03dc29425db3aba79b27d5125230b1a2b1dce62e120827c5
+        KNOTS_VERSION: 29.4.3.knots20260508
+        KNOTS_SHA256: 4c67f1139b668fc3b98e339dd16112c636b2c0f42c2294b98fb92d1d27943e24
       run: |
         set -euo pipefail
         archive="bitcoin-${KNOTS_VERSION}-x86_64-linux-gnu.tar.gz"
@@ -254,7 +260,7 @@ jobs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/knots-reviewed-source
-        key: knots-2942-source-11c0b99a82b8b1c9c29ab76d9b0507ce1017813665741627b3f3883a4c2f7a7f
+        key: knots-2943-source-f1613e4ec63b7a1d87e9eba10aed730195a08c732e8883c4215e2d4680b9ed83
 
     - name: Verify released Knots consensus and mempool maturity boundaries
       id: knots-maturity
@@ -262,7 +268,7 @@ jobs:
       env:
         MININGCORE_KNOTS_SOURCE_CACHE: ${{ runner.temp }}/knots-reviewed-source
         MININGCORE_KNOTS_TEST_ARTIFACTS: ${{ runner.temp }}/knots-maturity-diagnostics
-      run: bash scripts/regtest/validate-knots-29.4.2-maturity.sh
+      run: bash scripts/regtest/validate-knots-29.4.3-maturity.sh
 
     - name: Preserve failed Knots maturity diagnostics
       if: failure() && steps.knots-maturity.outcome == 'failure'
@@ -437,6 +443,13 @@ jobs:
         printf '%s  %s\n' 424ac65de320a835b4cbe2c2a8b9140b12e8bab86cf5ebda89ffee024947135e "$xelis_root/archive.tar.gz" | sha256sum --check --strict
         tar -xzf "$xelis_root/archive.tar.gz" -C "$xelis_root"
         echo "MININGCORE_TEST_XELISD=$xelis_root/x86_64-unknown-linux-gnu/xelis_daemon" >> "$GITHUB_ENV"
+
+    - name: Verify SMTP TLS fail-closed transport
+      shell: bash
+      run: >-
+        dotnet test --no-build --verbosity normal
+        --filter "FullyQualifiedName~Miningcore.Tests.Notifications.SmtpTransportTests"
+        src/Miningcore.Tests/Miningcore.Tests.csproj
 
     - name: Test
       id: linux_full_suite
@@ -723,6 +736,22 @@ jobs:
         --configuration Release
         --framework net10.0
         --filter "FullyQualifiedName~Miningcore.Tests.Stratum.StratumDiagnosticTests"
+
+    - name: Test Windows daemon TLS rejection
+      run: >-
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
+        --no-restore
+        --configuration Release
+        --framework net10.0
+        --filter "FullyQualifiedName~Miningcore.Tests.Rpc.RpcTlsTests.PlatformRejectsUntrustedDaemonCertificate"
+
+    - name: Verify SMTP TLS transport on Windows
+      run: >-
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
+        --no-restore
+        --configuration Release
+        --framework net10.0
+        --filter "FullyQualifiedName~Miningcore.Tests.Notifications.SmtpTransportTests"
 
     - name: Test Windows Stratum listener lifecycle
       run: >-

@@ -26,6 +26,7 @@ public partial class BitcoinBlake2bStartupTests
     private static JObject MaturityInfo(int height, bool blake2bActive = true) => new()
     {
         ["height"] = height,
+        ["hash"] = new string('c', 64),
         ["blake2b"] = new JObject { ["height"] = 20, ["active"] = blake2bActive },
         ["deployments"] = new JObject(),
     };
@@ -250,19 +251,66 @@ public partial class BitcoinBlake2bStartupTests
                     _ => new System.Net.Http.HttpRequestException("test transport failure"),
                 };
                 return Task.FromResult(new RpcResponse<JObject>(null,
-                    ct.IsCancellationRequested ? new JsonRpcError(-500, "Cancelled", null) : Unavailable()));
+                    ct.IsCancellationRequested ? new JsonRpcError(-500, "Cancelled", null) : AttestationRpcError ?? Unavailable()));
             }
             var response = method switch
             {
-                BitcoinCommands.GetNetworkInfo => new JObject { ["version"] = Drift == "version" ? 300000 : 290402,
-                    ["subversion"] = "/Satoshi:29.4.2/Knots:20260508/" },
-                BitcoinCommands.GetBlockchainInfo => new JObject { ["chain"] = Drift == "chain" ? "main" : "regtest" },
+                BitcoinCommands.GetNetworkInfo => new JObject { ["version"] = Drift == "version" ? 300000 : 290403,
+                    ["subversion"] = "/Satoshi:29.4.3/Knots:20260508/" },
+                BitcoinCommands.GetBlockchainInfo => new JObject { ["chain"] = Drift == "chain" ? "main" : "regtest",
+                    ["blocks"] = 19, ["bestblockhash"] = new string('c', 64) },
                 "getdeploymentinfo" => Drift == "maturity" ? BitcoinBlake2bMaturityTests.Deployment(BitcoinBlake2bMaturity.Mainnet, 973439) : MaturityInfo(19, Drift != "deployment"),
                 _ => throw new InvalidOperationException(method),
             };
             return Task.FromResult(new RpcResponse<JObject>(response));
         }
+        internal JsonRpcError AttestationRpcError;
+        internal int HeaderCalls;
+        protected override Task<RpcResponse<JObject>> GetAttestationHeaderAsync(string hash, CancellationToken ct)
+        {
+            HeaderCalls++;
+            return Task.FromResult(FailedAttestationMethod == "getblockheader"
+                ? new RpcResponse<JObject>(null, AttestationRpcError ?? Unavailable())
+                : new(new JObject { ["hash"] = hash, ["height"] = Drift == "header" ? 18 : 19, ["confirmations"] = 1 }));
+        }
         private static JsonRpcError Unavailable() => new(-500, "RPC unavailable", null);
+    }
+
+    [Theory]
+    [InlineData("getnetworkinfo", false)]
+    [InlineData("getnetworkinfo", true)]
+    [InlineData("getblockchaininfo", false)]
+    [InlineData("getblockchaininfo", true)]
+    [InlineData("getdeploymentinfo", false)]
+    [InlineData("getdeploymentinfo", true)]
+    [InlineData("getblockheader", false)]
+    [InlineData("getblockheader", true)]
+    public async Task RuntimeAttestation_AllRpcContractErrorsBackOffAndRecoverWithoutFaultingVerifiedWork(string method, bool conversion)
+    {
+        var now = DateTime.UtcNow;
+        var clock = Substitute.For<IMasterClock>(); clock.Now.Returns(_ => now);
+        var manager = new LifecycleManager(container, clock);
+        manager.Configure(LifecycleConfig(), new ClusterConfig()); manager.Prepare();
+        await manager.RefreshAsync();
+        var verified = manager.GetJobForStratum();
+        now = now.AddSeconds(30);
+        manager.FailedAttestationMethod = method;
+        manager.AttestationRpcError = conversion
+            ? new(-500, "private RPC detail", null, new Newtonsoft.Json.JsonSerializationException("private RPC detail"))
+            : new(-32601, "private RPC detail", null);
+        Assert.NotNull((await manager.FetchTemplateAsync(CancellationToken.None)).Error);
+        var calls = (manager.AttestationCalls, manager.HeaderCalls);
+        Assert.NotNull((await manager.FetchTemplateAsync(CancellationToken.None)).Error);
+        await manager.RefreshAsync();
+        Assert.Equal(calls, (manager.AttestationCalls, manager.HeaderCalls));
+        Assert.Same(verified, manager.GetJobForStratum());
+        now = now.AddSeconds(1);
+        manager.FailedAttestationMethod = null;
+        await manager.RefreshAsync();
+        Assert.NotSame(verified, manager.GetJobForStratum());
+        now = now.AddSeconds(30);
+        manager.Drift = "header";
+        await Assert.ThrowsAsync<PoolStartupException>(() => manager.RefreshAsync());
     }
 
     [Theory]

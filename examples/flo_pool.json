@@ -17,10 +17,10 @@
     "banOnLoginFailure": true
   },
   "notifications": {
-    "enabled": false,
     "email": {
       "host": "smtp.example.com",
       "port": 587,
+      "tlsMode": "startTls",
       "user": "CHANGE_ME_SMTP_USER",
       "password": "CHANGE_ME_SMTP_PASSWORD",
       "fromAddress": "pool@example.com",

@@ -53,7 +53,8 @@ internal static class ConfigurationDiagnosticProjection
             [typeof(NotificationsConfig)] = Fields<NotificationsConfig>(
                 nameof(NotificationsConfig.Enabled), nameof(NotificationsConfig.Email),
                 nameof(NotificationsConfig.Pushover), nameof(NotificationsConfig.Admin)),
-            [typeof(EmailSenderConfig)] = Fields<EmailSenderConfig>(nameof(EmailSenderConfig.Port)),
+            [typeof(EmailSenderConfig)] = Fields<EmailSenderConfig>(
+                nameof(EmailSenderConfig.Port), nameof(EmailSenderConfig.TlsMode)),
             [typeof(PushoverConfig)] = Fields<PushoverConfig>(nameof(PushoverConfig.Enabled)),
             [typeof(AdminNotifications)] = Fields<AdminNotifications>(
                 nameof(AdminNotifications.Enabled), nameof(AdminNotifications.NotifyBlockFound),
@@ -287,6 +288,10 @@ internal static class ConfigurationDiagnosticProjection
 
         if(type == typeof(PayoutScheme) || type == typeof(BanManagerKind))
             return new JValue(Enum.IsDefined(type, value) ? Enum.GetName(type, value) : Omitted);
+
+        if(type == typeof(SmtpTlsMode))
+            return new JValue(Enum.IsDefined(type, value)
+                ? SmtpTlsModeConverter.ToConfigValue((SmtpTlsMode) value) : Omitted);
 
         // Strings and unknown/derived objects fail closed even if accidentally
         // added to the member allowlist. Never call their ToString or converters.

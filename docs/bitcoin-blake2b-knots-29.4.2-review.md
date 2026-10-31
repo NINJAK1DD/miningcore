@@ -1,5 +1,10 @@
 # Knots 29.4.2 compatibility review and upgrade
 
+This is a historical review and validation record. Current daemon compatibility,
+rolling reward maturity, reserves and upgrade/rollback instructions are in the
+[29.4.3 review](bitcoin-blake2b-knots-29.4.3-review.md). Do not use the historical
+29.4.2 baseline below as a current-mainnet deployment recommendation.
+
 Reviewed on 2026-10-04 for [#205](https://github.com/NINJAK1DD/miningcore/issues/205),
 following the exact-build policy in [#151](https://github.com/NINJAK1DD/miningcore/issues/151).
 The accepted daemon is **29.4.2.knots20260508**, numeric version `290402`, with the

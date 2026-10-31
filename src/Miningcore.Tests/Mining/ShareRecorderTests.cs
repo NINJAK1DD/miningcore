@@ -6005,7 +6005,7 @@ public class ShareRecorderTests
                     Admin = new AdminNotifications
                     {
                         Enabled = true,
-                        NotifyPaymentSuccess = true,
+                        NotifyPaymentSuccess = false,
                     },
                 },
             }, messageBus, recoveryFailureHandler,
@@ -6027,7 +6027,8 @@ public class ShareRecorderTests
             messageBus.Received(1).SendMessage(
                 Arg.Is<AdminNotification>(notification =>
                     notification.Subject == "Share Recorder Policy Fallback" &&
-                    notification.Message.Contains(recoveryFilename)),
+                    notification.Message.Contains(recoveryFilename) &&
+                    notification.Importance == AdminNotificationImportance.FinancialOrSecurity),
                 Arg.Any<string>());
         }
         finally

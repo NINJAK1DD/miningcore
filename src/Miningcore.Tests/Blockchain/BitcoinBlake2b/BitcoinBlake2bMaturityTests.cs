@@ -19,8 +19,16 @@ public class BitcoinBlake2bMaturityTests
     internal static JObject Deployment(BitcoinBlake2bMaturity schedule, int tip) => new()
     {
         ["height"] = tip,
+        ["hash"] = new string('c', 64),
         ["blake2b"] = new JObject { ["height"] = 20, ["active"] = true },
-        ["deployments"] = new JObject { ["long_coinbase_maturity"] = new JObject
+        ["deployments"] = new JObject { ["long_coinbase_maturity"] = schedule.RollingStart.HasValue &&
+            (!schedule.HistoricalStart.HasValue || tip + 1 >= schedule.RollingEnforce!.Value) ? new JObject
+        {
+            ["type"] = "flagday", ["height"] = schedule.RollingEnforce!.Value,
+            ["coinbase_expiry_time"] = schedule.Expiry,
+            ["coinbase_start_height"] = schedule.RollingStart.Value, ["maturity"] = schedule.RollingMaturity,
+            ["active"] = schedule.ActiveAt((long) tip + 1),
+        } : new JObject
         {
             ["type"] = "flagday", ["height"] = schedule.Enforce, ["height_end"] = schedule.Release - 1,
             ["coinbase_start_height"] = schedule.Start, ["maturity"] = schedule.Maturity,
@@ -31,7 +39,8 @@ public class BitcoinBlake2bMaturityTests
     [Fact]
     public void WalletPolicy_PersistsAfterConsensusRelease()
     {
-        Assert.False(BitcoinBlake2bMaturity.Mainnet.ActiveAt(979920));
+        Assert.False(BitcoinBlake2bMaturity.Mainnet.HistoricalActiveAt(979920));
+        Assert.True(BitcoinBlake2bMaturity.Mainnet.ActiveAt(979920));
         Assert.Equal(6481, BitcoinBlake2bMaturity.Mainnet.WalletConfirmations);
     }
 
@@ -39,7 +48,7 @@ public class BitcoinBlake2bMaturityTests
     [InlineData(973438, false)]
     [InlineData(973439, true)]
     [InlineData(979918, true)]
-    [InlineData(979919, false)]
+    [InlineData(979919, true)]
     public void DeploymentAndGbt_UseNextHeightAndInclusiveRpcEnd(int tip, bool active)
     {
         var schedule = BitcoinBlake2bMaturity.Mainnet;
@@ -76,6 +85,11 @@ public class BitcoinBlake2bMaturityTests
         Assert.Throws<PoolStartupException>(() => BitcoinBlake2bMaturity.Mainnet.ValidateDeployment(info, "test"));
         Assert.Throws<PoolStartupException>(() => new BitcoinBlake2bMaturity(2, 104, 106, 104).ValidateDeployment(info, "test"));
     }
+
+    [Fact]
+    public void UnscheduledRegtest_RejectsFabricatedSentinelDeployment() =>
+        Assert.Throws<PoolStartupException>(() => BitcoinBlake2bMaturity.Regtest.ValidateDeployment(
+            Deployment(BitcoinBlake2bMaturity.Regtest, 19), "test"));
 
     [Theory]
     [InlineData("null")]

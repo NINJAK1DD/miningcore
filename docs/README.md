@@ -17,10 +17,13 @@ wallet balances or recovery files.
 | Order a local PostgreSQL service safely with Miningcore under systemd | [systemd PostgreSQL ordering](systemd-postgresql-ordering.md) |
 | Choose a ready-to-edit pool or relay topology | [Example configurations](../examples/README.md) |
 | Configure pools, logging and recovery storage | [Configuration](configuration.md) |
+| Configure administrative email and Pushover alerts | [Notification activation](notifications.md) |
 | Operate and monitor a production service | [Operator handbook](operations.md) |
 | Diagnose startup, mining, payout or storage problems | [Troubleshooting](troubleshooting.md) |
 | Set up, back up, migrate or recover PostgreSQL | [Database and recovery](database.md) |
 | Authenticate PostgreSQL TLS and migrate legacy flags | [PostgreSQL TLS policy](postgres-tls.md) |
+| Verify daemon HTTPS/WSS certificates and provision private CA trust | [Daemon RPC TLS](rpc-tls.md) |
+| Protect and rotate a Warthog payout wallet key after possible exposure | [Warthog wallet key security](warthog-wallet-key-security.md) |
 | Configure PostgreSQL command timeouts and migrate explicit zero | [PostgreSQL command timeout policy](postgres-command-timeout.md) |
 | Prepare a v0.2.1-or-earlier/pre-PR #135 database for default Bitcoin direct-coinbase SOLO | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
 | Migrate an existing .NET 6 deployment | [.NET 6 to .NET 10 migration](dotnet-6-to-10-migration.md) |
@@ -46,7 +49,8 @@ wallet balances or recovery files.
 | Configure Litecoin–Dogecoin merged mining | [Merged mining](merged-mining-litecoin-dogecoin.md) |
 | Configure and commission DigiByte direct mining | [DigiByte](digibyte.md) |
 | Configure the separate Bitcoin BLAKE2b header-v2 chain | [Bitcoin BLAKE2b](bitcoin-blake2b.md) |
-| Review the Knots 29.4.2 maturity/RPC upgrade and DATUM handoff | [Knots 29.4.2 compatibility review](bitcoin-blake2b-knots-29.4.2-review.md) |
+| Review the Knots 29.4.3 rolling maturity/RPC upgrade and DATUM handoff | [Knots 29.4.3 compatibility review](bitcoin-blake2b-knots-29.4.3-review.md) |
+| Inspect historical Knots 29.4.2 validation provenance | [Historical 29.4.2 review](bitcoin-blake2b-knots-29.4.2-review.md) |
 | Review Scrypt daemon/template provenance | [Scrypt coin definitions](scrypt-coin-definitions.md) |
 | Review Bitcoin-family BIP310 mask safety | [Version rolling](version-rolling.md) |
 | Preserve outstanding work when miners or proxies repeat subscribe | [Bitcoin subscription policy](bitcoin-subscription-policy.md) |

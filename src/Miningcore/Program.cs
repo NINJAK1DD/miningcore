@@ -32,6 +32,7 @@ using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Rpc;
+using Miningcore.Rest;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Crypto.Hashing.Equihash;
 using Miningcore.Crypto.Hashing.Ethash.Etchash;
@@ -274,7 +275,7 @@ public class Program : ProcessStatusBackgroundService
                 .ConfigureServices((ctx, services) =>
                 {
                     ConfigureHostShutdown(services);
-                    services.AddHttpClient();
+                    AddHttpClients(services);
                     services.AddMemoryCache();
 
                     ConfigureBackgroundServices(services);
@@ -726,6 +727,12 @@ public class Program : ProcessStatusBackgroundService
         ArgumentNullException.ThrowIfNull(services);
         services.TryAddSingleton<Program>();
         services.AddHostedService(sp => sp.GetRequiredService<Program>());
+    }
+
+    internal static void AddHttpClients(IServiceCollection services)
+    {
+        services.AddHttpClient();
+        services.AddDaemonRestClient();
     }
 
     internal static void ConfigureHostShutdown(IServiceCollection services,
@@ -1257,19 +1264,6 @@ public class Program : ProcessStatusBackgroundService
             if(listenerConflict.HasValue)
                 throw new PoolStartupException(
                     $"API listener port {listenerConflict.Value} is also assigned to an enabled Stratum endpoint");
-
-            if(!recoveryMode &&
-               config.Notifications?.Admin?.Enabled == true)
-            {
-                if(string.IsNullOrEmpty(config.Notifications?.Email?.FromName))
-                    throw new PoolStartupException($"Notifications are enabled but email sender name is not configured (notifications.email.fromName)");
-
-                if(string.IsNullOrEmpty(config.Notifications?.Email?.FromAddress))
-                    throw new PoolStartupException($"Notifications are enabled but email sender address name is not configured (notifications.email.fromAddress)");
-
-                if(string.IsNullOrEmpty(config.Notifications?.Admin?.EmailAddress))
-                    throw new PoolStartupException($"Admin notifications are enabled but recipient address is not configured (notifications.admin.emailAddress)");
-            }
 
             if(string.IsNullOrEmpty(config.Logging?.LogFile))
             {
