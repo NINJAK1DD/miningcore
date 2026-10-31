@@ -292,10 +292,13 @@ pool runtime; updating and packaging its Xelis ABI remains #120 work.
 The job manager now refuses startup unless the process is x64 and the native
 library exports both `xelis_hash_export` and `xelis_hash_v2_export` and passes
 both known-answer self-tests before issuing work. Once per process, the production
-managed wrappers hash 112 zero bytes and compare all 32 result bytes against
+managed wrappers hash 112 zero bytes and a nonzero 112-byte input per algorithm,
+comparing all 32 result bytes against
 the pinned upstream [v1](https://github.com/xelis-project/xelis-hash/blob/f48262b931438fdbf2932711613e020c02f1ea04/src/v1.rs)
 and [v2](https://github.com/xelis-project/xelis-hash/blob/f48262b931438fdbf2932711613e020c02f1ea04/src/v2.rs)
-`test_zero_hash` vectors. A zeroing, unwritten or incorrect result refuses startup;
+v1 `test_zero_input`/`test_xelis_input` and v2
+`test_zero_hash`/`test_verify_output` vectors. The nonzero cases detect a wrapper that ignores its
+input or drops v1's copy into the private state. A zeroing, unwritten or incorrect result refuses startup;
 restart after replacing the native library. This detects broken implementations
 at startup; it is not an integrity guarantee against a malicious library or
 corruption occurring later. Genuine zero-valued share proofs remain valid, with
