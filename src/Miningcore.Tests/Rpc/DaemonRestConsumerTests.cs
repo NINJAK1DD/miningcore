@@ -107,8 +107,8 @@ public class DaemonRestConsumerTests
         Assert.Equal("redirect-refused", record.Value<string>("failure"));
         Assert.Equal(JTokenType.Null, record["method"].Type);
         Assert.DoesNotContain("127.0.0.1", warnings.Warnings.Single());
-        Assert.Contains(warnings.Warnings.Single(), warnings.ReadPoolLog());
         Assert.Contains(warnings.Warnings.Single(), warnings.ReadMainLog());
+        Assert.Contains(warnings.Warnings.Single(), warnings.ReadPoolLog());
     }
 
     [Fact]
@@ -244,6 +244,7 @@ public class DaemonRestConsumerTests
         private readonly NLog.Config.LoggingConfiguration previous = NLog.LogManager.Configuration;
         private readonly NLog.Targets.MemoryTarget target = new("pool-capture") { Layout = "${message}" };
         private readonly string directory = Path.Combine(Path.GetTempPath(), "miningcore-rest-log-" + Guid.NewGuid().ToString("N"));
+        private bool closed;
         public string PoolLogPath { get; }
         public string MainLogPath => Path.Combine(directory, "main.log");
 
@@ -266,12 +267,24 @@ public class DaemonRestConsumerTests
 
         public string ReadPoolLog()
         {
-            NLog.LogManager.Flush();
-            NLog.LogManager.Configuration = previous;
+            CloseLogging();
             return File.ReadAllText(PoolLogPath);
         }
 
-        public string ReadMainLog() => File.ReadAllText(MainLogPath);
+        public string ReadMainLog()
+        {
+            CloseLogging();
+            return File.ReadAllText(MainLogPath);
+        }
+
+        private void CloseLogging()
+        {
+            if(closed)
+                return;
+            NLog.LogManager.Flush();
+            NLog.LogManager.Configuration = previous;
+            closed = true;
+        }
 
         public void Dispose()
         {

@@ -174,12 +174,13 @@ GET or Warthog-shaped payment POST to a plaintext HTTP listener. The
 cleartext compatibility and that 301/302/303/307/308 responses never replay
 GET URLs, headers or POST payment data to another origin.
 `DaemonRestConsumerTests` exercises Beam explorer selection, Conceal's separate
-JSON-RPC path, and the actual Warthog payout POST. Run these on the
+JSON-RPC path, and the actual Warthog payout POST. `DaemonRestLoggingTests`
+checks bounded warnings and outage rearming. Run these on the
 documented Ubuntu test lab with:
 
 ```bash
 dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --no-restore \
-  --filter 'FullyQualifiedName~RpcTlsTests|FullyQualifiedName~DaemonRestTransportTests|FullyQualifiedName~DaemonRestConsumerTests'
+  --filter 'FullyQualifiedName~RpcTlsTests|FullyQualifiedName~DaemonRestTransportTests|FullyQualifiedName~DaemonRestConsumerTests|FullyQualifiedName~DaemonRestLoggingTests'
 ```
 
 Reproduce on the documented Linux lab after building the solution:

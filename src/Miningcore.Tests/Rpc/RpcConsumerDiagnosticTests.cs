@@ -55,7 +55,7 @@ public class RpcConsumerDiagnosticTests
         // xUnit 2.4.2 runs DisableParallelization collections after awaiting all
         // parallel collections. Different collection names do not defeat that rule.
         foreach(var type in new[] { typeof(RpcConsumerDiagnosticTests),
-            typeof(DaemonRestTransportTests), typeof(DaemonRestConsumerTests),
+            typeof(DaemonRestLoggingTests), typeof(DaemonRestConsumerTests),
             typeof(Miningcore.Tests.Payments.PayoutManagerLoggingTests),
             typeof(IPAccessWhitelistLoggingTests), typeof(Miningcore.Tests.Mining.ShareRecorderTests) })
             CollectionAssertions.NonParallelDefinition(type);
