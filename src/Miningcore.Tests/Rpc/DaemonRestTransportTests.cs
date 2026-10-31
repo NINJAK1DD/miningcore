@@ -19,6 +19,8 @@ using Miningcore.Rest;
 using Miningcore.Rpc;
 using Newtonsoft.Json.Linq;
 using NSubstitute;
+using NLog.Config;
+using NLog.Targets;
 using Xunit;
 
 namespace Miningcore.Tests.Rpc;
@@ -185,11 +187,12 @@ public class DaemonRestTransportTests
     [Fact]
     public void RestDiagnosticRejectsUnreviewedFailureLabels()
     {
-        var logger = new WarningRecorder();
-        RpcDiagnostics.WriteRest(logger, "synthetic-secret", "pool-1", 2);
-        var record = JObject.Parse(Assert.Single(logger.Warnings)["RPC diagnostic ".Length..]);
+        using var logs = new RestLogCapture();
+        RpcDiagnostics.WriteRest("synthetic-secret", "pool-1", 2);
+        var record = JObject.Parse(Assert.Single(logs.Warnings)["RPC diagnostic ".Length..]);
         Assert.Equal("other", record.Value<string>("failure"));
-        Assert.DoesNotContain("synthetic-secret", logger.Warnings[0]);
+        Assert.Equal(JTokenType.Null, record["method"].Type);
+        Assert.DoesNotContain("synthetic-secret", logs.Warnings[0]);
     }
 
     [Theory]
@@ -265,8 +268,8 @@ public class DaemonRestTransportTests
     [Fact]
     public async Task DiagnosticsWarnOncePerOutageAndNeverIncludeWalletPath()
     {
-        var logger = new WarningRecorder();
-        using var client = new HttpClient(new DaemonRestDiagnosticsHandler(logger)
+        using var logs = new RestLogCapture();
+        using var client = new HttpClient(new DaemonRestDiagnosticsHandler
         {
             InnerHandler = new DiagnosticSequenceHandler(),
         });
@@ -284,31 +287,32 @@ public class DaemonRestTransportTests
         Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
         await Assert.ThrowsAsync<HttpRequestException>(SendTagged);
 
-        Assert.Equal(4, logger.Warnings.Count);
-        Assert.Equal(2, logger.Warnings.Count(x => x.Contains("tls-handshake", StringComparison.Ordinal)));
-        Assert.Equal(2, logger.Warnings.Count(x => x.Contains("redirect-refused", StringComparison.Ordinal)));
-        foreach(var warning in logger.Warnings)
+        Assert.Equal(4, logs.Warnings.Count);
+        Assert.Equal(2, logs.Warnings.Count(x => x.Contains("tls-handshake", StringComparison.Ordinal)));
+        Assert.Equal(2, logs.Warnings.Count(x => x.Contains("redirect-refused", StringComparison.Ordinal)));
+        foreach(var warning in logs.Warnings)
         {
             Assert.StartsWith("RPC diagnostic ", warning);
             var record = JObject.Parse(warning["RPC diagnostic ".Length..]);
             Assert.Equal("Rest", record.Value<string>("transport"));
             Assert.Equal("Failure", record.Value<string>("stage"));
+            Assert.Equal(JTokenType.Null, record["method"].Type);
             Assert.Equal("pool-1", record.Value<string>("poolId"));
             Assert.Equal(2, record.Value<int>("endpointIndex"));
             if(record.Value<string>("failure") == "redirect-refused")
                 Assert.Equal(307, record.Value<int>("httpStatus"));
         }
-        Assert.All(logger.Warnings, warning => Assert.DoesNotContain("synthetic-secret", warning));
-        Assert.All(logger.Warnings, warning => Assert.DoesNotContain("synthetic-credential", warning));
-        Assert.All(logger.Warnings, warning => Assert.DoesNotContain("127.0.0.1", warning));
-        Assert.All(logger.Warnings, warning => Assert.DoesNotContain("1234", warning));
+        Assert.All(logs.Warnings, warning => Assert.DoesNotContain("synthetic-secret", warning));
+        Assert.All(logs.Warnings, warning => Assert.DoesNotContain("synthetic-credential", warning));
+        Assert.All(logs.Warnings, warning => Assert.DoesNotContain("127.0.0.1", warning));
+        Assert.All(logs.Warnings, warning => Assert.DoesNotContain("1234", warning));
     }
 
     [Fact]
     public async Task Http2NegotiationWarningRearmsAfterResponse()
     {
-        var logger = new WarningRecorder();
-        using var client = new HttpClient(new DaemonRestDiagnosticsHandler(logger)
+        using var logs = new RestLogCapture();
+        using var client = new HttpClient(new DaemonRestDiagnosticsHandler
         {
             InnerHandler = new Http2SequenceHandler(),
         });
@@ -327,8 +331,8 @@ public class DaemonRestTransportTests
             else
                 await Assert.ThrowsAsync<HttpRequestException>(() => client.SendAsync(request));
         }
-        Assert.Equal(2, logger.Warnings.Count);
-        Assert.All(logger.Warnings, warning => Assert.Contains("http2-negotiation", warning));
+        Assert.Equal(2, logs.Warnings.Count);
+        Assert.All(logs.Warnings, warning => Assert.Contains("http2-negotiation", warning));
     }
 
     private sealed class DiagnosticSequenceHandler : HttpMessageHandler
@@ -371,21 +375,24 @@ public class DaemonRestTransportTests
         }
     }
 
-    private sealed class WarningRecorder : ILogger<DaemonRestDiagnosticsHandler>
+    private sealed class RestLogCapture : IDisposable
     {
-        public List<string> Warnings { get; } = new();
-        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
-        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception,
-            Func<TState, Exception, string> formatter)
+        private readonly LoggingConfiguration previous = NLog.LogManager.Configuration;
+        private readonly MemoryTarget target = new() { Layout = "${message}" };
+
+        public RestLogCapture()
         {
-            if(IsEnabled(logLevel)) Warnings.Add(formatter(state, exception));
+            var config = new LoggingConfiguration();
+            config.AddRule(NLog.LogLevel.Warn, NLog.LogLevel.Fatal, target);
+            NLog.LogManager.Configuration = config;
         }
 
-        private sealed class NullScope : IDisposable
+        public IList<string> Warnings => target.Logs;
+
+        public void Dispose()
         {
-            public static readonly NullScope Instance = new();
-            public void Dispose() { }
+            NLog.LogManager.Configuration = previous;
+            target.Dispose();
         }
     }
 

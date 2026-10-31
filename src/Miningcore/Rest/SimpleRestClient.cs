@@ -153,13 +153,19 @@ public class SimpleRestClient
 
         PrepareRequest(request, null);
 
-        using var response = await httpClient.SendAsync(request, ct);
-        var msg = await response.Content.ReadAsStringAsync(ct);
-
-        if(!response.IsSuccessStatusCode)
-            throw new HttpRequestException(msg, null, response.StatusCode);
-
-        return new ResponseContent<T>(response, Deserialize<T>(msg));
+        var response = await httpClient.SendAsync(request, ct);
+        try
+        {
+            var msg = await response.Content.ReadAsStringAsync(ct);
+            if(!response.IsSuccessStatusCode)
+                throw new HttpRequestException(msg, null, response.StatusCode);
+            return new ResponseContent<T>(response, Deserialize<T>(msg));
+        }
+        catch
+        {
+            response.Dispose();
+            throw;
+        }
     }
 
     public async Task<T> Get<T>(string path, CancellationToken ct,
@@ -238,9 +244,16 @@ public class SimpleRestClient
         PrepareGeneratedRequest(request, headers);
 
         var response = await httpClient.SendAsync(request, ct);
-        var msg = await response.Content.ReadAsStringAsync(ct);
-
-        return new ResponseContent<T>(response, Deserialize<T>(msg));
+        try
+        {
+            var msg = await response.Content.ReadAsStringAsync(ct);
+            return new ResponseContent<T>(response, Deserialize<T>(msg));
+        }
+        catch
+        {
+            response.Dispose();
+            throw;
+        }
     }
 
     public async Task<HttpResponseMessage> DeleteWithResponse(string path, CancellationToken ct,
@@ -289,8 +302,15 @@ public class SimpleRestClient
         PrepareGeneratedRequest(request, headers);
 
         var response = await httpClient.SendAsync(request, ct);
-        var msg = await response.Content.ReadAsStringAsync(ct);
-
-        return new ResponseContent<T>(response, Deserialize<T>(msg));
+        try
+        {
+            var msg = await response.Content.ReadAsStringAsync(ct);
+            return new ResponseContent<T>(response, Deserialize<T>(msg));
+        }
+        catch
+        {
+            response.Dispose();
+            throw;
+        }
     }
 }

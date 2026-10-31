@@ -70,7 +70,16 @@ daemon list, and a fixed failure category. They omit host, port, paths, query
 strings, response bodies and credentials. Look for `tls-handshake`,
 `http2-negotiation` or `redirect-refused`; the latter includes the 3xx
 `httpStatus`. Transport warnings appear once per outage and rearm after a
-response. An unknown endpoint index is JSON null, never a guessed first daemon.
+response. They appear in the main log and, when `perPoolLogFile` is enabled,
+the affected pool's log. An unknown endpoint index is JSON null, never a
+guessed first daemon.
+
+Before restarting a production pool, verify each configured endpoint from a
+staging instance using the same service identity and trust store: certificate
+chain and SAN, HTTP/2 ALPN when requested, and the root REST paths used by its
+job and payout clients. Verify the proxy-to-daemon path separately and check
+Warthog's WebSocket listener with its own `sslWs`, `portWs` and `httpPathWs`
+settings. Check the pool log for `RPC diagnostic` warnings during this test.
 
 Warthog's wallet address check runs locally and does not send the configured
 private key to the daemon; see
@@ -159,8 +168,8 @@ Warthog paths over real loopback HTTPS with trusted, untrusted, expired and
 wrong-name certificates, plus HTTPS selected by `http2` with actual HTTP/2
 negotiation. An HTTP/1.1-only HTTPS server cannot receive a request when
 `http2` is required. Rejected handshakes deliver no request to the server. The
-HTTPS redirect test confirms that an HTTP 307 cannot replay a TLS-protected
-request to a plaintext HTTP listener. The
+HTTPS redirect tests confirm that an HTTP 307 cannot replay a TLS-protected
+GET or Warthog-shaped payment POST to a plaintext HTTP listener. The
 `DaemonRestTransportTests` fixture uses two real HTTP listeners to verify
 cleartext compatibility and that 301/302/303/307/308 responses never replay
 GET URLs, headers or POST payment data to another origin.

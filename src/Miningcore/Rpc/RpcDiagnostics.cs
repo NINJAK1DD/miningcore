@@ -4,7 +4,6 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NLog;
 using ZeroMQ;
-using MsLog = Microsoft.Extensions.Logging;
 
 namespace Miningcore.Rpc;
 
@@ -28,34 +27,16 @@ internal static class RpcDiagnostics
         return index >= 0 ? index + 1 : null;
     }
 
-    // The REST handler has a Microsoft logger; keep its projection in the same
-    // fixed RPC diagnostic vocabulary without ever exposing its request URI.
-    internal static void WriteRest(MsLog.ILogger logger, string failure, string poolId,
+    // REST uses the same NLog projection and pool logger as other RPC diagnostics.
+    internal static void WriteRest(string failure, string poolId,
         int? endpointIndex, int? status = null)
     {
-        if(!logger.IsEnabled(MsLog.LogLevel.Warning))
-            return;
-
         failure = failure is "tls-handshake" or "http2-negotiation" or "redirect-refused"
             ? failure : "other";
-
-        var data = new JObject
-        {
-            ["transport"] = Transport.Rest.ToString(),
-            ["stage"] = Stage.Failure.ToString(),
-            ["method"] = "other",
-            ["batchCount"] = null,
-            ["httpStatus"] = status,
-            ["bytes"] = null,
-            ["httpResponseChars"] = null,
-            ["elapsedMs"] = null,
-            ["endpointIndex"] = endpointIndex,
-            ["failure"] = failure,
-            ["failureCode"] = null,
-            ["poolId"] = poolId,
-        };
-        MsLog.LoggerExtensions.LogWarning(logger, "RPC diagnostic {Record}",
-            data.ToString(Formatting.None));
+        var logger = LogManager.GetLogger(string.IsNullOrEmpty(poolId)
+            ? "Miningcore.Rest.DaemonRestDiagnosticsHandler" : poolId);
+        Write(logger, LogLevel.Warn, Transport.Rest, Stage.Failure, status: status,
+            endpointIndex: endpointIndex, failureCategory: failure, poolId: poolId);
     }
 
     /// <remarks>
@@ -66,7 +47,8 @@ internal static class RpcDiagnostics
     internal static void Write(ILogger logger, LogLevel level, Transport transport, Stage stage,
         string method = null, int? batchCount = null, int? status = null,
         long? bytes = null, long? elapsedMs = null, Exception failure = null,
-        long? endpointIndex = null, int? httpResponseChars = null)
+        long? endpointIndex = null, int? httpResponseChars = null,
+        string failureCategory = null, string poolId = null)
     {
         if(!logger.IsEnabled(level))
             return;
@@ -84,9 +66,11 @@ internal static class RpcDiagnostics
             ["httpResponseChars"] = httpResponseChars,
             ["elapsedMs"] = elapsedMs,
             ["endpointIndex"] = endpointIndex,
-            ["failure"] = failure == null ? null : Diagnostics.DiagnosticFailure.Category(failure),
+            ["failure"] = failureCategory ?? (failure == null ? null : Diagnostics.DiagnosticFailure.Category(failure)),
             ["failureCode"] = Diagnostics.DiagnosticFailure.Code(failure),
         };
+        if(transport == Transport.Rest)
+            data["poolId"] = poolId;
         logger.Log(level, "RPC diagnostic " + data.ToString(Formatting.None));
     }
 }

@@ -33,6 +33,9 @@ Daemon REST transport failures use the related `RPC diagnostic ` JSON record wit
 `tls-handshake`, `http2-negotiation`, and `redirect-refused`; a refused
 redirect supplies its numeric `httpStatus`. The configured host and port are
 used only to group repeated outages in memory and never appear in the record.
+These warnings use the pool's NLog logger and reach its per-pool log when
+`perPoolLogFile` is enabled. The `method` field is null because no RPC method
+is involved.
 
 ## Audited consumers
 

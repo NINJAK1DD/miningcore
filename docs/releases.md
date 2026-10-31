@@ -54,6 +54,7 @@ If a daemon does not reconnect, look for `RPC diagnostic` Warnings with
 `transport: "Rest"` and `failure` of `tls-handshake`, `http2-negotiation` or
 `redirect-refused`. The record identifies the pool and daemon index without
 logging the host, port or wallet URL.
+With `perPoolLogFile` enabled, the warning also appears in that pool's log.
 
 ## Unreleased (after v0.3.0): Warthog wallet private key secrecy
 

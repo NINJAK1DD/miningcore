@@ -19,6 +19,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Miningcore.Configuration;
+using Miningcore.Blockchain.Warthog;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -74,6 +75,7 @@ public class RpcTlsTests
 
     [LinuxTrustTheory]
     [InlineData("rest-redirect-http", "valid")]
+    [InlineData("rest-redirect-http-post", "valid")]
     public async Task HttpsRestRedirectNeverReplaysToPlaintext(string transport, string certificate)
         => await VerifyCertificateBeforeSendingRpc(transport, certificate);
 
@@ -92,7 +94,7 @@ public class RpcTlsTests
             var requests = 0;
             var plaintextRequests = 0;
             WebApplication plaintextTarget = null;
-            if(transport == "rest-redirect-http")
+            if(transport is "rest-redirect-http" or "rest-redirect-http-post")
             {
                 var targetBuilder = WebApplication.CreateBuilder();
                 targetBuilder.Logging.ClearProviders();
@@ -139,12 +141,19 @@ public class RpcTlsTests
                         {
                             "rest-conceal" => "/getinfo",
                             "rest-warthog" => "/chain/head",
+                            "rest-redirect-http-post" => WarthogCommands.SendTransaction,
                             _ => "/status",
                         }, context.Request.Path.Value);
                         Assert.Equal("synthetic-secret", context.Request.Headers["X-Synthetic"].ToString());
                         if(transport is "rest-http2" or "rest-http2-http1")
                             Assert.Equal("HTTP/2", context.Request.Protocol);
-                        if(transport == "rest-redirect-http")
+                        if(transport == "rest-redirect-http-post")
+                        {
+                            Assert.Equal("POST", context.Request.Method);
+                            using var paymentReader = new StreamReader(context.Request.Body);
+                            Assert.Contains("synthetic-payment", await paymentReader.ReadToEndAsync());
+                        }
+                        if(transport is "rest-redirect-http" or "rest-redirect-http-post")
                         {
                             context.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
                             context.Response.Headers.Location = plaintextAddress + "/capture";
@@ -225,11 +234,11 @@ public class RpcTlsTests
                     }
                 }
                 var accepted = (certificate is "valid" or "dns-valid") &&
-                    transport is not ("rest-http2-http1" or "rest-redirect-http");
+                    transport is not ("rest-http2-http1" or "rest-redirect-http" or "rest-redirect-http-post");
                 Assert.False(handlerFailure.Task.IsCompleted, handlerFailure.Task.IsCompleted ? handlerFailure.Task.Result.ToString() : null);
                 Assert.True(process.ExitCode == (accepted ? 0 : 20), $"TLS probe exit {process.ExitCode}: {await stdout}\n{await stderr}");
                 Assert.Equal(accepted ? "accepted" : "rejected", (await stdout).Trim());
-                Assert.Equal(transport == "rest-redirect-http" ? 1 : accepted ? 1 : 0,
+                Assert.Equal(transport is "rest-redirect-http" or "rest-redirect-http-post" ? 1 : accepted ? 1 : 0,
                     Volatile.Read(ref requests));
                 Assert.Equal(0, Volatile.Read(ref plaintextRequests));
             }

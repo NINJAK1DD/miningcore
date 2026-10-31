@@ -47,10 +47,18 @@ internal static class RpcTlsProbe
                     "rest-http2" => BeamExplorerCommands.GetStatus,
                     "rest-http2-http1" => BeamExplorerCommands.GetStatus,
                     "rest-redirect-http" => BeamExplorerCommands.GetStatus,
+                    "rest-redirect-http-post" => WarthogCommands.SendTransaction,
                     _ => throw new ArgumentOutOfRangeException(nameof(transport)),
                 };
                 try
                 {
+                    if(transport == "rest-redirect-http-post")
+                    {
+                        using var postResponse = await restClient.PostWithResponse(path,
+                            new { toAddress = "synthetic-payment", amount = 1 }, deadline.Token,
+                            headers: new Dictionary<string, string> { ["X-Synthetic"] = "synthetic-secret" });
+                        return Report(true);
+                    }
                     var response = await restClient.Get<Dictionary<string, string>>(path, deadline.Token,
                         headers: new Dictionary<string, string> { ["X-Synthetic"] = "synthetic-secret" });
                     return response.GetValueOrDefault("value") == "verified" ? Report(true) : 2;
@@ -64,7 +72,8 @@ internal static class RpcTlsProbe
                 {
                     return Report(false);
                 }
-                catch(HttpRequestException ex) when(transport == "rest-redirect-http" &&
+                catch(HttpRequestException ex) when((transport is "rest-redirect-http" or
+                    "rest-redirect-http-post") &&
                     ex.StatusCode == System.Net.HttpStatusCode.TemporaryRedirect)
                 {
                     return Report(false);

@@ -2,12 +2,11 @@ using System.Collections.Concurrent;
 using System.Net;
 using Miningcore.Diagnostics;
 using Miningcore.Rpc;
-using Microsoft.Extensions.Logging;
 
 namespace Miningcore.Rest;
 
 /// <summary>Bounded, URL-safe diagnostics for daemon REST transport outages.</summary>
-public sealed class DaemonRestDiagnosticsHandler(ILogger<DaemonRestDiagnosticsHandler> logger) : DelegatingHandler
+public sealed class DaemonRestDiagnosticsHandler : DelegatingHandler
 {
     internal static readonly HttpRequestOptionsKey<string> PoolIdOption = new("daemon-rest-pool-id");
     internal static readonly HttpRequestOptionsKey<int?> EndpointIndexOption = new("daemon-rest-endpoint-index");
@@ -33,7 +32,7 @@ public sealed class DaemonRestDiagnosticsHandler(ILogger<DaemonRestDiagnosticsHa
             if((int)response.StatusCode is >= 300 and <= 399)
             {
                 if(redirectOutages.TryAdd(outage, 0))
-                    RpcDiagnostics.WriteRest(logger, "redirect-refused", poolId, endpointIndex,
+                    RpcDiagnostics.WriteRest("redirect-refused", poolId, endpointIndex,
                         (int)response.StatusCode);
                 var status = response.StatusCode;
                 response.Dispose();
@@ -49,7 +48,7 @@ public sealed class DaemonRestDiagnosticsHandler(ILogger<DaemonRestDiagnosticsHa
             var category = DiagnosticFailure.Category(ex) == "tls-handshake"
                 ? "tls-handshake" : "http2-negotiation";
             if(transportOutages.TryAdd(outage, 0))
-                RpcDiagnostics.WriteRest(logger, category, poolId, endpointIndex);
+                RpcDiagnostics.WriteRest(category, poolId, endpointIndex);
             throw;
         }
     }

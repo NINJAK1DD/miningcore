@@ -54,9 +54,7 @@ public static class DaemonRestClient
     // The daemon-specific path also protects direct Send/SendWithResponse calls.
     // General SimpleRestClient callers retain their caller-specified versions.
     private sealed class DaemonPolicyRestClient(HttpClient client, string baseUrl, bool http2,
-        string poolId, int? endpointIndex) : SimpleRestClient(client, baseUrl,
-            http2 ? HttpVersion.Version20 : null,
-            http2 ? HttpVersionPolicy.RequestVersionExact : HttpVersionPolicy.RequestVersionOrLower)
+        string poolId, int? endpointIndex) : SimpleRestClient(client, baseUrl)
     {
         protected override void PrepareRequest(HttpRequestMessage request,
             IEnumerable<KeyValuePair<string, string>> headers)

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -76,9 +77,8 @@ public class DaemonRestConsumerTests
             context.Response.Headers.Location = "http://127.0.0.1:1/capture";
             return Task.CompletedTask;
         });
-        var warnings = new RestWarningProvider();
+        using var warnings = new PoolLogCapture("beam-rest-test");
         var services = new ServiceCollection();
-        services.AddLogging(logging => logging.AddProvider(warnings));
         Miningcore.Program.AddHttpClients(services);
         using var clients = services.BuildServiceProvider();
         using var container = CreateContainer();
@@ -104,7 +104,9 @@ public class DaemonRestConsumerTests
         Assert.Equal("beam-rest-test", record.Value<string>("poolId"));
         Assert.Equal(2, record.Value<int>("endpointIndex"));
         Assert.Equal("redirect-refused", record.Value<string>("failure"));
+        Assert.Equal(JTokenType.Null, record["method"].Type);
         Assert.DoesNotContain("127.0.0.1", warnings.Warnings.Single());
+        Assert.Contains(warnings.Warnings.Single(), warnings.ReadPoolLog());
     }
 
     [Fact]
@@ -235,28 +237,41 @@ public class DaemonRestConsumerTests
             }, CancellationToken.None);
     }
 
-    private sealed class RestWarningProvider : ILoggerProvider
+    private sealed class PoolLogCapture : IDisposable
     {
-        public ConcurrentQueue<string> Warnings { get; } = new();
-        public ILogger CreateLogger(string categoryName) => new RestWarningLogger(categoryName, Warnings);
-        public void Dispose() { }
+        private readonly NLog.Config.LoggingConfiguration previous = NLog.LogManager.Configuration;
+        private readonly NLog.Targets.MemoryTarget target = new("pool-capture") { Layout = "${message}" };
+        private readonly string directory = Path.Combine(Path.GetTempPath(), "miningcore-rest-log-" + Guid.NewGuid().ToString("N"));
+        public string PoolLogPath { get; }
 
-        private sealed class RestWarningLogger(string category, ConcurrentQueue<string> warnings) : ILogger
+        public PoolLogCapture(string poolId)
         {
-            public IDisposable BeginScope<TState>(TState state) where TState : notnull => Scope.Instance;
-            public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
-            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
-                Exception exception, Func<TState, Exception, string> formatter)
+            PoolLogPath = Path.Combine(directory, poolId + ".log");
+            Directory.CreateDirectory(directory);
+            var config = Miningcore.Program.CreateLoggingConfiguration(new ClusterLoggingConfig
             {
-                if(category == typeof(DaemonRestDiagnosticsHandler).FullName && IsEnabled(logLevel))
-                    warnings.Enqueue(formatter(state, exception));
-            }
+                Level = "Warn", PerPoolLogFile = true, LogBaseDirectory = directory,
+            }, false, new[] { new PoolConfig { Id = poolId } });
+            var poolRule = Assert.Single(config.LoggingRules.Where(rule => rule.LoggerNamePattern == poolId));
+            config.AddTarget(target);
+            poolRule.Targets.Add(target);
+            NLog.LogManager.Configuration = config;
+        }
 
-            private sealed class Scope : IDisposable
-            {
-                public static readonly Scope Instance = new();
-                public void Dispose() { }
-            }
+        public IList<string> Warnings => target.Logs;
+
+        public string ReadPoolLog()
+        {
+            NLog.LogManager.Flush();
+            NLog.LogManager.Configuration = previous;
+            return File.ReadAllText(PoolLogPath);
+        }
+
+        public void Dispose()
+        {
+            NLog.LogManager.Configuration = previous;
+            target.Dispose();
+            Directory.Delete(directory, recursive: true);
         }
     }
 }
