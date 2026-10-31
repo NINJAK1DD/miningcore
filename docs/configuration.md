@@ -192,7 +192,7 @@ and [Json.NET extension-data serialization](https://www.newtonsoft.com/json/help
 | `paymentProcessing` | Cluster-wide payout scheduler |
 | `statistics` | Hashrate window, update interval and retention |
 | `banning` | Cluster-wide junk, login and invalid-share policy |
-| `notifications` | Email, Pushover and administrative events |
+| `notifications` | Administrative email and Pushover; see [activation policy](notifications.md) |
 | `pools` | Wallet, Stratum ports, daemons, payout policy and coin-specific options |
 | `shareRecoveryFile` | Write-through emergency journal used when PostgreSQL is unavailable |
 | `shareRecoveryStateDirectory` | Independent service state for fatal latches, journal-tail anchors, and import-retirement markers |
@@ -203,10 +203,11 @@ secrets. Restrict the file to the service account.
 
 ### SMTP transport migration
 
-Set `notifications.email.tlsMode` explicitly before upgrading any installation that
-sends email. Active notification senders are checked at startup, and every delivery
+Set `notifications.email.tlsMode` explicitly before upgrading any installation with
+a nonblank administrative email recipient and `notifications.admin.enabled: true`.
+Active notification senders are checked at startup, and every delivery
 checks the setting again. An omitted mode stops startup when administrative email is
-enabled; an unrecognised value is rejected when the configuration is loaded, even if
+selected; an unrecognised value is rejected when the configuration is loaded, even if
 email is disabled. Use `"implicitTls"` for port 465 (TLS begins before the
 SMTP greeting) and `"startTls"` for ports 25 and 587 (STARTTLS is mandatory). Explicit
 TLS modes may use a custom port, but ports 25/587 cannot use implicit TLS and port 465

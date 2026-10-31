@@ -18,6 +18,12 @@ public record PaymentRecipientTransactionChain
     public string[] TransactionIds { get; init; } = Array.Empty<string>();
 }
 
+internal sealed record PayoutBucketTotal(int Count, decimal? Amount);
+
+internal sealed record PayoutReconciliationTotals(
+    PayoutBucketTotal Accepted, PayoutBucketTotal Failed,
+    PayoutBucketTotal Uncertain, PayoutBucketTotal NotAttempted);
+
 public record PaymentNotification
 {
     public PaymentNotification(string poolId, string error, decimal amount, string symbol, int recipientsCount, string[] txIds, string[] txExplorerLinks, decimal? txFee)
@@ -66,6 +72,14 @@ public record PaymentNotification
 
     [JsonIgnore]
     internal PaymentFailureDiagnostic FailureDiagnostic { get; init; }
+
+    // Oversized in-memory notification details are replaced by a small alert
+    // before the ordinary formatting queue retains the event.
+    [JsonIgnore]
+    internal bool SummaryOnly { get; init; }
+
+    [JsonIgnore]
+    internal PayoutReconciliationTotals SummaryTotals { get; init; }
 
     [JsonConverter(typeof(StringEnumConverter), true)]
     public PaymentNotificationOutcome Outcome { get; set; }

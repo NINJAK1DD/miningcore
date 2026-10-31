@@ -17,6 +17,7 @@ wallet balances or recovery files.
 | Order a local PostgreSQL service safely with Miningcore under systemd | [systemd PostgreSQL ordering](systemd-postgresql-ordering.md) |
 | Choose a ready-to-edit pool or relay topology | [Example configurations](../examples/README.md) |
 | Configure pools, logging and recovery storage | [Configuration](configuration.md) |
+| Configure administrative email and Pushover alerts | [Notification activation](notifications.md) |
 | Operate and monitor a production service | [Operator handbook](operations.md) |
 | Diagnose startup, mining, payout or storage problems | [Troubleshooting](troubleshooting.md) |
 | Set up, back up, migrate or recover PostgreSQL | [Database and recovery](database.md) |

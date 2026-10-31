@@ -141,7 +141,8 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
                 messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}] Bitcoin BLAKE2b payout attestation withheld",
                     $"Pool {poolConfig.Id}: reason {reason} ({(int) reason}). Rewards and balances are retained. " +
                     "Check node synchronization, RPC availability and the reviewed daemon/chain/deployment configuration. " +
-                    "A changed process binding requires the documented stop/reconcile/restart. Sensitive RPC details are withheld."));
+                    "A changed process binding requires the documented stop/reconcile/restart. Sensitive RPC details are withheld.",
+                    AdminNotificationImportance.FinancialOrSecurity, poolConfig.Id));
                 grace.MarkNotificationSent(poolConfig.Id, 0, null, episode);
             }
             catch(Exception ex)
@@ -303,7 +304,8 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
         {
             messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}] Bitcoin BLAKE2b block reconciliation delayed",
                 $"Pool {poolConfig.Id} block {block.BlockHeight} has lacked matching active-chain header and wallet coinbase evidence for at least {(int) AlertAfter.TotalMinutes} minutes. " +
-                "The stored reward remains unresolved. Check getblockheader/gettransaction, wallet indexing, synchronization and RPC proxies. Sensitive verification detail is withheld."));
+                "The stored reward remains unresolved. Check getblockheader/gettransaction, wallet indexing, synchronization and RPC proxies. Sensitive verification detail is withheld.",
+                AdminNotificationImportance.FinancialOrSecurity, poolConfig.Id));
             grace.MarkNotificationSent(block.PoolId, block.Id, block.Hash, ReconciliationEpisode);
         }
         catch(Exception ex)
@@ -323,7 +325,8 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
                 $"Pool {poolConfig.Id} block {block.BlockHeight}: a later or same-time custodial reward is already confirmed. " +
                 "PROP/PPLNS share history may have been consumed and recovered funds may already have been swept. " +
                 "The block is durably quarantined and automatic balance allocation is withheld. Preserve backups and audit original shares, " +
-                "credits, payments and spendable wallet backing using the documented historical recovery procedure."));
+                "credits, payments and spendable wallet backing using the documented historical recovery procedure.",
+                AdminNotificationImportance.FinancialOrSecurity, poolConfig.Id));
             grace.MarkNotificationSent(block.PoolId, block.Id, block.Hash, episode);
         }
         catch(Exception ex)

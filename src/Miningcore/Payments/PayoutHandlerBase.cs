@@ -94,7 +94,8 @@ public abstract class PayoutHandlerBase
             try
             {
                 messageBus.SendMessage(new AdminNotification(
-                    "Payout wallet relock failed", message));
+                    "Payout wallet relock failed", message,
+                    AdminNotificationImportance.FinancialOrSecurity, poolConfig?.Id));
             }
             catch(Exception notificationError)
             {
