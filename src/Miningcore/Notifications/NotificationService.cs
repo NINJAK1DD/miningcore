@@ -440,9 +440,7 @@ public class NotificationService : StartupGatedBackgroundService,
         // it without hosting. Delivery cannot rely on the hosted startup validation.
         if(emailSenderConfig == null)
             throw new InvalidOperationException("Email delivery requires notifications.email configuration");
-        // Snapshot the mutable configuration before validating it. Use this same
-        // snapshot for connection and authentication so concurrent changes cannot
-        // turn a validated local relay into a credentialed plaintext send.
+        // Validate and send from one consistent copy of the configuration.
         var email = emailSenderConfig.Snapshot();
         var socketOptions = SmtpTransportPolicy.Resolve(email);
         logger.Info(() => $"Sending '{subject.ToLower()}' email to {recipient}");

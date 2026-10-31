@@ -406,8 +406,9 @@ public class SmtpTransportTests
 
         var config = Config(mode, ((IPEndPoint) listener.LocalEndpoint).Port);
         using var sender = Sender(config);
-        await Assert.ThrowsAsync<SslHandshakeException>(() => sender
+        var error = await Assert.ThrowsAsync<SslHandshakeException>(() => sender
             .SendEmailAsync("recipient@example.com", "subject", "body", timeout.Token));
+        Assert.NotNull(error.ServerCertificate);
         await server;
         if(mode == "startTls")
         {
@@ -575,8 +576,9 @@ public class SmtpTransportTests
 
             var config = Config("startTls", ((IPEndPoint) listener.LocalEndpoint).Port);
             using var sender = Sender(config);
-            await Assert.ThrowsAsync<SslHandshakeException>(() => sender.SendEmailAsync(
+            var error = await Assert.ThrowsAsync<SslHandshakeException>(() => sender.SendEmailAsync(
                 "recipient@example.com", "subject", "body", timeout.Token, TrustOnly(root)));
+            Assert.NotNull(error.ServerCertificate);
             await server;
             Assert.DoesNotContain(beforeTls, line => line.StartsWith("AUTH", StringComparison.OrdinalIgnoreCase));
             Assert.DoesNotContain(afterTls, line => line.StartsWith("AUTH", StringComparison.OrdinalIgnoreCase));
@@ -655,11 +657,14 @@ public class SmtpTransportTests
         using var withKey = issued.CopyWithPrivateKey(serverKey);
         // Schannel cannot use the ephemeral private key produced by CopyWithPrivateKey.
         // Reimport the test-only certificate without EphemeralKeySet for Windows CI.
-        var server = X509CertificateLoader.LoadPkcs12(
-            withKey.Export(X509ContentType.Pkcs12, "smtp-test"), "smtp-test",
-            X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.Exportable);
+        var server = ReloadServerCertificate(withKey);
         return (root, server);
     }
+
+    private static X509Certificate2 ReloadServerCertificate(X509Certificate2 certificate) =>
+        X509CertificateLoader.LoadPkcs12(
+            certificate.Export(X509ContentType.Pkcs12, "smtp-test"), "smtp-test",
+            X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.Exportable);
 
     private static EmailSenderConfig Config(string mode, int port) => new()
     {
@@ -699,7 +704,8 @@ public class SmtpTransportTests
         names.AddDnsName("localhost");
         names.AddIpAddress(IPAddress.Loopback);
         request.CertificateExtensions.Add(names.Build());
-        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1),
+        using var certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1),
             DateTimeOffset.UtcNow.AddDays(1));
+        return ReloadServerCertificate(certificate);
     }
 }
