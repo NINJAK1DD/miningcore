@@ -37,8 +37,27 @@ redirects, preventing Ergo/Alephium API-key headers and shared-client POST
 bodies from reaching a redirected origin. Configure the final daemon/proxy URL
 directly. See
 [daemon TLS compatibility and testing](rpc-tls.md).
-Beam explorer, Conceal and Warthog node REST requests still use plain HTTP and
-may follow redirects regardless of `ssl`; see [#235](https://github.com/NINJAK1DD/miningcore/issues/235).
+
+## Unreleased (after v0.3.0): daemon REST TLS and redirects
+
+Beam explorer, Conceal and Warthog node REST calls now honor the selected
+endpoint's `ssl` and `http2` settings and refuse redirects. Existing
+`ssl: true` or `http2: true` configurations that previously sent REST over
+HTTP will now require a trusted HTTPS endpoint. An HTTP-only daemon or a proxy
+that cannot negotiate the requested HTTP/2 version will fail without a
+plaintext or HTTP/1.1 fallback. **Upgrade the endpoint before restarting the
+pool**: place a trusted TLS proxy in front of a native HTTP listener, point
+`host` and `port` at its final HTTPS address, and provision certificate trust
+for the Miningcore service. HTTP redirects cannot perform this migration.
+See the [daemon REST migration guide](rpc-tls.md#beam-conceal-and-warthog-rest-endpoints).
+Before restarting production pools, verify certificate trust and name, HTTP/2
+ALPN when enabled, REST root paths, and proxy-to-daemon isolation on staging;
+check Warthog's separately configured WebSocket listener as well.
+If a daemon does not reconnect, look for `RPC diagnostic` Warnings with
+`transport: "Rest"` and `failure` of `tls-handshake`, `http2-negotiation` or
+`redirect-refused`. The record identifies the pool and daemon index without
+logging the host, port or wallet URL.
+With `perPoolLogFile` enabled, the warning also appears in that pool's log.
 
 ## Unreleased (after v0.3.0): Warthog wallet private key secrecy
 

@@ -19,6 +19,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Miningcore.Configuration;
+using Miningcore.Blockchain.Warthog;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -46,7 +47,8 @@ public class RpcTlsTests
     }
 
     public static IEnumerable<object[]> Cases =>
-        from transport in new[] { "https", "http2", "batch", "wss", "ergo", "alephium" }
+        from transport in new[] { "https", "http2", "batch", "wss", "ergo", "alephium",
+            "rest-beam", "rest-conceal", "rest-warthog", "rest-http2" }
         from certificate in new[] { "valid", "untrusted", "expired", "wrong-name", "dns-valid", "dns-ip-only" }
         select new object[] { transport, certificate };
 
@@ -60,8 +62,22 @@ public class RpcTlsTests
     [InlineData("wss")]
     [InlineData("ergo")]
     [InlineData("alephium")]
+    [InlineData("rest-beam")]
+    [InlineData("rest-conceal")]
+    [InlineData("rest-warthog")]
     public async Task PlatformRejectsUntrustedDaemonCertificate(string transport)
         => await VerifyCertificateBeforeSendingRpc(transport, "untrusted");
+
+    [LinuxTrustTheory]
+    [InlineData("rest-http2-http1", "valid")]
+    public async Task RestHttp2DoesNotDowngradeToHttp1(string transport, string certificate)
+        => await VerifyCertificateBeforeSendingRpc(transport, certificate);
+
+    [LinuxTrustTheory]
+    [InlineData("rest-redirect-http", "valid")]
+    [InlineData("rest-redirect-http-post", "valid")]
+    public async Task HttpsRestRedirectNeverReplaysToPlaintext(string transport, string certificate)
+        => await VerifyCertificateBeforeSendingRpc(transport, certificate);
 
     private static async Task VerifyCertificateBeforeSendingRpc(string transport, string certificate)
     {
@@ -76,12 +92,31 @@ public class RpcTlsTests
             using var serverKey = RSA.Create(2048);
             using var serverCert = CreateServer(ca, serverKey, certificate);
             var requests = 0;
+            var plaintextRequests = 0;
+            WebApplication plaintextTarget = null;
+            if(transport is "rest-redirect-http" or "rest-redirect-http-post")
+            {
+                var targetBuilder = WebApplication.CreateBuilder();
+                targetBuilder.Logging.ClearProviders();
+                targetBuilder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
+                plaintextTarget = targetBuilder.Build();
+                plaintextTarget.Run(context =>
+                {
+                    Interlocked.Increment(ref plaintextRequests);
+                    return context.Response.WriteAsync("{}");
+                });
+                await plaintextTarget.StartAsync();
+            }
+            await using var targetCleanup = plaintextTarget;
+            var plaintextAddress = plaintextTarget == null ? null : plaintextTarget.Services
+                .GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>().Addresses.Single();
             var handlerFailure = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
             var builder = WebApplication.CreateBuilder();
             builder.Logging.ClearProviders();
             builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0, listener =>
             {
-                listener.Protocols = HttpProtocols.Http1AndHttp2;
+                listener.Protocols = transport == "rest-http2-http1"
+                    ? HttpProtocols.Http1 : HttpProtocols.Http1AndHttp2;
                 listener.UseHttps(serverCert);
             }));
             await using var app = builder.Build();
@@ -98,6 +133,33 @@ public class RpcTlsTests
                         await socket.ReceiveAsync(new ArraySegment<byte>(buffer), context.RequestAborted);
                         await socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes("verified")),
                             WebSocketMessageType.Text, true, context.RequestAborted);
+                        return;
+                    }
+                    if(transport.StartsWith("rest-", StringComparison.Ordinal))
+                    {
+                        Assert.Equal(transport switch
+                        {
+                            "rest-conceal" => "/getinfo",
+                            "rest-warthog" => "/chain/head",
+                            "rest-redirect-http-post" => WarthogCommands.SendTransaction,
+                            _ => "/status",
+                        }, context.Request.Path.Value);
+                        Assert.Equal("synthetic-secret", context.Request.Headers["X-Synthetic"].ToString());
+                        if(transport is "rest-http2" or "rest-http2-http1")
+                            Assert.Equal("HTTP/2", context.Request.Protocol);
+                        if(transport == "rest-redirect-http-post")
+                        {
+                            Assert.Equal("POST", context.Request.Method);
+                            using var paymentReader = new StreamReader(context.Request.Body);
+                            Assert.Contains("synthetic-payment", await paymentReader.ReadToEndAsync());
+                        }
+                        if(transport is "rest-redirect-http" or "rest-redirect-http-post")
+                        {
+                            context.Response.StatusCode = StatusCodes.Status307TemporaryRedirect;
+                            context.Response.Headers.Location = plaintextAddress + "/capture";
+                            return;
+                        }
+                        await context.Response.WriteAsync("{\"value\":\"verified\"}");
                         return;
                     }
                     Assert.Equal("Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("fixture:synthetic-secret")),
@@ -131,8 +193,10 @@ public class RpcTlsTests
                 var endpoint = new DaemonEndpointConfig
                 {
                     Host = certificate.StartsWith("dns-", StringComparison.Ordinal) ? "localhost" : address.Host,
-                    Port = address.Port, Ssl = transport != "http2", Http2 = transport == "http2",
+                    Port = address.Port, Ssl = transport is not ("http2" or "rest-http2" or "rest-http2-http1"),
+                    Http2 = transport is "http2" or "rest-http2" or "rest-http2-http1",
                     User = "fixture", Password = "synthetic-secret",
+                    HttpPath = transport == "rest-conceal" ? "/json_rpc" : null,
                     Extra = new Dictionary<string, object> { ["apiKey"] = "synthetic-api-key" },
                 };
                 var config = Path.Combine(directory, "endpoint.json");
@@ -169,11 +233,14 @@ public class RpcTlsTests
                         await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
                     }
                 }
-                var accepted = certificate is "valid" or "dns-valid";
+                var accepted = (certificate is "valid" or "dns-valid") &&
+                    transport is not ("rest-http2-http1" or "rest-redirect-http" or "rest-redirect-http-post");
                 Assert.False(handlerFailure.Task.IsCompleted, handlerFailure.Task.IsCompleted ? handlerFailure.Task.Result.ToString() : null);
                 Assert.True(process.ExitCode == (accepted ? 0 : 20), $"TLS probe exit {process.ExitCode}: {await stdout}\n{await stderr}");
                 Assert.Equal(accepted ? "accepted" : "rejected", (await stdout).Trim());
-                Assert.Equal(accepted ? 1 : 0, Volatile.Read(ref requests));
+                Assert.Equal(transport is "rest-redirect-http" or "rest-redirect-http-post" ? 1 : accepted ? 1 : 0,
+                    Volatile.Read(ref requests));
+                Assert.Equal(0, Volatile.Read(ref plaintextRequests));
             }
             finally
             {

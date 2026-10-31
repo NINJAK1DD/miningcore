@@ -268,7 +268,9 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
             })
             .ToArray();
             
-        restClient = new SimpleRestClient(httpClientFactory, "http://" + daemonEndpoints.First().Host.ToString() + ":" + daemonEndpoints.First().Port.ToString() + "/");
+        var restEndpoint = daemonEndpoints.First();
+        restClient = DaemonRestClient.Create(httpClientFactory, restEndpoint,
+            poolConfig.Id, RpcDiagnostics.EndpointIndex(poolConfig.Daemons, restEndpoint));
         rpcClient = new RpcClient(daemonEndpoints.First(), jsonSerializerSettings, messageBus, pc.Id);
         
         // configure wallet daemon

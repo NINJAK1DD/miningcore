@@ -5,8 +5,13 @@ using System.Text;
 using Miningcore.Configuration;
 using Miningcore.Blockchain.Ergo;
 using Miningcore.Blockchain.Alephium;
+using Miningcore.Blockchain.Beam;
+using Miningcore.Blockchain.Conceal;
+using Miningcore.Blockchain.Warthog;
 using Miningcore.Messaging;
 using Miningcore.Rpc;
+using Miningcore.Rest;
+using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NLog;
@@ -28,6 +33,52 @@ internal static class RpcTlsProbe
         try
         {
             var endpoint = JsonConvert.DeserializeObject<DaemonEndpointConfig>(await File.ReadAllTextAsync(configPath));
+            if(transport.StartsWith("rest-", StringComparison.Ordinal))
+            {
+                var services = new ServiceCollection();
+                services.AddDaemonRestClient();
+                using var provider = services.BuildServiceProvider();
+                var restClient = DaemonRestClient.Create(provider.GetRequiredService<IHttpClientFactory>(), endpoint);
+                var path = transport switch
+                {
+                    "rest-beam" => BeamExplorerCommands.GetStatus,
+                    "rest-conceal" => ConcealConstants.DaemonRpcGetInfoLocation,
+                    "rest-warthog" => WarthogCommands.GetChainInfo,
+                    "rest-http2" => BeamExplorerCommands.GetStatus,
+                    "rest-http2-http1" => BeamExplorerCommands.GetStatus,
+                    "rest-redirect-http" => BeamExplorerCommands.GetStatus,
+                    "rest-redirect-http-post" => WarthogCommands.SendTransaction,
+                    _ => throw new ArgumentOutOfRangeException(nameof(transport)),
+                };
+                try
+                {
+                    if(transport == "rest-redirect-http-post")
+                    {
+                        using var postResponse = await restClient.PostWithResponse(path,
+                            new { toAddress = "synthetic-payment", amount = 1 }, deadline.Token,
+                            headers: new Dictionary<string, string> { ["X-Synthetic"] = "synthetic-secret" });
+                        return Report(true);
+                    }
+                    var response = await restClient.Get<Dictionary<string, string>>(path, deadline.Token,
+                        headers: new Dictionary<string, string> { ["X-Synthetic"] = "synthetic-secret" });
+                    return response.GetValueOrDefault("value") == "verified" ? Report(true) : 2;
+                }
+                catch(Exception ex) when(IsTlsHandshake(ex))
+                {
+                    return Report(false);
+                }
+                catch(HttpRequestException ex) when(transport == "rest-http2-http1" &&
+                    ex.HttpRequestError == HttpRequestError.VersionNegotiationError)
+                {
+                    return Report(false);
+                }
+                catch(HttpRequestException ex) when((transport is "rest-redirect-http" or
+                    "rest-redirect-http-post") &&
+                    ex.StatusCode == System.Net.HttpStatusCode.TemporaryRedirect)
+                {
+                    return Report(false);
+                }
+            }
             var client = new RpcClient(endpoint, new JsonSerializerSettings(), new MessageBus(), "tls-test");
             var logger = LogManager.GetCurrentClassLogger();
             if(transport == "wss")

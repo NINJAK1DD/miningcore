@@ -32,6 +32,7 @@ using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Configuration;
 using Miningcore.Rpc;
+using Miningcore.Rest;
 using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Crypto.Hashing.Equihash;
 using Miningcore.Crypto.Hashing.Ethash.Etchash;
@@ -274,7 +275,7 @@ public class Program : ProcessStatusBackgroundService
                 .ConfigureServices((ctx, services) =>
                 {
                     ConfigureHostShutdown(services);
-                    services.AddHttpClient();
+                    AddHttpClients(services);
                     services.AddMemoryCache();
 
                     ConfigureBackgroundServices(services);
@@ -726,6 +727,12 @@ public class Program : ProcessStatusBackgroundService
         ArgumentNullException.ThrowIfNull(services);
         services.TryAddSingleton<Program>();
         services.AddHostedService(sp => sp.GetRequiredService<Program>());
+    }
+
+    internal static void AddHttpClients(IServiceCollection services)
+    {
+        services.AddHttpClient();
+        services.AddDaemonRestClient();
     }
 
     internal static void ConfigureHostShutdown(IServiceCollection services,
