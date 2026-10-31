@@ -6,6 +6,7 @@ using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using System.Text;
 using MailKit.Net.Smtp;
+using MailKit.Security;
 using MimeKit;
 using Miningcore.Configuration;
 using Miningcore.Contracts;
@@ -428,6 +429,7 @@ public class NotificationService : StartupGatedBackgroundService,
         // it without hosting. Delivery cannot rely on the hosted startup validation.
         if(emailSenderConfig == null)
             throw new InvalidOperationException("Email delivery requires notifications.email configuration");
+        var socketOptions = SmtpTransportPolicy.Resolve(emailSenderConfig);
         logger.Info(() => $"Sending '{subject.ToLower()}' email to {recipient}");
 
         var message = new MimeMessage();
@@ -438,8 +440,15 @@ public class NotificationService : StartupGatedBackgroundService,
 
         using(var client = new SmtpClient())
         {
-            await client.ConnectAsync(emailSenderConfig.Host, emailSenderConfig.Port, cancellationToken: ct);
-            await client.AuthenticateAsync(emailSenderConfig.User, emailSenderConfig.Password, ct);
+            client.CheckCertificateRevocation = true;
+            client.ServerCertificateValidationCallback = (_, _, _, errors) =>
+                SmtpTransportPolicy.CertificateIsValid(errors);
+            await client.ConnectAsync(emailSenderConfig.Host, emailSenderConfig.Port,
+                socketOptions, ct);
+            if(socketOptions != SecureSocketOptions.None && !client.IsSecure)
+                throw new InvalidOperationException("SMTP TLS negotiation did not complete");
+            if(!string.IsNullOrEmpty(emailSenderConfig.User))
+                await client.AuthenticateAsync(emailSenderConfig.User, emailSenderConfig.Password, ct);
             await client.SendAsync(message, ct);
             await client.DisconnectAsync(true, ct);
         }

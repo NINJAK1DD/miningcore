@@ -1,6 +1,7 @@
 using FluentValidation;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
+using Miningcore.Notifications;
 
 namespace Miningcore.Configuration;
 
@@ -10,6 +11,18 @@ public class EmailSenderConfigValidator : AuthenticatedNetworkEndpointConfigVali
 {
     public EmailSenderConfigValidator()
     {
+        RuleFor(j => j).Custom((config, context) =>
+        {
+            try
+            {
+                SmtpTransportPolicy.Resolve(config);
+            }
+            catch(InvalidOperationException error)
+            {
+                context.AddFailure(error.Message);
+            }
+        });
+
         RuleFor(j => j.FromAddress)
             .NotNull()
             .NotEmpty()
@@ -33,6 +46,11 @@ public class NotificationsConfigValidator : AbstractValidator<NotificationsConfi
 {
     public NotificationsConfigValidator()
     {
+        RuleFor(j => j.Email)
+            .SetValidator(new EmailSenderConfigValidator())
+            .When(j => j.Email != null &&
+                (j.Enabled || j.Admin?.Enabled == true));
+
         RuleFor(j => j.Email)
             .NotNull()
             .When(x => x.Enabled)
@@ -448,6 +466,10 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
         RuleFor(j => j.Api)
             .SetValidator(new ApiConfigValidator())
             .When(j => !recoveryMode && j.Api?.Enabled == true);
+
+        RuleFor(j => j.Notifications)
+            .SetValidator(new NotificationsConfigValidator())
+            .When(j => j.Notifications != null);
 
         // ensure pool ids are unique
         RuleFor(j => j.Pools)

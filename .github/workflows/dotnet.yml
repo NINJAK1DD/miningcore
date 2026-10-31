@@ -417,6 +417,13 @@ jobs:
         --filter "FullyQualifiedName~Miningcore.Tests.Mining.ShareReceiverTests"
         src/Miningcore.Tests/Miningcore.Tests.csproj
 
+    - name: Verify SMTP TLS fail-closed transport
+      shell: bash
+      run: >-
+        dotnet test --no-build --verbosity normal
+        --filter "FullyQualifiedName~Miningcore.Tests.Notifications.SmtpTransportTests"
+        src/Miningcore.Tests/Miningcore.Tests.csproj
+
     - name: Test
       id: linux_full_suite
       shell: bash

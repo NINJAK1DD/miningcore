@@ -344,6 +344,12 @@
         "port": {
           "type": "integer"
         },
+        "tlsMode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "user": {
           "type": [
             "string",
