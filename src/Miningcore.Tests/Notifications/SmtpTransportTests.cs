@@ -181,6 +181,40 @@ public class SmtpTransportTests
         Assert.DoesNotContain(commands, command => command.StartsWith("AUTH", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task RejectedStartTlsFailsBeforeAuthentication()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var commands = new List<string>();
+        var server = Task.Run(async () =>
+        {
+            using var peer = await listener.AcceptTcpClientAsync(timeout.Token);
+            using var stream = peer.GetStream();
+            using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
+            using var writer = new StreamWriter(stream, Encoding.ASCII, leaveOpen: true)
+                { NewLine = "\r\n", AutoFlush = true };
+            await writer.WriteLineAsync("220 loopback ESMTP");
+            commands.Add(await reader.ReadLineAsync(timeout.Token));
+            await writer.WriteLineAsync("250-loopback");
+            await writer.WriteLineAsync("250 STARTTLS");
+            commands.Add(await reader.ReadLineAsync(timeout.Token));
+            await writer.WriteLineAsync("454 TLS temporarily unavailable");
+            var next = await reader.ReadLineAsync(timeout.Token);
+            if(next != null)
+                commands.Add(next);
+        }, timeout.Token);
+
+        var config = Config("startTls", ((IPEndPoint) listener.LocalEndpoint).Port);
+        await Assert.ThrowsAnyAsync<Exception>(() => Sender(config)
+            .SendEmailAsync("recipient@example.com", "subject", "body", timeout.Token));
+        await server;
+        Assert.StartsWith("EHLO", commands[0]);
+        Assert.Equal("STARTTLS", commands[1]);
+        Assert.DoesNotContain(commands, command => command.StartsWith("AUTH", StringComparison.OrdinalIgnoreCase));
+    }
+
     [Theory]
     [InlineData("startTls")]
     [InlineData("implicitTls")]
