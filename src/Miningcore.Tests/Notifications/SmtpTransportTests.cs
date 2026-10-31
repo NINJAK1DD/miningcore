@@ -129,7 +129,10 @@ public class SmtpTransportTests
         var config = Config(null, 587);
         var result = new NotificationsConfigValidator().Validate(new NotificationsConfig
         {
-            Admin = new AdminNotifications { Enabled = true },
+            Admin = new AdminNotifications
+            {
+                Enabled = true, EmailAddress = "operator@example.invalid",
+            },
             Email = config,
         });
         Assert.False(result.IsValid);
@@ -147,7 +150,11 @@ public class SmtpTransportTests
         var result = new NotificationsConfigValidator().Validate(new NotificationsConfig
         {
             Enabled = notificationsEnabled,
-            Admin = new AdminNotifications { Enabled = adminEnabled },
+            Admin = new AdminNotifications
+            {
+                Enabled = adminEnabled,
+                EmailAddress = "operator@example.invalid",
+            },
             Email = Config(null, 587),
         });
         Assert.Equal(!adminEnabled, result.IsValid);
@@ -155,9 +162,13 @@ public class SmtpTransportTests
         var missingEmail = new NotificationsConfigValidator().Validate(new NotificationsConfig
         {
             Enabled = notificationsEnabled,
-            Admin = new AdminNotifications { Enabled = adminEnabled },
+            Admin = new AdminNotifications
+            {
+                Enabled = adminEnabled,
+                EmailAddress = "operator@example.invalid",
+            },
         });
-        Assert.True(missingEmail.IsValid);
+        Assert.Equal(!adminEnabled, missingEmail.IsValid);
     }
 
     [Fact]
@@ -205,7 +216,10 @@ public class SmtpTransportTests
             Pools = Array.Empty<PoolConfig>(),
             Notifications = new NotificationsConfig
             {
-                Admin = new AdminNotifications { Enabled = true },
+                Admin = new AdminNotifications
+                {
+                    Enabled = true, EmailAddress = "operator@example.invalid",
+                },
                 Email = Config(null, 587),
             },
         }, null, messageBus);

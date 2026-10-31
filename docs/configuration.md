@@ -192,7 +192,7 @@ and [Json.NET extension-data serialization](https://www.newtonsoft.com/json/help
 | `paymentProcessing` | Cluster-wide payout scheduler |
 | `statistics` | Hashrate window, update interval and retention |
 | `banning` | Cluster-wide junk, login and invalid-share policy |
-| `notifications` | Email, Pushover and administrative events |
+| `notifications` | Administrative email and Pushover; see [activation policy](notifications.md) |
 | `pools` | Wallet, Stratum ports, daemons, payout policy and coin-specific options |
 | `shareRecoveryFile` | Write-through emergency journal used when PostgreSQL is unavailable |
 | `shareRecoveryStateDirectory` | Independent service state for fatal latches, journal-tail anchors, and import-retirement markers |

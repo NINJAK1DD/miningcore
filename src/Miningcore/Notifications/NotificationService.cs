@@ -33,21 +33,19 @@ public class NotificationService : StartupGatedBackgroundService,
         Contract.RequiresNonNull(messageBus);
 
         this.clusterConfig = clusterConfig;
-        emailSenderConfig = clusterConfig.Notifications?.Email;
         this.messageBus = messageBus;
         this.pushoverClient = pushoverClient;
+        activation = new NotificationActivation(clusterConfig.Notifications);
 
         poolConfigs = clusterConfig.Pools.ToDictionary(x => x.Id, x => x);
 
-        adminEmail = clusterConfig.Notifications?.Admin?.EmailAddress;
     }
 
     private readonly ILogger logger = LogManager.GetCurrentClassLogger();
     private readonly ClusterConfig clusterConfig;
     private readonly Dictionary<string, PoolConfig> poolConfigs;
-    private readonly string adminEmail;
+    private readonly NotificationActivation activation;
     private readonly IMessageBus messageBus;
-    private readonly EmailSenderConfig emailSenderConfig;
     private readonly PushoverClient pushoverClient;
 
     public string FormatAmount(decimal amount, string poolId)
@@ -57,10 +55,10 @@ public class NotificationService : StartupGatedBackgroundService,
 
     private async Task OnAdminNotificationAsync(AdminNotification notification, CancellationToken ct)
     {
-        if(!string.IsNullOrEmpty(adminEmail))
-            await Guard(()=> SendEmailAsync(adminEmail, notification.Subject, notification.Message, ct), LogGuarded);
+        if(activation.EmailEnabled)
+            await Guard(()=> SendEmailAsync(activation.EmailRecipient, notification.Subject, notification.Message, ct), LogGuarded);
 
-        if(clusterConfig.Notifications?.Pushover?.Enabled == true)
+        if(activation.PushoverEnabled)
             await Guard(()=> pushoverClient.PushMessage(notification.Subject, notification.Message, PushoverMessagePriority.None, ct), LogGuarded);
     }
 
@@ -69,16 +67,20 @@ public class NotificationService : StartupGatedBackgroundService,
     {
         ArgumentNullException.ThrowIfNull(notification);
 
-        if(clusterConfig.Notifications?.Admin?.Enabled != true)
+        if(!activation.AdminEnabled)
             return;
 
         var errors = new List<Exception>();
 
-        if(!string.IsNullOrWhiteSpace(adminEmail))
+        if(!activation.EmailEnabled && !activation.PushoverEnabled)
+            throw new InvalidOperationException(
+                "Enabled critical notifications have no configured email recipient or Pushover transport");
+
+        if(activation.EmailEnabled)
         {
             try
             {
-                await SendEmailAsync(adminEmail, notification.Subject,
+                await SendEmailAsync(activation.EmailRecipient, notification.Subject,
                     notification.Message, ct);
             }
             catch(Exception ex)
@@ -88,10 +90,11 @@ public class NotificationService : StartupGatedBackgroundService,
             }
         }
 
-        if(clusterConfig.Notifications?.Pushover?.Enabled == true)
+        if(activation.PushoverEnabled)
         {
             try
             {
+                activation.ValidatePushoverProvider();
                 await pushoverClient.PushMessage(notification.Subject,
                     notification.Message, PushoverMessagePriority.None, ct);
             }
@@ -115,9 +118,10 @@ public class NotificationService : StartupGatedBackgroundService,
 
         if(clusterConfig.Notifications?.Admin?.NotifyBlockFound == true)
         {
-            await Guard(() => SendEmailAsync(adminEmail, subject, message, ct), LogGuarded);
+            if(activation.EmailEnabled)
+                await Guard(() => SendEmailAsync(activation.EmailRecipient, subject, message, ct), LogGuarded);
 
-            if(clusterConfig.Notifications?.Pushover?.Enabled == true)
+            if(activation.PushoverEnabled)
                 await Guard(() => pushoverClient.PushMessage(subject, message, PushoverMessagePriority.None, ct), LogGuarded);
         }
     }
@@ -132,9 +136,10 @@ public class NotificationService : StartupGatedBackgroundService,
         if(isSuccess && clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess != true)
             return;
 
-        await Guard(()=> SendEmailAsync(adminEmail, subject, emailMessage, ct), LogGuarded);
+        if(activation.EmailEnabled)
+            await Guard(()=> SendEmailAsync(activation.EmailRecipient, subject, emailMessage, ct), LogGuarded);
 
-        if(clusterConfig.Notifications?.Pushover?.Enabled == true)
+        if(activation.PushoverEnabled)
             await Guard(()=> pushoverClient.PushMessage(subject, pushoverMessage,
                 PushoverMessagePriority.None, ct), LogGuarded);
     }
@@ -438,10 +443,10 @@ public class NotificationService : StartupGatedBackgroundService,
         // The critical-sender singleton is separate from the hosted instance under the
         // current Autofac registrations, even in normal operation. Recovery also resolves
         // it without hosting. Delivery cannot rely on the hosted startup validation.
-        if(emailSenderConfig == null)
-            throw new InvalidOperationException("Email delivery requires notifications.email configuration");
+        if(string.IsNullOrWhiteSpace(recipient))
+            throw new InvalidOperationException("Email delivery requires a nonblank recipient");
         // Validate and send from one consistent copy of the configuration.
-        var email = emailSenderConfig.Snapshot();
+        var email = activation.ValidateEmailProvider();
         var socketOptions = SmtpTransportPolicy.Resolve(email);
         logger.Info(() => $"Sending '{subject.ToLower()}' email to {recipient}");
 
@@ -486,23 +491,11 @@ public class NotificationService : StartupGatedBackgroundService,
         {
             var obs = new List<IObservable<IObservable<Unit>>>();
 
-            if(clusterConfig.Notifications?.Admin?.Enabled == true)
+            // Also validate the actual hosted instance: it is distinct from the
+            // Autofac critical sender and can be constructed without Program.ValidateConfig.
+            activation.ValidateForNormalHost();
+            if(activation.AdminEnabled)
             {
-                // Normal non-recovery validation already requires email configuration.
-                // Validate before subscriptions/readiness, not in the constructor where
-                // Autofac would wrap the named startup error. Block/payment delivery can
-                // use the sender even when the recipient is absent or whitespace.
-                // Keep this aligned with the policy consolidation tracked in issue #148.
-                if(emailSenderConfig == null)
-                    throw new PoolStartupException("Admin email notifications require notifications.email configuration");
-                try
-                {
-                    SmtpTransportPolicy.Resolve(emailSenderConfig);
-                }
-                catch(InvalidOperationException ex)
-                {
-                    throw new PoolStartupException(ex.Message, ex);
-                }
                 obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));
                 obs.Add(Subscribe<BlockFoundNotification>(OnBlockFoundNotificationAsync, ct));
                 obs.Add(Subscribe<PaymentNotification>(OnPaymentNotificationAsync, ct));

@@ -1,6 +1,7 @@
 using FluentValidation;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
+using Miningcore.Notifications;
 
 namespace Miningcore.Configuration;
 
@@ -31,24 +32,25 @@ public class EmailSenderConfigValidator : AbstractValidator<EmailSenderConfig>
 
 public class AdminNotificationsValidator : AbstractValidator<AdminNotifications>
 {
-    public AdminNotificationsValidator()
-    {
-        RuleFor(j => j.EmailAddress)
-            .NotNull()
-            .NotEmpty()
-            .When(x => x.Enabled)
-            .WithMessage("Admin notification recipient missing or empty");
-    }
+    // Transport validation needs the parent NotificationsConfig. A Pushover-only
+    // administrator has no email recipient.
 }
 
 public class NotificationsConfigValidator : AbstractValidator<NotificationsConfig>
 {
     public NotificationsConfigValidator()
     {
-        RuleFor(j => j.Email)
-            .SetValidator(new EmailSenderConfigValidator())
-            .When(j => j.Email != null &&
-                j.Admin?.Enabled == true);
+        RuleFor(x => x).Custom((config, context) =>
+        {
+            try
+            {
+                new NotificationActivation(config).ValidateForNormalHost();
+            }
+            catch(Miningcore.Mining.PoolStartupException ex)
+            {
+                context.AddFailure(ex.Message);
+            }
+        });
     }
 }
 
@@ -463,7 +465,7 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
         RuleFor(j => j.Notifications)
             .SetValidator(new NotificationsConfigValidator())
-            .When(j => j.Notifications != null);
+            .When(j => !recoveryMode && j.Notifications != null);
 
         // ensure pool ids are unique
         RuleFor(j => j.Pools)

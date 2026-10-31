@@ -33,6 +33,18 @@ relay on the same host, the explicit `"localPlaintext"` mode accepts only a
 numeric loopback address and no SMTP credentials. Update copied example files
 before enabling alerts. See the [SMTP transport migration guide](configuration.md#smtp-transport-migration).
 
+## Unreleased: administrative notification activation
+
+`notifications.admin.enabled` now consistently controls validation, event
+subscriptions and critical delivery. The legacy top-level
+`notifications.enabled` field is deprecated and ignored. An active admin
+configuration must have at least one usable transport: a nonblank recipient
+with SMTP settings, Pushover with user and token, or both. Blank recipients no
+longer trigger email attempts; an enabled critical alert with no transport
+reports an error. Review conflicting flags and provider fields before
+upgrading. The `-rs` importer still ignores live notification settings.
+See [notification activation and migration](notifications.md).
+
 ## Unreleased (after v0.3.0): verify daemon RPC TLS certificates
 
 HTTPS/HTTP2 and WSS daemon RPC transports now use platform certificate validation

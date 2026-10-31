@@ -525,7 +525,9 @@ public class HostedServiceStartupTests
         Assert.NotSame(hostedNotification, criticalSender);
         var error = await Assert.ThrowsAsync<PoolStartupException>(() =>
             host.StartAsync(CancellationToken.None).WaitAsync(timeout.Token));
-        Assert.Contains("notifications.email", error.Message);
+        Assert.Contains(recipient == "admin@example.invalid"
+            ? "notifications.email"
+            : "notifications.admin.emailAddress", error.Message);
         await laterService.DidNotReceive().StartAsync(Arg.Any<CancellationToken>());
         messageBus.DidNotReceive().Listen<AdminNotification>();
         messageBus.DidNotReceive().Listen<BlockFoundNotification>();
@@ -588,8 +590,7 @@ public class HostedServiceStartupTests
         var aggregate = await Assert.ThrowsAsync<AggregateException>(() =>
             sender.SendCriticalAdminNotificationAsync(new AdminNotification("test", "recovery"), timeout.Token));
         var transport = Assert.IsType<IOException>(Assert.Single(aggregate.InnerExceptions));
-        var error = Assert.IsType<InvalidOperationException>(transport.InnerException);
-        Assert.Contains("Email delivery", error.Message);
+        var error = Assert.IsType<PoolStartupException>(transport.InnerException);
         Assert.Contains("notifications.email", error.Message);
         messageBus.DidNotReceive().Listen<AdminNotification>();
         messageBus.DidNotReceive().Listen<BlockFoundNotification>();
@@ -612,12 +613,10 @@ public class HostedServiceStartupTests
             Notifications = new NotificationsConfig
             {
                 Admin = new AdminNotifications { Enabled = true },
-                Email = new EmailSenderConfig
+                Pushover = new PushoverConfig
                 {
-                    Host = "127.0.0.1", Port = 2525,
-                    TlsMode = SmtpTlsMode.LocalPlaintext,
+                    Enabled = true, User = "test-user", Token = "test-token",
                 },
-                Pushover = new PushoverConfig(),
             },
         }, null, messageBus);
         using var timeout = new CancellationTokenSource(
@@ -650,12 +649,10 @@ public class HostedServiceStartupTests
             Notifications = new NotificationsConfig
             {
                 Admin = new AdminNotifications { Enabled = true },
-                Email = new EmailSenderConfig
+                Pushover = new PushoverConfig
                 {
-                    Host = "127.0.0.1", Port = 2525,
-                    TlsMode = SmtpTlsMode.LocalPlaintext,
+                    Enabled = true, User = "test-user", Token = "test-token",
                 },
-                Pushover = new PushoverConfig(),
             },
         }, null, messageBus);
         using var canceled = new CancellationTokenSource();
