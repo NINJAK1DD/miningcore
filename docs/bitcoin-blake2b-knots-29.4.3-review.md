@@ -290,6 +290,48 @@ Functional tests use isolated schedule overrides/mocktime; mainnet constants
 are checked independently by upstream unit vectors and Miningcore boundary tests.
 Never run the overrides against an operator node or wallet.
 
+### Validation on 31 October 2026
+
+Implementation commit `1d5f83d0ecd20a37d9485bdcb9918265ce89f29f` includes the
+merged dev baseline `c0bba3d3a8e2f61e91682197ce8dbf97e2689dfc`, including payout
+handler lifetime scopes, verified RPC TLS and financial-notification priority.
+Validation used the documented Ubuntu lab with .NET SDK 10.0.114. The managed
+build completed with zero warnings/errors and reused unchanged, audited native
+libraries. All **250 targeted tests passed**, with no failures or skips.
+
+The complete suite on this implementation then passed **5450 tests, zero failed,
+three skipped**, in 13 minutes 22 seconds. Knots/Core/Litecoin/Dogecoin,
+PostgreSQL 18.6 accounting, and isolated PostgreSQL TLS/payment fixtures were
+enabled. The skipped tests were `Run_Benchmarks`,
+`LiveDaemon_LocalAddressCheckIsAcceptedWithoutSendingKey` (no live Warthog
+fixture supplied), and `PlatformRejectsUntrustedDaemonCertificate` (the separate
+platform opt-in probe). These skips do not exclude the in-process daemon TLS,
+SMTP TLS or live Knots/PostgreSQL paths exercised by the suite.
+
+These tests cover impossible same-hash/different-height snapshots in both
+directions, runtime RPC-contract error backoff/recovery for all four attestation
+RPCs, terminal successful contradictions, startup warmup and cancellation,
+strict startup/payout contracts, empty recovery sweeps, cache-conflict guidance,
+and the real PostgreSQL/psql audit with required depth and warning-edge checks.
+
+All four checksum-pinned unmodified upstream functional tests and the mainnet
+maturity unit suite passed again. Both source-gate self-tests, lab-helper tests,
+document-link/backup checks and workflow pin checks passed on this source.
+
+The merged baseline `cbe4bc927491676e861568e4be92fe844463439c` also has verified
+green [.NET](https://github.com/NINJAK1DD/miningcore/actions/runs/41238226714),
+[Release](https://github.com/NINJAK1DD/miningcore/actions/runs/41238226725) and
+[portability](https://github.com/NINJAK1DD/miningcore/actions/runs/41238226713)
+runs. Current-head CI results are linked in PR #231; the older local run below is
+retained as historical evidence rather than presented as validation of later
+dev merges.
+
+Reports are retained under
+`/home/ubuntu/issue-230/miningcore/build/knots-hardening-2026-10-31`:
+`build.log`, `targeted.trx`, `targeted.log`, `full.trx`, `full.log`, and
+`upstream.log`. The full run includes the implementation above with the current
+dev integration; the subsequent documentation commit only records these results.
+
 ### Historical local validation on 30 October 2026
 
 The lab used Ubuntu 26.04.1, .NET SDK 10.0.112, PostgreSQL 18.6,
