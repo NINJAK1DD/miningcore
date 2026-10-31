@@ -58,7 +58,10 @@ not delay later Pushover alerts. Pushover requests share a two-request gate
 that keeps one slot available to critical alerts during ordinary traffic.
 Payout alert formatting now runs after the scheduler handoff. Ordinary queue
 depth is capped at 256 for formatting and each transport; overload logs counted
-omissions, with payout failures and uncertain outcomes reported at Error level.
+omissions. Disabled events do not occupy slots, routine alerts leave 32 slots
+for incidents, and omitted payout or marked financial/security alerts report
+their pool at Error level. Oversized payout events use compact operator summaries
+before queueing.
 Timeouts bound the local wait and do not prove the provider rejected a message;
 Pushover `status: 1` confirms queueing by the provider, not human receipt.
 See [notification activation and migration](notifications.md).

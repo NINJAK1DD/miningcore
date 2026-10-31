@@ -67,6 +67,11 @@ public record PaymentNotification
     [JsonIgnore]
     internal PaymentFailureDiagnostic FailureDiagnostic { get; init; }
 
+    // Oversized in-memory notification details are replaced by a small alert
+    // before the ordinary formatting queue retains the event.
+    [JsonIgnore]
+    internal bool SummaryOnly { get; init; }
+
     [JsonConverter(typeof(StringEnumConverter), true)]
     public PaymentNotificationOutcome Outcome { get; set; }
 

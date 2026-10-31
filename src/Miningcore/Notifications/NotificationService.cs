@@ -62,10 +62,13 @@ public class NotificationService : StartupGatedBackgroundService,
         return $"{amount:0.#####} {poolConfigs[poolId].Template.Symbol}";
     }
 
+    private enum OrdinaryImportance { Routine, PayoutIncident, FinancialOrSecurityAdmin }
+
     private sealed record OrdinaryNotification(string Subject, string EmailMessage,
-        string PushoverMessage, bool FinancialIncident = false);
+        string PushoverMessage, OrdinaryImportance Importance,
+        string PoolId = null);
     private sealed record OrdinaryEnvelope(Func<OrdinaryNotification> Format,
-        bool FinancialIncident);
+        OrdinaryImportance Importance, string PoolId);
 
     // Cap both the scheduler handoff and each transport's serial queue.
     internal int MaxPendingOrdinaryNotifications { get; set; } = 256;
@@ -84,7 +87,97 @@ public class NotificationService : StartupGatedBackgroundService,
 
     private static OrdinaryNotification FormatAdminNotification(
         AdminNotification notification) =>
-        new(notification.Subject, notification.Message, notification.Message);
+        new(notification.Subject, notification.Message, notification.Message,
+            notification.Importance == AdminNotificationImportance.FinancialOrSecurity
+                ? OrdinaryImportance.FinancialOrSecurityAdmin
+                : OrdinaryImportance.Routine,
+            notification.PoolId);
+
+    private static bool IsFinancialIncident(PaymentNotification notification) =>
+        notification.Outcome != PaymentNotificationOutcome.Success ||
+        !string.IsNullOrEmpty(notification.Error);
+
+    private PaymentNotification CompactOversizedPayment(PaymentNotification notification)
+    {
+        const int maxItems = 2048;
+        const int maxCharacters = 512 * 1024;
+        long items = 0;
+        long characters = 0;
+
+        void Add(string value) => characters += value?.Length ?? 0;
+        bool Oversized() => items > maxItems || characters > maxCharacters;
+        bool AddStrings(string[] values)
+        {
+            if(values == null) return false;
+            items += values.Length;
+            if(Oversized()) return true;
+            foreach(var value in values)
+            {
+                Add(value);
+                if(Oversized()) return true;
+            }
+            return false;
+        }
+        bool AddEntries(PayoutReconciliationEntry[] entries)
+        {
+            if(entries == null) return false;
+            items += entries.Length;
+            if(Oversized()) return true;
+            foreach(var entry in entries)
+            {
+                if(entry == null) continue;
+                Add(entry.Address);
+                Add(entry.TransactionId);
+                Add(entry.Detail);
+                if(Oversized() || AddStrings(entry.TransactionIds)) return true;
+            }
+            return false;
+        }
+        bool AddChains(PaymentRecipientTransactionChain[] chains)
+        {
+            if(chains == null) return false;
+            items += chains.Length;
+            if(Oversized()) return true;
+            foreach(var chain in chains)
+            {
+                if(chain == null) continue;
+                Add(chain.Address);
+                Add(chain.CanonicalTransactionId);
+                if(Oversized() || AddStrings(chain.TransactionIds)) return true;
+            }
+            return false;
+        }
+
+        Add(notification.PoolId);
+        Add(notification.Symbol);
+        Add(notification.Error);
+        if(Oversized() || AddStrings(notification.TxIds) ||
+            AddStrings(notification.TxExplorerLinks) ||
+            AddChains(notification.RecipientTransactionChains) ||
+            AddEntries(notification.Reconciliation?.Accepted) ||
+            AddEntries(notification.Reconciliation?.Failed) ||
+            AddEntries(notification.Reconciliation?.Uncertain) ||
+            AddEntries(notification.Reconciliation?.NotAttempted))
+        {
+            logger.Warn("Oversized payout notification for pool {0} reduced to an operator summary; consult retained payout evidence and wallet history",
+                notification.PoolId);
+            return new PaymentNotification(notification.PoolId, null,
+                notification.Amount, notification.Symbol)
+            {
+                Outcome = IsFinancialIncident(notification)
+                    ? notification.Outcome == PaymentNotificationOutcome.Uncertain
+                        ? PaymentNotificationOutcome.Uncertain
+                        : PaymentNotificationOutcome.Failure
+                    : PaymentNotificationOutcome.Success,
+                RecipientsCount = notification.RecipientsCount,
+                SubmittedAmount = notification.SubmittedAmount,
+                PrecisionAdjustment = notification.PrecisionAdjustment,
+                SummaryOnly = true,
+            };
+        }
+
+        return notification;
+    }
 
     public async Task SendCriticalAdminNotificationAsync(AdminNotification notification,
         CancellationToken ct)
@@ -177,7 +270,8 @@ public class NotificationService : StartupGatedBackgroundService,
 
         const string subject = "Block Notification";
         var message = $"Pool {notification.PoolId} found block candidate {notification.BlockHeight}";
-        return new OrdinaryNotification(subject, message, message);
+        return new OrdinaryNotification(subject, message, message,
+            OrdinaryImportance.Routine, notification.PoolId);
     }
 
     private OrdinaryNotification PreparePaymentNotification(
@@ -185,15 +279,13 @@ public class NotificationService : StartupGatedBackgroundService,
     {
         BeforePaymentFormat?.Invoke(notification);
         var coin = poolConfigs[notification.PoolId].Template;
-        var (subject, emailMessage, pushoverMessage, isSuccess) =
+        var (subject, emailMessage, pushoverMessage, _) =
             FormatPaymentNotification(notification,
             coin.Symbol, coin.ExplorerTxLink, activation.EmailEnabled);
 
-        if(isSuccess && clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess != true)
-            return null;
-
         return new OrdinaryNotification(subject, emailMessage, pushoverMessage,
-            !isSuccess);
+            IsFinancialIncident(notification) ? OrdinaryImportance.PayoutIncident :
+                OrdinaryImportance.Routine, notification.PoolId);
     }
 
     internal static (string Subject, string EmailMessage, string PushoverMessage,
@@ -204,9 +296,39 @@ public class NotificationService : StartupGatedBackgroundService,
         var outcome = notification.Outcome;
 
         // Preserve the legacy object-initializer contract where Error alone represented failure.
-        if(outcome == PaymentNotificationOutcome.Success &&
-            !string.IsNullOrEmpty(notification.Error))
+        if(outcome == PaymentNotificationOutcome.Success && IsFinancialIncident(notification))
             outcome = PaymentNotificationOutcome.Failure;
+
+        if(notification.SummaryOnly)
+        {
+            var subject = outcome switch
+            {
+                PaymentNotificationOutcome.Success => "Payout Success Notification",
+                PaymentNotificationOutcome.Uncertain => "Payout Outcome Uncertain Notification",
+                _ => "Payout Failure Notification",
+            };
+            var state = outcome switch
+            {
+                PaymentNotificationOutcome.Success => "completed",
+                PaymentNotificationOutcome.Uncertain => "has an uncertain outcome",
+                _ => "failed",
+            };
+            var guidance = outcome == PaymentNotificationOutcome.Uncertain
+                ? "Reconcile wallet history before retrying or releasing ownership."
+                : outcome == PaymentNotificationOutcome.Failure
+                    ? "Check operation diagnostics before retrying."
+                    : string.Empty;
+            var emailMessage = $"Payout batch {FormatExactHtmlAmount(notification.Amount, symbol)} " +
+                $"from pool {HtmlEncode(notification.PoolId)} {state}. " +
+                "Per-recipient detail was omitted from this alert because the notification payload was large. " +
+                "Consult retained private payout evidence and wallet history. " + guidance;
+            var pushoverMessage = $"Payout batch {FormatExactAmount(notification.Amount, symbol)} " +
+                $"from pool {notification.PoolId} {state}. " +
+                "Per-recipient detail was omitted from this alert because the notification payload was large. " +
+                "Consult retained private payout evidence and wallet history. " + guidance;
+            return (subject, emailMessage, pushoverMessage,
+                outcome == PaymentNotificationOutcome.Success);
+        }
 
         if(outcome == PaymentNotificationOutcome.Success)
         {
@@ -520,19 +642,27 @@ public class NotificationService : StartupGatedBackgroundService,
     }
 
     private bool TryReserve(ref int pending, ref long dropped,
-        string queue, bool financialIncident)
+        string queue, OrdinaryImportance importance, string poolId)
     {
+        var limit = Math.Max(1, MaxPendingOrdinaryNotifications);
+        // Leave capacity for incidents even when routine publishers are noisy.
+        var routineLimit = limit > 1
+            ? limit - Math.Min(32, Math.Max(1, limit / 8))
+            : limit;
         while(true)
         {
             var current = Volatile.Read(ref pending);
-            if(current >= Math.Max(1, MaxPendingOrdinaryNotifications))
+            if(current >= (importance == OrdinaryImportance.Routine ? routineLimit : limit))
             {
                 var total = Interlocked.Increment(ref dropped);
-                if(financialIncident)
-                    logger.Error("Ordinary {0} queue full; payout failure or uncertain outcome not queued; dropped count {1}",
-                        queue, total);
+                if(importance == OrdinaryImportance.PayoutIncident)
+                    logger.Error("Ordinary {0} queue full; payout failure or uncertain outcome not queued for pool {1}; dropped count {2}",
+                        queue, poolId, total);
+                else if(importance == OrdinaryImportance.FinancialOrSecurityAdmin)
+                    logger.Error("Ordinary {0} queue full; financial or security administrative alert not queued for pool {1}; dropped count {2}",
+                        queue, poolId ?? "unknown", total);
                 else if(total == 1 || total % 100 == 0)
-                    logger.Warn("Ordinary {0} queue full; nonfinancial alert omitted; dropped count {1}",
+                    logger.Warn("Ordinary {0} queue full; routine alert omitted; dropped count {1}",
                         queue, total);
                 return false;
             }
@@ -543,17 +673,34 @@ public class NotificationService : StartupGatedBackgroundService,
     }
 
     private IObservable<OrdinaryEnvelope> ListenForFormatting<T>(
-        Func<T, OrdinaryNotification> format)
+        Func<T, OrdinaryNotification> format,
+        Func<T, bool> eligible,
+        Func<T, OrdinaryImportance> importance,
+        Func<T, string> poolId,
+        Func<T, T> compact = null)
     {
         return messageBus.Listen<T>()
-            // Only capture the event on the publisher's scheduler. Formatting
-            // runs after ObserveOn in ExecuteAsync.
-            .Select(msg => new OrdinaryEnvelope(() => format(msg),
-                msg is PaymentNotification payout &&
-                (payout.Outcome != PaymentNotificationOutcome.Success ||
-                    !string.IsNullOrEmpty(payout.Error))))
-            .Where(envelope => TryReserve(ref pendingFormatting,
-                ref droppedFormatting, "formatting", envelope.FinancialIncident));
+            .Where(eligible)
+            .Select(msg => (Message: msg, Importance: importance(msg), PoolId: poolId(msg)))
+            .Where(entry => TryReserve(ref pendingFormatting,
+                ref droppedFormatting, "formatting", entry.Importance,
+                entry.PoolId))
+            // Only admitted payout payloads are scanned for large in-memory
+            // details. Full message formatting runs after ObserveOn.
+            .Select(entry =>
+            {
+                try
+                {
+                    var retained = compact == null ? entry.Message : compact(entry.Message);
+                    return new OrdinaryEnvelope(() => format(retained),
+                        entry.Importance, entry.PoolId);
+                }
+                catch
+                {
+                    Interlocked.Decrement(ref pendingFormatting);
+                    throw;
+                }
+            });
     }
 
     private OrdinaryNotification FormatSafely(
@@ -597,9 +744,21 @@ public class NotificationService : StartupGatedBackgroundService,
                 // own serial queue. A stalled email cannot hold later pushes.
                 var events = new[]
                     {
-                        ListenForFormatting<AdminNotification>(FormatAdminNotification),
-                        ListenForFormatting<BlockFoundNotification>(FormatBlockFoundNotification),
-                        ListenForFormatting<PaymentNotification>(PreparePaymentNotification),
+                        ListenForFormatting<AdminNotification>(FormatAdminNotification,
+                            _ => true,
+                            msg => msg.Importance == AdminNotificationImportance.FinancialOrSecurity
+                                ? OrdinaryImportance.FinancialOrSecurityAdmin : OrdinaryImportance.Routine,
+                            msg => msg.PoolId),
+                        ListenForFormatting<BlockFoundNotification>(FormatBlockFoundNotification,
+                            _ => clusterConfig.Notifications?.Admin?.NotifyBlockFound == true,
+                            _ => OrdinaryImportance.Routine, msg => msg.PoolId),
+                        ListenForFormatting<PaymentNotification>(PreparePaymentNotification,
+                            msg => IsFinancialIncident(msg) ||
+                                clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess == true,
+                            msg => IsFinancialIncident(msg) ? OrdinaryImportance.PayoutIncident :
+                                OrdinaryImportance.Routine,
+                            msg => msg.PoolId,
+                            CompactOversizedPayment),
                     }
                     .Merge()
                     .ObserveOn(TaskPoolScheduler.Default)
@@ -611,7 +770,8 @@ public class NotificationService : StartupGatedBackgroundService,
                 if(activation.EmailEnabled)
                     channels.Add(events
                         .Where(notification => TryReserve(ref pendingEmail,
-                            ref droppedEmail, "email", notification.FinancialIncident))
+                            ref droppedEmail, "email", notification.Importance,
+                            notification.PoolId))
                         .Select(notification => Observable.FromAsync(async () =>
                         {
                             try
@@ -629,7 +789,8 @@ public class NotificationService : StartupGatedBackgroundService,
                 if(activation.PushoverEnabled)
                     channels.Add(events
                         .Where(notification => TryReserve(ref pendingPushover,
-                            ref droppedPushover, "Pushover", notification.FinancialIncident))
+                            ref droppedPushover, "Pushover", notification.Importance,
+                            notification.PoolId))
                         .Select(notification => Observable.FromAsync(async () =>
                         {
                             try

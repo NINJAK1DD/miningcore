@@ -462,7 +462,10 @@ public class NotificationActivationTests
             Assert.Equal(3, service.DroppedFormatting);
             Assert.Equal(3, logs.Target.Logs.Count);
             Assert.All(logs.Target.Logs, entry =>
-                Assert.Contains("payout failure or uncertain outcome not queued", entry));
+            {
+                Assert.Contains("payout failure or uncertain outcome not queued", entry);
+                Assert.Contains("pool test", entry);
+            });
         }
         finally
         {
@@ -472,6 +475,250 @@ public class NotificationActivationTests
         while(requests.Count < 2)
             await Task.Delay(10, deadline.Token);
         await service.StopAsync(deadline.Token);
+    }
+
+    [Fact]
+    public async Task DisabledEventsDoNotDisplaceUncertainPayout()
+    {
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications { Enabled = true },
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        config.Pools = new[]
+        {
+            new PoolConfig { Id = "test", Template = new BitcoinTemplate { Symbol = "BTC" } },
+        };
+        var bus = new MessageBus();
+        var requests = new RecordingPushoverHandler();
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var service = new NotificationService(config,
+            new PushoverClient(config, factory), bus)
+        {
+            MaxPendingOrdinaryNotifications = 2,
+        };
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        service.BeforePaymentFormat = _ =>
+        {
+            entered.Set();
+            release.Wait(deadline.Token);
+        };
+
+        await service.StartAsync(deadline.Token).WaitAsync(deadline.Token);
+        try
+        {
+            bus.SendMessage(new PaymentNotification("test", "failure", 1, "BTC")
+            {
+                Outcome = PaymentNotificationOutcome.Uncertain,
+            });
+            await Task.Run(() => entered.Wait(deadline.Token), deadline.Token);
+            for(var index = 0; index < 5; index++)
+            {
+                bus.SendMessage(new PaymentNotification("test", null, 1, "BTC"));
+                bus.SendMessage(new BlockFoundNotification { PoolId = "test", BlockHeight = (ulong) index });
+            }
+            bus.SendMessage(new PaymentNotification("test", "failure", 1, "BTC")
+            {
+                Outcome = PaymentNotificationOutcome.Uncertain,
+            });
+
+            Assert.Equal(2, service.PendingFormatting);
+            Assert.Equal(0, service.DroppedFormatting);
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        while(requests.Count < 2)
+            await Task.Delay(10, deadline.Token);
+        await service.StopAsync(deadline.Token);
+        Assert.Equal(2, requests.Count);
+    }
+
+    [Fact]
+    public async Task RoutineQueueTrafficReservesCapacityForPayoutIncident()
+    {
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications { Enabled = true, NotifyPaymentSuccess = true },
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        config.Pools = new[]
+        {
+            new PoolConfig { Id = "test", Template = new BitcoinTemplate { Symbol = "BTC" } },
+        };
+        var bus = new MessageBus();
+        var requests = new RecordingPushoverHandler();
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var logs = new TestLogs(LogLevel.Warn);
+        using var service = new NotificationService(config,
+            new PushoverClient(config, factory), bus, logs.Logger)
+        {
+            MaxPendingOrdinaryNotifications = 2,
+        };
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        service.BeforePaymentFormat = _ =>
+        {
+            entered.Set();
+            release.Wait(deadline.Token);
+        };
+
+        await service.StartAsync(deadline.Token).WaitAsync(deadline.Token);
+        try
+        {
+            bus.SendMessage(new PaymentNotification("test", null, 1, "BTC"));
+            await Task.Run(() => entered.Wait(deadline.Token), deadline.Token);
+            bus.SendMessage(new AdminNotification("routine", "message"));
+            bus.SendMessage(new PaymentNotification("test", "failure", 1, "BTC")
+            {
+                Outcome = PaymentNotificationOutcome.Uncertain,
+            });
+
+            Assert.Equal(2, service.PendingFormatting);
+            Assert.Equal(1, service.DroppedFormatting);
+            Assert.Contains(logs.Target.Logs, entry =>
+                entry.Contains("formatting queue full; routine alert omitted"));
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        while(requests.Count < 2)
+            await Task.Delay(10, deadline.Token);
+        await service.StopAsync(deadline.Token);
+        Assert.Equal(2, requests.Count);
+    }
+
+    [Fact]
+    public async Task FinancialAdminOverflowIsReportedForItsPool()
+    {
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications { Enabled = true },
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        config.Pools = new[]
+        {
+            new PoolConfig { Id = "test", Template = new BitcoinTemplate { Symbol = "BTC" } },
+        };
+        var bus = new MessageBus();
+        var requests = new RecordingPushoverHandler();
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var logs = new TestLogs(LogLevel.Error);
+        using var service = new NotificationService(config,
+            new PushoverClient(config, factory), bus, logs.Logger)
+        {
+            MaxPendingOrdinaryNotifications = 2,
+        };
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        service.BeforePaymentFormat = _ =>
+        {
+            entered.Set();
+            release.Wait(deadline.Token);
+        };
+
+        await service.StartAsync(deadline.Token).WaitAsync(deadline.Token);
+        try
+        {
+            bus.SendMessage(new PaymentNotification("test", "failure", 1, "BTC"));
+            await Task.Run(() => entered.Wait(deadline.Token), deadline.Token);
+            for(var index = 0; index < 3; index++)
+                bus.SendMessage(new AdminNotification("Payout wallet relock failed",
+                    "Check wallet state", AdminNotificationImportance.FinancialOrSecurity,
+                    "test"));
+
+            Assert.Equal(2, service.PendingFormatting);
+            Assert.Equal(2, service.DroppedFormatting);
+            Assert.Equal(2, logs.Target.Logs.Count);
+            Assert.All(logs.Target.Logs, entry =>
+            {
+                Assert.Contains("financial or security administrative alert not queued", entry);
+                Assert.Contains("pool test", entry);
+            });
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        while(requests.Count < 2)
+            await Task.Delay(10, deadline.Token);
+        await service.StopAsync(deadline.Token);
+    }
+
+    [Fact]
+    public async Task OversizedPayoutUsesSmallOperatorSummary()
+    {
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications { Enabled = true },
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        config.Pools = new[]
+        {
+            new PoolConfig { Id = "test", Template = new BitcoinTemplate { Symbol = "BTC" } },
+        };
+        var bus = new MessageBus();
+        var requests = new RecordingPushoverHandler();
+        using var http = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(http);
+        using var logs = new TestLogs(LogLevel.Warn);
+        using var service = new NotificationService(config,
+            new PushoverClient(config, factory), bus, logs.Logger);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        await service.StartAsync(deadline.Token).WaitAsync(deadline.Token);
+        bus.SendMessage(new PaymentNotification("test", "private failure", 1, "BTC")
+        {
+            Outcome = PaymentNotificationOutcome.Uncertain,
+            Reconciliation = new Miningcore.Payments.PayoutReconciliation
+            {
+                Uncertain = new[]
+                {
+                    new Miningcore.Payments.PayoutReconciliationEntry
+                    {
+                        Address = new string('x', 512 * 1024 + 1),
+                    },
+                },
+            },
+        });
+        while(requests.Count == 0)
+            await Task.Delay(10, deadline.Token);
+        await service.StopAsync(deadline.Token);
+
+        Assert.Contains(logs.Target.Logs, entry =>
+            entry.Contains("reduced to an operator summary"));
+        var body = Uri.UnescapeDataString(requests.LastBody);
+        Assert.Contains("Per-recipient detail was omitted", body);
+        Assert.Contains("Reconcile wallet history before retrying", body);
+        Assert.DoesNotContain(new string('x', 100), body);
     }
 
     [Fact]
@@ -493,7 +740,7 @@ public class NotificationActivationTests
         using var logs = new TestLogs(LogLevel.Warn);
         using var service = new NotificationService(config, null, bus, logs.Logger)
         {
-            MaxPendingOrdinaryNotifications = 2,
+            MaxPendingOrdinaryNotifications = 3,
             OrdinaryTransportTimeout = TimeSpan.FromSeconds(5),
         };
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -512,7 +759,7 @@ public class NotificationActivationTests
 
         Assert.Equal(1, service.DroppedEmail);
         Assert.Contains(logs.Target.Logs, entry =>
-            entry.Contains("email queue full; nonfinancial alert omitted"));
+            entry.Contains("email queue full; routine alert omitted"));
     }
 
     [Fact]
