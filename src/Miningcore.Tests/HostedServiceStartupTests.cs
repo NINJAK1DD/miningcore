@@ -32,6 +32,27 @@ namespace Miningcore.Tests;
 public class HostedServiceStartupTests
 {
     [Fact]
+    public async Task MetricsPublisher_Blake2bScanVisitsAreDistinctFromFinancialSettlements()
+    {
+        var registry = Metrics.NewCustomRegistry();
+        using var publisher = new MetricsPublisher(Substitute.For<IMessageBus>(), null,
+            Metrics.WithCustomRegistry(registry), registry);
+        publisher.OnBlake2bReconciliationTelemetry(new("review", 64, 192, 48160, 48161, 2, false));
+        publisher.OnBlake2bReconciliationTelemetry(new("review", 5, 207, 48160, 48162, 5, false));
+        publisher.OnBlake2bReconciliationTelemetry(new("review", 0, 0, 48160, 0, 0, true));
+        for(var scrape = 0; scrape < 2; scrape++)
+        {
+            await using var output = new MemoryStream();
+            await registry.CollectAndExportAsTextAsync(output);
+            var text = Encoding.UTF8.GetString(output.ToArray());
+            Assert.Contains("miningcore_blake2b_orphan_rows_scanned_total{pool=\"review\"} 69", text);
+            Assert.Contains("miningcore_blake2b_orphan_sweeps_total{pool=\"review\"} 1", text);
+            Assert.Contains("miningcore_blake2b_orphan_cursor{pool=\"review\"} 0", text);
+            Assert.Contains("miningcore_blake2b_orphan_batch_near_horizon_rows{pool=\"review\"} 0", text);
+        }
+    }
+
+    [Fact]
     public async Task MetricsPublisher_StratumAdmissionExportsOnlyBoundedOutcomes()
     {
         var telemetry = new Subject<TelemetryEvent>();

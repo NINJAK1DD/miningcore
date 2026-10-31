@@ -944,9 +944,12 @@ The current compatibility update removes the BLAKE2b startup dependency on the r
 and payout checks enforce the reviewed long-maturity deployment and GBT transition
 contract. Wallet-aware progress and active-chain verification keep immature or
 unverified rewards pending without rescaling shares or reversing PPS liabilities.
-See the [29.4.2 review, upgrade and DATUM handoff](bitcoin-blake2b-knots-29.4.2-review.md).
-Upgrade both the daemon and Miningcore **before mainnet height 973440**. Old templates
-can include premature coinbase spends rejected by enforcing nodes after that boundary;
+The current node is exactly **Knots 29.4.3.knots20260508**. Rolling rewards use their
+creation-parent MTP and require 25921 wallet confirmations; historical/post-cutoff
+thresholds remain 6481/101. Expiry does not release already covered rewards.
+See the [29.4.3 review, upgrade and DATUM handoff](bitcoin-blake2b-knots-29.4.3-review.md).
+Upgrade both the daemon and Miningcore **before mainnet height 979919**. Old 29.4.2
+validation may diverge from 980019 and mining policy can produce incompatible spends from 986399;
 keep admission stopped if revalidation/synchronization and reconciliation are incomplete.
 The dedicated payout handler verifies retained block headers on pruned nodes, preserves
 immature wallet credit, alerts on prolonged contradictory evidence and quarantines

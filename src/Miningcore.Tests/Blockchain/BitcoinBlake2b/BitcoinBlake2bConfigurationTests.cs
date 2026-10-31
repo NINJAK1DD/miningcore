@@ -199,8 +199,8 @@ public class BitcoinBlake2bConfigurationTests : TestBase
     {
         var coin = Assert.IsType<BitcoinBlake2bTemplate>(ModuleInitializer.CoinTemplates["bitcoin-blake2b"]);
         Assert.Equal(CoinFamily.BitcoinBlake2b, coin.Family);
-        Assert.Equal("knots-29.4.2-header-v2", coin.Blake2bProtocol);
-        Assert.Equal("https://github.com/bitcoinknots/bitcoin/tree/58398baf33e588779685ead478e6397bb28ed3d6", coin.Github);
+        Assert.Equal("knots-29.4.3-header-v2", coin.Blake2bProtocol);
+        Assert.Equal("https://github.com/bitcoinknots/bitcoin/tree/a7c4617524c334f542484bfef3919b9f12573840", coin.Github);
         Assert.Equal("BLAKE2b header-v2", coin.GetAlgorithmName());
         Assert.Equal(1d, coin.ShareMultiplier);
         Assert.True(coin.DisableVersionRolling);
@@ -277,7 +277,7 @@ public class BitcoinBlake2bConfigurationTests : TestBase
     [Theory]
     [InlineData("blake2bProtocol", "null")]
     [InlineData("blake2bProtocol", "\"unreviewed-revision\"")]
-    [InlineData("Blake2bProtocol", "\"knots-29.4.2-header-v2\"")]
+    [InlineData("Blake2bProtocol", "\"knots-29.4.3-header-v2\"")]
     [InlineData("hasMWEB", "true")]
     [InlineData("shareMultiplier", "65536")]
     [InlineData("headerHasher", "{\"hash\":\"blake2b\"}")]
@@ -320,17 +320,19 @@ public class BitcoinBlake2bConfigurationTests : TestBase
     }
 
     [Theory]
-    [InlineData(290402, "/Satoshi:29.4.2/Knots:20260508/", true)]
-    [InlineData(290402, "/Satoshi:29.4.2(pool operator; London)/Knots:20260508/", true)]
-    [InlineData(290402, "/Satoshi:29.4.2/Knots:20260508/Miningcore:1/", true)]
-    [InlineData(290402, "/Satoshi:29.4.2(pool)/Knots:20260508/Miningcore:1/", true)]
-    [InlineData(290402, "/Satoshi:29.4.2(pool/Knots:20260508/", false)]
-    [InlineData(290402, "/Satoshi:29.4.2/Knots:20260508/\nspoof", false)]
-    [InlineData(290402, "prefix/Satoshi:29.4.2/Knots:20260508/", false)]
+    [InlineData(290402, "/Satoshi:29.4.2/Knots:20260508/", false)]
+    [InlineData(290403, "/Satoshi:29.4.2/Knots:20260508/", false)]
+    [InlineData(290403, "/Satoshi:29.4.3/Knots:20260508/", true)]
+    [InlineData(290403, "/Satoshi:29.4.3(pool operator; London)/Knots:20260508/", true)]
+    [InlineData(290403, "/Satoshi:29.4.3/Knots:20260508/Miningcore:1/", true)]
+    [InlineData(290403, "/Satoshi:29.4.3(pool)/Knots:20260508/Miningcore:1/", true)]
+    [InlineData(290403, "/Satoshi:29.4.3(pool/Knots:20260508/", false)]
+    [InlineData(290403, "/Satoshi:29.4.3/Knots:20260508/\nspoof", false)]
+    [InlineData(290403, "prefix/Satoshi:29.4.3/Knots:20260508/", false)]
     [InlineData(290401, "/Satoshi:29.4.1/Knots:20260508/", false)]
     [InlineData(290400, "/Satoshi:29.4.0/Knots:20260508/", false)]
-    [InlineData(290402, "/Satoshi:29.4.2/Knots:20260508rc4/", false)]
-    [InlineData(290402, "/Satoshi:29.4.2/", false)]
+    [InlineData(290403, "/Satoshi:29.4.3/Knots:20260508rc4/", false)]
+    [InlineData(290403, "/Satoshi:29.4.3/", false)]
     [InlineData(300000, "/Satoshi:30.0.0/Knots:20260508/", false)]
     public void DaemonIdentity_RequiresReviewedStableRevision(int version, string agent, bool accepted)
     {
@@ -344,9 +346,9 @@ public class BitcoinBlake2bConfigurationTests : TestBase
     [Fact]
     public void DaemonIdentity_RejectsUntrustedAgentWithoutExposingItsPayload()
     {
-        var payload = "private-credential\n/Satoshi:29.4.2/Knots:20260508/";
+        var payload = "private-credential\n/Satoshi:29.4.3/Knots:20260508/";
         var error = Assert.Throws<PoolStartupException>(() => BitcoinBlake2bJobManager.ValidateDaemonIdentity(
-            new JObject { ["version"] = 290402, ["subversion"] = payload }, "test"));
+            new JObject { ["version"] = 290403, ["subversion"] = payload }, "test"));
         Assert.DoesNotContain(payload, error.Message);
         Assert.DoesNotContain("private-credential", error.Message);
         Assert.Contains("subversion is withheld", error.Message);
@@ -410,6 +412,32 @@ public class BitcoinBlake2bConfigurationTests : TestBase
         if(accepted) Assert.IsType<BitcoinBlake2bTemplate>(Load(template));
         else Assert.Throws<PoolStartupException>(() => Load(template));
         network["blake2bMaturityRelease"].Parent.Remove();
+        Assert.Throws<PoolStartupException>(() => Load(template));
+    }
+
+    [Theory]
+    [InlineData("regtest", "1819756800", true)]
+    [InlineData("regtest", "4294967295", true)]
+    [InlineData("main", "1819756800", false)]
+    [InlineData("regtest", "0", false)]
+    [InlineData("regtest", "1296688601", false)]
+    [InlineData("regtest", "1296688602", false)]
+    [InlineData("regtest", "1296688603", true)]
+    [InlineData("regtest", "-1", false)]
+    [InlineData("regtest", "4294967296", false)]
+    [InlineData("regtest", "\"1819756800\"", false)]
+    [InlineData("regtest", "null", false)]
+    public void Loader_RollingExpiryRequiresCompleteRegtestSchedule(string chain, string expiry, bool accepted)
+    {
+        var template = ReadTemplate();
+        var network = template["networks"][chain];
+        network["blake2bMaturityStart"] = 30;
+        network["blake2bMaturityEnforce"] = 134;
+        network["blake2bMaturityRelease"] = 140;
+        network["blake2bMaturityExpiry"] = JToken.Parse(expiry);
+        if(accepted) Assert.IsType<BitcoinBlake2bTemplate>(Load(template));
+        else Assert.Throws<PoolStartupException>(() => Load(template));
+        network["blake2bMaturityStart"].Parent.Remove();
         Assert.Throws<PoolStartupException>(() => Load(template));
     }
 

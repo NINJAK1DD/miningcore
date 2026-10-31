@@ -9,6 +9,10 @@ public class Block
     public double NetworkDifficulty { get; set; }
     public string Status { get; set; }
     public string Type { get; set; }
+    /// <summary>
+    /// Progress toward the reward-specific wallet/operator confirmation threshold.
+    /// Immature rewards remain below one. This is not a payment or liquidity receipt.
+    /// </summary>
     public double ConfirmationProgress { get; set; }
     public double? Effort { get; set; }
     public double? MinerEffort { get; set; }
