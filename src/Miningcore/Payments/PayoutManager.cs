@@ -102,7 +102,9 @@ public class PayoutManager : ProcessStatusBackgroundService
     internal const int DirectSettlementReconciliationBatchSize = 64;
     internal const ulong DirectSettlementReconciliationDepth = 4_032;
     internal const int Blake2bOrphanReconciliationBatchSize = 64;
-    internal const ulong Blake2bOrphanReconciliationDepth = 12_960;
+    // Two reviewed rolling maturity intervals. Keyset batches remain bounded;
+    // older or already credited rewards require the operator recovery audit.
+    internal const ulong Blake2bOrphanReconciliationDepth = 51_840;
     // ProcessPoolsAsync serializes pool cycles; never access this cursor cache
     // from concurrent classification work without adding synchronization.
     private readonly Dictionary<string, long> blake2bOrphanCursors = new(StringComparer.Ordinal);
@@ -425,8 +427,22 @@ public class PayoutManager : ProcessStatusBackgroundService
             var orphaned = await Read(cursor);
             // A keyset cursor rotates through every eligible row, including
             // permanently unavailable evidence, instead of starving later rows.
-            if(orphaned.Length == 0 && cursor != 0) orphaned = await Read(0);
+            var wrapped = orphaned.Length == 0 && cursor != 0;
+            if(wrapped) orphaned = await Read(0);
             blake2bOrphanCursors[poolConfig.Id] = orphaned.LastOrDefault()?.Id ?? 0;
+            var oldest = orphaned.Length > 0 ? orphaned.Min(x => x.BlockHeight) : 0UL;
+            var nearHorizon = orphaned.Count(x => x.BlockHeight <= (ulong) minHeight + 2592);
+            logger.Info(() => $"[{poolConfig.Id}] BLAKE2b orphan scan: rows {orphaned.Length}, cursor {blake2bOrphanCursors[poolConfig.Id]}, minimum height {minHeight}, oldest batch height {oldest}, near-horizon batch rows {nearHorizon}, sweep completed {wrapped}");
+            try
+            {
+                messageBus.SendMessage(new BitcoinBlake2bReconciliationTelemetry(poolConfig.Id, orphaned.Length,
+                    blake2bOrphanCursors[poolConfig.Id], minHeight, oldest, nearHorizon, wrapped));
+            }
+            catch(Exception ex)
+            {
+                // Monitoring cannot suppress classification or change balances.
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutManager.LoadBlocksForClassificationAsync", failure: ex);
+            }
             return pendingBlocks.Concat(orphaned).DistinctBy(x => x.Id).ToArray();
         }
         if(poolConfig.Template is not BitcoinTemplate)

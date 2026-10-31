@@ -100,10 +100,24 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
             BitcoinBlake2bJobManager.ValidateDeployment(deployment.Response,
                 coin.Networks[chainName].Blake2bActivationHeight!.Value, poolConfig.Id);
             schedule.ValidateDeployment(deployment.Response, poolConfig.Id);
+            var observation = await BitcoinBlake2bChainEvidence.ObserveAsync(chain.Response, deployment.Response,
+                hash => GetBlockHeaderAsync(hash, ct), poolConfig.Id, ct);
+            if(observation != BitcoinBlake2bChainObservation.Verified)
+                throw AttestationFailure(observation == BitcoinBlake2bChainObservation.ChainChanged
+                    ? BitcoinBlake2bPayoutAttestationReason.ChainChanged : BitcoinBlake2bPayoutAttestationReason.RpcUnavailable);
         }
         catch(PoolStartupException)
         {
             throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.ContractDrift);
+        }
+        catch(JsonException ex)
+        {
+            throw AttestationFailure(JsonFailureReason(ex));
+        }
+        catch(Exception ex) when(ex is HttpRequestException or TimeoutException ||
+            ex is OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            throw AttestationFailure(BitcoinBlake2bPayoutAttestationReason.RpcUnavailable);
         }
         try { contracts.Attest(poolConfig.Id, chainName, schedule); }
         catch(InvalidOperationException)
@@ -140,7 +154,9 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
             {
                 messageBus.SendMessage(new AdminNotification($"[{poolConfig.Id}] Bitcoin BLAKE2b payout attestation withheld",
                     $"Pool {poolConfig.Id}: reason {reason} ({(int) reason}). Rewards and balances are retained. " +
-                    "Check node synchronization, RPC availability and the reviewed daemon/chain/deployment configuration. " +
+                    (reason == BitcoinBlake2bPayoutAttestationReason.ChainChanged
+                        ? "Chain snapshots changed, are too far apart or lack common branch evidence. Wait for a coherent synchronized view; no configuration drift is inferred. "
+                        : "Check node synchronization, RPC availability and the reviewed daemon/chain/deployment configuration. ") +
                     "A changed process binding requires the documented stop/reconcile/restart. Sensitive RPC details are withheld."));
                 grace.MarkNotificationSent(poolConfig.Id, 0, null, episode);
             }
@@ -162,6 +178,7 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
         try
         {
             var result = await GetBlockHeaderAsync(hash, ct);
+            ct.ThrowIfCancellationRequested();
             var header = result?.Error == null ? result?.Response : null;
             if(header?["hash"]?.Type != JTokenType.String ||
                 !string.Equals(header["hash"].Value<string>(), hash, StringComparison.OrdinalIgnoreCase) ||
@@ -169,9 +186,14 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
                 header["confirmations"]?.Type != JTokenType.Integer || !int.TryParse(header["confirmations"].ToString(), out var confirmations) ||
                 confirmations == 0 || confirmations < -1)
                 return null;
-            return new(hash, height, confirmations);
+            var previous = header["previousblockhash"]?.Type == JTokenType.String
+                ? header["previousblockhash"].Value<string>() : null;
+            long? mtp = header["mediantime"]?.Type == JTokenType.Integer &&
+                long.TryParse(header["mediantime"].ToString(), out var time) && time >= 0 && time <= uint.MaxValue ? time : null;
+            return new(hash, height, confirmations, previous, mtp);
         }
-        catch(Exception ex) when(ex is JsonException or HttpRequestException)
+        catch(Exception ex) when(ex is JsonException or HttpRequestException or TimeoutException ||
+            ex is OperationCanceledException && !ct.IsCancellationRequested)
         {
             return null;
         }
@@ -227,6 +249,7 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
                 }
                 if(header?.Confirmations == -1 && header.Height == block.BlockHeight)
                 {
+                    contracts.ForgetCreation(poolConfig.Id, block.Hash);
                     var wasOrphaned = block.Status == BlockStatus.Orphaned;
                     block.Status = BlockStatus.Orphaned;
                     block.ConfirmationProgress = 0;
@@ -249,16 +272,54 @@ public class BitcoinBlake2bPayoutHandler : BitcoinPayoutHandler, IBlockAllocatio
                             NotifyDelay(block);
                         else
                         {
+                            var policyMaturity = schedule.Maturity;
+                            if(schedule.Expiry.HasValue)
+                            {
+                                if(!BitcoinBlake2bChainEvidence.Hash(header.PreviousBlockHash))
+                                {
+                                    NotifyDelay(block);
+                                    result.Add(block);
+                                    continue;
+                                }
+                                if(!contracts.TryCreation(poolConfig.Id, header, out var parentMtp, out var conflict))
+                                {
+                                    var parent = conflict ? null : await ReadHeaderAsync(header.PreviousBlockHash, ct);
+                                    // Retain the extra active check on a cache miss: a reorg
+                                    // during the parent RPC can orphan the creation block
+                                    // while leaving its parent active. Warm cycles need only
+                                    // the fresh creation header above plus fresh wallet data.
+                                    var current = parent == null ? null : await ReadHeaderAsync(block.Hash, ct);
+                                    if(parent?.Confirmations is not > 0 || parent.Height + 1 != header.Height ||
+                                        !parent.MedianTimePast.HasValue || current?.Confirmations is not > 0 ||
+                                        current.Height != header.Height || !string.Equals(current.PreviousBlockHash, header.PreviousBlockHash, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        NotifyDelay(block);
+                                        result.Add(block);
+                                        continue;
+                                    }
+                                    header = current;
+                                    parentMtp = parent.MedianTimePast.Value;
+                                    contracts.RememberCreation(poolConfig.Id, header, parentMtp);
+                                }
+                                policyMaturity = schedule.PolicyMaturity(header.Height, parentMtp);
+                                // Keep historical spend-height consensus independent
+                                // of policy expiry, including an unusually early MTP
+                                // cutoff. Never credit below either requirement.
+                                var spendHeight = (long) header.Height + Math.Min(transaction.Confirmations, header.Confirmations);
+                                policyMaturity = Math.Max(policyMaturity, schedule.ConsensusMaturity(
+                                    header.Height, spendHeight, parentMtp));
+                            }
                             var confirmations = Math.Min(transaction.Confirmations, header.Confirmations);
-                            var spendable = !immature && confirmations >= schedule.RequiredConfirmations(operatorConfirmations);
+                            var spendable = !immature && confirmations >= schedule.RequiredConfirmations(operatorConfirmations, policyMaturity);
                             block.Status = spendable ? BlockStatus.Confirmed : BlockStatus.Pending;
-                            block.ConfirmationProgress = schedule.Progress(confirmations, operatorConfirmations, immature);
+                            block.ConfirmationProgress = schedule.Progress(confirmations, operatorConfirmations, immature, policyMaturity);
                             block.Reward = reward;
                             block.BitcoinBlake2bCustodialEvidenceVerified = true;
                             block.NotifyBlockConfirmationProgressOnUpdate = !spendable;
                             block.NotifyBlockUnlockedOnUpdate = spendable;
+                            if(spendable) contracts.ForgetCreation(poolConfig.Id, block.Hash);
                             ClearDelay(block);
-                            logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight}: wallet category {(immature ? "immature" : "generate")}, confirmations {confirmations}, remaining depth {schedule.Remaining(confirmations, operatorConfirmations)}, status {block.Status}");
+                            logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight}: wallet category {(immature ? "immature" : "generate")}, confirmations {confirmations}, remaining depth {schedule.Remaining(confirmations, operatorConfirmations, policyMaturity)}, status {block.Status}");
                         }
                     }
                     catch(Exception ex) when(ex is JsonException or OverflowException)

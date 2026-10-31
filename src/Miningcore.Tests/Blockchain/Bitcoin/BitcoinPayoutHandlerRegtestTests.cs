@@ -245,7 +245,7 @@ public class BitcoinPayoutHandlerRegtestTests : TestBase
         private const string RpcUser = "miningcore";
         private const string RpcPassword = "miningcore-regtest";
         private const string WalletName = "miningcore";
-        private readonly Process process;
+        private Process process;
         private readonly HttpClient httpClient = new();
         private readonly ConcurrentQueue<string> processOutput = new();
 
@@ -258,6 +258,11 @@ public class BitcoinPayoutHandlerRegtestTests : TestBase
             httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
                 "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{RpcUser}:{RpcPassword}")));
 
+            ObserveProcess();
+        }
+
+        private void ObserveProcess()
+        {
             process.OutputDataReceived += (_, args) => RecordProcessOutput(args.Data);
             process.ErrorDataReceived += (_, args) => RecordProcessOutput(args.Data);
             process.BeginOutputReadLine();
@@ -368,6 +373,34 @@ public class BitcoinPayoutHandlerRegtestTests : TestBase
 
         public Task<RpcEnvelope> TryWalletRpcAsync(string method, params object[] parameters) =>
             TryRpcAsync(method, wallet: true, CancellationToken.None, parameters);
+
+        public async Task RestartAsync(bool? walletBroadcast = null, long? mockTime = null)
+        {
+            var startInfo = process.StartInfo;
+            if(walletBroadcast.HasValue)
+            {
+                for(var i = startInfo.ArgumentList.Count - 1; i >= 0; i--)
+                    if(startInfo.ArgumentList[i].StartsWith("-walletbroadcast=", StringComparison.Ordinal))
+                        startInfo.ArgumentList.RemoveAt(i);
+                startInfo.ArgumentList.Add($"-walletbroadcast={(walletBroadcast.Value ? 1 : 0)}");
+            }
+            if(mockTime.HasValue)
+            {
+                for(var i = startInfo.ArgumentList.Count - 1; i >= 0; i--)
+                    if(startInfo.ArgumentList[i].StartsWith("-mocktime=", StringComparison.Ordinal))
+                        startInfo.ArgumentList.RemoveAt(i);
+                startInfo.ArgumentList.Add($"-mocktime={mockTime.Value}");
+            }
+            await RootRpcAsync("stop");
+            using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await process.WaitForExitAsync(shutdown.Token);
+            process.Dispose();
+            process = Process.Start(startInfo) ?? throw new InvalidOperationException("Unable to restart isolated bitcoind");
+            ObserveProcess();
+            await WaitUntilReadyAsync();
+            if(!(await RootRpcAsync("listwallets")).Values<string>().Contains(WalletName))
+                await RootRpcAsync("loadwallet", WalletName);
+        }
 
         public async ValueTask DisposeAsync()
         {

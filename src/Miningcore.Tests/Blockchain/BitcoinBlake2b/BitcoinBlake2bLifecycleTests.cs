@@ -26,6 +26,7 @@ public partial class BitcoinBlake2bStartupTests
     private static JObject MaturityInfo(int height, bool blake2bActive = true) => new()
     {
         ["height"] = height,
+        ["hash"] = new string('c', 64),
         ["blake2b"] = new JObject { ["height"] = 20, ["active"] = blake2bActive },
         ["deployments"] = new JObject(),
     };
@@ -254,14 +255,17 @@ public partial class BitcoinBlake2bStartupTests
             }
             var response = method switch
             {
-                BitcoinCommands.GetNetworkInfo => new JObject { ["version"] = Drift == "version" ? 300000 : 290402,
-                    ["subversion"] = "/Satoshi:29.4.2/Knots:20260508/" },
-                BitcoinCommands.GetBlockchainInfo => new JObject { ["chain"] = Drift == "chain" ? "main" : "regtest" },
+                BitcoinCommands.GetNetworkInfo => new JObject { ["version"] = Drift == "version" ? 300000 : 290403,
+                    ["subversion"] = "/Satoshi:29.4.3/Knots:20260508/" },
+                BitcoinCommands.GetBlockchainInfo => new JObject { ["chain"] = Drift == "chain" ? "main" : "regtest",
+                    ["blocks"] = 19, ["bestblockhash"] = new string('c', 64) },
                 "getdeploymentinfo" => Drift == "maturity" ? BitcoinBlake2bMaturityTests.Deployment(BitcoinBlake2bMaturity.Mainnet, 973439) : MaturityInfo(19, Drift != "deployment"),
                 _ => throw new InvalidOperationException(method),
             };
             return Task.FromResult(new RpcResponse<JObject>(response));
         }
+        protected override Task<RpcResponse<JObject>> GetAttestationHeaderAsync(string hash, CancellationToken ct) =>
+            Task.FromResult(new RpcResponse<JObject>(new JObject { ["hash"] = hash, ["height"] = 19, ["confirmations"] = 1 }));
         private static JsonRpcError Unavailable() => new(-500, "RPC unavailable", null);
     }
 

@@ -2,7 +2,7 @@ using Miningcore.Configuration;
 
 namespace Miningcore.Blockchain.BitcoinBlake2b;
 
-// Reviewed Knots 58398baf33e588779685ead478e6397bb28ed3d6:
+// Reviewed Knots a7c4617524c334f542484bfef3919b9f12573840:
 // src/kernel/chainparams.cpp and src/consensus/params.h. The catalogue repeats
 // these values as operator-readable JSON; loader checks and tests pin it here.
 internal static class BitcoinBlake2bConsensus

@@ -7,6 +7,7 @@ internal enum BitcoinBlake2bPayoutAttestationReason
     Syncing = 702,
     ContractDrift = 703,
     BindingMismatch = 704,
+    ChainChanged = 705,
 }
 
 internal sealed class BitcoinBlake2bPayoutAttestationException(
