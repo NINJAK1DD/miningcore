@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
 using AutoMapper;
+using Microsoft.Extensions.DependencyInjection;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Warthog;
 using Miningcore.Blockchain.Warthog.DaemonRequests;
@@ -19,6 +20,7 @@ using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
+using Miningcore.Rest;
 using Miningcore.Stratum;
 using Miningcore.Time;
 using NLog;
@@ -44,8 +46,16 @@ public sealed class WarthogDaemonFactAttribute : FactAttribute
 }
 
 [Collection("Warthog wallet secrecy")]
-public class WarthogWalletAddressTests : TestBase
+public class WarthogWalletAddressTests : TestBase, IDisposable
 {
+    private readonly List<ServiceProvider> clientProviders = new();
+
+    public void Dispose()
+    {
+        foreach(var provider in clientProviders)
+            provider.Dispose();
+    }
+
     // Public, synthetic secp256k1 scalar 1: never use this key for real funds.
     private static readonly string Canary = new string('0', 63) + '1';
     private const string Address = "751e76e8199196d454941c45d1b3a323f1433bd6ffded884";
@@ -385,11 +395,14 @@ public class WarthogWalletAddressTests : TestBase
         },
     };
 
-    private static IHttpClientFactory MakeFactory(HttpMessageHandler requests)
+    private IHttpClientFactory MakeFactory(HttpMessageHandler requests)
     {
-        var factory = Substitute.For<IHttpClientFactory>();
-        factory.CreateClient(Arg.Any<string>()).Returns(new HttpClient(requests));
-        return factory;
+        var services = new ServiceCollection();
+        services.AddDaemonRestClient()
+            .ConfigurePrimaryHttpMessageHandler(() => requests);
+        var provider = services.BuildServiceProvider();
+        clientProviders.Add(provider);
+        return provider.GetRequiredService<IHttpClientFactory>();
     }
 
     private TestPayoutHandler CreatePayoutHandler(HttpMessageHandler requests,

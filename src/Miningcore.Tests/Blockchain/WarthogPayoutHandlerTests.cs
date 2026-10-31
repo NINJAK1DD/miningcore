@@ -237,6 +237,24 @@ public class WarthogPayoutHandlerTests
     }
 
     [Fact]
+    public async Task PayoutRecipient_RedirectResponseRequiresReconciliation()
+    {
+        var handler = CreateHandler();
+        handler.EnqueuePreparation(PreparedTransaction);
+        handler.EnqueueSubmission((_, _) =>
+            throw new HttpRequestException("Daemon REST redirect was refused", null,
+                HttpStatusCode.TemporaryRedirect));
+
+        var exception = await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            handler.RunRecipientsAsync(CancellationToken.None,
+                ("post-redirected", 1m)));
+
+        Assert.Equal("post-redirected",
+            Assert.Single(exception.Reconciliation.Uncertain).Address);
+        Assert.Equal(1, handler.SubmissionCalls);
+    }
+
+    [Fact]
     public async Task PayoutRecipients_PreflightFailureThenUncertainPostPreservesMembership()
     {
         var handler = CreateHandler();

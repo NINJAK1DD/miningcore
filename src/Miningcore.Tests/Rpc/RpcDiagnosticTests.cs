@@ -1185,8 +1185,9 @@ public class RpcDiagnosticTests
                 Assert.DoesNotContain(message, c => c is '\r' or '\n' or '\u0085' or '\u2028' or '\u2029');
                 Assert.StartsWith("RPC diagnostic ", message);
                 var data = JObject.Parse(message["RPC diagnostic ".Length..]);
-                Assert.Equal(new[] { "transport", "stage", "method", "batchCount", "httpStatus", "bytes", "httpResponseChars", "elapsedMs", "endpointIndex", "failure", "failureCode" },
-                    data.Properties().Select(x => x.Name).ToArray());
+                var fields = new[] { "transport", "stage", "method", "batchCount", "httpStatus", "bytes", "httpResponseChars", "elapsedMs", "endpointIndex", "failure", "failureCode" };
+                Assert.Equal(data.Value<string>("transport") == "Rest" ? fields.Append("poolId") : fields,
+                    data.Properties().Select(x => x.Name));
             }
         }
         public void Dispose() => factory.Dispose();

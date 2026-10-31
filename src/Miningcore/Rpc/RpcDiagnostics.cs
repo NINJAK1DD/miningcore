@@ -11,7 +11,7 @@ namespace Miningcore.Rpc;
 // response IDs, error messages, or exception objects to a logging target.
 internal static class RpcDiagnostics
 {
-    internal enum Transport { Http, WebSocket, Zmq }
+    internal enum Transport { Http, WebSocket, Zmq, Rest }
     internal enum Stage { Request, Response, Connect, Subscribe, Receive, Failure, StopTimeout, CancellationCallbackFailure }
 
     internal static string Method(string method) => RpcMethodCatalog.Label(method);
@@ -27,6 +27,18 @@ internal static class RpcDiagnostics
         return index >= 0 ? index + 1 : null;
     }
 
+    // REST uses the same NLog projection and pool logger as other RPC diagnostics.
+    internal static void WriteRest(string failure, string poolId,
+        int? endpointIndex, int? status = null)
+    {
+        failure = failure is "tls-handshake" or "http2-negotiation" or "redirect-refused"
+            ? failure : "other";
+        var logger = LogManager.GetLogger(string.IsNullOrEmpty(poolId)
+            ? "Miningcore.Rest.DaemonRestDiagnosticsHandler" : poolId);
+        Write(logger, LogLevel.Warn, Transport.Rest, Stage.Failure, status: status,
+            endpointIndex: endpointIndex, failureCategory: failure, poolId: poolId);
+    }
+
     /// <remarks>
     /// httpResponseChars counts decoded UTF-16 code units (String.Length), not wire
     /// bytes or Unicode code points. A null handshake status means no HTTP status
@@ -35,7 +47,8 @@ internal static class RpcDiagnostics
     internal static void Write(ILogger logger, LogLevel level, Transport transport, Stage stage,
         string method = null, int? batchCount = null, int? status = null,
         long? bytes = null, long? elapsedMs = null, Exception failure = null,
-        long? endpointIndex = null, int? httpResponseChars = null)
+        long? endpointIndex = null, int? httpResponseChars = null,
+        string failureCategory = null, string poolId = null)
     {
         if(!logger.IsEnabled(level))
             return;
@@ -53,9 +66,11 @@ internal static class RpcDiagnostics
             ["httpResponseChars"] = httpResponseChars,
             ["elapsedMs"] = elapsedMs,
             ["endpointIndex"] = endpointIndex,
-            ["failure"] = failure == null ? null : Diagnostics.DiagnosticFailure.Category(failure),
+            ["failure"] = failureCategory ?? (failure == null ? null : Diagnostics.DiagnosticFailure.Category(failure)),
             ["failureCode"] = Diagnostics.DiagnosticFailure.Code(failure),
         };
+        if(transport == Transport.Rest)
+            data["poolId"] = poolId;
         logger.Log(level, "RPC diagnostic " + data.ToString(Formatting.None));
     }
 }

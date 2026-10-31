@@ -27,6 +27,7 @@ fields carried through `JsonExtensionData`; use the reviewed examples and the
 | Configure log rotation | [Log files and rotation](#log-files-and-rotation) |
 | Authenticate a remote PostgreSQL server | [PostgreSQL TLS and migration](postgres-tls.md) |
 | Verify daemon HTTPS/WSS certificates and provision private CA trust | [Daemon RPC TLS](rpc-tls.md) |
+| Migrate Beam, Conceal and Warthog REST daemon TLS and redirect behavior | [Daemon REST endpoints](rpc-tls.md#beam-conceal-and-warthog-rest-endpoints) |
 | Configure database command limits or migrate an unlimited timeout | [PostgreSQL command timeout](postgres-command-timeout.md) |
 | Configure payout precision | [Bitcoin-family payout precision](#bitcoin-family-payout-precision) |
 | Configure default non-custodial Bitcoin SOLO | [Bitcoin direct-coinbase SOLO](#bitcoin-direct-coinbase-solo) |
