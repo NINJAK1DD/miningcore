@@ -151,7 +151,7 @@
 
   // Email, administrative and Pushover event delivery.
   "notifications": {
-    // Currently unused; see #148. Administrative email delivery follows admin.enabled.
+    // Deprecated compatibility field; ignored. Use admin.enabled below.
     "enabled": false,
     "email": {
       // SMTP server used for email notifications.
@@ -165,8 +165,11 @@
       "fromName": "Miningcore operator"
     },
     "admin": {
-      // Operational alerts for block, payment and persistence events.
+      // Authoritative switch for administrative, block, payment and critical
+      // persistence alerts. Requires a nonblank emailAddress or enabled Pushover.
       "enabled": false,
+      // Nonblank opts into email and requires the email provider above.
+      // Omit or blank for Pushover-only delivery.
       "emailAddress": "operator@example.com",
       "notifyBlockFound": true,
       "notifyPaymentSuccess": true

@@ -793,7 +793,8 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     {
         try
         {
-            messageBus.SendMessage(new AdminNotification(subject, message));
+            messageBus.SendMessage(new AdminNotification(subject, message,
+                AdminNotificationImportance.FinancialOrSecurity, poolConfig.Id));
         }
         catch(Exception ex)
         {

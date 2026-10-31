@@ -2397,13 +2397,13 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     private void NotifyAdminOnPolicyFallback()
     {
         if(clusterConfig.Notifications?.Admin?.Enabled == true &&
-           clusterConfig.Notifications?.Admin?.NotifyPaymentSuccess == true &&
            !notifiedAdminOnPolicyFallback)
         {
             notifiedAdminOnPolicyFallback = true;
 
             messageBus.SendMessage(new AdminNotification("Share Recorder Policy Fallback",
-                $"The Share Recorder's Policy Fallback has been engaged. Check share recovery file {recoveryFilename}."));
+                $"The Share Recorder's Policy Fallback has been engaged. Check share recovery file {recoveryFilename}.",
+                AdminNotificationImportance.FinancialOrSecurity));
         }
     }
 

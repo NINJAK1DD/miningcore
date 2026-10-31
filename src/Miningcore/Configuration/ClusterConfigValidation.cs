@@ -6,49 +6,15 @@ namespace Miningcore.Configuration;
 
 #region Validators
 
-public class EmailSenderConfigValidator : AbstractValidator<EmailSenderConfig>
-{
-    public EmailSenderConfigValidator()
-    {
-        RuleFor(j => j).Custom((config, context) =>
-        {
-            try
-            {
-                SmtpTransportPolicy.Resolve(config);
-            }
-            catch(InvalidOperationException error)
-            {
-                context.AddFailure(error.Message);
-            }
-        });
-
-        RuleFor(j => j.FromAddress)
-            .NotNull()
-            .NotEmpty()
-            .WithMessage("EmailSender fromAddress missing or empty");
-    }
-}
-
-public class AdminNotificationsValidator : AbstractValidator<AdminNotifications>
-{
-    public AdminNotificationsValidator()
-    {
-        RuleFor(j => j.EmailAddress)
-            .NotNull()
-            .NotEmpty()
-            .When(x => x.Enabled)
-            .WithMessage("Admin notification recipient missing or empty");
-    }
-}
-
 public class NotificationsConfigValidator : AbstractValidator<NotificationsConfig>
 {
     public NotificationsConfigValidator()
     {
-        RuleFor(j => j.Email)
-            .SetValidator(new EmailSenderConfigValidator())
-            .When(j => j.Email != null &&
-                j.Admin?.Enabled == true);
+        RuleFor(x => x).Custom((config, context) =>
+        {
+            foreach(var error in new NotificationActivation(config).GetValidationErrors())
+                context.AddFailure(error);
+        });
     }
 }
 
@@ -463,7 +429,9 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
 
         RuleFor(j => j.Notifications)
             .SetValidator(new NotificationsConfigValidator())
-            .When(j => j.Notifications != null);
+            // The recovery reader drops notifications before binding. Keep direct
+            // recovery-mode validation equally independent of live alert settings.
+            .When(j => !recoveryMode && j.Notifications != null);
 
         // ensure pool ids are unique
         RuleFor(j => j.Pools)

@@ -33,6 +33,40 @@ relay on the same host, the explicit `"localPlaintext"` mode accepts only a
 numeric loopback address and no SMTP credentials. Update copied example files
 before enabling alerts. See the [SMTP transport migration guide](configuration.md#smtp-transport-migration).
 
+## Unreleased: administrative notification activation
+
+`notifications.admin.enabled` now consistently controls validation, event
+subscriptions and critical delivery. The legacy top-level
+`notifications.enabled` field is deprecated and ignored; a `true` legacy value
+with disabled admin notifications now logs a startup warning. The `examples/`
+configurations omit the legacy field. An active admin
+configuration must have at least one usable transport: a nonblank recipient
+with SMTP settings, Pushover with user and token, or both. Sender and recipient
+email addresses must be plain addresses, and a whitespace-only sender name is
+invalid when email is selected. Blank recipients no
+longer trigger email attempts; an enabled critical alert with no transport
+reports an error. Review conflicting flags and provider fields before
+upgrading. Ordinary email and Pushover attempts start independently with a
+15-second limit per channel. Pushover messages and titles are bounded to its
+1024 and 250 character limits, and HTTP success requires `status: 1` in the
+response. The `-rs` importer still ignores live notification settings.
+Uncertain-payout Pushover alerts now direct operators to retained evidence and
+wallet history even when email is unavailable. Ordinary timeouts identify the
+failed channel, while cancellation during host shutdown is treated as expected.
+Each channel now processes its own ordered event queue, so stalled email does
+not delay later Pushover alerts. Pushover requests share a two-request gate
+that keeps one slot available to critical alerts during ordinary traffic.
+Payout alert formatting now runs after the scheduler handoff. Ordinary queue
+depth is capped at 256 for formatting and each transport; overload logs counted
+omissions. Disabled events do not occupy slots, routine alerts leave 32 slots
+for incidents, and omitted payout or marked financial/security alerts report
+their pool at Error level. Oversized payout events use compact operator summaries
+before queueing, retaining per-outcome aggregate counts and amounts. Share
+Recorder policy-fallback alerts no longer depend on successful-payment alerts.
+Timeouts bound the local wait and do not prove the provider rejected a message;
+Pushover `status: 1` confirms queueing by the provider, not human receipt.
+See [notification activation and migration](notifications.md).
+
 ## Unreleased (after v0.3.0): verify daemon RPC TLS certificates
 
 HTTPS/HTTP2 and WSS daemon RPC transports now use platform certificate validation

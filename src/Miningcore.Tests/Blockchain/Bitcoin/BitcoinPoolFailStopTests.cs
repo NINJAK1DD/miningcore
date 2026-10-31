@@ -81,7 +81,9 @@ public class BitcoinPoolFailStopTests
         messageBus.Received(1).SendMessage(
             Arg.Is<AdminNotification>(x =>
                 x.Subject.Contains("direct-SOLO", StringComparison.Ordinal) &&
-                x.Message.Contains(config.Id, StringComparison.Ordinal)),
+                x.Message.Contains(config.Id, StringComparison.Ordinal) &&
+                x.Importance == AdminNotificationImportance.FinancialOrSecurity &&
+                x.PoolId == config.Id),
             Arg.Any<string>());
     }
 
