@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
@@ -227,6 +228,47 @@ public class NotificationActivationTests
                 new AdminNotification("incident", "failure"), timeout.Token));
 
         Assert.Equal(2, error.InnerExceptions.Count);
+        Assert.Equal(1, requests.Count);
+    }
+
+    [Fact]
+    public async Task StalledSmtpDoesNotDelayPushoverCriticalAttempt()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var email = ValidEmail();
+        email.Port = ((IPEndPoint) listener.LocalEndpoint).Port;
+        var config = Config(new NotificationsConfig
+        {
+            Admin = new AdminNotifications
+            {
+                Enabled = true, EmailAddress = "operator@example.invalid",
+            },
+            Email = email,
+            Pushover = new PushoverConfig
+            {
+                Enabled = true, User = "test-user", Token = "test-token",
+            },
+        });
+        var requests = new RecordingPushoverHandler();
+        using var client = new HttpClient(requests);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(client);
+        using var sender = new NotificationService(config,
+            new PushoverClient(config, factory), Substitute.For<IMessageBus>());
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var accepted = listener.AcceptTcpClientAsync(timeout.Token).AsTask();
+
+        var delivery = sender.SendCriticalAdminNotificationAsync(
+            new AdminNotification("incident", "failure"), timeout.Token);
+        using var peer = await accepted.WaitAsync(timeout.Token);
+        while(requests.Count == 0)
+            await Task.Delay(10, timeout.Token);
+        Assert.False(delivery.IsCompleted);
+
+        timeout.Cancel();
+        var error = await Assert.ThrowsAsync<AggregateException>(() => delivery);
+        Assert.Single(error.InnerExceptions);
         Assert.Equal(1, requests.Count);
     }
 

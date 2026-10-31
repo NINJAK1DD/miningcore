@@ -70,45 +70,48 @@ public class NotificationService : StartupGatedBackgroundService,
         if(!activation.AdminEnabled)
             return;
 
-        var errors = new List<Exception>();
-
         if(!activation.EmailEnabled && !activation.PushoverEnabled)
             throw new InvalidOperationException(
                 "Enabled critical notifications have no configured email recipient or Pushover transport");
 
+        // Start both selected transports before awaiting either one. A slow SMTP
+        // connection must not consume the caller's entire durability-alert timeout
+        // before Pushover has a chance to send.
+        var attempts = new List<Task<Exception>>();
         if(activation.EmailEnabled)
-        {
-            try
-            {
-                await SendEmailAsync(activation.EmailRecipient, notification.Subject,
-                    notification.Message, ct);
-            }
-            catch(Exception ex)
-            {
-                errors.Add(new IOException(
-                    "Critical administrative email delivery failed", ex));
-            }
-        }
+            attempts.Add(AttemptCriticalTransportAsync(
+                () => SendEmailAsync(activation.EmailRecipient, notification.Subject,
+                    notification.Message, ct),
+                "Critical administrative email delivery failed"));
 
         if(activation.PushoverEnabled)
-        {
-            try
+            attempts.Add(AttemptCriticalTransportAsync(async () =>
             {
                 activation.ValidatePushoverProvider();
                 await pushoverClient.PushMessage(notification.Subject,
                     notification.Message, PushoverMessagePriority.None, ct);
-            }
-            catch(Exception ex)
-            {
-                errors.Add(new IOException(
-                    "Critical administrative Pushover delivery failed", ex));
-            }
-        }
+            }, "Critical administrative Pushover delivery failed"));
 
-        if(errors.Count > 0)
+        var errors = (await Task.WhenAll(attempts))
+            .Where(error => error != null).ToArray();
+        if(errors.Length > 0)
             throw new AggregateException(
                 "One or more critical administrative notification transports failed",
                 errors);
+    }
+
+    private static async Task<Exception> AttemptCriticalTransportAsync(
+        Func<Task> send, string failureMessage)
+    {
+        try
+        {
+            await send();
+            return null;
+        }
+        catch(Exception ex)
+        {
+            return new IOException(failureMessage, ex);
+        }
     }
 
     private async Task OnBlockFoundNotificationAsync(BlockFoundNotification notification, CancellationToken ct)
