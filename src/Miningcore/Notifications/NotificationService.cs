@@ -713,8 +713,8 @@ public class NotificationService : StartupGatedBackgroundService,
                     logger.Error("Ordinary {0} queue full; payout failure or uncertain outcome not queued for pool {1}; dropped count {2}",
                         queue, poolId, total);
                 else if(importance == OrdinaryImportance.FinancialOrSecurityAdmin)
-                    logger.Error("Ordinary {0} queue full; financial or security administrative alert not queued for pool {1}; dropped count {2}",
-                        queue, poolId ?? "unknown", total);
+                    logger.Error("Ordinary {0} queue full; financial or security administrative alert not queued for {1}; dropped count {2}",
+                        queue, poolId == null ? "the cluster" : $"pool {poolId}", total);
                 else if(total == 1 || total % 100 == 0)
                     logger.Warn("Ordinary {0} queue full; routine alert omitted; dropped count {1}",
                         queue, total);

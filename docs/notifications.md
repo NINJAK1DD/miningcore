@@ -46,8 +46,9 @@ they consume a slot. Routine alerts can use at most 224 slots, leaving 32 for
 payout incidents and explicitly marked financial or security administrative
 alerts. On overflow, Miningcore omits new routine alerts and logs a counted
 warning. Every omitted payout incident or marked administrative alert is logged
-at Error level with its queue, pool and dropped count; inspect retained payout
-and wallet evidence if such an overload occurs. A de-duplicated incident episode
+at Error level with its queue, pool or cluster scope, and dropped count;
+inspect retained payout and wallet evidence if such an overload occurs. A
+de-duplicated incident episode
 marked sent after publication is not re-sent if its ordinary queue later drops
 the alert, so inspect the overflow Error log even if no message arrived. Payout
 events exceeding 2,048 retained items or 512 Ki characters of text are reduced
