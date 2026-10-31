@@ -9,6 +9,7 @@ using System.Reactive.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -47,6 +48,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
     private DaemonEndpointConfig[] daemonEndpoints;
     private AlephiumCoinTemplate coin;
     private AlephiumClient rpc;
+    private int tlsStartupWarningEmitted;
     private string network;
     private readonly IExtraNonceProvider extraNonceProvider;
     private readonly IMasterClock clock;
@@ -55,6 +57,20 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
     protected int maxActiveJobs;
     private int socketJobMessageBufferSize;
     private int socketMiningProtocol = 0;
+
+    private void ReportDaemonStartupFailure(string operation, Exception failure)
+    {
+        var level = NLog.LogLevel.Debug;
+        if(RpcConsumerDiagnostics.Failure(failure) == "tls-handshake" &&
+           logger.IsEnabled(NLog.LogLevel.Warn) &&
+           Interlocked.Exchange(ref tlsStartupWarningEmitted, 1) == 0)
+            level = NLog.LogLevel.Warn;
+
+        RpcConsumerDiagnostics.Write(logger, level, operation, failure: failure);
+    }
+
+    private void RecordDaemonTransportSuccess()
+        => Volatile.Write(ref tlsStartupWarningEmitted, 0);
     
     protected IObservable<AlephiumBlockTemplate[]> AlephiumSubscribeStratumApiSocketClient(CancellationToken ct, DaemonEndpointConfig endPoint,
         AlephiumDaemonEndpointConfigExtra extraDaemonEndpoint, object payload = null,
@@ -736,7 +752,10 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
     protected override async Task<bool> AreDaemonsHealthyAsync(CancellationToken ct)
     {
         var info = await Guard(() => rpc.GetInfosSelfCliqueAsync(ct),
-            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.AreDaemonsHealthyAsync", failure: ex));
+            ex=> ReportDaemonStartupFailure("AlephiumJobManager.AreDaemonsHealthyAsync", ex));
+
+        if(info != null)
+            RecordDaemonTransportSuccess();
 
         if(info?.SelfReady != true || info?.Synced != true)
             return false;
@@ -747,13 +766,16 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
     protected override async Task<bool> AreDaemonsConnectedAsync(CancellationToken ct)
     {
         var infosChainParams = await Guard(() => rpc.GetInfosChainParamsAsync(ct),
-            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.AreDaemonsConnectedAsync", failure: ex));
+            ex=> ReportDaemonStartupFailure("AlephiumJobManager.AreDaemonsConnectedAsync", ex));
 
         var info = await Guard(() => rpc.GetInfosInterCliquePeerInfoAsync(ct),
-            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.AreDaemonsConnectedAsync", failure: ex));
+            ex=> ReportDaemonStartupFailure("AlephiumJobManager.AreDaemonsConnectedAsync", ex));
         
         var nodeInfo = await Guard(() => rpc.GetInfosNodeAsync(ct),
-            ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.AreDaemonsConnectedAsync", failure: ex));
+            ex=> ReportDaemonStartupFailure("AlephiumJobManager.AreDaemonsConnectedAsync", ex));
+
+        if(infosChainParams != null && info != null && nodeInfo != null)
+            RecordDaemonTransportSuccess();
         
         // update stats
         if(!string.IsNullOrEmpty(nodeInfo?.BuildInfo.ReleaseVersion))
@@ -784,7 +806,10 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
         do
         {
             var work = await Guard(() => rpc.GetInfosSelfCliqueAsync(ct),
-                ex=> RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "AlephiumJobManager.EnsureDaemonsSynchedAsync", failure: ex));
+                ex=> ReportDaemonStartupFailure("AlephiumJobManager.EnsureDaemonsSynchedAsync", ex));
+
+            if(work != null)
+                RecordDaemonTransportSuccess();
 
             var isSynched = (work?.SelfReady == true && work?.Synced == true);
 

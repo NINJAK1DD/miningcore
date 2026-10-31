@@ -6,6 +6,7 @@ using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Text;
 using Miningcore.Configuration;
+using Miningcore.Diagnostics;
 using Miningcore.Extensions;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
@@ -46,12 +47,14 @@ public class RpcClient
     private readonly JsonSerializer serializer;
     private readonly IMessageBus messageBus;
     private readonly string poolId;
+    private int tlsWarningEmitted;
 
     private static readonly HttpClient httpClient = new(new HttpClientHandler
     {
         AutomaticDecompression = DecompressionMethods.All,
-
-        ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true,
+        // A 307/308 can replay a wallet password or payout POST body to another origin.
+        AllowAutoRedirect = false,
+        // Keep platform chain, validity and hostname verification for daemon HTTPS.
     });
 
     #region API-Surface
@@ -100,6 +103,7 @@ public class RpcClient
 
         catch(Exception ex)
         {
+            WarnOnTlsFailure(logger, ex, method);
             RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
                 RpcDiagnostics.Stage.Failure, method, failure: ex);
             if(throwOnError)
@@ -130,11 +134,20 @@ public class RpcClient
 
         catch(Exception ex)
         {
+            WarnOnTlsFailure(logger, ex);
             RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
                 RpcDiagnostics.Stage.Failure, batchCount: batch.Length, failure: ex);
             // Caller-observable data is preserved; unsafe consumer logging is tracked in #154.
             return Enumerable.Repeat(new RpcResponse<JToken>(null, new JsonRpcError(-500, ex.Message, null, ex)), batch.Length).ToArray();
         }
+    }
+
+    private void WarnOnTlsFailure(ILogger logger, Exception failure, string method = null)
+    {
+        if(logger.IsEnabled(LogLevel.Warn) && DiagnosticFailure.Category(failure) == "tls-handshake" &&
+           Interlocked.Exchange(ref tlsWarningEmitted, 1) == 0)
+            RpcDiagnostics.Write(logger, LogLevel.Warn, RpcDiagnostics.Transport.Http,
+                RpcDiagnostics.Stage.Failure, method, failure: failure);
     }
 
     public IObservable<byte[]> WebsocketSubscribe(ILogger logger, CancellationToken ct, DaemonEndpointConfig endPoint,
@@ -206,6 +219,11 @@ public class RpcClient
             // send request
             using(var response = await httpClient.SendAsync(request, ct))
             {
+                // A response proves the carrying connection is usable; for HTTPS,
+                // its TLS handshake completed even if the body is invalid (for example, a 401).
+                Volatile.Write(ref tlsWarningEmitted, 0);
+                if((int) response.StatusCode is >= 300 and <= 399)
+                    throw new HttpRequestException("Daemon RPC redirect was refused", null, response.StatusCode);
                 // read response
                 var responseContent = await response.Content.ReadAsStringAsync(ct);
 
@@ -264,6 +282,10 @@ public class RpcClient
             // send request
             using(var response = await httpClient.SendAsync(request, ct))
             {
+                // Re-arm on HTTP response receipt, regardless of body decoding.
+                Volatile.Write(ref tlsWarningEmitted, 0);
+                if((int) response.StatusCode is >= 300 and <= 399)
+                    throw new HttpRequestException("Daemon RPC redirect was refused", null, response.StatusCode);
                 // deserialize response
                 var responseContent = await response.Content.ReadAsStringAsync(ct);
 
@@ -276,7 +298,6 @@ public class RpcClient
                 if(decoded is not JArray items)
                     throw new JsonSerializationException("JSON-RPC batch response contract is incompatible");
                 var result = items.Select(item => DecodeEnvelope(item, serializer)).ToArray();
-
                 messageBus.SendTelemetry(poolId, TelemetryCategory.RpcRequest, "batch",
                     sw.Elapsed, response.IsSuccessStatusCode);
 
@@ -443,7 +464,7 @@ public class RpcClient
                             // connect
                             var protocol = endPoint.Ssl ? "wss" : "ws";
                             var uri = new Uri($"{protocol}://{endPoint.Host}:{endPoint.Port}{endPoint.HttpPath}");
-                            client.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+                            // WSS uses the same platform certificate trust policy as HTTPS.
 
                             RpcDiagnostics.Write(logger, LogLevel.Debug, RpcDiagnostics.Transport.WebSocket,
                                 RpcDiagnostics.Stage.Connect, method, endpointIndex: endpointIndex);

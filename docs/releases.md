@@ -22,6 +22,52 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased (after v0.3.0): verify daemon RPC TLS certificates
+
+HTTPS/HTTP2 and WSS daemon RPC transports now use platform certificate validation
+instead of accepting arbitrary server certificates. All coin families using the
+shared client, plus the independent Ergo and Alephium HTTP clients, are affected.
+Endpoints with expired, untrusted or mismatched
+certificates must renew/replace them or provision their independently verified
+private CA into the service/container trust store before upgrading. Restart to
+retire existing pooled connections. Look for `tls-handshake` in structured RPC
+Warning/Error diagnostics if a daemon fails to reconnect. No database migration
+or insecure-skip option is added. Daemon JSON-RPC HTTP clients no longer follow
+redirects, preventing Ergo/Alephium API-key headers and shared-client POST
+bodies from reaching a redirected origin. Configure the final daemon/proxy URL
+directly. See
+[daemon TLS compatibility and testing](rpc-tls.md).
+
+## Unreleased (after v0.3.0): daemon REST TLS and redirects
+
+Beam explorer, Conceal and Warthog node REST calls now honor the selected
+endpoint's `ssl` and `http2` settings and refuse redirects. Existing
+`ssl: true` or `http2: true` configurations that previously sent REST over
+HTTP will now require a trusted HTTPS endpoint. An HTTP-only daemon or a proxy
+that cannot negotiate the requested HTTP/2 version will fail without a
+plaintext or HTTP/1.1 fallback. **Upgrade the endpoint before restarting the
+pool**: place a trusted TLS proxy in front of a native HTTP listener, point
+`host` and `port` at its final HTTPS address, and provision certificate trust
+for the Miningcore service. HTTP redirects cannot perform this migration.
+See the [daemon REST migration guide](rpc-tls.md#beam-conceal-and-warthog-rest-endpoints).
+Before restarting production pools, verify certificate trust and name, HTTP/2
+ALPN when enabled, REST root paths, and proxy-to-daemon isolation on staging;
+check Warthog's separately configured WebSocket listener as well.
+If a daemon does not reconnect, look for `RPC diagnostic` Warnings with
+`transport: "Rest"` and `failure` of `tls-handshake`, `http2-negotiation` or
+`redirect-refused`. The record identifies the pool and daemon index without
+logging the host, port or wallet URL.
+With `perPoolLogFile` enabled, the warning also appears in that pool's log.
+
+## Unreleased (after v0.3.0): Warthog wallet private key secrecy
+
+Warthog wallet address checks now derive the address locally, removing the
+private key from daemon REST URLs and startup errors. Invalid keys and
+non-lowercase pool addresses fail before daemon startup checks when payment
+processing is enabled for both the cluster and pool. If an older version ran
+with Warthog payments enabled, follow the
+[Warthog key incident guidance](warthog-wallet-key-security.md).
+
 ## Unreleased (after v0.3.0): native floating-point state on CryptoNote load
 
 CryptoNote's Linux shared-library link no longer passes `-Ofast` to the linker

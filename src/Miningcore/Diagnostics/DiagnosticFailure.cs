@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using System.Net.Http;
 using System.Net.WebSockets;
 using System.Security.Authentication;
 using System.Security.Cryptography;
@@ -11,7 +12,27 @@ namespace Miningcore.Diagnostics;
 // runtime type names are a safe diagnostic contract.
 internal static class DiagnosticFailure
 {
-    internal static string Category(Exception error) => error switch
+    internal static string Category(Exception error)
+    {
+        // Transport libraries wrap certificate failures. Bound the walk so a
+        // malformed exception graph cannot consume unbounded diagnostic work.
+        var cause = error;
+        for(var depth = 0; cause != null && depth < 8; cause = cause.InnerException, depth++)
+            if(cause is AuthenticationException)
+                return "tls-handshake";
+
+        // Schannel can report a failed TLS handshake without exposing an
+        // AuthenticationException. This category also includes protocol
+        // negotiation failure, so it does not claim a specific certificate error.
+        cause = error;
+        for(var depth = 0; cause != null && depth < 8; cause = cause.InnerException, depth++)
+            if(cause is HttpRequestException { HttpRequestError: HttpRequestError.SecureConnectionError })
+                return "tls-handshake";
+
+        return DirectCategory(error);
+    }
+
+    private static string DirectCategory(Exception error) => error switch
     {
         null => "unknown",
         TimeoutException => "timeout",

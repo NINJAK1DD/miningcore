@@ -10,6 +10,7 @@ using Autofac;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.BitcoinBlake2b;
+using Miningcore.Blockchain.Warthog;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
@@ -29,6 +30,80 @@ namespace Miningcore.Tests.Payments;
 public class PayoutManagerTests
 {
     private static readonly TimeSpan HostTestTimeout = TimeSpan.FromSeconds(10);
+
+    [Fact]
+    public async Task PayoutCycles_ResolveDisposableHandlersInChildScopes()
+    {
+        var probe = new PayoutScopeProbe();
+        var builder = new ContainerBuilder();
+        builder.RegisterInstance(probe);
+        builder.RegisterType<PayoutScopeHandler>()
+            .As<IPayoutHandler>()
+            .WithMetadata(nameof(CoinFamilyAttribute.SupportedFamilies),
+                new[] { CoinFamily.Warthog });
+        await using var container = builder.Build();
+        probe.Root = container;
+
+        var poolConfig = new PoolConfig
+        {
+            Id = "warthog-scope",
+            Enabled = true,
+            Template = new WarthogCoinTemplate { Family = CoinFamily.Warthog },
+            PaymentProcessing = new PoolPaymentProcessingConfig { Enabled = true },
+        };
+        var pool = Substitute.For<IMiningPool>();
+        pool.Config.Returns(poolConfig);
+        var manager = new PayoutManager(container, Substitute.For<IConnectionFactory>(),
+            Substitute.For<IBlockRepository>(), Substitute.For<IShareRepository>(),
+            Substitute.For<IBalanceRepository>(),
+            new ClusterConfig { PaymentProcessing = new ClusterPaymentProcessingConfig() },
+            Substitute.For<IMessageBus>(), Substitute.For<IPayoutManagerLease>(),
+            new ProcessStatus());
+        manager.AttachPool(pool);
+
+        for(var cycle = 1; cycle <= 3; cycle++)
+        {
+            await manager.ProcessPoolsAsync(CancellationToken.None);
+            Assert.Equal(cycle, probe.ResolvedInChild);
+            Assert.Equal(cycle, probe.Disposed);
+        }
+    }
+
+    private sealed class PayoutScopeProbe
+    {
+        public ILifetimeScope Root { get; set; }
+        public int ResolvedInChild { get; set; }
+        public int Disposed { get; set; }
+    }
+
+    private sealed class PayoutScopeHandler : IPayoutHandler, IDisposable
+    {
+        private readonly ILifetimeScope scope;
+        private readonly PayoutScopeProbe probe;
+
+        public PayoutScopeHandler(ILifetimeScope scope, PayoutScopeProbe probe)
+        {
+            this.scope = scope;
+            this.probe = probe;
+        }
+
+        public Task ConfigureAsync(ClusterConfig cc, PoolConfig pc, CancellationToken ct)
+        {
+            if(!ReferenceEquals(scope, probe.Root))
+                probe.ResolvedInChild++;
+            throw new InvalidOperationException("End the test cycle after handler activation");
+        }
+
+        public Task<Block[]> ClassifyBlocksAsync(IMiningPool pool, Block[] blocks, CancellationToken ct) =>
+            Task.FromResult(blocks);
+        public Task<decimal> UpdateBlockRewardBalancesAsync(IDbConnection con, IDbTransaction tx,
+            IMiningPool pool, Block block, CancellationToken ct) => Task.FromResult(0m);
+        public Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct) => Task.CompletedTask;
+        public double AdjustShareDifficulty(double difficulty) => difficulty;
+        public double AdjustBlockEffort(double effort) => effort;
+        public string FormatAmount(decimal amount) => amount.ToString();
+        public void Dispose() => probe.Disposed++;
+    }
 
     [Fact]
     public void DirectSubmissionClassification_CannotDowngradeObservedState()
@@ -930,7 +1005,7 @@ public class PayoutManagerTests
     [Fact]
     public async Task PpsRetention_IsIndependentOfBlockDiscovery()
     {
-        var context = Substitute.For<IComponentContext>();
+        var context = Substitute.For<ILifetimeScope>();
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var connection = Substitute.For<IDbConnection>();
         var transaction = Substitute.For<IDbTransaction>();
@@ -1003,7 +1078,7 @@ public class PayoutManagerTests
         Func<CancellationToken, Task> executeOverride = null,
         IMessageBus messageBusOverride = null, bool persistedDirect = false)
     {
-        var context = Substitute.For<IComponentContext>();
+        var context = Substitute.For<ILifetimeScope>();
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var connection = Substitute.For<IDbConnection>();
         var transaction = Substitute.For<IDbTransaction>();
