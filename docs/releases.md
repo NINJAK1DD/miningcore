@@ -22,6 +22,17 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased (after v0.3.0): SMTP notification TLS migration
+
+Before upgrading a pool with administrative email enabled, set
+`notifications.email.tlsMode` to `"startTls"` on ports 25/587 or `"implicitTls"` on
+port 465. The SMTP relay must present a trusted, valid certificate whose name
+matches `notifications.email.host`. Missing STARTTLS and certificate failures stop
+delivery; there is no automatic fallback to plaintext. For an unauthenticated
+relay on the same host, the explicit `"localPlaintext"` mode accepts only a
+numeric loopback address and no SMTP credentials. Update copied example files
+before enabling alerts. See the [SMTP transport migration guide](configuration.md#smtp-transport-migration).
+
 ## Unreleased (after v0.3.0): verify daemon RPC TLS certificates
 
 HTTPS/HTTP2 and WSS daemon RPC transports now use platform certificate validation

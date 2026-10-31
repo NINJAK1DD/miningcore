@@ -348,6 +348,12 @@
           "type": [
             "string",
             "null"
+          ],
+          "enum": [
+            null,
+            "startTls",
+            "implicitTls",
+            "localPlaintext"
           ]
         },
         "user": {

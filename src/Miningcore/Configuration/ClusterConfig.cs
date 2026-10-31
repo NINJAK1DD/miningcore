@@ -1319,7 +1319,8 @@ public class RewardRecipient
 public partial class EmailSenderConfig : AuthenticatedNetworkEndpointConfig
 {
     /// <summary>Required SMTP transport policy: startTls, implicitTls, or localPlaintext.</summary>
-    public string TlsMode { get; set; }
+    [JsonConverter(typeof(SmtpTlsModeConverter))]
+    public SmtpTlsMode? TlsMode { get; set; }
     public string FromAddress { get; set; }
     public string FromName { get; set; }
 }

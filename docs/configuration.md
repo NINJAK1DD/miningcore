@@ -211,6 +211,9 @@ TLS modes may use a custom port, but ports 25/587 cannot use implicit TLS and po
 cannot use STARTTLS. The server certificate must have a trusted, valid chain and match
 the configured host. A missing STARTTLS extension, failed upgrade, or invalid
 certificate stops delivery before SMTP authentication. No automatic fallback occurs.
+Certificate revocation checking remains enabled. Ensure the service can reach
+the certificate authority's CRL or OCSP endpoints; a failed check may stop
+delivery, and revocation lookups may outlast the critical alert's short timeout.
 
 For a deliberately unauthenticated relay on the same host, use `"localPlaintext"` with
 `host` set to a numeric loopback address such as `127.0.0.1` or `::1` and omit both `user`
@@ -218,6 +221,9 @@ and `password`. This mode rejects other destinations and credentials. A relay th
 requires credentials must provide TLS instead. If changing from a DNS name to a
 loopback address for a TLS relay, ensure its certificate covers the address, or keep
 the matching DNS name with `startTls`/`implicitTls`.
+Relays in separate Docker containers normally have non-loopback addresses and
+therefore need TLS; only relays sharing the same network namespace can use the
+loopback plaintext mode.
 
 `persistence.postgres.commandTimeout` accepts whole seconds from **1 to 86,400**;
 omitted/null uses **300 seconds**, while the shipped example explicitly uses

@@ -53,7 +53,8 @@ internal static class ConfigurationDiagnosticProjection
             [typeof(NotificationsConfig)] = Fields<NotificationsConfig>(
                 nameof(NotificationsConfig.Enabled), nameof(NotificationsConfig.Email),
                 nameof(NotificationsConfig.Pushover), nameof(NotificationsConfig.Admin)),
-            [typeof(EmailSenderConfig)] = Fields<EmailSenderConfig>(nameof(EmailSenderConfig.Port)),
+            [typeof(EmailSenderConfig)] = Fields<EmailSenderConfig>(
+                nameof(EmailSenderConfig.Port), nameof(EmailSenderConfig.TlsMode)),
             [typeof(PushoverConfig)] = Fields<PushoverConfig>(nameof(PushoverConfig.Enabled)),
             [typeof(AdminNotifications)] = Fields<AdminNotifications>(
                 nameof(AdminNotifications.Enabled), nameof(AdminNotifications.NotifyBlockFound),
@@ -128,8 +129,7 @@ internal static class ConfigurationDiagnosticProjection
                 nameof(DaemonEndpointConfig.HttpPath), nameof(DaemonEndpointConfig.Category)),
             [typeof(ApiTlsConfig)] = Fields<ApiTlsConfig>(nameof(ApiTlsConfig.TlsPfxFile), nameof(ApiTlsConfig.TlsPfxPassword)),
             [typeof(EmailSenderConfig)] = Fields<EmailSenderConfig>(nameof(EmailSenderConfig.Host), nameof(EmailSenderConfig.User),
-                nameof(EmailSenderConfig.Password), nameof(EmailSenderConfig.FromAddress), nameof(EmailSenderConfig.FromName),
-                nameof(EmailSenderConfig.TlsMode)),
+                nameof(EmailSenderConfig.Password), nameof(EmailSenderConfig.FromAddress), nameof(EmailSenderConfig.FromName)),
             [typeof(PushoverConfig)] = Fields<PushoverConfig>(nameof(PushoverConfig.User), nameof(PushoverConfig.Token)),
             [typeof(AdminNotifications)] = Fields<AdminNotifications>(nameof(AdminNotifications.EmailAddress)),
             [typeof(ShareRelayConfig)] = Fields<ShareRelayConfig>(nameof(ShareRelayConfig.PublishUrl), nameof(ShareRelayConfig.SharedEncryptionKey)),
@@ -288,6 +288,10 @@ internal static class ConfigurationDiagnosticProjection
 
         if(type == typeof(PayoutScheme) || type == typeof(BanManagerKind))
             return new JValue(Enum.IsDefined(type, value) ? Enum.GetName(type, value) : Omitted);
+
+        if(type == typeof(SmtpTlsMode))
+            return new JValue(Enum.IsDefined(type, value)
+                ? SmtpTlsModeConverter.ToConfigValue((SmtpTlsMode) value) : Omitted);
 
         // Strings and unknown/derived objects fail closed even if accidentally
         // added to the member allowlist. Never call their ToString or converters.

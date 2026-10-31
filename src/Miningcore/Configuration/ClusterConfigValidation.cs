@@ -1,13 +1,12 @@
 using FluentValidation;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
-using Miningcore.Notifications;
 
 namespace Miningcore.Configuration;
 
 #region Validators
 
-public class EmailSenderConfigValidator : AuthenticatedNetworkEndpointConfigValidator<EmailSenderConfig>
+public class EmailSenderConfigValidator : AbstractValidator<EmailSenderConfig>
 {
     public EmailSenderConfigValidator()
     {
@@ -49,12 +48,7 @@ public class NotificationsConfigValidator : AbstractValidator<NotificationsConfi
         RuleFor(j => j.Email)
             .SetValidator(new EmailSenderConfigValidator())
             .When(j => j.Email != null &&
-                (j.Enabled || j.Admin?.Enabled == true));
-
-        RuleFor(j => j.Email)
-            .NotNull()
-            .When(x => x.Enabled)
-            .WithMessage("You must configure at least one notifications provider when notifications are enabled");
+                j.Admin?.Enabled == true);
     }
 }
 

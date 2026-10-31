@@ -1,5 +1,6 @@
 using Miningcore.Rpc;
 using System.Net;
+using System.Net.Security;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
@@ -422,18 +423,41 @@ public class NotificationService : StartupGatedBackgroundService,
             .Select(x => x.ToString())) + "…";
     }
 
-    public async Task SendEmailAsync(string recipient, string subject, string body, CancellationToken ct)
+    private static readonly RemoteCertificateValidationCallback StrictCertificateValidation =
+        (_, _, _, errors) => SmtpTransportPolicy.CertificateIsValid(errors);
+
+    public Task SendEmailAsync(string recipient, string subject, string body, CancellationToken ct) =>
+        SendEmailAsync(recipient, subject, body, ct, StrictCertificateValidation);
+
+    // The internal overload permits tests to use an isolated certificate trust root.
+    // Every production caller uses the strict platform validation callback above.
+    internal async Task SendEmailAsync(string recipient, string subject, string body,
+        CancellationToken ct, RemoteCertificateValidationCallback certificateValidation)
     {
+        ArgumentNullException.ThrowIfNull(certificateValidation);
         // The critical-sender singleton is separate from the hosted instance under the
         // current Autofac registrations, even in normal operation. Recovery also resolves
         // it without hosting. Delivery cannot rely on the hosted startup validation.
         if(emailSenderConfig == null)
             throw new InvalidOperationException("Email delivery requires notifications.email configuration");
-        var socketOptions = SmtpTransportPolicy.Resolve(emailSenderConfig);
+        // Snapshot the mutable configuration before validating it. Use this same
+        // snapshot for connection and authentication so concurrent changes cannot
+        // turn a validated local relay into a credentialed plaintext send.
+        var email = new EmailSenderConfig
+        {
+            Host = emailSenderConfig.Host,
+            Port = emailSenderConfig.Port,
+            TlsMode = emailSenderConfig.TlsMode,
+            User = emailSenderConfig.User,
+            Password = emailSenderConfig.Password,
+            FromAddress = emailSenderConfig.FromAddress,
+            FromName = emailSenderConfig.FromName,
+        };
+        var socketOptions = SmtpTransportPolicy.Resolve(email);
         logger.Info(() => $"Sending '{subject.ToLower()}' email to {recipient}");
 
         var message = new MimeMessage();
-        message.From.Add(new MailboxAddress(emailSenderConfig.FromName, emailSenderConfig.FromAddress));
+        message.From.Add(new MailboxAddress(email.FromName, email.FromAddress));
         message.To.Add(new MailboxAddress("", recipient));
         message.Subject = subject;
         message.Body = new TextPart("html") { Text = body };
@@ -441,14 +465,13 @@ public class NotificationService : StartupGatedBackgroundService,
         using(var client = new SmtpClient())
         {
             client.CheckCertificateRevocation = true;
-            client.ServerCertificateValidationCallback = (_, _, _, errors) =>
-                SmtpTransportPolicy.CertificateIsValid(errors);
-            await client.ConnectAsync(emailSenderConfig.Host, emailSenderConfig.Port,
+            client.ServerCertificateValidationCallback = certificateValidation;
+            await client.ConnectAsync(email.Host, email.Port,
                 socketOptions, ct);
             if(socketOptions != SecureSocketOptions.None && !client.IsSecure)
                 throw new InvalidOperationException("SMTP TLS negotiation did not complete");
-            if(!string.IsNullOrEmpty(emailSenderConfig.User))
-                await client.AuthenticateAsync(emailSenderConfig.User, emailSenderConfig.Password, ct);
+            if(socketOptions != SecureSocketOptions.None && !string.IsNullOrEmpty(email.User))
+                await client.AuthenticateAsync(email.User, email.Password, ct);
             await client.SendAsync(message, ct);
             await client.DisconnectAsync(true, ct);
         }
@@ -483,6 +506,7 @@ public class NotificationService : StartupGatedBackgroundService,
                 // Keep this aligned with the policy consolidation tracked in issue #148.
                 if(emailSenderConfig == null)
                     throw new PoolStartupException("Admin email notifications require notifications.email configuration");
+                SmtpTransportPolicy.Resolve(emailSenderConfig);
                 obs.Add(Subscribe<AdminNotification>(OnAdminNotificationAsync, ct));
                 obs.Add(Subscribe<BlockFoundNotification>(OnBlockFoundNotificationAsync, ct));
                 obs.Add(Subscribe<PaymentNotification>(OnPaymentNotificationAsync, ct));
