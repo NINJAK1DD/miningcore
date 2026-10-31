@@ -61,7 +61,8 @@ depth is capped at 256 for formatting and each transport; overload logs counted
 omissions. Disabled events do not occupy slots, routine alerts leave 32 slots
 for incidents, and omitted payout or marked financial/security alerts report
 their pool at Error level. Oversized payout events use compact operator summaries
-before queueing.
+before queueing, retaining per-outcome aggregate counts and amounts. Share
+Recorder policy-fallback alerts no longer depend on successful-payment alerts.
 Timeouts bound the local wait and do not prove the provider rejected a message;
 Pushover `status: 1` confirms queueing by the provider, not human receipt.
 See [notification activation and migration](notifications.md).

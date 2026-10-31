@@ -36,7 +36,8 @@ public partial class BitcoinBlake2bStartupTests
         using var dependencies = Scope();
         using var scope = dependencies.BeginLifetimeScope(builder => builder.RegisterInstance(bus));
         var pool = ResolvePool(scope);
-        pool.Configure(LifecycleConfig(), new ClusterConfig { Logging = new ClusterLoggingConfig() });
+        var poolConfig = LifecycleConfig();
+        pool.Configure(poolConfig, new ClusterConfig { Logging = new ClusterLoggingConfig() });
         using var logs = new NLog.LogFactory();
         var target = new NLog.Targets.MemoryTarget { Layout = "${level}|${message}|${exception:format=message}" };
         var config = new NLog.Config.LoggingConfiguration();
@@ -64,7 +65,9 @@ public partial class BitcoinBlake2bStartupTests
             Assert.DoesNotContain($"secondary teardown failure {i}", diagnostics[i]);
         }
         bus.Received(1).SendMessage(Arg.Any<PoolStatusNotification>(), Arg.Any<string>());
-        bus.Received(1).SendMessage(Arg.Any<AdminNotification>(), Arg.Any<string>());
+        bus.Received(1).SendMessage(Arg.Is<AdminNotification>(notification =>
+            notification.Importance == AdminNotificationImportance.FinancialOrSecurity &&
+            notification.PoolId == poolConfig.Id), Arg.Any<string>());
         Assert.Equal("faulted", pool.MiningState);
         Assert.True(pool.MiningFaulted);
         Assert.Null(pool.TryAcquireOperation());

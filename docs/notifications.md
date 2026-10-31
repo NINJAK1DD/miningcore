@@ -47,9 +47,14 @@ payout incidents and explicitly marked financial or security administrative
 alerts. On overflow, Miningcore omits new routine alerts and logs a counted
 warning. Every omitted payout incident or marked administrative alert is logged
 at Error level with its queue, pool and dropped count; inspect retained payout
-and wallet evidence if such an overload occurs. Large payout events are reduced
-to a compact operator alert before queueing, with a pointer to retained evidence.
-Critical persistence alerts bypass these ordinary queues.
+and wallet evidence if such an overload occurs. A de-duplicated incident episode
+marked sent after publication is not re-sent if its ordinary queue later drops
+the alert, so inspect the overflow Error log even if no message arrived. Payout
+events exceeding 2,048 retained items or 512 Ki characters of text are reduced
+to a compact operator alert before queueing. The summary keeps accepted, failed,
+uncertain and not-attempted recipient counts and amounts when reconciliation
+data exists, and points to retained evidence for per-recipient detail. Critical
+persistence alerts bypass these ordinary queues.
 Pushover requests share a two-request gate within a Miningcore process across
 hosted and critical senders,
 with one slot reserved for critical alerts when ordinary traffic is active.

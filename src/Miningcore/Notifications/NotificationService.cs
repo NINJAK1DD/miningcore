@@ -97,6 +97,34 @@ public class NotificationService : StartupGatedBackgroundService,
         notification.Outcome != PaymentNotificationOutcome.Success ||
         !string.IsNullOrEmpty(notification.Error);
 
+    private static PayoutReconciliationTotals SummarizeReconciliation(
+        PayoutReconciliation reconciliation)
+    {
+        if(reconciliation == null) return null;
+
+        static PayoutBucketTotal Total(PayoutReconciliationEntry[] entries)
+        {
+            if(entries == null || entries.Length == 0) return null;
+            var count = 0;
+            decimal? amount = 0;
+            foreach(var entry in entries)
+            {
+                if(entry == null) continue;
+                count++;
+                if(amount.HasValue)
+                {
+                    try { amount += entry.Amount; }
+                    catch(OverflowException) { amount = null; }
+                }
+            }
+            return count == 0 ? null : new PayoutBucketTotal(count, amount);
+        }
+
+        return new PayoutReconciliationTotals(Total(reconciliation.Accepted),
+            Total(reconciliation.Failed), Total(reconciliation.Uncertain),
+            Total(reconciliation.NotAttempted));
+    }
+
     private PaymentNotification CompactOversizedPayment(PaymentNotification notification)
     {
         const int maxItems = 2048;
@@ -173,6 +201,7 @@ public class NotificationService : StartupGatedBackgroundService,
                 SubmittedAmount = notification.SubmittedAmount,
                 PrecisionAdjustment = notification.PrecisionAdjustment,
                 SummaryOnly = true,
+                SummaryTotals = SummarizeReconciliation(notification.Reconciliation),
             };
         }
 
@@ -321,10 +350,12 @@ public class NotificationService : StartupGatedBackgroundService,
             var emailMessage = $"Payout batch {FormatExactHtmlAmount(notification.Amount, symbol)} " +
                 $"from pool {HtmlEncode(notification.PoolId)} {state}. " +
                 "Per-recipient detail was omitted from this alert because the notification payload was large. " +
+                FormatCompactTotals(notification.SummaryTotals, symbol, true) +
                 "Consult retained private payout evidence and wallet history. " + guidance;
             var pushoverMessage = $"Payout batch {FormatExactAmount(notification.Amount, symbol)} " +
                 $"from pool {notification.PoolId} {state}. " +
                 "Per-recipient detail was omitted from this alert because the notification payload was large. " +
+                FormatCompactTotals(notification.SummaryTotals, symbol, false) +
                 "Consult retained private payout evidence and wallet history. " + guidance;
             return (subject, emailMessage, pushoverMessage,
                 outcome == PaymentNotificationOutcome.Success);
@@ -415,6 +446,29 @@ public class NotificationService : StartupGatedBackgroundService,
             (failureSummary == null ? string.Empty : " " + failureSummary);
         return ("Payout Failure Notification", emailFailureMessage,
             pushoverFailureMessage, false);
+    }
+
+    private static string FormatCompactTotals(PayoutReconciliationTotals totals,
+        string symbol, bool html)
+    {
+        if(totals == null) return string.Empty;
+        var sections = new List<string>();
+        Add("Accepted/persisted", totals.Accepted);
+        Add("Failed", totals.Failed);
+        Add("Uncertain", totals.Uncertain);
+        Add("Not attempted", totals.NotAttempted);
+        return sections.Count == 0 ? string.Empty :
+            string.Join(html ? "<br/>" : "\n", sections) + (html ? "<br/>" : "\n");
+
+        void Add(string heading, PayoutBucketTotal bucket)
+        {
+            if(bucket == null) return;
+            var amount = bucket.Amount.HasValue
+                ? html ? FormatExactHtmlAmount(bucket.Amount.Value, symbol)
+                    : FormatExactAmount(bucket.Amount.Value, symbol)
+                : "amount unavailable";
+            sections.Add($"{heading}: {bucket.Count} recipient(s), {amount}.");
+        }
     }
 
     private static void AppendReconciliationSection(List<string> sections, string heading,
@@ -680,27 +734,38 @@ public class NotificationService : StartupGatedBackgroundService,
         Func<T, T> compact = null)
     {
         return messageBus.Listen<T>()
-            .Where(eligible)
-            .Select(msg => (Message: msg, Importance: importance(msg), PoolId: poolId(msg)))
-            .Where(entry => TryReserve(ref pendingFormatting,
-                ref droppedFormatting, "formatting", entry.Importance,
-                entry.PoolId))
-            // Only admitted payout payloads are scanned for large in-memory
-            // details. Full message formatting runs after ObserveOn.
-            .Select(entry =>
+            .Select(msg =>
             {
+                var reserved = false;
                 try
                 {
-                    var retained = compact == null ? entry.Message : compact(entry.Message);
+                    if(msg is null)
+                        throw new ArgumentNullException(nameof(msg));
+                    if(!eligible(msg))
+                        return null;
+
+                    var level = importance(msg);
+                    var affectedPool = poolId(msg);
+                    if(!TryReserve(ref pendingFormatting, ref droppedFormatting,
+                        "formatting", level, affectedPool))
+                        return null;
+                    reserved = true;
+
+                    // Only admitted payout payloads are scanned on the
+                    // publisher thread. Full formatting runs after ObserveOn.
+                    var retained = compact == null ? msg : compact(msg);
                     return new OrdinaryEnvelope(() => format(retained),
-                        entry.Importance, entry.PoolId);
+                        level, affectedPool);
                 }
-                catch
+                catch(Exception ex)
                 {
-                    Interlocked.Decrement(ref pendingFormatting);
-                    throw;
+                    if(reserved)
+                        Interlocked.Decrement(ref pendingFormatting);
+                    LogGuarded(ex);
+                    return null;
                 }
-            });
+            })
+            .Where(envelope => envelope != null);
     }
 
     private OrdinaryNotification FormatSafely(
