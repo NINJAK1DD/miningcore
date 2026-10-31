@@ -831,8 +831,10 @@ public class RpcDiagnosticTests
         Assert.Contains("\"failure\":\"tls-handshake\"", Assert.Single(logs.Messages));
     }
 
-    [Fact]
-    public async Task TlsWarning_RearmsAfterSingleAndBatchHttpResponses()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TlsWarning_RearmsAfterSingleAndBatchHttpResponses(bool bounded)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         using var logs = new CapturedLogs(NLog.LogLevel.Warn);
@@ -855,30 +857,33 @@ public class RpcDiagnosticTests
         // responses, then later failures. No trust-store override is used.
         var endpoint = server.Endpoint();
         var client = new RpcClient(endpoint, new JsonSerializerSettings(), Substitute.For<IMessageBus>(), "test");
+        Task<RpcResponse<JToken>> ExecuteSingle() => bounded
+            ? client.ExecuteBoundedAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token, new RpcResponseLimits(4096, 78))
+            : client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token);
         int Warnings() => logs.Messages.Count(message => message.Contains("\"failure\":\"tls-handshake\"", StringComparison.Ordinal));
 
         endpoint.Ssl = true; // HTTPS against the local HTTP-only listener.
         for(var i = 0; i < 2; i++)
         {
-            var failed = await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token);
+            var failed = await ExecuteSingle();
             Assert.Equal("tls-handshake", DiagnosticFailure.Category(failed.Error?.InnerException));
         }
         Assert.Equal(1, Warnings());
 
         endpoint.Ssl = false;
-        Assert.Null((await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error);
+        Assert.Null((await ExecuteSingle()).Error);
         endpoint.Ssl = true;
         Assert.Equal("tls-handshake", DiagnosticFailure.Category(
-            (await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error?.InnerException));
+            (await ExecuteSingle()).Error?.InnerException));
         Assert.Equal(2, Warnings());
 
         endpoint.Ssl = false;
         endpoint.HttpPath = "/unauthorized";
-        Assert.NotNull((await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error);
+        Assert.NotNull((await ExecuteSingle()).Error);
         endpoint.HttpPath = null;
         endpoint.Ssl = true;
         Assert.Equal("tls-handshake", DiagnosticFailure.Category(
-            (await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error?.InnerException));
+            (await ExecuteSingle()).Error?.InnerException));
         Assert.Equal(3, Warnings());
 
         endpoint.Ssl = false;
@@ -886,7 +891,7 @@ public class RpcDiagnosticTests
             new RpcRequest("getnetworkinfo"))).Error);
         endpoint.Ssl = true;
         Assert.Equal("tls-handshake", DiagnosticFailure.Category(
-            (await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error?.InnerException));
+            (await ExecuteSingle()).Error?.InnerException));
         Assert.Equal(4, Warnings());
 
         endpoint.Ssl = false;
@@ -896,7 +901,7 @@ public class RpcDiagnosticTests
         endpoint.HttpPath = null;
         endpoint.Ssl = true;
         Assert.Equal("tls-handshake", DiagnosticFailure.Category(
-            (await client.ExecuteAsync<JToken>(logs.Logger, "getnetworkinfo", deadline.Token)).Error?.InnerException));
+            (await ExecuteSingle()).Error?.InnerException));
         Assert.Equal(5, Warnings());
         logs.AssertSafe();
     }
@@ -988,8 +993,10 @@ public class RpcDiagnosticTests
         Assert.Equal(0, Volatile.Read(ref redirectedRequests));
     }
 
-    [Fact]
-    public async Task SharedRpcRedirect_DoesNotForwardWalletPassword()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SharedRpcRedirect_DoesNotForwardWalletPassword(bool bounded)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var redirectedRequests = 0;
@@ -1023,8 +1030,11 @@ public class RpcDiagnosticTests
         endpoint.HttpPath = string.Empty;
         var client = new RpcClient(endpoint, new JsonSerializerSettings(),
             Substitute.For<IMessageBus>(), "test");
-        var response = await client.ExecuteAsync<JToken>(logs.Logger, "walletpassphrase",
-            deadline.Token, new object[] { Secret, 60 });
+        var response = bounded
+            ? await client.ExecuteBoundedAsync<JToken>(logs.Logger, "walletpassphrase", deadline.Token,
+                new RpcResponseLimits(4096, 78), new object[] { Secret, 60 })
+            : await client.ExecuteAsync<JToken>(logs.Logger, "walletpassphrase",
+                deadline.Token, new object[] { Secret, 60 });
         Assert.Equal(HttpStatusCode.TemporaryRedirect,
             Assert.IsType<HttpRequestException>(response.Error?.InnerException).StatusCode);
         var request = await originRequest.Task.WaitAsync(deadline.Token);

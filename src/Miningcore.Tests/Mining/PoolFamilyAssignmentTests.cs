@@ -12,6 +12,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
 using AutoMapper;
+using Miningcore.Banning;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.IO;
 using Miningcore.Blockchain;
@@ -26,6 +27,7 @@ using Miningcore.Blockchain.Ethereum;
 using Miningcore.Blockchain.Kaspa;
 using Miningcore.Blockchain.Progpow;
 using Miningcore.Blockchain.Warthog;
+using Miningcore.Blockchain.Xelis;
 using Miningcore.Blockchain.Zano;
 using Miningcore.Configuration;
 using Miningcore.Crypto.Hashing.Progpow;
@@ -58,6 +60,179 @@ public class PoolFamilyAssignmentTests : TestBase
     private static readonly string[] Families = { "Alephium", "Beam", "Bitcoin", "Conceal", "Cryptonote",
         "Equihash", "Ergo", "Ethereum", "Handshake", "Kaspa", "Nexa", "Progpow", "Satoshicash", "Warthog", "Xelis", "Zano" };
     private static bool NeedsNative(string family) => family is "Conceal" or "Cryptonote" or "Zano";
+
+    [Fact]
+    public async Task XelisAuthorizationRetirementRaceClosesQuietlyAndReleasesAssignmentGate()
+    {
+        await using var fixture = await Fixture.Create(this, "Xelis");
+        fixture.Time.Block = true;
+        var authorization = Task.Run(() => fixture.Authorize());
+        try
+        {
+            // Static difficulty processing is inside the assignment gate after
+            // the final suspension check, immediately before job creation.
+            await fixture.Time.Entered.Task.WaitAsync(Timeout);
+            fixture.SuspendXelisWork();
+        }
+        finally
+        {
+            fixture.Time.Block = false;
+            fixture.Time.Release.Set();
+        }
+        await authorization.WaitAsync(Timeout);
+        await fixture.WaitDisconnected();
+        Assert.True(fixture.Connection.IsDisconnectRequested);
+        Assert.False(fixture.Connection.Context.IsAuthorized);
+        Assert.Equal(1, fixture.Connection.Context.AssignmentGate.CurrentCount);
+        Assert.DoesNotContain(fixture.Messages, m => m["method"]?.Value<string>() == "mining.notify");
+        Assert.Empty(fixture.Errors.Logs);
+        fixture.AssertNoBan();
+    }
+
+    [Fact]
+    public async Task XelisListenerRefusesSuspendedTcpBeforeDispatchAndReopensAfterRecovery()
+    {
+        await using var fixture = await Fixture.Create(this, "Xelis");
+        var endpoint = await fixture.StartXelisListener();
+        fixture.SuspendXelisWork();
+        var calls = fixture.DaemonCalls;
+        using(var rejected = new TcpClient(AddressFamily.InterNetwork))
+        {
+            var rejectedDuringConnect = false;
+            try { await rejected.ConnectAsync(endpoint.Address, endpoint.Port).WaitAsync(Timeout); }
+            catch(SocketException ex) when(ex.SocketErrorCode is SocketError.ConnectionReset or
+                SocketError.ConnectionAborted or SocketError.Shutdown)
+            {
+                // Fast abort can win ConnectAsync completion (EPIPE on Linux).
+                // Refusal and timeout remain failures; no unrelated error is accepted.
+                rejectedDuringConnect = true;
+            }
+            try
+            {
+                if(!rejectedDuringConnect)
+                {
+                    var received = await rejected.GetStream().ReadAsync(new byte[1]).AsTask().WaitAsync(Timeout);
+                    Assert.Equal(0, received);
+                }
+            }
+            catch(SocketException ex) when(ex.SocketErrorCode is SocketError.ConnectionReset or SocketError.ConnectionAborted) { }
+            catch(System.IO.IOException ex) when(ex.InnerException is SocketException socket &&
+                socket.SocketErrorCode is SocketError.ConnectionReset or SocketError.ConnectionAborted) { }
+        }
+        Assert.Equal((0, 0), fixture.Pool.ConnectionAdmission.Snapshot);
+        Assert.Equal(0, fixture.Pool.TrackedConnectionTaskCount);
+        Assert.Equal(calls, fixture.DaemonCalls);
+        fixture.AssertNoBan();
+        await fixture.RefreshXelis("xel/v1");
+        using var recovered = new TcpClient(AddressFamily.InterNetwork);
+        await recovered.ConnectAsync(endpoint.Address, endpoint.Port).WaitAsync(Timeout);
+        await recovered.GetStream().WriteAsync(Encoding.UTF8.GetBytes(
+            "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"fixture\"]}\n"));
+        using var reader = new System.IO.StreamReader(recovered.GetStream());
+        var response = JObject.Parse(await reader.ReadLineAsync().WaitAsync(Timeout));
+        Assert.Equal(1, response["id"].Value<int>());
+        Assert.NotNull(response["result"]);
+        Assert.True(response["error"] == null || response["error"].Type == JTokenType.Null);
+        Assert.Equal(1, fixture.Pool.ConnectionAdmission.Snapshot.Active);
+        Assert.Empty(fixture.Errors.Logs);
+        fixture.AssertNoBan();
+    }
+
+    [Theory]
+    [InlineData("mining.subscribe")] [InlineData("mining.authorize")]
+    public async Task XelisSuspensionDisconnectsNewRequestsWithoutAddressRpcsOrBan(string method)
+    {
+        await using var fixture = await Fixture.Create(this, "Xelis");
+        fixture.SuspendXelisWork();
+        fixture.UseWire();
+        var calls = fixture.DaemonCalls;
+        await fixture.DispatchDisconnectingXelisRequest(method);
+        await fixture.WaitDisconnected();
+        Assert.True(fixture.Connection.IsDisconnectRequested);
+        Assert.Equal(calls, fixture.DaemonCalls);
+        fixture.AssertNoBan();
+        Assert.DoesNotContain(fixture.Messages, x => x["method"]?.Value<string>() is "mining.notify" or "mining.set_difficulty");
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public async Task XelisRetirementRejectionsPastBanThresholdDoNotPenalizeMiners(bool recovered)
+    {
+        await using var fixture = await Fixture.Create(this, "Xelis");
+        await fixture.Authorize();
+        await fixture.Flush();
+        var worker = fixture.Connection.ContextAs<XelisWorkerContext>();
+        var old = worker.validJobs.Last();
+        fixture.Pool.Config.Banning = new PoolShareBasedBanningConfig
+            { Enabled = true, CheckThreshold = 2, InvalidPercent = 50, Time = 60 };
+        // Hold the disconnect notification to exercise queued submissions and the
+        // recovery tail independently of the active-session disconnect policy.
+        fixture.SuspendXelisWork();
+        if(recovered) fixture.RecoverXelisWork();
+        for(var i = 0; i < 5; i++)
+        {
+            await fixture.SubmitXelis(old.JobId, 100 + i);
+            fixture.AssertError(100 + i, StratumError.JobNotFound, "mining work unavailable");
+        }
+        Assert.Equal(0, worker.Stats.InvalidShares);
+        Assert.Equal(0, worker.Stats.ValidShares);
+        Assert.False(fixture.Connection.IsDisconnectRequested);
+        fixture.AssertNoBan();
+        if(recovered)
+        {
+            // Unknown work still follows the ordinary invalid-share policy.
+            await fixture.SubmitXelis("unknown-job", 200);
+            Assert.Equal(1, worker.Stats.InvalidShares);
+        }
+    }
+
+    [Fact]
+    public async Task XelisTransitionDisconnectsActualTcpSessionsAndRecoveryAllowsReauthorization()
+    {
+        await using var fixture = await Fixture.Create(this, "Xelis");
+        fixture.UseWire();
+        await fixture.DispatchLogin("mining.authorize", null, 1);
+        fixture.AssertOneSuccess(1);
+        var oldJob = fixture.Connection.ContextAs<XelisWorkerContext>().validJobs.Last();
+        fixture.ObserveXelisSuspension();
+        await fixture.RefreshXelis("xel/v3");
+        await fixture.WaitDisconnected();
+        fixture.AssertNoBan();
+        Assert.True(oldJob.IsRetired);
+        await fixture.RefreshXelis("xel/v1");
+        await fixture.ReconnectXelis();
+        fixture.UseWire();
+        await fixture.DispatchLogin("mining.authorize", null, 1);
+        fixture.AssertOneSuccess(1);
+        Assert.True(fixture.Connection.Context.IsAuthorized);
+        Assert.False(fixture.Connection.IsDisconnectRequested);
+        Assert.Contains(fixture.Messages, m => m["method"]?.Value<string>() == "mining.notify");
+        Assert.True(oldJob.IsRetired);
+        fixture.AssertNoBan();
+    }
+    [Theory]
+    [MemberData(nameof(XelisLifecycleTests.MalformedSubmissions), MemberType = typeof(XelisLifecycleTests))]
+    public async Task XelisMalformedSubmissionReturnsControlledErrorAndKeepsSession(string json)
+    {
+        await using var fixture = await Fixture.Create(this, "Xelis");
+        await fixture.Authorize();
+        await fixture.Flush();
+        var worker = fixture.Connection.ContextAs<XelisWorkerContext>();
+        var jobs = worker.validJobs.ToArray();
+        var calls = fixture.DaemonCalls;
+        await fixture.SubmitXelisParameters(json == null ? null : JToken.Parse(json), 100);
+        fixture.AssertError(100, StratumError.Other, "invalid params");
+        Assert.Equal(1, worker.Stats.InvalidShares);
+        Assert.Equal(0, worker.Stats.ValidShares);
+        Assert.False(fixture.Connection.IsDisconnectRequested);
+        Assert.True(worker.IsAuthorized);
+        Assert.Equal(jobs, worker.validJobs.ToArray());
+        Assert.Equal(calls, fixture.DaemonCalls);
+        fixture.AssertNoBan();
+        Assert.Empty(fixture.Errors.Logs);
+    }
+
     public static IEnumerable<object[]> ManagedFamilies => Cases(false);
     public static IEnumerable<object[]> NativeFamilies => Cases(true);
     private static IEnumerable<object[]> Cases(bool native) => Families.Where(f => NeedsNative(f) == native)
@@ -692,16 +867,22 @@ public class PoolFamilyAssignmentTests : TestBase
         private ILifetimeScope scope;
         private readonly MemoryCache cache = new(new MemoryCacheOptions());
         private readonly CancellationTokenSource stop = new();
-        private readonly TcpClient client = new(AddressFamily.InterNetwork);
+        private TcpClient client = new(AddressFamily.InterNetwork);
         private Task dispatch;
         private Task wireRead;
+        private Task listenerLifetime;
         private readonly DaemonStub daemon = new();
         private readonly LogFactory logs = new();
+        private readonly RecyclableMemoryStreamManager streams = new();
         private string family;
         private ClusterConfig cluster;
         private object job;
         private object manager;
         private MockMasterClock clock;
+        private JsonSerializerSettings serializerSettings;
+        private ILogger logger;
+        private readonly IBanManager bans = Substitute.For<IBanManager>();
+        internal int DaemonCalls => daemon.Calls;
         private TaskCompletionSource flushed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private TaskCompletionSource requestHandled;
         internal TaskCompletionSource RequestEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -731,8 +912,8 @@ public class PoolFamilyAssignmentTests : TestBase
         private void Initialize(PoolFamilyAssignmentTests test, string family)
         {
             this.family = family;
+            serializerSettings = test.jsonSerializerSettings;
             clock = new MockMasterClock { CurrentTime = DateTime.UnixEpoch.AddDays(20000) };
-            var streams = new RecyclableMemoryStreamManager();
             var factory = Substitute.For<IHttpClientFactory>();
             factory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient(new RestStub()));
             scope = test.container.BeginLifetimeScope(b =>
@@ -768,6 +949,7 @@ public class PoolFamilyAssignmentTests : TestBase
             Pool.Configure(config, cluster);
             Pool.VarDiffTimeProvider = Time;
             SetField(Pool, "manager", manager);
+            SetField(Pool, "banManager", bans);
             SetField(manager, "poolConfig", config);
             SetField(manager, "clusterConfig", cluster);
             SetField(manager, "coin", coin);
@@ -793,7 +975,7 @@ public class PoolFamilyAssignmentTests : TestBase
             logConfig.AddRule(LogLevel.Warn, LogLevel.Warn, Warnings);
             logConfig.AddRule(LogLevel.Info, LogLevel.Info, AssignmentDiagnostics);
             logs.Configuration = logConfig;
-            var logger = logs.GetLogger(config.Id);
+            logger = logs.GetLogger(config.Id);
             SetField(Pool, "logger", logger);
             SetField(manager, "logger", logger);
             var rpc = new RpcClient(new DaemonEndpointConfig { Host = "127.0.0.1", Port = daemon.Port,
@@ -818,9 +1000,21 @@ public class PoolFamilyAssignmentTests : TestBase
             job = ReadyJob(family, config, cluster);
             NonBitcoinCandidateCreditTests.ConfigurePolicy(job);
             SetField(manager, "currentJob", job);
+            if(family == "Xelis")
+                ((XelisJob) job).BindEpoch(XelisEpoch());
             if(family == "Equihash")
                 SetProperty(manager, "ChainConfig", ((EquihashCoinTemplate) coin).GetNetwork(NBitcoin.ChainName.Mainnet));
-            client.Connect(endpoint);
+            Connect(endpoint, port);
+            Assert.Null(VarDiffManager.Update(Connection.Context, options, clock));
+            Time.Timestamp = 5 * TimeSpan.TicksPerSecond;
+        }
+
+        private void Connect(IPEndPoint endpoint, PoolEndpoint port)
+        {
+            using var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var socketEndpoint = (IPEndPoint) listener.LocalEndpoint;
+            client.Connect(socketEndpoint);
             var socket = listener.AcceptSocket();
             Connection = new StratumConnection(logger, streams, clock, "concrete", false);
             Invoke(Pool, "OnConnect", Connection, endpoint);
@@ -831,12 +1025,12 @@ public class PoolFamilyAssignmentTests : TestBase
                 SetProperty(worker, "ExtraNonce1", "00000001");
             if(family is "Ethereum" or "Zano") SetProperty(worker, "ProtocolVersion", 2);
             Invoke(Pool, "RegisterConnection", Connection);
-            var onRequest = poolType.GetMethod("OnRequestAsync", BindingFlags.Instance | BindingFlags.NonPublic, null,
+            var onRequest = Pool.GetType().GetMethod("OnRequestAsync", BindingFlags.Instance | BindingFlags.NonPublic, null,
                 new[] { typeof(StratumConnection), typeof(Timestamped<JsonRpcRequest>), typeof(CancellationToken) }, null);
             Assert.NotNull(onRequest);
             Connection.SendMessageOverride = (message, _) =>
             {
-                RecordMessage(JObject.Parse(JsonConvert.SerializeObject(message, test.jsonSerializerSettings)));
+                RecordMessage(JObject.Parse(JsonConvert.SerializeObject(message, serializerSettings)));
                 return Task.CompletedTask;
             };
             dispatch = Connection.DispatchAsync(socket, stop.Token, new StratumEndpoint(endpoint, port),
@@ -847,8 +1041,54 @@ public class PoolFamilyAssignmentTests : TestBase
                         new Timestamped<JsonRpcRequest>(request, clock.Now), ct }); requestHandled?.TrySetResult(); }
                     catch(Exception ex) { requestHandled?.TrySetException(ex); throw; }
                 }, _ => { }, (_, _) => { });
-            Assert.Null(VarDiffManager.Update(worker, options, clock));
-            Time.Timestamp = 5 * TimeSpan.TicksPerSecond;
+        }
+
+        internal async Task ReconnectXelis()
+        {
+            await WaitDisconnected();
+            if(wireRead != null) await wireRead.WaitAsync(Timeout);
+            client.Dispose();
+            Invoke(Pool, "UnregisterConnection", Connection);
+            client = new TcpClient(AddressFamily.InterNetwork);
+            Messages.Clear();
+            var port = Pool.Config.Ports.First();
+            Connect(new IPEndPoint(IPAddress.Loopback, port.Key), port.Value);
+        }
+
+        internal Task WaitDisconnected() => dispatch.WaitAsync(Timeout);
+        internal async Task<IPEndPoint> StartXelisListener()
+        {
+            Connection.Disconnect();
+            await WaitDisconnected();
+            Invoke(Pool, "UnregisterConnection", Connection);
+            var port = Pool.Config.Ports.Single();
+            var endpoint = new StratumEndpoint(new IPEndPoint(IPAddress.Loopback, port.Key), port.Value);
+            var reservation = new StratumListenerReservation(Pool.Config.Id, endpoint,
+                StratumServer.CreateBoundSocket(endpoint.IPEndPoint));
+            reservation.Activate();
+            listenerLifetime = ((StratumServer) Pool).RunAsync(stop.Token, reservation);
+            return endpoint.IPEndPoint;
+        }
+        internal void UseWire()
+        {
+            Connection.SendMessageOverride = null;
+            wireRead = ReadWireMessages();
+        }
+        internal void AssertNoBan() => bans.DidNotReceiveWithAnyArgs().Ban(default, default);
+        internal void ObserveXelisSuspension() => ((XelisPool) Pool).ObserveWorkSuspension();
+        private XelisWorkEpoch XelisEpoch() => (XelisWorkEpoch) typeof(XelisJobManager)
+            .GetField("workEpoch", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(manager);
+        internal void RecoverXelisWork()
+        {
+            SetField(manager, "workEpoch", new XelisWorkEpoch());
+            SetCandidateCeiling(100);
+            ((XelisJob) job).BindEpoch(XelisEpoch());
+        }
+        internal async Task RefreshXelis(string algorithm)
+        {
+            daemon.XelisAlgorithm = algorithm;
+            await (Task<bool>) Invoke(manager, "UpdateJob", stop.Token, null);
+            job = ((XelisJobManager) manager).GetJobForStratum();
         }
 
         internal Task Idle() => (Task) Invoke(Pool, "UpdateVarDiffAsync", Connection, true, stop.Token);
@@ -860,6 +1100,10 @@ public class PoolFamilyAssignmentTests : TestBase
         }
 
         internal void RemoveTemplateForFault() => SetField(manager, "currentJob", null);
+        internal void SuspendXelisWork()
+        {
+            XelisEpoch().Retire();
+        }
         internal void ConfigureKaspaStatic(bool enabled) => SetField(Pool, "extraPoolConfig",
             new Miningcore.Blockchain.Kaspa.Configuration.KaspaPoolConfigExtra { EnableStaticDifficulty = enabled });
         internal Task DeviceRequest(double difficulty, int id = 2) => DispatchRequest(new JsonRpcRequest(
@@ -937,6 +1181,7 @@ public class PoolFamilyAssignmentTests : TestBase
                     RecordMessage(JObject.Parse(line));
             }
             catch(Exception) when(stop.IsCancellationRequested) { }
+            catch(System.IO.IOException) when(Connection.IsDisconnectRequested) { }
         }
 
         internal Task DispatchLogin(string method, double? difficulty, int id, bool nicehash = false)
@@ -966,6 +1211,17 @@ public class PoolFamilyAssignmentTests : TestBase
         }
 
         internal Task SubmitProgpow(object parameters, int id) => DispatchRequest(new JsonRpcRequest(ProgpowStratumMethods.SubmitShare, parameters, id));
+        internal Task SubmitXelis(string jobId, int id) => DispatchRequest(new JsonRpcRequest(XelisStratumMethods.SubmitShare,
+            new[] { "fixture", jobId, "0000000000000001" }, id));
+        internal Task SubmitXelisParameters(object parameters, int id) =>
+            DispatchRequest(new JsonRpcRequest(XelisStratumMethods.SubmitShare, parameters, id));
+        internal async Task DispatchDisconnectingXelisRequest(string method)
+        {
+            requestHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await client.GetStream().WriteAsync(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(
+                new JsonRpcRequest(method, new[] { "fixture", "worker", "x" }, 1)) + "\n"));
+            await requestHandled.Task.WaitAsync(Timeout);
+        }
 
         internal void AssertError(int id, StratumError code, string message)
         {
@@ -1054,6 +1310,8 @@ public class PoolFamilyAssignmentTests : TestBase
                     await dispatch.WaitAsync(Timeout);
                 if(wireRead != null)
                     await wireRead.WaitAsync(Timeout);
+                if(listenerLifetime != null)
+                    await listenerLifetime.WaitAsync(Timeout);
             }
             finally
             {
@@ -1163,6 +1421,8 @@ public class PoolFamilyAssignmentTests : TestBase
     }
     private sealed class DaemonStub : IAsyncDisposable
     {
+        internal int Calls;
+        internal string XelisAlgorithm = "xel/v1";
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource stop = new();
         private readonly Task serve;
@@ -1182,9 +1442,12 @@ public class PoolFamilyAssignmentTests : TestBase
                         if(line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase)) length = int.Parse(line[15..]);
                     var data = new char[length];
                     await reader.ReadBlockAsync(data, stop.Token);
+                    Interlocked.Increment(ref Calls);
                     var id = JObject.Parse(new string(data))["id"];
                     var response = Encoding.UTF8.GetBytes(new JObject { ["id"] = id, ["result"] = new JObject
-                        { ["isvalid"] = true, ["is_valid"] = true, ["type"] = "regular", ["address"] = "fixture" }, ["error"] = null }.ToString(Formatting.None));
+                        { ["isvalid"] = true, ["is_valid"] = true, ["type"] = "regular", ["address"] = "fixture",
+                          ["difficulty"] = "100", ["algorithm"] = XelisAlgorithm, ["topoheight"] = 1,
+                          ["template"] = new string('0', 256), ["miner_work"] = new string('a', 224) }, ["error"] = null }.ToString(Formatting.None));
                     var headers = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {response.Length}\r\nConnection: close\r\n\r\n");
                     await stream.WriteAsync(headers, stop.Token);
                     await stream.WriteAsync(response, stop.Token);

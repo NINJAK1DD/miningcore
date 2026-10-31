@@ -26,7 +26,14 @@ namespace Miningcore.Rpc;
 public class RpcClient
 {
     public RpcClient(DaemonEndpointConfig endPoint, JsonSerializerSettings serializerSettings, IMessageBus messageBus, string poolId)
+        : this(endPoint, serializerSettings, messageBus, poolId, sharedHttpClient)
     {
+    }
+
+    internal RpcClient(DaemonEndpointConfig endPoint, JsonSerializerSettings serializerSettings, IMessageBus messageBus, string poolId, HttpClient transport)
+    {
+        Contract.RequiresNonNull(transport);
+        httpClient = transport;
         Contract.RequiresNonNull(serializerSettings);
         Contract.RequiresNonNull(messageBus);
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(poolId));
@@ -49,7 +56,8 @@ public class RpcClient
     private readonly string poolId;
     private int tlsWarningEmitted;
 
-    private static readonly HttpClient httpClient = new(new HttpClientHandler
+    private readonly HttpClient httpClient;
+    private static readonly HttpClient sharedHttpClient = new(new HttpClientHandler
     {
         AutomaticDecompression = DecompressionMethods.All,
         // A 307/308 can replay a wallet password or payout POST body to another origin.
@@ -59,15 +67,29 @@ public class RpcClient
 
     #region API-Surface
 
-    public async Task<RpcResponse<TResponse>> ExecuteAsync<TResponse>(ILogger logger, string method, CancellationToken ct,
-        object payload = null, bool throwOnError = false)
+    // Preserve the original CLR signature for separately compiled consumers.
+    public Task<RpcResponse<TResponse>> ExecuteAsync<TResponse>(ILogger logger, string method, CancellationToken ct,
+        object payload = null, bool throwOnError = false) where TResponse : class =>
+        ExecuteCoreAsync<TResponse>(logger, method, ct, payload, throwOnError, null);
+
+    public Task<RpcResponse<TResponse>> ExecuteBoundedAsync<TResponse>(ILogger logger, string method, CancellationToken ct,
+        RpcResponseLimits responseLimits, object payload = null, bool throwOnError = false) where TResponse : class
+    {
+        ArgumentNullException.ThrowIfNull(responseLimits);
+        return ExecuteCoreAsync<TResponse>(logger, method, ct, payload, throwOnError, responseLimits);
+    }
+
+    private async Task<RpcResponse<TResponse>> ExecuteCoreAsync<TResponse>(ILogger logger, string method, CancellationToken ct,
+        object payload, bool throwOnError, RpcResponseLimits responseLimits)
         where TResponse : class
     {
         Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(method));
+        if(responseLimits != null && (responseLimits.MaxBytes <= 0 || responseLimits.MaxNumericTokenChars <= 0))
+            throw new ArgumentOutOfRangeException(nameof(responseLimits));
 
         try
         {
-            var response = await RequestAsync(logger, ct, config, method, payload);
+            var response = await RequestAsync(logger, ct, config, method, payload, responseLimits);
 
             try
             {
@@ -181,7 +203,7 @@ public class RpcClient
 
     #endregion // API-Surface
 
-    private async Task<JsonRpcResponse<JToken>> RequestAsync(ILogger logger, CancellationToken ct, DaemonEndpointConfig endPoint, string method, object payload)
+    private async Task<JsonRpcResponse<JToken>> RequestAsync(ILogger logger, CancellationToken ct, DaemonEndpointConfig endPoint, string method, object payload, RpcResponseLimits responseLimits)
     {
         var sw = Stopwatch.StartNew();
 
@@ -217,15 +239,29 @@ public class RpcClient
                 RpcDiagnostics.Stage.Request, method);
 
             // send request
-            using(var response = await httpClient.SendAsync(request, ct))
+            // ResponseHeadersRead must retain the previous overall HttpClient timeout
+            // for body reads as well as headers, including an unresponsive chunked peer.
+            using var responseDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            if(responseLimits != null) responseDeadline.CancelAfter(httpClient.Timeout);
+            var token = responseLimits == null ? ct : responseDeadline.Token;
+            var completion = responseLimits == null ? HttpCompletionOption.ResponseContentRead : HttpCompletionOption.ResponseHeadersRead;
+            try
             {
+                using var response = await httpClient.SendAsync(request, completion, token);
                 // A response proves the carrying connection is usable; for HTTPS,
                 // its TLS handshake completed even if the body is invalid (for example, a 401).
                 Volatile.Write(ref tlsWarningEmitted, 0);
                 if((int) response.StatusCode is >= 300 and <= 399)
                     throw new HttpRequestException("Daemon RPC redirect was refused", null, response.StatusCode);
-                // read response
-                var responseContent = await response.Content.ReadAsStringAsync(ct);
+                var responseContent = responseLimits == null
+                    ? await response.Content.ReadAsStringAsync(ct)
+                    : await ReadBoundedResponseAsync(response.Content, responseLimits.MaxBytes, token);
+                try { responseLimits?.ValidateNumbers(responseContent); }
+                catch(JsonReaderException ex) when(!response.IsSuccessStatusCode)
+                {
+                    // Preserve HTTP attribution without letting error bodies bypass numeric limits.
+                    throw new HttpRequestException("JSON-RPC HTTP response could not be decoded", ex, response.StatusCode);
+                }
 
                 RpcDiagnostics.Write(logger, LogLevel.Trace, RpcDiagnostics.Transport.Http,
                     RpcDiagnostics.Stage.Response, method, status: (int) response.StatusCode,
@@ -238,7 +274,30 @@ public class RpcClient
 
                 return result;
             }
+            catch(OperationCanceledException ex) when(responseLimits != null && !ct.IsCancellationRequested && responseDeadline.IsCancellationRequested)
+            {
+                // Retain the structural timeout/caller-cancellation distinction.
+                throw new TaskCanceledException("JSON-RPC request timed out", new TimeoutException("JSON-RPC response deadline expired", ex), token);
+            }
         }
+    }
+
+    private static async Task<string> ReadBoundedResponseAsync(HttpContent content, int maxBytes, CancellationToken ct)
+    {
+        if(content.Headers.ContentLength > maxBytes)
+            throw new InvalidDataException("JSON-RPC response exceeds its byte limit");
+        await using var stream = await content.ReadAsStreamAsync(ct);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[Math.Min(4096, maxBytes)];
+        while(true)
+        {
+            var count = await stream.ReadAsync(chunk, ct);
+            if(count == 0) break;
+            if(buffer.Length + count > maxBytes)
+                throw new InvalidDataException("JSON-RPC response exceeds its byte limit");
+            buffer.Write(chunk, 0, count);
+        }
+        return Encoding.UTF8.GetString(buffer.GetBuffer(), 0, checked((int) buffer.Length));
     }
 
     private async Task<JsonRpcResponse<JToken>[]> BatchRequestAsync(ILogger logger, CancellationToken ct, DaemonEndpointConfig endPoint, RpcRequest[] batch)

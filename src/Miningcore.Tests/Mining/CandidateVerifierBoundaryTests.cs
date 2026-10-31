@@ -81,7 +81,7 @@ public class CandidateVerifierBoundaryTests
     }
     private sealed class Xel : XelisJob
     {
-        internal Share Verify(StratumConnection worker) => ProcessShareInternal(worker, "0000000000000001");
+        internal Share Verify(StratumConnection worker) => ProcessShareInternal(worker, "0000000000000001").Share;
         protected override byte[] SerializeCoinbase(byte[] extra, byte[] nonce) => new byte[112];
         protected override byte[] SerializeHeader(byte[] extra, byte[] nonce) => new byte[112];
     }
@@ -151,6 +151,7 @@ public class CandidateVerifierBoundaryTests
         else if(family == "Xelis")
         {
             var job = new Xel(); source = job; context = new XelisWorkerContext { ExtraNonce1 = "00" }; verify = job.Verify;
+            Set(job, "Algorithm", XelisConstants.AlgorithmXelisHashV1);
             Set(job, "BlockTemplate", new Miningcore.Blockchain.Xelis.DaemonResponses.GetBlockTemplateResponse());
             Set(job, "BlockHeader", new Miningcore.Blockchain.Xelis.DaemonResponses.GetBlockHeaderResponse { TopoHeight = 101 });
             Set(job, "xelisHash", hash); Set(job, "blake3Hasher", hash);

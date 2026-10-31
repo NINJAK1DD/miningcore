@@ -29,6 +29,7 @@ public class XelisWorkerContext : WorkerContextBase
 
     public virtual void AddJob(XelisJob job, int maxActiveJobs)
     {
+        job.EnsureActive();
         if(!validJobs.Contains(job))
             validJobs.Enqueue(job);
 
@@ -38,6 +39,13 @@ public class XelisWorkerContext : WorkerContextBase
 
     public XelisJob GetJob(string jobId)
     {
-        return validJobs.ToArray().FirstOrDefault(x => x.JobId == jobId);
+        return validJobs.ToArray().FirstOrDefault(x => x.JobId == jobId && !x.IsRetired);
+    }
+
+    internal XelisJob GetJobForSubmission(string jobId)
+    {
+        var job = validJobs.ToArray().FirstOrDefault(x => x.JobId == jobId);
+        job?.EnsureActive(); // Preserve the retirement reason, including after recovery.
+        return job;
     }
 }

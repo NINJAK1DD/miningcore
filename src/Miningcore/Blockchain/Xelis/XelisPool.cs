@@ -44,8 +44,36 @@ public class XelisPool : PoolBase
     private XelisPoolConfigExtra extraPoolConfig;
     private XelisCoinTemplate coin;
 
+    protected override bool IsConnectionAdmissionOpen =>
+        base.IsConnectionAdmissionOpen && manager is { IsWorkSuspended: false };
+
+    protected override void OnConnect(StratumConnection connection, System.Net.IPEndPoint endpoint)
+    {
+        // Accept checks admission before registering; close the race if suspension
+        // began before registration made this connection visible to the sweep.
+        if(!IsConnectionAdmissionOpen) throw new XelisWorkUnavailableException();
+        base.OnConnect(connection, endpoint);
+    }
+
+    internal void ObserveWorkSuspension()
+    {
+        var observedManager = manager;
+        observedManager.WorkSuspended += DisconnectSuspendedMiners;
+        disposables.Add(System.Reactive.Disposables.Disposable.Create(() =>
+            observedManager.WorkSuspended -= DisconnectSuspendedMiners));
+    }
+
+    private void DisconnectSuspendedMiners()
+    {
+        // No IP ban: closing sessions lets miners try their configured failover.
+        foreach(var connection in connections.Values)
+            Guard(() => Disconnect(connection), ex =>
+                RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "XelisPool.SetupJobManager", failure: ex));
+    }
+
     protected virtual async Task OnSubscribeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(manager.IsWorkSuspended) { Disconnect(connection); return; }
         var request = tsRequest.Value;
 
         if(request.Id == null)
@@ -114,6 +142,7 @@ public class XelisPool : PoolBase
     
     protected virtual async Task OnAuthorizeAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
     {
+        if(manager.IsWorkSuspended) { Disconnect(connection); return; }
         var request = tsRequest.Value;
 
         if(request.Id == null)
@@ -140,10 +169,18 @@ public class XelisPool : PoolBase
 
         // assumes that minerName is an address
         minerName = await manager.NormalizeAddressAsync(minerName, ct);
+        if(manager.IsWorkSuspended || connection.IsDisconnectRequested) { Disconnect(connection); return; }
         context.IsAuthorized = await manager.ValidateAddressAsync(minerName, ct);
 
         context.Miner = minerName;
         context.Worker = workerName;
+
+        if(manager.IsWorkSuspended || connection.IsDisconnectRequested)
+        {
+            context.IsAuthorized = false;
+            Disconnect(connection);
+            return;
+        }
 
         if(context.IsAuthorized)
         {
@@ -172,6 +209,8 @@ public class XelisPool : PoolBase
             {
                 assignmentGate.Activate();
                 ct.ThrowIfCancellationRequested();
+                if(manager.IsWorkSuspended || connection.IsDisconnectRequested)
+                    throw new XelisWorkUnavailableException();
                 // Static diff
                 if(staticDiff.HasValue &&
                    (context.VarDiff != null && staticDiff.Value >= context.VarDiff.Config.MinDiff ||
@@ -184,10 +223,20 @@ public class XelisPool : PoolBase
                 }
 
                 var minerJobParams = CreateWorkerJob(connection, context.IsAuthorized);
+                if(minerJobParams == null)
+                    throw new XelisWorkUnavailableException();
 
                 // send intial update
                 await connection.NotifyAsync(XelisStratumMethods.SetDifficulty, new object[] { context.Difficulty });
                 await connection.NotifyAsync(XelisStratumMethods.MiningNotify, minerJobParams);
+            }
+            catch(XelisWorkUnavailableException)
+            {
+                // Expected retirement can race the last check or assignment
+                // creation after authorization succeeded. Close quietly while
+                // retaining the same terminal assignment cleanup and gate release.
+                Guard(() => context.CloseDifficultyAssignments());
+                Guard(() => Disconnect(connection));
             }
             catch(Exception ex)
             {
@@ -214,18 +263,28 @@ public class XelisPool : PoolBase
 
     private object CreateWorkerJob(StratumConnection connection, bool cleanJob)
     {
-        WarnAboveCandidateTarget(connection);
-        var context = connection.ContextAs<XelisWorkerContext>();
-        var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
-        var job = (XelisJob) manager.GetJobForStratum().ForWorker(context, () => manager.NextWorkerJobId());
-
-        // update context
-        lock(context)
+        var source = manager.GetJobForStratum();
+        if(source == null)
         {
-            context.AddJob(job, maxActiveJobs);
+            if(manager.IsWorkSuspended) return null;
+            throw new InvalidOperationException("No Xelis work is available");
         }
+        try
+        {
+            WarnAboveCandidateTarget(connection);
+            var context = connection.ContextAs<XelisWorkerContext>();
+            var maxActiveJobs = extraPoolConfig?.MaxActiveJobs ?? 8;
+            var job = source.ForWorker(context, () => manager.NextWorkerJobId());
 
-        return job.GetJobParams(cleanJob);
+            // update context
+            lock(context)
+            {
+                context.AddJob(job, maxActiveJobs);
+            }
+
+            return job.GetJobParams(cleanJob);
+        }
+        catch(XelisWorkUnavailableException) { return null; }
     }
 
     protected virtual async Task OnSubmitAsync(StratumConnection connection, Timestamped<JsonRpcRequest> tsRequest, CancellationToken ct)
@@ -235,6 +294,7 @@ public class XelisPool : PoolBase
 
         try
         {
+            if(manager.IsWorkSuspended) throw new XelisWorkUnavailableException();
             if(request.Id == null)
                 throw new StratumException(StratumError.MinusOne, "missing request id");
 
@@ -256,7 +316,14 @@ public class XelisPool : PoolBase
             else if(!context.IsSubscribed)
                 throw new StratumException(StratumError.NotSubscribed, "not subscribed");
 
-            var requestParams = request.ParamsAs<string[]>();
+            // Validate through the manager without casts/coercions that can
+            // throw ordinary exceptions for malformed miner-controlled JSON.
+            var requestParams = request.Params switch
+            {
+                Newtonsoft.Json.Linq.JArray values => values.ToObject<object[]>(),
+                object[] values => values,
+                _ => null,
+            };
 
             // submit
             var share = await manager.SubmitShareAsync(connection, requestParams, ct);
@@ -290,6 +357,13 @@ public class XelisPool : PoolBase
             await UpdateVarDiffAsync(connection, false, ct);
         }
 
+        catch(XelisWorkUnavailableException)
+        {
+            // Retired assignments, including the recovery tail, never count
+            // against the miner's invalid-share ratio or trigger an IP ban.
+            PublishTelemetry(TelemetryCategory.Share, clock.Now - tsRequest.Timestamp.UtcDateTime, false);
+            throw;
+        }
         catch(StratumException ex)
         {
             // telemetry
@@ -318,6 +392,7 @@ public class XelisPool : PoolBase
                 await connection.NotifyAsync(XelisStratumMethods.SetDifficulty, new object[] { context.Difficulty });
 
             var minerJobParams = CreateWorkerJob(connection, (bool) ((object[]) jobParams)[^1]);
+            if(minerJobParams == null) return;
 
             // send job
             await connection.NotifyAsync(XelisStratumMethods.MiningNotify, minerJobParams);
@@ -332,6 +407,8 @@ public class XelisPool : PoolBase
     }
 
     protected override bool UsesCandidateDifficultyPolicy => true;
+    // During suspension the null job gives an unbounded ceiling; admission is
+    // closed and no accepted shares can drive VarDiff until fresh work returns.
     protected override double CandidateAssignmentLimit => manager?.CandidateDifficultyLimit ?? double.MaxValue;
 
     public override double ShareMultiplier => coin.ShareMultiplier;
@@ -356,6 +433,7 @@ public class XelisPool : PoolBase
             new TypedParameter(typeof(IExtraNonceProvider), new XelisExtraNonceProvider(poolConfig.Id, extraNonce1Size, clusterConfig.InstanceId)));
 
         manager.Configure(poolConfig, clusterConfig);
+        ObserveWorkSuspension();
 
         await manager.StartAsync(ct);
 
@@ -439,6 +517,7 @@ public class XelisPool : PoolBase
 
         catch(StratumException ex)
         {
+            if(connection.IsDisconnectRequested) return;
             await connection.RespondErrorAsync(ex.Code, ex.Message, request.Id, false);
         }
     }
@@ -454,6 +533,7 @@ public class XelisPool : PoolBase
 
             // send varDiff update
             await connection.NotifyAsync(XelisStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
+            if(minerJobParams == null) return;
             await connection.NotifyAsync(XelisStratumMethods.MiningNotify, minerJobParams);
         }
     }
