@@ -391,6 +391,13 @@ CREATE TABLE IF NOT EXISTS pearl_payout_intents (
     created TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS pearl_payout_holds (
+    poolid TEXT NOT NULL,
+    blockid BIGINT NOT NULL REFERENCES blocks(id) ON DELETE RESTRICT,
+    blockhash TEXT NOT NULL CHECK (blockhash ~ '^[0-9a-f]{64}$'),
+    PRIMARY KEY (poolid, blockid)
+);
+
 -- BEGIN GENERATED PPS ARITHMETIC MIGRATION
 -- Source: add_pps_arithmetic_version.sql; run scripts/release/sync-pps-arithmetic-migration.py
 -- Stop all share producers/relays and drain recovery journals before upgrading.

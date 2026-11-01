@@ -30,6 +30,8 @@ backup when asking for help.
 5. Apply the documented database migrations as the schema owner, after stopping
    writers and taking a backup. Use an ordinary application role for Miningcore.
    Both share-accounting migrations and `add_pearl_candidates.sql` are required.
+   Re-run the idempotent Pearl migration on upgrade to create `pearl_payout_holds`,
+   and grant the application role SELECT/INSERT/UPDATE/DELETE on that table.
 
 Allow substantial memory headroom beyond the worker's 8 GiB address-space limit
 for Miningcore, the node, wallet, database, and operating system. Only one
@@ -349,7 +351,7 @@ proof-enabled chain mining, mature payouts and paid-ledger restart checks for ea
 | PPS pool refuses startup | Enable payment processing at both levels, configure local PostgreSQL, apply the accounting migrations, and match any arithmetic cutover exactly. Do not bypass the schema/privilege checks. |
 | PPS balances increase but payments wait | Check minimum payment, spendable reserve, Oyster synchronization/unlock state, pending payout intent and quarantined blocks. Stop admission if reserve funding is inadequate; accepted liabilities remain owed. |
 | Missing canonical block identity or payout synchronization fails | Check that RPC returns valid block hashes, not null, empty or malformed results. Restore node/wallet RPC health and retry; do not manually orphan rewards or resend payments to bypass this hold. |
-| Payments held because a confirmed block is above the node tip | Restore node synchronization and let classification retry after catch-up. Matching wallet/node tips on a shorter chain do not authorize new payouts. Existing submitted intents can still reconcile; do not delete them or manually resend. |
+| Payments held for an above-tip or deferred confirmed block | Restore node synchronization and let classification recheck the exact block hash on a stable chain. Catch-up alone does not clear the durable hold. Held blocks are prioritized across bounded batches, including after restart. Existing submitted intents can still reconcile; do not delete holds/intents or manually resend. |
 | PPLNS rewards are smaller than a full block | Check `factor` and whether enough assigned work fills the window. Achieved proof difficulty does not determine payout weight. |
 | PPLNS reports an invalid factor | Set a positive JSON number; zero, negative values, null and strings are rejected before mining starts. |
 | Miner connects but no work arrives | Check the selected Pearl algorithm, supported release, TLS port, valid network-specific wallet, and `v2` protocol. Inspect template readiness. |

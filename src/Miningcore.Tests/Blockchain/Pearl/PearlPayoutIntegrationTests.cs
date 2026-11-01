@@ -53,6 +53,7 @@ public class PearlPayoutIntegrationTests
         internal string Genesis = PearlJobManager.Genesis(PearlNetwork.Regtest);
         internal string BestHash = new('a', 64);
         internal string CanonicalHash = new('a', 64);
+        internal string BestHashAfterCanonicalLookup;
         internal ulong Height = 120;
         internal decimal Available = 1000000;
         internal bool Locked, LostResponse, Conflict, Partial, Offline, NodeMissing, NodeOffline, RejectSend, PartialBatch;
@@ -82,7 +83,11 @@ public class PearlPayoutIntegrationTests
                     if(Offline) error = new JObject {["code"] = -28, ["message"] = "temporarily unavailable"};
                     else switch(method)
                     {
-                        case "getblockhash": result = request["params"][0].Value<long>() == 0 ? Genesis : CanonicalHash; break;
+                        case "getblockhash":
+                            var height = request["params"][0].Value<long>();
+                            result = height == 0 ? Genesis : CanonicalHash;
+                            if(height != 0 && BestHashAfterCanonicalLookup != null) BestHash = BestHashAfterCanonicalLookup;
+                            break;
                         case "getbestblockhash": result = BestHash; break;
                         case "getblockchaininfo": result = new JObject {["blocks"] = Height, ["bestblockhash"] = BestHash}; break;
                         case "validateaddress": result = new JObject {["ismine"] = true}; break;
@@ -219,13 +224,96 @@ public class PearlPayoutIntegrationTests
 
         // The same stored block is still eligible when the node reaches its height.
         lab.Server.Height = confirmed.BlockHeight;
+        Assert.Equal(1, await lab.Count("pearl_payout_holds"));
+        await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, balances, CancellationToken.None));
+        Assert.Equal(0, lab.Server.Sends);
         var retry = Assert.Single(await handler.ReconciliationBlocksAsync(lab.Server.Height, 0, CancellationToken.None));
         lab.Server.Calls.Clear();
         Assert.Empty(await handler.ClassifyBlocksAsync(null, new[] {retry}, CancellationToken.None));
         Assert.Contains("getblockhash", lab.Server.Calls);
         Assert.Equal(BlockStatus.Confirmed, retry.Status);
         Assert.Equal("confirmed", await lab.Db.ExecuteScalarAsync<string>("SELECT status FROM blocks"));
+        Assert.Equal(0, await lab.Count("pearl_payout_holds"));
         await handler.PayoutAsync(null, balances, CancellationToken.None);
+        Assert.Equal(1, lab.Server.Sends);
+        Assert.Equal(1, await lab.Count("payments"));
+    }
+
+    [PostgresIntegrationFact]
+    public async Task CompetingCatchupBetweenClassificationAndPayoutCannotReleaseHold()
+    {
+        await using var lab = await Lab.Create(true);
+        var handler = await lab.Handler();
+        var recipients = await lab.Seed();
+        await lab.Db.ExecuteAsync("""
+            INSERT INTO blocks(poolid,blockheight,networkdifficulty,status,transactionconfirmationdata,hash,created)
+            VALUES('pearl',121,1,'confirmed',@hash,@hash,now())
+            """, new {hash = new string('a',64)});
+        var block = Assert.Single(await handler.ReconciliationBlocksAsync(120, 0, CancellationToken.None));
+        Assert.Empty(await handler.ClassifyBlocksAsync(null, new[] {block}, CancellationToken.None));
+        lab.Server.Height = 121;
+        lab.Server.CanonicalHash = lab.Server.BestHash = new string('b',64);
+        // Catch-up between classification and payout must not authorize sendmany.
+        await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, recipients, CancellationToken.None));
+        Assert.Equal(0, lab.Server.Sends);
+        Assert.Equal(0, await lab.Count("pearl_payout_intents"));
+        Assert.Equal(1.234567899m, await lab.Db.ExecuteScalarAsync<decimal>("SELECT amount FROM balances"));
+        Assert.Equal(1, await lab.Count("pearl_payout_holds"));
+
+        handler = await lab.Handler();
+        await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, recipients, CancellationToken.None));
+        // Held rewards override both cursor and ordinary reconciliation age limits.
+        var retry = Assert.Single(await handler.ReconciliationBlocksAsync(50000, long.MaxValue, CancellationToken.None));
+        var classified = Assert.Single(await handler.ClassifyBlocksAsync(null, new[] {retry}, CancellationToken.None));
+        Assert.Equal(BlockStatus.Quarantined, classified.Status);
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        await lab.Connections.RunTx((con, tx) => repository.UpdateBlockAsync(con, tx, classified));
+        await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, recipients, CancellationToken.None));
+        Assert.Equal(0, lab.Server.Sends);
+        Assert.Equal(0, await lab.Count("payments"));
+        Assert.Equal(1, await lab.Count("pearl_payout_holds"));
+    }
+
+    [PostgresIntegrationFact]
+    public async Task DeferredHoldsCoverUnvisitedBatchesAndRequireStableCanonicalEvidence()
+    {
+        await using var lab = await Lab.Create(true);
+        var handler = await lab.Handler();
+        var recipients = await lab.Seed();
+        // Exercise upgrades as well as the fresh schema, including idempotent replay.
+        await lab.Db.ExecuteAsync("DROP TABLE pearl_payout_holds");
+        var migration = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_pearl_candidates.sql"));
+        await lab.Db.ExecuteAsync(migration);
+        await lab.Db.ExecuteAsync(migration);
+        await lab.Db.ExecuteAsync("""
+            INSERT INTO blocks(poolid,blockheight,networkdifficulty,status,transactionconfirmationdata,hash,created)
+            SELECT 'pearl',121,1,'confirmed',@hash,@hash,now() FROM generate_series(1,65)
+            """, new {hash = new string('a',64)});
+        Assert.Empty(await handler.ClassifyBlocksAsync(null, Array.Empty<Block>(), CancellationToken.None));
+        Assert.Equal(65, await lab.Count("pearl_payout_holds"));
+        lab.Server.Height = 5000;
+        var batch = await handler.ReconciliationBlocksAsync(5000, long.MaxValue, CancellationToken.None);
+        Assert.Equal(64, batch.Length);
+        lab.Server.CanonicalHash = null;
+        await Assert.ThrowsAsync<InvalidDataException>(() => handler.ClassifyBlocksAsync(null, batch, CancellationToken.None));
+        Assert.Equal(65, await lab.Count("pearl_payout_holds"));
+        lab.Server.CanonicalHash = new string('a',64);
+        lab.Server.BestHashAfterCanonicalLookup = new string('b',64);
+        Assert.Empty(await handler.ClassifyBlocksAsync(null, batch, CancellationToken.None));
+        Assert.Equal(65, await lab.Count("pearl_payout_holds"));
+        lab.Server.BestHashAfterCanonicalLookup = null;
+        Assert.Empty(await handler.ClassifyBlocksAsync(null, batch, CancellationToken.None));
+        Assert.Equal(1, await lab.Count("pearl_payout_holds"));
+        await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, recipients, CancellationToken.None));
+        var remaining = Assert.Single(await handler.ReconciliationBlocksAsync(5000, long.MaxValue, CancellationToken.None));
+        Assert.Empty(await handler.ClassifyBlocksAsync(null, new[] {remaining}, CancellationToken.None));
+        Assert.Equal(0, await lab.Count("pearl_payout_holds"));
+        // Even after verification, a changed tip requires another classification cycle.
+        lab.Server.BestHash = new string('c',64);
+        await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, recipients, CancellationToken.None));
+        Assert.Equal(0, lab.Server.Sends);
+        Assert.Empty(await handler.ClassifyBlocksAsync(null, new[] {remaining}, CancellationToken.None));
+        await handler.PayoutAsync(null, recipients, CancellationToken.None);
         Assert.Equal(1, lab.Server.Sends);
         Assert.Equal(1, await lab.Count("payments"));
     }
@@ -250,6 +338,9 @@ public class PearlPayoutIntegrationTests
         // The transaction was already submitted; a restart on a shorter chain must
         // reconcile that exact transaction without authorizing a second send.
         lab.Server.Height = 119;
+        Assert.Empty(await handler.ClassifyBlocksAsync(null, Array.Empty<Block>(), CancellationToken.None));
+        Assert.Equal(1, await lab.Count("pearl_payout_holds"));
+        await lab.Db.ExecuteAsync("UPDATE blocks SET status='quarantined'");
         handler = await lab.Handler();
         lab.Server.Calls.Clear();
         await handler.PayoutAsync(null, recipients, CancellationToken.None);
@@ -263,7 +354,8 @@ public class PearlPayoutIntegrationTests
         await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, recipients, CancellationToken.None));
         Assert.Equal(1, lab.Server.Sends);
         Assert.Equal(1, await lab.Count("payments"));
-        Assert.Equal("confirmed", await lab.Db.ExecuteScalarAsync<string>("SELECT status FROM blocks"));
+        Assert.Equal("quarantined", await lab.Db.ExecuteScalarAsync<string>("SELECT status FROM blocks"));
+        Assert.Equal(1, await lab.Count("pearl_payout_holds"));
     }
 
     [PostgresIntegrationFact]

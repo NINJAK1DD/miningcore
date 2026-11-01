@@ -1,4 +1,5 @@
 -- Apply as the schema owner; grant application SELECT/INSERT/UPDATE/DELETE as for other pool tables.
+-- Re-run this idempotent migration when upgrading Pearl payout hold support.
 CREATE TABLE IF NOT EXISTS pearl_candidates (
     poolid TEXT NOT NULL,
     identity TEXT NOT NULL CHECK (identity ~ '^[0-9a-f]{64}$'),
@@ -23,4 +24,11 @@ CREATE TABLE IF NOT EXISTS pearl_payout_intents (
     recipients TEXT NOT NULL CHECK (octet_length(recipients) BETWEEN 2 AND 131072),
     transactionid TEXT CHECK (transactionid ~ '^[0-9a-f]{64}$'),
     created TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pearl_payout_holds (
+    poolid TEXT NOT NULL,
+    blockid BIGINT NOT NULL REFERENCES blocks(id) ON DELETE RESTRICT,
+    blockhash TEXT NOT NULL CHECK (blockhash ~ '^[0-9a-f]{64}$'),
+    PRIMARY KEY (poolid, blockid)
 );

@@ -36,7 +36,7 @@ The publish target validates checksums, licenses and the worker version and inst
 
 The helper build checks the exact clean upstream revision, uses both Cargo lockfiles, generates and embeds V1/V2 circuit caches, records cache/binary checksums and toolchain versions, and includes the upstream license inventory and Cargo dependency license/notice files. Keep the whole `pearl/` directory when distributing binaries. Do not replace its worker with an unreviewed executable that merely prints the expected version.
 
-Stop all database writers, back up the database, and apply the ordinary share-accounting migrations plus `migrations/add_pearl_candidates.sql` as the schema owner. New installations use `createdb.sql`. The application role needs the usual table DML privileges, not PostgreSQL superuser/CREATEDB privileges. The pool checks for durable share-accounting and candidate schemas before accepting miners.
+Stop all database writers, back up the database, and apply the ordinary share-accounting migrations plus `migrations/add_pearl_candidates.sql` as the schema owner. Re-run that idempotent Pearl migration when upgrading to create `pearl_payout_holds`; grant the application role SELECT/INSERT/UPDATE/DELETE on the new table. New installations use `createdb.sql`. The application role needs the usual table DML privileges, not PostgreSQL superuser/CREATEDB privileges. The pool checks for durable share-accounting and candidate schemas before accepting miners; payout initialization also requires the hold table.
 
 ## Node, Oyster and pool configuration
 
@@ -153,7 +153,7 @@ conservation were checked, including PPS precision remainders. Restart preserved
 all payments, balances, PPS credits and financial history without a second credit
 or payment. Private transcripts are retained separately; only their hashes are public.
 
-Final payout review also requires valid 64-character lowercase hexadecimal hashes
+Payout processing requires valid 64-character lowercase hexadecimal hashes
 from canonical-block lookups and both wallet/node tip lookups. A null, empty or
 malformed RPC result cannot establish a competing block or synchronized wallets.
 If the node tip is below a recorded block's height, classification is deferred
@@ -161,9 +161,17 @@ until catch-up; lag alone cannot orphan or quarantine that reward. Only a valid,
 differing canonical hash at the recorded height establishes a competing block.
 New payout submissions are held while any confirmed pool block is above the node
 tip, even if wallet and node agree on that shorter chain and other funds are
-spendable. This hold leaves reward status and balances unchanged and clears after
-catch-up. Existing durable payout intents can still reconcile their exact
-transaction evidence without another wallet send.
+spendable. Classification persists a hold for every above-tip confirmed reward,
+including rewards outside the current reconciliation batch. Catch-up alone does
+not release it: the exact stored block must pass a fresh canonical-hash check on
+a stable chain. Held blocks take priority in the bounded 64-block scan regardless
+of the normal cursor or age window. Holds survive restarts and failed RPC calls;
+competing hashes retain them and trigger quarantine. A tip change between
+classification and payout also defers new submissions until another cycle.
+Existing durable payout intents can reconcile exact transaction evidence even
+while deferred-block or quarantine holds prevent new submissions. Do not delete
+holds or intents to force a payment; audit genuinely quarantined rewards before
+any manual release. Reward status and balances remain unchanged by deferral.
 The HTTP/PostgreSQL regressions reproduce both failures against the pre-fix code,
 then verify unchanged reward status and balances until valid evidence returns.
 Existing durable-intent reconciliation still uses exact transaction identity and

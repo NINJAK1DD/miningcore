@@ -42,6 +42,8 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
     private RpcClient node;
     private PearlNetwork network;
     private PearlPaymentProcessingConfigExtra config;
+    private bool classificationStarted;
+    private string classifiedTip;
     protected override string LogCategory => "Pearl Payout Handler";
     public double AdjustBlockEffort(double effort) => effort;
 
@@ -68,6 +70,8 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         if(reward.Value<bool?>("ismine") != true) throw new InvalidDataException("Oyster must own the pool reward address");
         await cf.Run(async con => await con.ExecuteAsync(new CommandDefinition(
             "SELECT poolid, marker, recipients, transactionid, created FROM pearl_payout_intents LIMIT 0", cancellationToken: ct)));
+        await cf.Run(async con => await con.ExecuteAsync(new CommandDefinition(
+            "SELECT poolid, blockid, blockhash FROM pearl_payout_holds LIMIT 0", cancellationToken: ct)));
     }
 
     private async Task<T> RpcAsync<T>(RpcClient rpc, string method, object parameters, CancellationToken ct) where T : class
@@ -79,12 +83,23 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
 
     public async Task<Block[]> ClassifyBlocksAsync(IMiningPool pool, Block[] blocks, CancellationToken ct)
     {
+        classificationStarted = true;
+        classifiedTip = null;
         var synced = (await RpcAsync<JToken>(wallet, "chainsynced", null, ct))?.Value<bool>() == true;
         var chain = await RpcAsync<JObject>(node, "getblockchaininfo", null, ct);
         var tip = chain?.Value<ulong?>("blocks") ?? throw new InvalidDataException("Missing Pearl chain height");
         var bestHash = chain.Value<string>("bestblockhash");
         if(!IsTransactionId(bestHash)) throw new InvalidDataException("Missing Pearl chain identity");
+        // Record all affected credited rewards, including those outside this cycle's
+        // bounded reconciliation batch. A later height increase is not canonical proof.
+        await cf.Run(con => con.ExecuteAsync(new CommandDefinition("""
+            INSERT INTO pearl_payout_holds(poolid, blockid, blockhash)
+            SELECT poolid, id, hash FROM blocks
+            WHERE poolid=@Id AND status='confirmed' AND blockheight>@tip
+            ON CONFLICT (poolid, blockid) DO NOTHING
+            """, new {poolConfig.Id, tip = checked((long) tip)}, cancellationToken: ct)));
         var result = new List<Block>();
+        var verifiedConfirmed = new List<Block>();
         foreach(var block in blocks)
         {
             block.PearlCustodialEvidenceVerified = false;
@@ -106,7 +121,12 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
             }
             // Reorg observation does not depend on a wallet finishing its rescan.
             // Fresh reward credit always does.
-            if(!synced || block.Status == BlockStatus.Confirmed) continue;
+            if(block.Status == BlockStatus.Confirmed)
+            {
+                verifiedConfirmed.Add(block);
+                continue;
+            }
+            if(!synced) continue;
             var header = await RpcAsync<JObject>(node, "getblockheader", new object[] {block.Hash, true}, ct);
             var transaction = await RpcAsync<JObject>(wallet, "gettransaction", new object[] {block.TransactionConfirmationData}, ct);
             if(transaction?.Value<string>("blockhash") != block.Hash || header?.Value<string>("hash") != block.Hash)
@@ -133,6 +153,21 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
             result.Add(block);
         }
         if(await RpcAsync<string>(node, "getbestblockhash", null, ct) != bestHash) return Array.Empty<Block>();
+        // Release only the exact stored identities checked on a stable chain. Failure,
+        // tip changes, competing hashes and unvisited batches retain durable holds.
+        if(verifiedConfirmed.Count > 0)
+            await cf.RunTx(async (con, tx) =>
+            {
+                foreach(var verified in verifiedConfirmed)
+                    await con.ExecuteAsync(new CommandDefinition("""
+                        DELETE FROM pearl_payout_holds h USING blocks b
+                        WHERE h.poolid=@PoolId AND h.blockid=@Id AND h.blockhash=@Hash
+                        AND b.id=h.blockid AND b.poolid=h.poolid AND b.hash=h.blockhash
+                        AND b.blockheight=@BlockHeight AND b.status='confirmed'
+                        """, new {verified.PoolId, verified.Id, verified.Hash,
+                            BlockHeight = checked((long) verified.BlockHeight)}, tx, cancellationToken: ct));
+            }, ct: ct);
+        classifiedTip = bestHash;
         foreach(var observed in result)
             metrics.Count(poolConfig.Id, observed.Status switch
             {
@@ -148,8 +183,11 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
     {
         var minimum = tip > 4032 ? checked((long) (tip - 4032)) : 0;
         async Task<Block[]> Read(long cursor) => await cf.Run(async con => (await con.QueryAsync<Block>(new CommandDefinition("""
-            SELECT * FROM blocks WHERE poolid=@Id AND status IN ('orphaned','confirmed')
-            AND blockheight>=@minimum AND id>@cursor ORDER BY id LIMIT 64
+            SELECT b.* FROM blocks b LEFT JOIN pearl_payout_holds h
+                ON h.poolid=b.poolid AND h.blockid=b.id
+            WHERE b.poolid=@Id AND b.status IN ('orphaned','confirmed')
+            AND (h.blockid IS NOT NULL OR (b.blockheight>=@minimum AND b.id>@cursor))
+            ORDER BY (h.blockid IS NOT NULL) DESC, b.id LIMIT 64
             """, new {poolConfig.Id, minimum, cursor}, cancellationToken: ct))).ToArray());
         var result = await Read(cursor);
         if(result.Length == 0 && cursor != 0) result = await Read(0);
@@ -188,11 +226,6 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
 
     private async Task ExecutePayoutAsync(Balance[] balances, CancellationToken ct)
     {
-        if(await cf.Run(con => con.ExecuteScalarAsync<bool>(new CommandDefinition(
-               "SELECT EXISTS(SELECT 1 FROM blocks WHERE poolid=@Id AND status='quarantined')", new {poolConfig.Id}, cancellationToken: ct))))
-        {
-            throw new InvalidDataException("Pearl payments are held pending review of a quarantined block");
-        }
         var pending = await ReadIntentAsync(ct);
         metrics.Set(poolConfig.Id, PearlMeasure.PayoutState, pending == null ? 0 : 1);
         if(pending != null)
@@ -200,12 +233,20 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
             await ReconcileAsync(pending, ct);
             return;
         }
+        if(await cf.Run(con => con.ExecuteScalarAsync<bool>(new CommandDefinition(
+               "SELECT EXISTS(SELECT 1 FROM blocks WHERE poolid=@Id AND status='quarantined')", new {poolConfig.Id}, cancellationToken: ct))))
+            throw new InvalidDataException("Pearl payments are held pending review of a quarantined block");
+        if(await cf.Run(con => con.ExecuteScalarAsync<bool>(new CommandDefinition(
+               "SELECT EXISTS(SELECT 1 FROM pearl_payout_holds WHERE poolid=@Id)", new {poolConfig.Id}, cancellationToken: ct))))
+            throw new InvalidDataException("Pearl payments await canonical verification of deferred confirmed blocks");
         if((await RpcAsync<JToken>(wallet, "chainsynced", null, ct))?.Value<bool>() != true)
             throw new InvalidDataException("Oyster is not synchronized with the payout node");
         var walletTip = await RpcAsync<string>(wallet, "getbestblockhash", null, ct);
         var nodeTip = await RpcAsync<string>(node, "getbestblockhash", null, ct);
         if(!IsTransactionId(walletTip) || !IsTransactionId(nodeTip) || walletTip != nodeTip)
             throw new InvalidDataException("Oyster is not synchronized with the payout node");
+        if(classificationStarted && classifiedTip != nodeTip)
+            throw new InvalidDataException("Pearl payments require classification on the current chain tip");
         var chain = await RpcAsync<JObject>(node, "getblockchaininfo", null, ct);
         var tip = chain?.Value<long?>("blocks");
         if(tip is null or < 0 || chain.Value<string>("bestblockhash") != nodeTip)
