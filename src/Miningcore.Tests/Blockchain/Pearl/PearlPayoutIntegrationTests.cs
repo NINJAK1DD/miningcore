@@ -209,6 +209,14 @@ public class PearlPayoutIntegrationTests
         Assert.False(pending.NotifyBlockUnlockedOnUpdate);
         Assert.False(confirmed.NotifyBlockUnlockedOnUpdate);
 
+        // Matching wallet/node tips and other spendable funds cannot back an above-tip reward.
+        await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, balances, CancellationToken.None));
+        Assert.Equal(0, lab.Server.Sends);
+        Assert.Equal(0, await lab.Count("pearl_payout_intents"));
+        Assert.Equal(0, await lab.Count("payments"));
+        Assert.Equal(1.234567899m, await lab.Db.ExecuteScalarAsync<decimal>("SELECT amount FROM balances"));
+        Assert.Equal("confirmed", await lab.Db.ExecuteScalarAsync<string>("SELECT status FROM blocks"));
+
         // The same stored block is still eligible when the node reaches its height.
         lab.Server.Height = confirmed.BlockHeight;
         var retry = Assert.Single(await handler.ReconciliationBlocksAsync(lab.Server.Height, 0, CancellationToken.None));
@@ -220,6 +228,42 @@ public class PearlPayoutIntegrationTests
         await handler.PayoutAsync(null, balances, CancellationToken.None);
         Assert.Equal(1, lab.Server.Sends);
         Assert.Equal(1, await lab.Count("payments"));
+    }
+
+    [PostgresIntegrationFact]
+    public async Task AboveTipConfirmedRewardDoesNotBlockExistingIntentReconciliation()
+    {
+        await using var lab = await Lab.Create(true);
+        var handler = await lab.Handler();
+        var recipients = await lab.Seed();
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var confirmed = new Block {PoolId = lab.Config.Id, BlockHeight = 120, Hash = new string('a',64),
+            Status = BlockStatus.Confirmed, ConfirmationProgress = 1, Created = DateTime.UtcNow,
+            TransactionConfirmationData = new string('b',64), Reward = 1};
+        await lab.Connections.RunTx((con, tx) => repository.InsertAsync(con, tx, confirmed));
+        lab.Server.LostResponse = true;
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => handler.PayoutAsync(null, recipients, CancellationToken.None));
+        Assert.Equal(1, lab.Server.Sends);
+        Assert.Equal(1, await lab.Count("pearl_payout_intents"));
+        Assert.Equal(0, await lab.Count("payments"));
+
+        // The transaction was already submitted; a restart on a shorter chain must
+        // reconcile that exact transaction without authorizing a second send.
+        lab.Server.Height = 119;
+        handler = await lab.Handler();
+        lab.Server.Calls.Clear();
+        await handler.PayoutAsync(null, recipients, CancellationToken.None);
+        Assert.DoesNotContain("getblockchaininfo", lab.Server.Calls);
+        Assert.Equal(1, lab.Server.Sends);
+        Assert.Equal(0, await lab.Count("pearl_payout_intents"));
+        Assert.Equal(1, await lab.Count("payments"));
+        Assert.Equal(1, await lab.Count("payment_batches"));
+        Assert.Equal(.000000009m, await lab.Db.ExecuteScalarAsync<decimal>("SELECT amount FROM balances"));
+        // With no intent left, new submissions are still held until catch-up.
+        await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, recipients, CancellationToken.None));
+        Assert.Equal(1, lab.Server.Sends);
+        Assert.Equal(1, await lab.Count("payments"));
+        Assert.Equal("confirmed", await lab.Db.ExecuteScalarAsync<string>("SELECT status FROM blocks"));
     }
 
     [PostgresIntegrationFact]

@@ -159,6 +159,11 @@ malformed RPC result cannot establish a competing block or synchronized wallets.
 If the node tip is below a recorded block's height, classification is deferred
 until catch-up; lag alone cannot orphan or quarantine that reward. Only a valid,
 differing canonical hash at the recorded height establishes a competing block.
+New payout submissions are held while any confirmed pool block is above the node
+tip, even if wallet and node agree on that shorter chain and other funds are
+spendable. This hold leaves reward status and balances unchanged and clears after
+catch-up. Existing durable payout intents can still reconcile their exact
+transaction evidence without another wallet send.
 The HTTP/PostgreSQL regressions reproduce both failures against the pre-fix code,
 then verify unchanged reward status and balances until valid evidence returns.
 Existing durable-intent reconciliation still uses exact transaction identity and

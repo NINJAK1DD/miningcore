@@ -206,6 +206,16 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         var nodeTip = await RpcAsync<string>(node, "getbestblockhash", null, ct);
         if(!IsTransactionId(walletTip) || !IsTransactionId(nodeTip) || walletTip != nodeTip)
             throw new InvalidDataException("Oyster is not synchronized with the payout node");
+        var chain = await RpcAsync<JObject>(node, "getblockchaininfo", null, ct);
+        var tip = chain?.Value<long?>("blocks");
+        if(tip is null or < 0 || chain.Value<string>("bestblockhash") != nodeTip)
+            throw new InvalidDataException("Missing or changed Pearl payout chain evidence");
+        // Agreement on a shorter chain does not establish previously credited rewards.
+        // This temporary hold must not obstruct reconciliation of an existing intent above.
+        if(await cf.Run(con => con.ExecuteScalarAsync<bool>(new CommandDefinition(
+               "SELECT EXISTS(SELECT 1 FROM blocks WHERE poolid=@Id AND status='confirmed' AND blockheight>@tip)",
+               new {poolConfig.Id, tip = tip.Value}, cancellationToken: ct))))
+            throw new InvalidDataException("Pearl payments are held while a confirmed block is above the node tip");
         var selected = balances.Take(100).Select(x => x with { Amount = decimal.Floor(x.Amount * 100_000_000m) / 100_000_000m })
             .Where(x => x.Amount >= poolConfig.PaymentProcessing.MinimumPayment).ToArray();
         if(selected.Length == 0) return;
