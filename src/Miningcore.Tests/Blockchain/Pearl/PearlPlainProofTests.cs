@@ -11,6 +11,37 @@ namespace Miningcore.Tests.Blockchain.Pearl;
 
 public class PearlPlainProofTests
 {
+    [Fact]
+    public void SeededMutationCampaignBoundsNestedStructuresAndCompressedInput()
+    {
+        var seed = RealProof();
+        var random = new Random(244256);
+        for(var iteration = 0; iteration < 4096; iteration++)
+        {
+            var proof = seed.ToArray();
+            switch(iteration % 4)
+            {
+                case 0: Array.Resize(ref proof, random.Next(proof.Length)); break;
+                case 1: BinaryPrimitives.WriteUInt64LittleEndian(proof.AsSpan(random.Next(6) * 8), ulong.MaxValue); break;
+                case 2: random.NextBytes(proof.AsSpan(random.Next(proof.Length - 8), 8)); break;
+                case 3: Array.Resize(ref proof, proof.Length + random.Next(2, 65)); break;
+            }
+            // Structural inspection is not cryptographic validation: a leaf-only mutation may parse.
+            // Only explicit invalid-data rejection is permitted, never overflow/index/OOM faults.
+            try {PearlPlainProof.Inspect(proof);}
+            catch(InvalidDataException) { }
+            if(iteration < 256)
+            {
+                using var buffer = new MemoryStream();
+                using(var encoder = new GZipStream(buffer, CompressionLevel.Fastest, true)) encoder.Write(proof);
+                var wire = buffer.ToArray();
+                if(iteration % 2 == 0) random.NextBytes(wire.AsSpan(random.Next(wire.Length - 8), 8));
+                try {PearlProofEncoding.Decode(Convert.ToBase64String(wire));}
+                catch(InvalidDataException) { }
+            }
+        }
+    }
+
     internal static byte[] RealProof()
     {
         using var stream = typeof(PearlPlainProofTests).Assembly.GetManifestResourceStream(

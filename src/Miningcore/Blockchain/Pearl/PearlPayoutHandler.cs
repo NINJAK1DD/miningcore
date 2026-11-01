@@ -37,6 +37,7 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         public DateTime Created { get; set; }
     }
     internal const decimal MarkerAmount = 0.01m;
+    private readonly PearlMetrics metrics = PearlMetrics.Default;
     private RpcClient wallet;
     private RpcClient node;
     private PearlNetwork network;
@@ -49,8 +50,8 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         clusterConfig = cc;
         poolConfig = pc;
         logger = LogManager.GetLogger("Pearl Payments");
-        config = pc.PaymentProcessing.Extra.SafeExtensionDataAs<PearlPaymentProcessingConfigExtra>();
-        var networkName = pc.Extra.SafeExtensionDataAs<PearlPoolConfig>().Network;
+        config = pc.PaymentProcessing.Extra.SafeExtensionDataAs<PearlPaymentProcessingConfigExtra>() ?? new();
+        var networkName = (pc.Extra.SafeExtensionDataAs<PearlPoolConfig>() ?? new()).Network;
         network = networkName switch {"mainnet" => PearlNetwork.Mainnet, "regtest" => PearlNetwork.Regtest,
             _ => throw new InvalidDataException("Unsupported Pearl payout network")};
         if(config.FeeRateGrainsPerKb is null or < 1 or > 100_000_000 || config.MinimumConfirmations is null or < 101 or > 100000)
@@ -127,7 +128,16 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
             }
             result.Add(block);
         }
-        return await RpcAsync<string>(node, "getbestblockhash", null, ct) == bestHash ? result.ToArray() : Array.Empty<Block>();
+        if(await RpcAsync<string>(node, "getbestblockhash", null, ct) != bestHash) return Array.Empty<Block>();
+        foreach(var observed in result)
+            metrics.Count(poolConfig.Id, observed.Status switch
+            {
+                BlockStatus.Confirmed => PearlEvent.RewardMature,
+                BlockStatus.Quarantined => PearlEvent.RewardQuarantined,
+                BlockStatus.Orphaned => PearlEvent.RewardOrphaned,
+                _ => PearlEvent.RewardPending
+            });
+        return result.ToArray();
     }
 
     internal async Task<Block[]> ReconciliationBlocksAsync(ulong tip, long cursor, CancellationToken ct)
@@ -158,10 +168,29 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
 
     public Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct) => TrackPayoutAsync(balances, async () =>
     {
+        try {await ExecutePayoutAsync(balances, ct);}
+        catch(PayoutOutcomeUncertainException)
+        {
+            metrics.Set(poolConfig.Id, PearlMeasure.PayoutState, 1);
+            throw;
+        }
+        catch
+        {
+            metrics.Set(poolConfig.Id, PearlMeasure.PayoutState, -1);
+            metrics.Count(poolConfig.Id, PearlEvent.PayoutHeld);
+            throw;
+        }
+    });
+
+    private async Task ExecutePayoutAsync(Balance[] balances, CancellationToken ct)
+    {
         if(await cf.Run(con => con.ExecuteScalarAsync<bool>(new CommandDefinition(
                "SELECT EXISTS(SELECT 1 FROM blocks WHERE poolid=@Id AND status='quarantined')", new {poolConfig.Id}, cancellationToken: ct))))
+        {
             throw new InvalidDataException("Pearl payments are held pending review of a quarantined block");
+        }
         var pending = await ReadIntentAsync(ct);
+        metrics.Set(poolConfig.Id, PearlMeasure.PayoutState, pending == null ? 0 : 1);
         if(pending != null)
         {
             await ReconcileAsync(pending, ct);
@@ -171,7 +200,7 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
             await RpcAsync<string>(wallet, "getbestblockhash", null, ct) != await RpcAsync<string>(node, "getbestblockhash", null, ct))
             throw new InvalidDataException("Oyster is not synchronized with the payout node");
         var selected = balances.Take(100).Select(x => x with { Amount = decimal.Floor(x.Amount * 100_000_000m) / 100_000_000m })
-            .Where(x => x.Amount >= MarkerAmount).ToArray();
+            .Where(x => x.Amount >= poolConfig.PaymentProcessing.MinimumPayment).ToArray();
         if(selected.Length == 0) return;
         var amounts = selected.ToDictionary(x => x.Address, x => x.Amount, StringComparer.Ordinal);
         _ = PearlWalletRequest.SendMany(amounts, network, config.FeeRateGrainsPerKb.Value);
@@ -199,6 +228,8 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
                 VALUES(@PoolId, @Marker, @Recipients, @Created)
                 """, pending, tx, cancellationToken: ct)), ct: ct, classifyCommitOutcome: true);
             // Once the intent exists, no error path may issue a fresh sendmany for this batch.
+            metrics.Set(poolConfig.Id, PearlMeasure.PayoutState, 1);
+            metrics.Count(poolConfig.Id, PearlEvent.PayoutAttempt);
             TrackPayoutSubmission(ct, selected);
             try
             {
@@ -211,6 +242,7 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
             }
             catch(Exception ex) when(ex is not PayoutOutcomeUncertainException)
             {
+                metrics.Count(poolConfig.Id, PearlEvent.PayoutUncertain);
                 throw new PayoutOutcomeUncertainException("Pearl payout requires reconciliation of its durable marker; do not resend", ex);
             }
         }
@@ -218,7 +250,7 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         {
             await RelockPayoutWalletSafelyAsync(async token => await RpcAsync<JToken>(wallet, "walletlock", null, token));
         }
-    });
+    }
 
     private Task<Intent> ReadIntentAsync(CancellationToken ct) => cf.Run(con => con.QuerySingleOrDefaultAsync<Intent>(
         new CommandDefinition("SELECT * FROM pearl_payout_intents WHERE poolid=@Id", new {poolConfig.Id}, cancellationToken: ct)));
@@ -284,10 +316,14 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
             await PersistPaymentsAsync(recipients, intent.TransactionId);
             await cf.Run(async con => await con.ExecuteAsync(new CommandDefinition(
                 "DELETE FROM pearl_payout_intents WHERE poolid=@PoolId AND marker=@Marker", intent, cancellationToken: ct)));
+            metrics.Set(poolConfig.Id, PearlMeasure.PayoutState, 0);
+            metrics.Count(poolConfig.Id, PearlEvent.PayoutCompleted);
             NotifyPayoutSuccess(poolConfig.Id, recipients, new[] {intent.TransactionId}, fee);
         }
         catch(Exception ex) when(ex is not PayoutOutcomeUncertainException)
         {
+            metrics.Set(poolConfig.Id, PearlMeasure.PayoutState, 1);
+            metrics.Count(poolConfig.Id, PearlEvent.PayoutUncertain);
             throw new PayoutOutcomeUncertainException("Pearl payout intent retained for reconciliation; do not resend", ex);
         }
     }

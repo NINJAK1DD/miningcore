@@ -93,5 +93,18 @@ internal sealed class PearlWorkerContext : WorkerContextBase
         }
     }
 
+    internal (int Active, int Stale) JobCounts(string tip, int lifetimeSeconds, int graceSeconds)
+    {
+        lock(sync)
+        {
+            var now = time.GetTimestamp();
+            var active = jobs.Count(job => job.Block.PreviousBlockHash == tip &&
+                time.GetElapsedTime(job.Issued, now).TotalSeconds < lifetimeSeconds &&
+                (!job.Retired.HasValue || time.GetElapsedTime(job.Retired.Value, now).TotalSeconds < graceSeconds));
+            return (active, jobs.Count - active);
+        }
+    }
+
     internal void Forget(PearlJob job, string identity) { lock(sync) job.Proofs.Remove(identity); }
+    internal void ForgetAttempt(PearlJob job, string hash) { lock(sync) job.Attempts.Remove(hash); }
 }

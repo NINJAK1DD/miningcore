@@ -128,11 +128,7 @@ internal sealed class PearlBlockJob
         if(!result.IsBlockCandidate || result.Certificate.Length == 0 ||
             !result.Header.AsSpan().SequenceEqual(header))
             throw new InvalidDataException("A verified network-target certificate is required");
-        var certified = PearlConsensus.SerializeCertifiedHeader(header, 3, result.PublicData, result.Certificate);
-        using var stream = new MemoryStream();
-        stream.Write(certified);
-        stream.Write(ExportTransactions());
-        return stream.ToArray();
+        return PearlConsensus.SerializeBlock(header, 3, result.PublicData, result.Certificate, ExportTransactions());
     }
 
     internal byte[] ExportTransactions()

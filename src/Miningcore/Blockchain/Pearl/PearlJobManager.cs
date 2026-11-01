@@ -22,6 +22,7 @@ internal sealed class PearlJobManager
     internal sealed record Snapshot(string Fingerprint, string Tip, string Json, long Received, uint Height, double Difficulty);
     internal Snapshot Current => Volatile.Read(ref current);
     internal bool Ready => Current is { } value && time.GetElapsedTime(value.Received).TotalSeconds < 45;
+    internal double TemplateAgeSeconds => Current is { } value ? time.GetElapsedTime(value.Received).TotalSeconds : -1;
     internal RpcClient Node => nodes[Volatile.Read(ref selected)];
 
     internal PearlJobManager(PoolConfig pool, PearlNetwork network, JsonSerializerSettings settings,

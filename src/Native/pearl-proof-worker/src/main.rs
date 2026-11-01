@@ -2,6 +2,7 @@
 // Consensus dependency: pearl d7c517d267f10f5bcbbdc366f3e603942f9a5ab5.
 use std::io::{Read, Write};
 use anyhow::{Result, ensure};
+use std::sync::atomic::{AtomicU8, Ordering};
 use bincode::Options;
 use primitive_types::U256;
 use zk_pow::api::{
@@ -17,6 +18,9 @@ use zk_pow::circuit::{
 };
 use zk_pow::ffi::plain_proof::PlainProof;
 
+// Status 1 is a rejected request/proof; status 2 is an operational failure.
+static ERROR_CLASS: AtomicU8 = AtomicU8::new(2);
+
 const MAX_PROOF: usize = 8 * 1024 * 1024;
 const SOURCE: &str = "d7c517d267f10f5bcbbdc366f3e603942f9a5ab5";
 
@@ -24,13 +28,47 @@ fn main() {
     // stdout is exclusively the bounded binary response.
     std::panic::set_hook(Box::new(|_| {}));
     if std::env::args().nth(1).as_deref() == Some("--version") {
-        println!("miningcore-pearl-worker 1 {SOURCE} linux-x64");
+        println!("miningcore-pearl-worker 2 {SOURCE} linux-x64");
         return;
     }
-    let result = std::panic::catch_unwind(run);
-    if !matches!(result, Ok(Ok(()))) {
-        let _ = std::io::stdout().write_all(b"PRLRES01\x01\x00\x00\x00");
-        std::process::exit(1);
+    let status = run_status(run);
+    if status == 0 { return; }
+    let mut response = *b"PRLRES02\x00\x00\x00\x00";
+    response[8] = status;
+    let _ = std::io::stdout().write_all(&response);
+    std::process::exit(status as i32);
+}
+
+fn run_status(work: impl FnOnce() -> Result<()> + std::panic::UnwindSafe) -> u8 {
+    match std::panic::catch_unwind(work) {
+        Ok(Ok(())) => 0,
+        Ok(Err(_)) => ERROR_CLASS.load(Ordering::Relaxed),
+        Err(_) => 2, // A panic is never evidence that a miner submitted invalid work.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn panics_are_system_failures_even_during_untrusted_input_validation() {
+        ERROR_CLASS.store(1, Ordering::Relaxed);
+        assert_eq!(run_status(|| panic!("test-only injected panic")), 2);
+        assert_eq!(run_status(|| anyhow::bail!("invalid proof")), 1);
+        ERROR_CLASS.store(2, Ordering::Relaxed);
+        assert_eq!(run_status(|| anyhow::bail!("cache failure")), 2);
+        assert_eq!(run_status(|| Ok(())), 0);
+    }
+
+    #[test]
+    #[ignore = "explicit lab circuit-cache benchmark"]
+    fn measure_circuit_cache_load() {
+        for run in 0..3 {
+            let start = std::time::Instant::now();
+            let cache = CircuitCache::from_bytes(zk_pow::circuit::embedded_cache::CACHE_DATA).unwrap();
+            println!("cache_load run={} seconds={:.6}", run, start.elapsed().as_secs_f64());
+            drop(cache);
+        }
     }
 }
 
@@ -47,13 +85,15 @@ fn run() -> Result<()> {
         ensure!(libc::setrlimit(libc::RLIMIT_AS, &memory) == 0, "memory limit");
         ensure!(libc::setrlimit(libc::RLIMIT_CPU, &cpu) == 0, "cpu limit");
     }
+    ERROR_CLASS.store(1, Ordering::Relaxed);
     let mut input = std::io::stdin().lock();
     let mut fixed = [0u8; 124];
     input.read_exact(&mut fixed)?;
-    ensure!(&fixed[..8] == b"PRLJOB01", "protocol");
+    ensure!(&fixed[..8] == b"PRLJOB02", "protocol");
     ensure!(fixed[8] <= 1 && fixed[9] == 3 && fixed[10..12] == [0, 0], "unsupported operation");
     #[cfg(target_os = "linux")]
     if fixed[8] == 0 {
+        ERROR_CLASS.store(2, Ordering::Relaxed);
         unsafe {
             let memory = libc::rlimit { rlim_cur: 1024 * 1024 * 1024, rlim_max: 1024 * 1024 * 1024 };
             let cpu = libc::rlimit { rlim_cur: 20, rlim_max: 20 };
@@ -61,6 +101,7 @@ fn run() -> Result<()> {
             ensure!(libc::setrlimit(libc::RLIMIT_CPU, &cpu) == 0, "verification CPU limit");
         }
     }
+    ERROR_CLASS.store(1, Ordering::Relaxed);
     let header = IncompleteBlockHeader::from_bytes(&fixed[12..88])?;
     let target = U256::from_big_endian(&fixed[88..120]);
     ensure!(!target.is_zero(), "zero target");
@@ -92,9 +133,10 @@ fn run() -> Result<()> {
     ensure!(!overflow, "trivial share bound");
     ensure!(U256::from_little_endian(&public.hash_jackpot) <= bound, "low difficulty");
     let candidate = verify_plain_proof(&header, &proof, None, SeedDerivation::Salted).is_ok();
+    ensure!(fixed[8] != 1 || candidate, "not a block candidate");
+    ERROR_CLASS.store(2, Ordering::Relaxed);
     let mut certificate = Vec::new();
     if fixed[8] == 1 {
-        ensure!(candidate, "not a block candidate");
         // A fresh bounded cache per process cannot grow across attacker-chosen jobs.
         let mut cache = CircuitCache::from_bytes(zk_pow::circuit::embedded_cache::CACHE_DATA)?;
         let zk = prove_block(&mut public, private, &mut cache)?;
@@ -107,7 +149,7 @@ fn run() -> Result<()> {
     let data = public.to_wire_bytes()?;
     ensure!(data.len() == 164, "dense public data size");
     let mut output = Vec::with_capacity(180 + certificate.len());
-    output.extend_from_slice(b"PRLRES01");
+    output.extend_from_slice(b"PRLRES02");
     output.extend_from_slice(&[0, candidate as u8, 0, 0]);
     output.extend_from_slice(&data);
     output.extend_from_slice(&(certificate.len() as u32).to_le_bytes());

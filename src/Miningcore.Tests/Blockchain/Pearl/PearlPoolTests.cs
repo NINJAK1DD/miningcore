@@ -138,9 +138,23 @@ public class PearlPoolTests : TestBase
         await Flush(4);
         Assert.Equal(4, messages.Count);
         Assert.NotNull(messages[3]["error"]);
+        // A missing native service is not a bad miner proof, and does not consume replay identity.
+        config.Ports[connection.LocalEndpoint.Port] = new PoolEndpoint {Difficulty = 1, DifficultyGraceSeconds = 30};
+        Set(pool, "verifier", new PearlProofVerifier(Path.Combine(Path.GetTempPath(), "missing-pearl-" + Guid.NewGuid().ToString("N"))));
+        var invalidBefore = worker.Stats.InvalidShares;
+        await Invoke(pool, "OnRequestAsync", connection, new Timestamped<JsonRpcRequest>(
+            new JsonRpcRequest {Id = 3, Method = "mining.submit", Params = new JObject
+            {
+                ["job_id"] = first.Id,
+                ["plain_proof"] = Convert.ToBase64String(PearlPlainProofTests.RealProof())
+            }}, clock.Now), CancellationToken.None);
+        await Flush(5);
+        Assert.NotNull(messages[4]["error"]);
+        Assert.Equal(invalidBefore, worker.Stats.InvalidShares);
+        Assert.Empty(first.Attempts);
         Set(manager, "current", null);
         await Invoke(pool, "SendJobAsync", connection);
-        Assert.Equal(4, messages.Count);
+        Assert.Equal(5, messages.Count);
         stop.Cancel();
         await dispatch;
     }

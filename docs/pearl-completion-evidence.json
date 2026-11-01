@@ -1,0 +1,415 @@
+{
+  "date": "2026-11-01",
+  "issue": 244,
+  "pullRequest": 256,
+  "upstream": "d7c517d267f10f5bcbbdc366f3e603942f9a5ab5",
+  "scope": "SRBMiner-MULTI 3.7.3, RTX 3080 Ti, default dense rank-128 k-32768 8x16 profile; Linux glibc x64; salted integer V3",
+  "optionalUnimplemented": [
+    "Second miner certification (required only before claiming broad interoperability)",
+    "Official gateway access (requires a separate secure pool protocol mapping)"
+  ],
+  "tests": {
+    "fullRegression": {
+      "passed": 5766,
+      "failed": 0,
+      "skipped": 24
+    },
+    "finalFocused": {
+      "passed": 389,
+      "failed": 0,
+      "skipped": 1
+    },
+    "nativeContractsIncludingProve": 26,
+    "rustPanicAndCacheTests": 2,
+    "managedNestedMutations": 4096,
+    "managedCompressedMutations": 256
+  },
+  "nativeIpcVersion": 2,
+  "cacheLoadSeconds": [
+    0.022463,
+    0.021552,
+    0.021473
+  ],
+  "parallelismBenchmark": {
+    "seed": 244256,
+    "cases": 2048,
+    "outcomes": {
+      "accepted": 0,
+      "rejected": 2048
+    },
+    "mutationSeconds": 9.099,
+    "parentDeathVerified": true,
+    "workerSha256": "90144fafb4dcf5570bbe2fb7e3200dcfb84a93bc13ac709a98a458d07daa486a",
+    "frames": [
+      {
+        "fixture": "srb",
+        "encoding": "plain",
+        "plainBytes": 801488,
+        "encodedBytes": 1068652,
+        "jsonFrameBytes": 1068758,
+        "sha256": "59a12f6baa3c4b22baba3072950375c073882b0cf0a0f645040218202d3615ce"
+      },
+      {
+        "fixture": "srb",
+        "encoding": "gzip",
+        "plainBytes": 801488,
+        "encodedBytes": 9392,
+        "jsonFrameBytes": 9498,
+        "sha256": "59a12f6baa3c4b22baba3072950375c073882b0cf0a0f645040218202d3615ce"
+      },
+      {
+        "fixture": "srb",
+        "encoding": "zlib",
+        "plainBytes": 801488,
+        "encodedBytes": 8524,
+        "jsonFrameBytes": 8630,
+        "sha256": "59a12f6baa3c4b22baba3072950375c073882b0cf0a0f645040218202d3615ce"
+      },
+      {
+        "fixture": "share-only",
+        "encoding": "plain",
+        "plainBytes": 801488,
+        "encodedBytes": 1068652,
+        "jsonFrameBytes": 1068758,
+        "sha256": "0d874e378d8a8c93c2a8e5e9c1757f037145c4916232d944d9c4b34294a364c5"
+      },
+      {
+        "fixture": "share-only",
+        "encoding": "gzip",
+        "plainBytes": 801488,
+        "encodedBytes": 9396,
+        "jsonFrameBytes": 9502,
+        "sha256": "0d874e378d8a8c93c2a8e5e9c1757f037145c4916232d944d9c4b34294a364c5"
+      },
+      {
+        "fixture": "share-only",
+        "encoding": "zlib",
+        "plainBytes": 801488,
+        "encodedBytes": 8524,
+        "jsonFrameBytes": 8630,
+        "sha256": "0d874e378d8a8c93c2a8e5e9c1757f037145c4916232d944d9c4b34294a364c5"
+      }
+    ],
+    "benchmarks": [
+      {
+        "threads": 1,
+        "wallSeconds": 164.006,
+        "peakRssKiB": 8334428,
+        "userSeconds": 154.11,
+        "systemSeconds": 9.94,
+        "certificateBytes": 59560
+      },
+      {
+        "threads": 2,
+        "wallSeconds": 99.085,
+        "peakRssKiB": 8331056,
+        "userSeconds": 180.61,
+        "systemSeconds": 12.61,
+        "certificateBytes": 59560
+      },
+      {
+        "threads": 4,
+        "wallSeconds": 50.907,
+        "peakRssKiB": 8331560,
+        "userSeconds": 177.44,
+        "systemSeconds": 14.68,
+        "certificateBytes": 59560
+      },
+      {
+        "threads": 4,
+        "wallSeconds": 53.214,
+        "peakRssKiB": 8331692,
+        "userSeconds": 183.03,
+        "systemSeconds": 15.22,
+        "certificateBytes": 59560
+      }
+    ]
+  },
+  "finalPackagedWorker": {
+    "seed": 244256,
+    "cases": 2048,
+    "outcomes": {
+      "accepted": 0,
+      "rejected": 2048
+    },
+    "mutationSeconds": 8.955,
+    "parentDeathVerified": true,
+    "workerSha256": "9b97d5ba28c363928a4a425960bae2af36bba46253e94f5d4110eae864eb0aa7",
+    "frames": [
+      {
+        "fixture": "srb",
+        "encoding": "plain",
+        "plainBytes": 801488,
+        "encodedBytes": 1068652,
+        "jsonFrameBytes": 1068758,
+        "sha256": "59a12f6baa3c4b22baba3072950375c073882b0cf0a0f645040218202d3615ce"
+      },
+      {
+        "fixture": "srb",
+        "encoding": "gzip",
+        "plainBytes": 801488,
+        "encodedBytes": 9392,
+        "jsonFrameBytes": 9498,
+        "sha256": "59a12f6baa3c4b22baba3072950375c073882b0cf0a0f645040218202d3615ce"
+      },
+      {
+        "fixture": "srb",
+        "encoding": "zlib",
+        "plainBytes": 801488,
+        "encodedBytes": 8524,
+        "jsonFrameBytes": 8630,
+        "sha256": "59a12f6baa3c4b22baba3072950375c073882b0cf0a0f645040218202d3615ce"
+      },
+      {
+        "fixture": "share-only",
+        "encoding": "plain",
+        "plainBytes": 801488,
+        "encodedBytes": 1068652,
+        "jsonFrameBytes": 1068758,
+        "sha256": "0d874e378d8a8c93c2a8e5e9c1757f037145c4916232d944d9c4b34294a364c5"
+      },
+      {
+        "fixture": "share-only",
+        "encoding": "gzip",
+        "plainBytes": 801488,
+        "encodedBytes": 9396,
+        "jsonFrameBytes": 9502,
+        "sha256": "0d874e378d8a8c93c2a8e5e9c1757f037145c4916232d944d9c4b34294a364c5"
+      },
+      {
+        "fixture": "share-only",
+        "encoding": "zlib",
+        "plainBytes": 801488,
+        "encodedBytes": 8524,
+        "jsonFrameBytes": 8630,
+        "sha256": "0d874e378d8a8c93c2a8e5e9c1757f037145c4916232d944d9c4b34294a364c5"
+      }
+    ],
+    "benchmarks": [
+      {
+        "threads": 4,
+        "wallSeconds": 46.378,
+        "peakRssKiB": 8343884,
+        "userSeconds": 164.09,
+        "systemSeconds": 11.54,
+        "certificateBytes": 59560
+      }
+    ]
+  },
+  "oysterRpcCatalogue": {
+    "upstream": "d7c517d267f10f5bcbbdc366f3e603942f9a5ab5",
+    "height": 104,
+    "utxos": 7,
+    "transactions": 12,
+    "sendtoaddress": "79dbb62881e86cc9d71b9ee0b6afb877cf08500eed8c69ca98c97331361baa52",
+    "sendmany": "fb729102e70947e6217f22a344bb636f0d122f84dfe0f01248471a993e067f7c",
+    "gettransactionFeeConvention": "positive PRL fee; handler validates its absolute value",
+    "calls": [
+      {
+        "method": "walletislocked",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "bool"
+      },
+      {
+        "method": "getnewaddress",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "str"
+      },
+      {
+        "method": "validateaddress",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "dict"
+      },
+      {
+        "method": "validateaddress",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "dict"
+      },
+      {
+        "method": "getbalance",
+        "endpoint": "wallet",
+        "errorCode": -4,
+        "resultType": "NoneType"
+      },
+      {
+        "method": "sendtoaddress",
+        "endpoint": "wallet",
+        "errorCode": -13,
+        "resultType": "NoneType"
+      },
+      {
+        "method": "walletpassphrase",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "NoneType"
+      },
+      {
+        "method": "walletislocked",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "bool"
+      },
+      {
+        "method": "getblockcount",
+        "endpoint": "node",
+        "errorCode": null,
+        "resultType": "int"
+      },
+      {
+        "method": "chainsynced",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "bool"
+      },
+      {
+        "method": "getbestblockhash",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "str"
+      },
+      {
+        "method": "getbestblockhash",
+        "endpoint": "node",
+        "errorCode": null,
+        "resultType": "str"
+      },
+      {
+        "method": "getbalance",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "float"
+      },
+      {
+        "method": "listunspent",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "list"
+      },
+      {
+        "method": "listtransactions",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "list"
+      },
+      {
+        "method": "listtransactions",
+        "endpoint": "wallet",
+        "errorCode": -4,
+        "resultType": "NoneType"
+      },
+      {
+        "method": "sendtoaddress",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "str"
+      },
+      {
+        "method": "sendmany",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "str"
+      },
+      {
+        "method": "gettransaction",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "dict"
+      },
+      {
+        "method": "getrawtransaction",
+        "endpoint": "node",
+        "errorCode": null,
+        "resultType": "dict"
+      },
+      {
+        "method": "gettransaction",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "dict"
+      },
+      {
+        "method": "getrawtransaction",
+        "endpoint": "node",
+        "errorCode": null,
+        "resultType": "dict"
+      },
+      {
+        "method": "walletlock",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "NoneType"
+      },
+      {
+        "method": "walletislocked",
+        "endpoint": "wallet",
+        "errorCode": null,
+        "resultType": "bool"
+      },
+      {
+        "method": "sendmany",
+        "endpoint": "wallet",
+        "errorCode": -13,
+        "resultType": "NoneType"
+      },
+      {
+        "method": "getblockcount",
+        "endpoint": "node",
+        "errorCode": null,
+        "resultType": "int"
+      }
+    ]
+  },
+  "productionRuntime": {
+    "durationSeconds": 425,
+    "shares": 16,
+    "blocks": 1,
+    "blockHash": "281875955ea41ef49a702b28bbdf3b70fc6d2b334ef27f749b6047f9c3e75e09",
+    "metricsVerified": true,
+    "package": "Release IPC v2",
+    "miner": "SRBMiner-MULTI 3.7.3",
+    "databaseRole": "pearl_pool (non-superuser)"
+  },
+  "finalHeightMetric": {
+    "chainHeight": 104,
+    "exportedHeight": 104,
+    "verified": true,
+    "package": "final Release"
+  },
+  "pythonSerializer": {
+    "version": 3,
+    "header": "0000002032587e2447b0432f2cce83b08c81b3bebb1ecaffefbddbe9a8516adf27abd07884fb47b394e74c4a0fdc28a82f1cfbaeacb9e5542a78072fb9c6a5da37b5af74cf26e76a0000011e4a38e6e45f908688b61aa83619318d59d07bb34923f44451b31897eccfff9bc1",
+    "publicData": "000800008000000007010301000000010301010100000000000000000000000000000000000000000000000000000000000000007aff51caaf52157ccb4d92aac59bd35705428c1a2333e5ae3492f517994b24ec72530e24b779a206fe9ccf273885da2546ccd543c81d09b06d1b0754107d20cee13a082a0adb2bfaeda3838667d8be04b7df517317745a763687a8a8288bf10000010000000200001100000080010000",
+    "certificateBytes": 59560,
+    "blockSha256": "762d6b19d8873c74934861581a36026e62e681667ea18061a295b916da00fd1f",
+    "compactSizeBlockSha256": {
+      "1": "762d6b19d8873c74934861581a36026e62e681667ea18061a295b916da00fd1f",
+      "252": "777809eefba1eaa5f96f5f265c94b5eacfe2c7472199fa1cb6c2f722148a052a",
+      "253": "741ab003b07986804f8abd274aaefdd22bc3c4bacace16c98c33e46f82749d29",
+      "65535": "503680f4dd93845e1f89e669c7cec73909c1e573fbe70d052bfded1b050608ba",
+      "65536": "23aaa794adffcecb529c1c1fcbcb1d6cabf7f884fbfb479af975fc4779807ef8"
+    },
+    "upstream": "d7c517d267f10f5bcbbdc366f3e603942f9a5ab5",
+    "source": "proof-enabled isolated regtest node; official Python gateway and Rust bindings"
+  },
+  "logsSha256": {
+    "completion-full-regression.log": "fd3226026c36adcbb1ee47014753c719711714d917e26d17e98dd1bb541c0427",
+    "completion-tests.log": "bd460619a4b171b03c094e56701d08bfce4aab7bb2a427ea977f96e983a7aebc",
+    "completion-native-unit.log": "fd4607e09e0af73e88a44339c9426781f9ab11a31e373f026992689743f3f3bf",
+    "completion-worker-contract.log": "386763c12f3fa29a459503a7f5fd3f0a19a3bda37c7bc1b8efa7c5701c082cbc",
+    "completion-final-release.log": "f093e5c45bc99395532def33984e2e620de62bd3b7e340e008e0509469f671e5",
+    "completion-runtime-metrics.txt": "2e105b4fec99ec97e46b1655feb112de0472f6e6b4dc914657e3ab1a8d50d868",
+    "completion-final-native.log": "27cbb211621100e161a6a2b78255bc46392bb3aa6e8eecb961630ab93cde98e2"
+  },
+  "publishedMiningcoreDllSha256": "fffc0e82061012d6e8aa686b21fad8e2b9a3814e919516f96a18285166e17e7a",
+  "interpretation": [
+    "Skipped tests are not certification. Live runtime and wallet RPC tests were run separately.",
+    "Parallelism benchmark used IPC v2 before the testable panic-status refactor; final packaged worker was independently fuzzed and proved again. Both binary digests are retained.",
+    "Benchmark includes concurrent proof-enabled node activity; fresh circuit cache each process, repeated runs may benefit from OS page cache.",
+    "Mock HTTP fault injection uses the actual payout handler and a real PostgreSQL ledger; live Oyster catalogue verifies daemon contracts; earlier full process crash/lost-response evidence remains in pearl-certification.json.",
+    "One live block and 16 accepted shares were recorded before correcting only the Height metric from next-work height to chain height. Final Release startup separately verifies the corrected gauge against the node."
+  ]
+}

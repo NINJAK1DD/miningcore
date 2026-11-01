@@ -62,6 +62,31 @@ public class PearlProofVerifierTests
     }
 
     [PearlLinuxFact]
+    public async Task OnlyExplicitRejectionCanBeAttributedToTheMiner()
+    {
+        var (header, target, proof) = Input();
+        await Assert.ThrowsAsync<PearlWorkerException>(() =>
+            new PearlProofVerifier("/nonexistent/pearl-worker").VerifyAsync(header, target, proof, false, CancellationToken.None));
+        using(var rejected = new Helper("/bin/cat >/dev/null; printf 'PRLRES02\\001\\000\\000\\000'; exit 1"))
+            await Assert.ThrowsAsync<PearlInvalidProofException>(() =>
+                new PearlProofVerifier(rejected.Path).VerifyAsync(header, target, proof, false, CancellationToken.None));
+        foreach(var script in new[]
+        {
+            "/bin/cat >/dev/null; printf 'PRLRES02\\002\\000\\000\\000'; exit 2",
+            "/bin/cat >/dev/null; kill -KILL $$",
+            "exit 2", // Broken stdin while the caller writes is also infrastructure failure.
+            "/bin/cat >/dev/null; printf 'PRLRES02\\001\\000\\000\\000'; exit 2",
+            "/bin/cat >/dev/null; printf 'PRLRES02\\001\\000\\000\\000extra'; exit 1",
+            "/bin/cat >/dev/null; /usr/bin/head -c 61000 /dev/zero"
+        })
+        {
+            using var failed = new Helper(script);
+            await Assert.ThrowsAsync<PearlWorkerException>(() =>
+                new PearlProofVerifier(failed.Path).VerifyAsync(header, target, proof, false, CancellationToken.None));
+        }
+    }
+
+    [PearlLinuxFact]
     public async Task GlobalCapacityHasNoQueueAndCancellationKillsAndReapsWorkers()
     {
         using var helper = new Helper("exec /bin/sleep 60");

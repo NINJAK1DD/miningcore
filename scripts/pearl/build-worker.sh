@@ -39,7 +39,7 @@ cp "$repo_root/src/Native/pearl-proof-worker/src/main.rs" "$helper/src/"
 )
 cargo build --locked --release --manifest-path "$helper/Cargo.toml"
 worker="$helper/target/release/miningcore-pearl-worker"
-expected="miningcore-pearl-worker 1 $pin linux-x64"
+expected="miningcore-pearl-worker 2 $pin linux-x64"
 [[ $("$worker" --version) == "$expected" ]]
 install -m 0755 "$worker" "$build_root/output/miningcore-pearl-worker"
 cp "$upstream/LICENSE" "$build_root/output/pearl-upstream-LICENSE"

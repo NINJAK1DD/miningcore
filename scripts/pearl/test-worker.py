@@ -17,14 +17,14 @@ worker = args.worker.resolve(strict=True)
 fixtures = Path(__file__).resolve().parents[2] / "src/Miningcore.Tests/Fixtures/Pearl"
 env = dict(os.environ, RAYON_NUM_THREADS="4")
 version = subprocess.run([str(worker), "--version"], check=True, capture_output=True, timeout=5).stdout.decode().strip()
-assert version == "miningcore-pearl-worker 1 d7c517d267f10f5bcbbdc366f3e603942f9a5ab5 linux-x64"
+assert version == "miningcore-pearl-worker 2 d7c517d267f10f5bcbbdc366f3e603942f9a5ab5 linux-x64"
 
 cases = 0
 def run(name, request, valid, candidate=False, public=None, prove=False):
     global cases
     result = subprocess.run([str(worker)], input=request, capture_output=True, timeout=180 if prove else 5, env=env)
     assert result.returncode == (0 if valid else 1), (name, "exit", result.returncode)
-    assert result.stdout[:8] == b"PRLRES01", (name, "magic")
+    assert result.stdout[:8] == b"PRLRES02", (name, "magic")
     if valid:
         assert result.stdout[8:12] == bytes([0, int(candidate), 0, 0]), (name, "status")
         if public is not None:
@@ -33,7 +33,7 @@ def run(name, request, valid, candidate=False, public=None, prove=False):
         assert len(result.stdout) == 180 + length
         assert (0 < length <= 60000) if prove else length == 0
     else:
-        assert result.stdout == b"PRLRES01\x01\0\0\0", (name, "error frame")
+        assert result.stdout == b"PRLRES02\x01\0\0\0", (name, "error frame")
     assert not result.stderr, (name, "unexpected diagnostic output")
     cases += 1
     print("PASS", name, flush=True)
@@ -45,7 +45,7 @@ for fixture in ("srb", "share-only"):
     public = bytes.fromhex(meta["publicData"])
     target = int(meta["target"], 16)
     def packet(target=target, operation=0, proof=raw):
-        return (b"PRLJOB01" + bytes([operation, 3, 0, 0]) + bytes.fromhex(meta["header"]) +
+        return (b"PRLJOB02" + bytes([operation, 3, 0, 0]) + bytes.fromhex(meta["header"]) +
                 target.to_bytes(32, "big") + struct.pack("<I", len(proof)) + proof)
     request = packet()
     run(fixture + ":valid", request, True, meta["candidate"], public)

@@ -11,6 +11,34 @@ namespace Miningcore.Tests.Blockchain.Pearl;
 
 public class PearlConsensusTests
 {
+    [Fact]
+    public void CompleteBlockMatchesOfficialPythonGatewayAndNodeIncludingCompactSizeBoundaries()
+    {
+        using var fixture = GetType().Assembly.GetManifestResourceStream("Miningcore.Tests.Fixtures.Pearl.python-block.bin.gz");
+        using var gzip = new System.IO.Compression.GZipStream(fixture, System.IO.Compression.CompressionMode.Decompress);
+        using var buffer = new MemoryStream(); gzip.CopyTo(buffer);
+        var raw = buffer.ToArray();
+        using var metadata = GetType().Assembly.GetManifestResourceStream("Miningcore.Tests.Fixtures.Pearl.python-block.bin.json");
+        using var reader = new StreamReader(metadata);
+        var expected = JObject.Parse(reader.ReadToEnd());
+        var publicData = Convert.FromHexString(expected.Value<string>("publicData"));
+        var proofLength = expected.Value<int>("certificateBytes");
+        var headerOffset = 44 + publicData.Length + proofLength;
+        var proof = raw.AsSpan(44 + publicData.Length, proofLength).ToArray();
+        var header = raw.AsSpan(headerOffset, 76).ToArray();
+        Assert.Equal(raw, PearlConsensus.SerializeBlock(header, 3, publicData, proof, raw.AsSpan(headerOffset + 108)));
+        var transaction = raw[(headerOffset + 109)..];
+        foreach(var vector in ((JObject) expected["compactSizeBlockSha256"]).Properties())
+        {
+            var count = ulong.Parse(vector.Name);
+            using var transactions = new MemoryStream();
+            new NBitcoin.BitcoinStream(transactions, true).ReadWriteAsVarInt(ref count);
+            for(ulong i = 0; i < count; i++) transactions.Write(transaction);
+            var block = PearlConsensus.SerializeBlock(header, 3, publicData, proof, transactions.ToArray());
+            Assert.Equal(vector.Value.Value<string>(), Convert.ToHexString(SHA256.HashData(block)).ToLowerInvariant());
+        }
+    }
+
     private static byte[] Header() => PearlConsensus.SerializeIncompleteHeader(1,
         Convert.FromHexString("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000"),
         Convert.FromHexString("3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a"),

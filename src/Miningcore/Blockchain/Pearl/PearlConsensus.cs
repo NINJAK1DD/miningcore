@@ -10,6 +10,17 @@ namespace Miningcore.Blockchain.Pearl;
 /// </summary>
 internal static class PearlConsensus
 {
+    // Transactions already include their CompactSize count, from the immutable job snapshot.
+    internal static byte[] SerializeBlock(ReadOnlySpan<byte> header, uint version, ReadOnlySpan<byte> publicData,
+        ReadOnlySpan<byte> certificate, ReadOnlySpan<byte> transactions)
+    {
+        var prefix = SerializeCertifiedHeader(header, version, publicData, certificate);
+        var block = new byte[checked(prefix.Length + transactions.Length)];
+        prefix.CopyTo(block, 0);
+        transactions.CopyTo(block.AsSpan(prefix.Length));
+        return block;
+    }
+
     internal const int IncompleteHeaderSize = 76;
     internal const int HeaderSize = 108;
     internal const int DensePublicDataSize = 164;

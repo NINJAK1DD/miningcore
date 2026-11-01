@@ -13,10 +13,13 @@ namespace Miningcore.Blockchain.Pearl;
 internal sealed class PearlProofVerifier
 {
     internal const string ExpectedVersion =
-        "miningcore-pearl-worker 1 d7c517d267f10f5bcbbdc366f3e603942f9a5ab5 linux-x64";
+        "miningcore-pearl-worker 2 d7c517d267f10f5bcbbdc366f3e603942f9a5ab5 linux-x64";
     private readonly string executable;
     private static readonly SemaphoreSlim verificationSlots = new(2, 2);
     private static readonly SemaphoreSlim provingSlots = new(1, 1);
+
+    internal static int ActiveVerifiers => 2 - verificationSlots.CurrentCount;
+    internal static int ActiveProvers => 1 - provingSlots.CurrentCount;
 
     internal sealed record Result(byte[] Header, byte[] PublicData, bool IsBlockCandidate, byte[] Certificate);
 
@@ -50,7 +53,7 @@ internal sealed class PearlProofVerifier
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
             deadline.CancelAfter(prove ? TimeSpan.FromSeconds(180) : TimeSpan.FromSeconds(5));
             var fixedInput = new byte[124];
-            Encoding.ASCII.GetBytes("PRLJOB01", fixedInput);
+            Encoding.ASCII.GetBytes("PRLJOB02", fixedInput);
             fixedInput[8] = prove ? (byte) 1 : (byte) 0;
             fixedInput[9] = 3;
             header.CopyTo(fixedInput, 12);
@@ -59,7 +62,9 @@ internal sealed class PearlProofVerifier
             BinaryPrimitives.WriteUInt32LittleEndian(fixedInput.AsSpan(120), (uint) proof.Length);
 
             using var process = new Process { StartInfo = StartInfo() };
-            process.Start();
+            try {process.Start();}
+            catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+            {throw new PearlWorkerException("Pearl worker could not start", ex);}
             try
             {
                 var outputTask = ReadBoundedAsync(process.StandardOutput.BaseStream, 60180, deadline.Token);
@@ -67,28 +72,42 @@ internal sealed class PearlProofVerifier
                 var writeTask = WriteAsync(process, fixedInput, proof, deadline.Token);
                 await Task.WhenAll(outputTask, errorTask, writeTask, process.WaitForExitAsync(deadline.Token));
                 var response = await outputTask;
-                if(process.ExitCode != 0 || response.Length < 180 || !response.AsSpan(0, 8).SequenceEqual("PRLRES01"u8) ||
+                if(process.ExitCode == 1 && response.AsSpan().SequenceEqual("PRLRES02\x01\0\0\0"u8))
+                    throw new PearlInvalidProofException();
+                if(process.ExitCode != 0 || response.Length < 180 || !response.AsSpan(0, 8).SequenceEqual("PRLRES02"u8) ||
                     response[8] != 0 || response[9] > 1 || response[10] != 0 || response[11] != 0)
-                    throw new InvalidDataException("Pearl proof verification failed");
+                    throw new PearlWorkerException("Pearl worker failed or returned an invalid response");
 
                 var size = BinaryPrimitives.ReadUInt32LittleEndian(response.AsSpan(176));
                 if(size > PearlConsensus.MaximumProofSize || response.Length != 180 + size ||
                     prove && (size == 0 || response[9] != 1) || !prove && size != 0)
-                    throw new InvalidDataException("Invalid Pearl worker response");
+                    throw new PearlWorkerException("Invalid Pearl worker response");
                 var publicData = response[12..176];
                 if(BinaryPrimitives.ReadUInt32LittleEndian(publicData) != dimensions.K ||
                     BinaryPrimitives.ReadUInt16LittleEndian(publicData.AsSpan(4)) != dimensions.Rank ||
                     BinaryPrimitives.ReadUInt32LittleEndian(publicData.AsSpan(148)) != dimensions.M ||
                     BinaryPrimitives.ReadUInt32LittleEndian(publicData.AsSpan(152)) != dimensions.N)
-                    throw new InvalidDataException("Pearl worker dimensions do not match the proof");
+                    throw new PearlWorkerException("Pearl worker dimensions do not match the proof");
                 var jackpot = new BigInteger(publicData.AsSpan(116, 32), isUnsigned: true, isBigEndian: false);
                 if(jackpot > PearlConsensus.ScaleTarget(shareTarget, dimensions.RankAdjustedWorkFactor, false))
-                    throw new InvalidDataException("Pearl worker returned a low-difficulty proof");
+                    throw new PearlWorkerException("Pearl worker returned a low-difficulty proof");
                 var networkTarget = PearlConsensus.DecodeTarget(BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(72)));
                 var candidate = jackpot <= PearlConsensus.ScaleTarget(networkTarget, dimensions.RankAdjustedWorkFactor, true);
                 if(candidate != (response[9] == 1))
-                    throw new InvalidDataException("Pearl worker candidate classification mismatch");
+                    throw new PearlWorkerException("Pearl worker candidate classification mismatch");
                 return new Result(header.ToArray(), publicData, candidate, response[180..]);
+            }
+            catch(OperationCanceledException ex) when(!ct.IsCancellationRequested)
+            {
+                throw new PearlWorkerException("Pearl worker exceeded its deadline", ex);
+            }
+            catch(InvalidDataException ex)
+            {
+                throw new PearlWorkerException("Pearl worker exceeded its response limits", ex);
+            }
+            catch(IOException ex)
+            {
+                throw new PearlWorkerException("Pearl worker communication failed", ex);
             }
             finally
             {
@@ -164,3 +183,7 @@ internal sealed class PearlProofVerifier
         return result.ToArray();
     }
 }
+
+// Deliberately distinct from malformed client input: infrastructure failures must not ban miners.
+internal sealed class PearlWorkerException(string message, Exception inner = null) : Exception(message, inner);
+internal sealed class PearlInvalidProofException() : Exception("Invalid Pearl proof");
