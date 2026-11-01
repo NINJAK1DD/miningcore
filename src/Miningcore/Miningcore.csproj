@@ -92,7 +92,7 @@
         <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.1" />
         <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
         <PackageReference Include="JetBrains.Annotations" Version="2026.2.0" />
-        <PackageReference Include="MailKit" Version="4.18.1" />
+        <PackageReference Include="MailKit" Version="4.18.2" />
         <!-- Pin the patched transitive dependency until all upstream packages resolve
              Pkcs >= 10.0.13; remove only after restore/audit confirms that floor. -->
         <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
