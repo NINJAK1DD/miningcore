@@ -99,7 +99,7 @@ public class NonParallelCollectionTests
         // Pearl's process-wide worker capacity is exercised to exhaustion. Its live GPU
         // fixture shares that capacity and must not overlap the cancellation test.
         yield return new object[] { typeof(PearlProofWorkerCollection),
-            new[] { typeof(PearlProofVerifierTests), typeof(PearlLiveLabTests) } };
+            new[] { typeof(PearlProofVerifierTests), typeof(PearlLiveLabTests), typeof(PearlTransportTests) } };
         // The deadline collection has its own exact-membership contract.
         yield return new object[] { typeof(AdminApiEnvironmentCollection), new[] { typeof(AdminApiSecurityTests) } };
         yield return new object[] { typeof(BitcoinCorePayoutIntegrationCollection),

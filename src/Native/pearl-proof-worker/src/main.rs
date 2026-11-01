@@ -39,6 +39,9 @@ fn run() -> Result<()> {
     // Hard limits apply even when the .NET caller times out or disappears.
     #[cfg(target_os = "linux")]
     unsafe {
+        let parent = libc::getppid();
+        ensure!(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == 0, "parent lifetime");
+        ensure!(libc::getppid() == parent && parent != 1, "parent exited");
         let memory = libc::rlimit { rlim_cur: 8 * 1024 * 1024 * 1024, rlim_max: 8 * 1024 * 1024 * 1024 };
         let cpu = libc::rlimit { rlim_cur: 600, rlim_max: 600 };
         ensure!(libc::setrlimit(libc::RLIMIT_AS, &memory) == 0, "memory limit");
@@ -49,6 +52,15 @@ fn run() -> Result<()> {
     input.read_exact(&mut fixed)?;
     ensure!(&fixed[..8] == b"PRLJOB01", "protocol");
     ensure!(fixed[8] <= 1 && fixed[9] == 3 && fixed[10..12] == [0, 0], "unsupported operation");
+    #[cfg(target_os = "linux")]
+    if fixed[8] == 0 {
+        unsafe {
+            let memory = libc::rlimit { rlim_cur: 1024 * 1024 * 1024, rlim_max: 1024 * 1024 * 1024 };
+            let cpu = libc::rlimit { rlim_cur: 20, rlim_max: 20 };
+            ensure!(libc::setrlimit(libc::RLIMIT_AS, &memory) == 0, "verification memory limit");
+            ensure!(libc::setrlimit(libc::RLIMIT_CPU, &cpu) == 0, "verification CPU limit");
+        }
+    }
     let header = IncompleteBlockHeader::from_bytes(&fixed[12..88])?;
     let target = U256::from_big_endian(&fixed[88..120]);
     ensure!(!target.is_zero(), "zero target");

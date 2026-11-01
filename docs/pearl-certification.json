@@ -1,0 +1,478 @@
+{
+  "recorded_utc": "2026-11-01",
+  "issue": 244,
+  "pull_request": 256,
+  "network_for_live_blocks_and_payouts": "proof-enabled regtest",
+  "mainnet_block_or_payout_claimed": false,
+  "platform": {
+    "os": "Ubuntu 26.04 glibc x64 (WSL)",
+    "cpu": "Ryzen 9 5950X",
+    "gpu": "RTX 3080 Ti 12 GiB",
+    "host_memory_gib": 15,
+    "pool_rss_excludes_node_prover_gpu": true
+  },
+  "pins": {
+    "pearl": "v1.5.5",
+    "pearl_commit": "d7c517d267f10f5bcbbdc366f3e603942f9a5ab5",
+    "miner": "SRBMiner-MULTI 3.7.3",
+    "miner_archive_sha256": "c7250d39fe23549a88ef5d8d2041d75e60166f5d6ab8c8daf7274ab7b0a8da20",
+    "rust": "1.93.1"
+  },
+  "mainnet": {
+    "template_height": 136635,
+    "bits": "1754f66b",
+    "certificate_version": 3,
+    "transactions": 54,
+    "historical_activation_headers": 12,
+    "fixtures": [
+      "mainnet-template.json",
+      "mainnet-activations.json"
+    ]
+  },
+  "tests": {
+    "full": {
+      "passed": 5753,
+      "failed": 0,
+      "skipped": 24
+    },
+    "final_focused_after_reward_scheme_gate": {
+      "passed": 379,
+      "failed": 0,
+      "skipped": 1
+    },
+    "native_worker_including_proving": 26,
+    "native_libraries": 25,
+    "managed_native_entrypoints": 241,
+    "floating_point_modes": 8,
+    "skipped_lanes_are_not_certification": true
+  },
+  "package": {
+    "configuration": "Release",
+    "source_built": true,
+    "pinned_container_build_claimed": false,
+    "archive_packager_contract_smoke": true,
+    "worker_sha256": "438f19b5cf95113d8ac8e8fdd2e46c6c9bba7e10d04d212b831b9bdd63cd7c25"
+  },
+  "candidate_restart": {
+    "production_pool": true,
+    "miner": "SRBMiner-MULTI/3.7.3",
+    "hash": "255946f6fb1cd8b79a5bfe8b70a0d8a1eb56215798af89fcd4dee747a519898b",
+    "height": 1,
+    "shares": "1",
+    "crash_recovery": true,
+    "duplicate_credit": false
+  },
+  "payout_lost_response": {
+    "production_payout_handler": true,
+    "network": "regtest",
+    "transaction": "15a140706f84acac49f6516ab29163ee15dde8a34c1c22dd0ac56d7727009569",
+    "recipient_outputs": {
+      "rprl1pm4px7vl8lr3d3s7jm33mxwrlfnj36kvas6pvauhkudtzs4n748vqtwj2ml": 80.74103351,
+      "rprl1pet9x33gtgfvjemrhhzh9gval0eac6j05694vd2wye9gepg2pqxzsfaq9xy": 3148.90030711,
+      "rprl1p9wh8slxn6cj7nnqmqkl6xrpd7l2w9kfzf729n9t43x9eyym3v4ds3a3puu": 0.01
+    },
+    "sendmany_calls": 1,
+    "response_lost_after_broadcast": true,
+    "restart_reconciled": true,
+    "payment_batches": 1,
+    "height": 104,
+    "fee": 2.99e-05
+  },
+  "already_paid_intent_replay": {
+    "already_paid_intent_reconciled_with_no_eligible_balances": true,
+    "sendmany_calls": 0,
+    "ledger_unchanged": true,
+    "extra_change_ownership_and_fee_verified": true
+  },
+  "reorg": {
+    "before_maturity": [
+      "pending",
+      "orphaned",
+      "pending"
+    ],
+    "after_settlement": [
+      "confirmed",
+      "quarantined"
+    ],
+    "ledger_unchanged": true,
+    "original_chain_restored": "f8a17846af6108578f20c0b24286ba7d1181b515c117d8e2ad59fcea0f0af9aa",
+    "manual_quarantine_release_after_audit": true,
+    "nonempty_witness_block": "5fd4944928cfd1f16956e06498c3a87da4f6ca98efb9b4d1e5cec554a361d0e2",
+    "payout_transaction": "15a140706f84acac49f6516ab29163ee15dde8a34c1c22dd0ac56d7727009569",
+    "nonempty_block_transactions": 2
+  },
+  "independent_soak": {
+    "duration_seconds": 1801,
+    "samples": [
+      {
+        "seconds": 0,
+        "shares": 0,
+        "blocks": 1,
+        "candidates": 0,
+        "pool_rss_kib": 172804
+      },
+      {
+        "seconds": 60,
+        "shares": 2,
+        "blocks": 1,
+        "candidates": 2,
+        "pool_rss_kib": 204480
+      },
+      {
+        "seconds": 120,
+        "shares": 6,
+        "blocks": 2,
+        "candidates": 3,
+        "pool_rss_kib": 222720
+      },
+      {
+        "seconds": 180,
+        "shares": 7,
+        "blocks": 3,
+        "candidates": 0,
+        "pool_rss_kib": 221892
+      },
+      {
+        "seconds": 240,
+        "shares": 8,
+        "blocks": 3,
+        "candidates": 1,
+        "pool_rss_kib": 214944
+      },
+      {
+        "seconds": 300,
+        "shares": 9,
+        "blocks": 4,
+        "candidates": 0,
+        "pool_rss_kib": 225288
+      },
+      {
+        "seconds": 361,
+        "shares": 13,
+        "blocks": 5,
+        "candidates": 1,
+        "pool_rss_kib": 219956
+      },
+      {
+        "seconds": 420,
+        "shares": 13,
+        "blocks": 6,
+        "candidates": 0,
+        "pool_rss_kib": 221024
+      },
+      {
+        "seconds": 480,
+        "shares": 16,
+        "blocks": 7,
+        "candidates": 0,
+        "pool_rss_kib": 227004
+      },
+      {
+        "seconds": 540,
+        "shares": 17,
+        "blocks": 7,
+        "candidates": 1,
+        "pool_rss_kib": 218048
+      },
+      {
+        "seconds": 600,
+        "shares": 17,
+        "blocks": 8,
+        "candidates": 0,
+        "pool_rss_kib": 219004
+      },
+      {
+        "seconds": 660,
+        "shares": 17,
+        "blocks": 8,
+        "candidates": 0,
+        "pool_rss_kib": 219560
+      },
+      {
+        "seconds": 720,
+        "shares": 18,
+        "blocks": 8,
+        "candidates": 1,
+        "pool_rss_kib": 221652
+      },
+      {
+        "seconds": 781,
+        "shares": 18,
+        "blocks": 9,
+        "candidates": 0,
+        "pool_rss_kib": 222700
+      },
+      {
+        "seconds": 840,
+        "shares": 20,
+        "blocks": 9,
+        "candidates": 2,
+        "pool_rss_kib": 230180
+      },
+      {
+        "seconds": 901,
+        "shares": 21,
+        "blocks": 10,
+        "candidates": 1,
+        "pool_rss_kib": 229736
+      },
+      {
+        "seconds": 961,
+        "shares": 21,
+        "blocks": 11,
+        "candidates": 0,
+        "pool_rss_kib": 232404
+      },
+      {
+        "seconds": 1021,
+        "shares": 22,
+        "blocks": 11,
+        "candidates": 1,
+        "pool_rss_kib": 235116
+      },
+      {
+        "seconds": 1081,
+        "shares": 22,
+        "blocks": 12,
+        "candidates": 0,
+        "pool_rss_kib": 236040
+      },
+      {
+        "seconds": 1141,
+        "shares": 23,
+        "blocks": 12,
+        "candidates": 1,
+        "pool_rss_kib": 242140
+      },
+      {
+        "seconds": 1201,
+        "shares": 23,
+        "blocks": 13,
+        "candidates": 0,
+        "pool_rss_kib": 225264
+      },
+      {
+        "seconds": 1261,
+        "shares": 24,
+        "blocks": 13,
+        "candidates": 1,
+        "pool_rss_kib": 233000
+      },
+      {
+        "seconds": 1321,
+        "shares": 26,
+        "blocks": 14,
+        "candidates": 1,
+        "pool_rss_kib": 230884
+      },
+      {
+        "seconds": 1381,
+        "shares": 27,
+        "blocks": 15,
+        "candidates": 1,
+        "pool_rss_kib": 237720
+      },
+      {
+        "seconds": 1441,
+        "shares": 27,
+        "blocks": 16,
+        "candidates": 0,
+        "pool_rss_kib": 237728
+      },
+      {
+        "seconds": 1501,
+        "shares": 27,
+        "blocks": 16,
+        "candidates": 0,
+        "pool_rss_kib": 238956
+      },
+      {
+        "seconds": 1561,
+        "shares": 28,
+        "blocks": 16,
+        "candidates": 1,
+        "pool_rss_kib": 246000
+      },
+      {
+        "seconds": 1620,
+        "shares": 29,
+        "blocks": 18,
+        "candidates": 0,
+        "pool_rss_kib": 232572
+      },
+      {
+        "seconds": 1680,
+        "shares": 29,
+        "blocks": 18,
+        "candidates": 0,
+        "pool_rss_kib": 232780
+      },
+      {
+        "seconds": 1740,
+        "shares": 29,
+        "blocks": 18,
+        "candidates": 0,
+        "pool_rss_kib": 233576
+      },
+      {
+        "seconds": 1800,
+        "shares": 30,
+        "blocks": 18,
+        "candidates": 1,
+        "pool_rss_kib": 239428
+      }
+    ],
+    "miner_exit": 0,
+    "transcript": {
+      "sha256": "690eff291f2933438d1afd409d8f49919af1b8042da495fca1a16850fd7d04d9",
+      "accepted": 30,
+      "rejected": 1,
+      "tls13": false,
+      "rejection_lines": [
+        "[2026-11-01 02:58:55] GPU0[t0] share rejected [pearl verifier busy; retry later] [pearlhash][0]"
+      ]
+    },
+    "accepted_blocks_during_window": 17,
+    "max_pool_rss_kib": 246000,
+    "max_candidate_count": 3
+  },
+  "published_coin_smoke": {
+    "duration_seconds": 301,
+    "samples": [
+      {
+        "seconds": 0,
+        "shares": 30,
+        "blocks": 19,
+        "candidates": 0,
+        "pool_rss_kib": 169676
+      },
+      {
+        "seconds": 60,
+        "shares": 32,
+        "blocks": 19,
+        "candidates": 2,
+        "pool_rss_kib": 213356
+      },
+      {
+        "seconds": 120,
+        "shares": 35,
+        "blocks": 20,
+        "candidates": 1,
+        "pool_rss_kib": 202928
+      },
+      {
+        "seconds": 180,
+        "shares": 35,
+        "blocks": 21,
+        "candidates": 0,
+        "pool_rss_kib": 166836
+      },
+      {
+        "seconds": 240,
+        "shares": 35,
+        "blocks": 21,
+        "candidates": 0,
+        "pool_rss_kib": 169644
+      },
+      {
+        "seconds": 300,
+        "shares": 38,
+        "blocks": 21,
+        "candidates": 3,
+        "pool_rss_kib": 172124
+      }
+    ],
+    "miner_exit": 0
+  },
+  "release_tls": {
+    "duration_seconds": 301,
+    "samples": [
+      {
+        "seconds": 0,
+        "shares": 38,
+        "blocks": 22,
+        "candidates": 0,
+        "pool_rss_kib": 175436
+      },
+      {
+        "seconds": 60,
+        "shares": 41,
+        "blocks": 22,
+        "candidates": 3,
+        "pool_rss_kib": 221596
+      },
+      {
+        "seconds": 121,
+        "shares": 41,
+        "blocks": 23,
+        "candidates": 0,
+        "pool_rss_kib": 222904
+      },
+      {
+        "seconds": 181,
+        "shares": 45,
+        "blocks": 24,
+        "candidates": 1,
+        "pool_rss_kib": 231480
+      },
+      {
+        "seconds": 241,
+        "shares": 47,
+        "blocks": 24,
+        "candidates": 3,
+        "pool_rss_kib": 230064
+      },
+      {
+        "seconds": 300,
+        "shares": 49,
+        "blocks": 25,
+        "candidates": 2,
+        "pool_rss_kib": 224676
+      }
+    ],
+    "miner_exit": 0
+  },
+  "release_tls_transcript": {
+    "sha256": "58d1c1c836a9c02312f5e8c215806083fac300bd252a996892b160666bbd3763",
+    "accepted": 11,
+    "rejected": 0,
+    "tls13": true,
+    "rejection_lines": []
+  },
+  "submitblock_lost_response": {
+    "method": "submitblock",
+    "reply_lost_after_upstream_success": true,
+    "transaction": null,
+    "canonical_hash": "3ab09c956c4cc100ff0378485eebd1b8f447fc6f1534d0914dab3c11468855bc",
+    "block_height": 126,
+    "block_rows": 1
+  },
+  "release_canonical_blocks": [
+    {
+      "blockheight": 126,
+      "hash": "3ab09c956c4cc100ff0378485eebd1b8f447fc6f1534d0914dab3c11468855bc",
+      "status": "pending"
+    },
+    {
+      "blockheight": 127,
+      "hash": "1936a1b19b9da396cbdba0e7fa5f8a9b18a4eee6b549b8b2ac24056805eac30f",
+      "status": "pending"
+    },
+    {
+      "blockheight": 128,
+      "hash": "3c8d84110f5a1528ac4cb86eef882ffde5a95f1d9989833b2fb74a55e5aa0dc4",
+      "status": "pending"
+    },
+    {
+      "blockheight": 129,
+      "hash": "298d07d27a91128ef884a97f1b4060fe71778d9b577d3ff728d3fd4914d90733",
+      "status": "pending"
+    }
+  ],
+  "log_sha256": {
+    "full-regression-isolated.log": "0257e66ac36a6103d5bddadac4a5d841834b88c0e4535b81ead03fcc66140802",
+    "runtime-tests.log": "2ade770905080b8f2fbbaba81d417c5ce32dec73577d7ef788b02a885978436f",
+    "package-release.log": "b143ecc6e8fcad5a07653db9e28fc820464729692c7c7d4c875b0c8fac32c74d",
+    "final-release-managed.log": "2ccc60273d71bffc95efb4348f1a7c3995acd25fd8056e55fc0eafa8886b761e"
+  }
+}

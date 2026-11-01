@@ -8,6 +8,9 @@ internal static class RpcConsumerOperations
 {
     internal static readonly FrozenSet<string> All = new[]
     {
+        "PearlPool.Candidate",
+        "PearlPool.Telemetry",
+        "PearlJobManager.Refresh",
         "MetricsPublisher.OnTelemetryEvent",
         "MetricsPublisher.OnHashrateNotification",
         "MetricsPublisher.OnAuxiliaryTemplateRpcTelemetry",

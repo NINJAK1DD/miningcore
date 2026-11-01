@@ -1,134 +1,154 @@
-# Pearl development and validation
+# Pearl (PRL): deployment, protocol and validation
 
-This branch contains a **development foundation for [issue #244](https://github.com/NINJAK1DD/miningcore/issues/244)**. It does not yet provide an operator-ready Pearl pool. PRL is intentionally absent from the selectable coin catalogue. The production Stratum runtime, durable candidate/share accounting, Oyster payout handler and recovery integration are not implemented. None of the issue's acceptance criteria is complete.
+Pearl uses its own Miningcore family (`pearl`) and **PearlHash salted integer V3** proof verification. It is not a nonce hasher. The pool verifies plain matrix proofs, durably records shares and candidate work, generates a certificate in an isolated worker, submits the exact completed block, and pays matured custodial rewards through Oyster.
 
-## Reviewed baseline
+## Supported baseline
 
-- Pearl v1.5.5, commit [d7c517d267f10f5bcbbdc366f3e603942f9a5ab5](https://github.com/pearl-research-labs/pearl/tree/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5).
-- SRBMiner-MULTI [3.7.3](https://github.com/doktor83/SRBMiner-Multi/releases/tag/3.7.3), Linux archive SHA256 `c7250d39fe23549a88ef5d8d2041d75e60166f5d6ab8c8daf7274ab7b0a8da20`.
-- WildRig [0.51.8](https://github.com/andru-kun/wildrig-multi/releases/tag/0.51.8), Linux archive SHA256 `43f4071c743c922f2febf4b8ea44fc9f93dff668f5ffafcc24903dfd78f63771`. Its local probe sent an opaque hexadecimal opening line; interoperability is **not verified**.
-- Initial Miningcore base: `6b183751b` on `dev`; subsequently merged `4fe5ebe8e` (FluentValidation 12.2.0).
+| Component | Certified scope |
+| --- | --- |
+| Consensus/node/wallet | Pearl **v1.5.5**, commit `d7c517d267f10f5bcbbdc366f3e603942f9a5ab5`; source-built `xmss,zkpow` node and Oyster |
+| Mining | Current dense integer V3, rank penalty, rank >=128; mainnet and proof-enabled regtest |
+| Miner protocol | SRBMiner-MULTI **3.7.3**, named-object `type: v2` dialect, tested on Linux with RTX 3080 Ti |
+| Pool/helper package | Source-built **Ubuntu 26.04 glibc x64**, .NET 10, Rust/Cargo **1.93.1** |
+| Reward schemes | Custodial SOLO, PPLNS and PROP; all other schemes rejected |
+| Unsupported | Historical mining, MoE, draft FP8, NoxChain merge mining, testnet/testnet2 pool operation, musl, ARM64, Windows and macOS workers; Ubuntu 22.04 packages are not certified for Pearl |
 
-The currently deployed V3 protocol uses salted integer proofs. Draft floating-point proposals must not be substituted for it.
+Only the named SRBMiner release is advertised. WildRig 0.51.8's opening handshake was incompatible with this dialect; no WildRig/BzMiner/ARC/RGMiner/Fl4shMiner/PeakMiner interoperability is claimed. Two-miner certification is required before expanding that claim. Other mining families and their existing transport limits remain independent.
 
-## Implemented components
+[Official node/proof source](https://github.com/pearl-research-labs/pearl/tree/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5), [release](https://github.com/pearl-research-labs/pearl/releases/tag/v1.5.5), [SRBMiner release](https://github.com/doktor83/SRBMiner-Multi/releases/tag/3.7.3).
 
-- `PearlConsensus`: exact positive uint256 compact targets, hard rounding, explicit saturation versus rejection, 76-byte incomplete headers, and V1/V2/V3 dense certificate-first header framing.
-- `PearlPlainProof`: allocation-free validation of every nested dense bincode count, dimension, tree size and index before Rust deserialization. It does not claim to validate a proof cryptographically.
-- `PearlProofEncoding`: bounded base64/gzip/zlib decoding and canonicalization of legacy omitted-None versus current dense-None encodings.
-- `miningcore-pearl-worker`: isolated current-V3 verification/certification using the pinned official Rust implementation. It verifies the generated certificate before returning it.
-- `PearlProofVerifier`: a versioned binary process contract, fixed global capacity, response bounds, deadlines, process-tree termination/reaping, and independent managed target/candidate checks.
-- `PearlNetworkRules`: mainnet, testnet, testnet2 and regtest fork boundaries, checked against generated official Go fixtures; mining fails closed outside current V3 rules.
-- `PearlWalletRequest`: Oyster account/fee/minimum-confirmation argument ordering, network-aware addresses, canonical duplicates and grain-exact amounts, including the daemon float64 conversion boundary.
-- `PearlAddress` and `PearlBlockJob`: network-aware Taproot scripts and immutable per-worker coinbase/header/transaction snapshots, witness commitments, certificate-first blocks, and verified-result/header binding.
+## Build and install
 
-Historical certificate **serialization** is covered; historical mining/proving is not implemented. The current mining builder and worker reject unsupported certificate versions. They are not registered as a production pool family.
-
-## Consensus details confirmed by executable tests
-
-Pearl's wire header is 76 bytes without a proof commitment and 108 bytes with it. Rust's in-memory previous-block and Merkle hash fields use the opposite order from wire serialization. The worker therefore calls the official `IncompleteBlockHeader::from_bytes`; it does not overlay a managed struct on those bytes.
-
-The completed block ID is SHA256d(header108), not the jackpot hash. The proof commitment is SHA256d(version LE32 || public data). A block begins with its certificate, then header, transaction count and witness-aware transactions.
-
-The live GBT returned a **raw 32-byte** `default_witness_commitment`, not a Bitcoin-style output script. The builder recomputes it and constructs the `6a24aa21a9ed` output prefix itself. An explicit JSON-RPC version is required by this node: omitting it produced an empty response and a daemon marshal error.
-
-For current dense work, let L = k - k % rank and T = sampled rows × sampled columns. The share bound is assigned_target × T × (L / rank) × 128. Jackpot comparison is inclusive and interprets the jackpot as little-endian uint256. Pool bounds must not overflow; consensus block checks saturate. Exact boundaries are tested against real proofs. This is not yet a definition/implementation of Miningcore financial share credit or VarDiff.
-
-## Native boundary and current limits
-
-The worker supports Linux x64 development builds only. Ubuntu 26.04.1/glibc was exercised; Ubuntu 22.04, musl, ARM64, Windows and macOS packages are not certified.
-
-The binary IPC request is `PRLJOB01`, operation byte (0 verify / 1 prove), certificate byte (3), two zero reserved bytes, header76, big-endian target32, LE32 proof length, and proof bytes. EOF is required. The successful response is `PRLRES01`, status 0, candidate byte, two zero reserved bytes, public data164, LE32 certificate length, and certificate bytes. Rejection uses a fixed 12-byte frame and nonzero exit. No input-derived diagnostic text crosses this boundary.
-
-- Decoded plain proof: 8 MiB maximum; dense format only.
-- Certificate: 60,000 bytes maximum; public data: 164 bytes.
-- Two verification processes and one proving process globally; no pending worker queue.
-- Managed verification deadline: 5 seconds; proving deadline: 180 seconds.
-- Per-process address-space ceiling: 8 GiB; CPU ceiling: 600 seconds; four Rayon threads.
-- Each process handles one request. Circuit caches cannot accumulate across requests.
-- Parent cancellation kills and reaps the process tree before releasing capacity.
-
-These are measured development limits, not production sizing recommendations. In particular, this does **not** bound a future public Stratum listener's aggregate memory or authenticate clients. The existing generic 32 KiB Stratum limit remains unchanged. A secure Pearl transport needs frame-aware pipe backpressure, authentication limits, aggregate in-flight byte budgets, connection/worker rate limits and slow-client deadlines before the family can be enabled.
-
-## Building and testing
-
-The worker is opt-in and is not bundled into normal Miningcore releases yet:
+Build Miningcore using the normal Linux native build instructions. Install the reviewed Rust 1.93.1 toolchain, then:
 
 ```bash
-bash scripts/pearl/build-worker.sh
-python3 scripts/pearl/test-worker.py build/pearl-native/output/miningcore-pearl-worker
-# Optional slower certificate-generation contract:
-python3 scripts/pearl/test-worker.py build/pearl-native/output/miningcore-pearl-worker --prove
+bash scripts/pearl/build-worker.sh /absolute/build/pearl
+python3 scripts/pearl/test-worker.py /absolute/build/pearl/output/miningcore-pearl-worker --prove
+dotnet publish src/Miningcore -c Release -o /absolute/publish \
+  -p:PearlWorkerBundle=/absolute/build/pearl/output
 ```
 
-The build requires Rust 1.93.1 and pins rustup toolchain selection. It checks the upstream commit and tracked cleanliness, generates both required circuit caches, uses Cargo locks, checks the worker version and records binary/cache checksums and toolchain versions. The upstream licence inventory is copied with the output. Complete release packaging and third-party dependency notices remain required.
+The publish target validates checksums, licenses and the worker version and installs `pearl/miningcore-pearl-worker` plus its notices. The Linux archive packager preserves its executable bit and rechecks the bundle. The optional `PearlWorkerBundle` property never downloads or silently chooses another consensus implementation. A pool configured without an installed, matching worker fails startup. Ordinary releases without this optional bundle cannot run Pearl until the source-built bundle is installed with `scripts/pearl/install-worker.sh BUNDLE PUBLISH_DIRECTORY`.
 
-Focused managed tests:
+The helper build checks the exact clean upstream revision, uses both Cargo lockfiles, generates and embeds V1/V2 circuit caches, records cache/binary checksums and toolchain versions, and includes the upstream license inventory and Cargo dependency license/notice files. Keep the whole `pearl/` directory when distributing binaries. Do not replace its worker with an unreviewed executable that merely prints the expected version.
+
+Stop all database writers, back up the database, and apply the ordinary share-accounting migrations plus `migrations/add_pearl_candidates.sql` as the schema owner. New installations use `createdb.sql`. The application role needs the usual table DML privileges, not PostgreSQL superuser/CREATEDB privileges. The pool checks for durable share-accounting and candidate schemas before accepting miners.
+
+## Node, Oyster and pool configuration
+
+Start with [examples/pearl_pool.json](../examples/pearl_pool.json). Replace every `CHANGE_ME` value. Keep the pool configuration and wallet credentials readable only by the service user. `proofWorker` must be an absolute path. Use a separate data directory for each network, and verify genesis before opening a miner port.
+
+Build or install the exact official node/wallet release with real ZK verification enabled. Follow the pinned [node installation instructions](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/node/docs/installation.md) and [Oyster guide](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/wallet/README.md). `task build:blockchain` builds the official programs; inspect the build tags and run the proof-enabled lab checks before trusting a custom build. Simnet/bypass/stub builds do not certify this integration.
+
+Mainnet ports are node RPC **44107**, P2P **44108**, Oyster RPC **44207**. Configure Oyster's full-node connection to the same synchronized node; do not leave it pointed at a different network or an unrelated SPV backend. Use Oyster `getnewaddress` on the `default` BIP86 account to create a wallet-owned `prl1p...` reward address. Back up the wallet seed/database before mining. Configure node RPC with credentials permitted to call GBT/submitblock, and a separate `category: wallet` endpoint for Oyster. Startup checks both genesis values and Oyster ownership of the reward address.
+
+Expose only the public Stratum TLS ports. Bind RPC, PostgreSQL, admin and metrics endpoints to loopback or a restricted management network. For same-host plaintext RPC, explicitly bind the daemons to loopback and use their local TLS-disable options; for remote RPC set `ssl: true`, install the issuing CA in the host trust store, and use a hostname matching the certificate. Miningcore verifies the certificate chain and hostname and refuses redirects. Never disable certificate verification to make a remote wallet work.
+
+The example has public TLS ports 4400/4401 with an operator PFX certificate. On a trusted lab network only, a separate loopback non-TLS listener can be used. The tested miner invocation was:
 
 ```bash
-dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj -c Release \
-  -p:MiningcoreStratumListenerSmoke=true --filter FullyQualifiedName~Blockchain.Pearl
+./SRBMiner-MULTI --algorithm pearlhash --pool 127.0.0.1:19503 \
+  --wallet rprl1pYOUR_LAB_ADDRESS.rig1 --password x --disable-cpu --gpu-id 0
 ```
 
-The smoke property deliberately omits existing unrelated native libraries and cannot publish a runnable pool. Use the documented lab's full native build/regression runner for release validation.
+For production add `--tls true`, use the configured public endpoint and a mainnet `prl1p` address. Do not reuse lab wallets or RPC passwords. The miner archive is retained in the documented lab at `/opt/miningcore-test-lab/miners/srbminer-multi-3.7.3`; SHA256 `c7250d39fe23549a88ef5d8d2041d75e60166f5d6ab8c8daf7274ab7b0a8da20`.
 
-`PearlLiveLabTests` is explicitly skipped unless `MININGCORE_PEARL_LIVE_LAB=1`. It additionally requires `MININGCORE_PEARL_LAB_ROOT`, a proof-enabled v1.5.5 regtest node on loopback 19501, Oyster on 19502, the lab-only RPC credentials in the test, and the checksum-pinned SRBMiner archive installed under `/opt/miningcore-test-lab/miners/srbminer-multi-3.7.3`. This fixture uses a local protocol harness; it does not exercise a production Miningcore pool.
+## Pool protocol contract: named-object v2
 
-The Pearl node/wallet must be built with `xmss,zkpow`, after the Rust static library/circuit caches and XMSS library. A stub verifier, simnet proof bypass or `BFNoPoWCheck` cannot certify block support.
+Messages are newline-delimited JSON-RPC. IDs are required; string IDs are limited to 64 characters. No positional Bitcoin subscribe/configure dialect is negotiated. A client explicitly selects this dialect in authorization:
 
-## Recorded live evidence — 1 November 2026
+```json
+{"id":1,"method":"mining.authorize","params":{"wallet":"prl1pADDRESS.rig1","agent":"SRBMiner-MULTI/3.7.3","type":"v2"}}
+```
 
-Host: documented WSL Ubuntu lab; Ryzen 9 5950X, RTX 3080 Ti (12 GiB), 15 GiB system RAM. Rust/Cargo 1.93.1; source-built pearld and Oyster 1.5.5.
+The address must be a network-correct, checksum-valid Bech32m witness-v1 32-byte program. Uppercase addresses are normalized; mixed case is rejected. Worker names are optional, at most 64 ASCII letters/digits/underscore/hyphen. Wallet strings are bounded at 160 and agent strings at 128 characters. Reauthorization is rejected. Authorization is an accounting identity, not proof that the client owns the payout key.
 
-- SRBMiner authorize used an object with `wallet`, `agent` and `type: v2`. A notify with header, target, height, job ID and certificate version produced a raw base64 proof without compression negotiation.
-- Real profile: m=32772, n=15360, k=32768, rank=128, 8 sampled rows and 16 columns; decoded legacy proof 801,488 bytes.
-- Verification measured approximately 41 ms. Four-thread proving and certificate self-verification completed in 47.105 seconds. The initial 120 CPU-second budget was insufficient; it killed the process after about 61 wall seconds with two threads.
-- Managed builder + real GPU miner + isolated worker + proof-enabled regtest passed. Accepted height-1 block: `7fcd0c445ce023338c9fada3eb82d8b40051c83249fa05a8540fd08105091088`.
-- Coinbase: `33f81badd36f6acb13e6992a80f292f3ec46758912df8f862c9d4481f8418040`; reward 322,964,134,063 grains; certificate 59,560 bytes.
-- A separately captured real easier-than-network proof verifies as a share and is correctly rejected for certification.
-- Native contract suite: 25 cases without proving, including exact bound-1/bound/bound+1, malformed/truncated input, changed matrix/header, unsupported version, overflow and candidate classification.
-- No mainnet block/payout or production-pool soak has been performed.
+For this miner the first `mining.notify` precedes the authorization acknowledgement (`result: true, error: null`). Notify `params` is an object containing `job_id` (32 hex characters), `header` (76 wire bytes as lowercase hex), `target` (32-byte **big-endian exact integer**, hex), `height`, and `cert_version: 3`. Subsequent target/transaction/time updates create a new job/header and are published under the existing per-connection assignment gate.
 
-**Regtest restart caveat:** v1.5.5 `node/btcd.go::removeRegressionDB` deliberately deletes the regtest database at startup. This happened after a clean shutdown in the lab. Preserve the running node for pool/wallet restart tests, or explicitly distinguish a daemon reset from a persistent-chain restart test. This accepted block was subsequently removed by that deliberate test-network reset.
+```json
+{"id":2,"method":"mining.submit","params":{"job_id":"JOB_ID","plain_proof":"BASE64"}}
+```
 
-## Regression checkpoint
+Raw base64 and bounded gzip/zlib proof encodings are accepted. There is no client-selected header, reward address, target, certificate version or credited work in submission. Successful shares receive `result: true, error: null` **after** the database receipt and any candidate intent commit. Codes: 21 unknown/stale job, 22 duplicate proof, 24 unauthorized, 20 unsupported/invalid/busy or capacity refusal. A busy refusal does not promise that retrying the same bytes will be accepted; request/use fresh work. Failed native service execution closes the connection without crediting unverified work. Unknown methods are rejected. On synchronization loss or unsupported upgrades the pool retires work and disconnects miners; miners reconnect when valid templates return.
 
-The documented Ubuntu native build completed, and the final warning-audited managed build reported zero warnings and errors. The full test run passed **5,704 tests**, with **24 explicitly skipped** (5,728 total), in 8 minutes 44 seconds. Skipped opt-in lanes are not counted as certification. The Pearl GPU fixture was run separately twice and passed both times. The native worker contract suite passed 25 cases after the final toolchain-pinned build.
+Jobs are session-local, randomize the coinbase namespace, retain at most 8 snapshots by default (2–16 configurable), and expire after 120 seconds (30–180 configurable). Previous difficulty is accepted only through the configured 0–30 second grace. A changed previous-block hash immediately invalidates an old job. Same-tip transaction/time changes retain immutable old snapshots within those bounds.
 
-After merging the FluentValidation update, dependency restore succeeded and the focused Pearl/collection run passed **120 tests**, with one explicitly skipped live GPU fixture. An initial restore attempt aborted with a transient internal CLR error; the successful retry used `--disable-parallel`. The full-suite count above is from the pre-merge checkpoint.
+## Consensus, targets and financial units
 
-The existing lab PostgreSQL application login was insufficient for administrator-only migration fixtures. A separate administrator resolved those checks but exposed a partition fixture's assumption that its administrator is named `miningcore`. The successful run used a fresh disposable cluster on loopback 55434 with that fixture-specific setup. The existing lab application's privileges on 55432 were not elevated. The temporary cluster is stopped after testing. Logs and TRX evidence remain under `/home/ubuntu/issue-244/evidence` and `/home/ubuntu/issue-244/miningcore/build/test-lab`.
+Headers are 76 bytes without a proof commitment and 108 bytes with it. Block identity is SHA256d(header108); the commitment is SHA256d(version LE32 || public data164). A block begins with its certificate, then header, CompactSize count and witness-aware transactions. GBT's witness commitment is a raw 32-byte hash: Miningcore recomputes it and adds the `6a24aa21a9ed` script prefix. It builds the BIP34 coinbase, preserves transaction order/IDs, and reserves certificate space within the block limits.
 
-Pearl's process-wide helper capacity test deliberately fills both slots and verifies cancellation/reaping. It and the opt-in GPU fixture share a reviewed nonparallel collection so they cannot interfere with one another.
+The worker calls the official wire decoder rather than overlaying Rust's differently ordered in-memory hash fields. Official source handles the 52-byte configuration, BLAKE3 commitments, integer noise/transcript, V3 salted seed binding, Merkle openings and jackpot. Managed code independently validates dimensions, public-data binding, targets and candidate eligibility; preflight is never treated as cryptographic verification.
 
-## Remaining issue #244 work
+Let `D1 = DecodeCompact(0x1b00ffff)`, the Pearl mainnet difficulty-one reference. An assigned difficulty `d` produces `floor(D1/d)`, dividing by the exact IEEE-754 value of `d` with integer arithmetic. No compact share override or approximate floating-point acceptance boundary is used. For `L=k-k%rank`, sampled tile size `T=rows*columns`, active work factor `F=T*(L/rank)*128`, accept iff the verified little-endian jackpot is <= `assigned_target*F`. Pool overflow is rejected; consensus candidate scaling saturates at uint256 max. Network bits remain unchanged in the committed header.
 
-The next implementation must wire these primitives into an authenticated, bounded Pearl pool runtime and define exact difficulty/credit/VarDiff semantics. It must persist share/candidate intent before irreversible external effects, recover uncertain submission outcomes without duplicate credit, classify rewards/reorgs against exact hashes, and integrate Oyster sends with existing payout leases/reconciliation.
+`NetworkDifficulty = D1/network_target`; reported achieved `ShareDifficulty` and `ActualDifficulty` are `D1*F/max(1,jackpot)`. Financial `Difficulty` is the assigned difficulty capped at network difficulty, never a client-declared rate or lucky achieved value. Equal assigned difficulty therefore buys equal expected normalized work across the allowed dimensions/ranks. API hashrate is credited difficulty/second multiplied by `2^256/D1`: **rank-adjusted work units per second**, not a promise to reproduce a miner's displayed raw matrix TH/s. Regtest's much easier network target caps credit and can make its dashboard rate much lower than the GPU display.
 
-Still required: live historical transition evidence and production enforcement of the tested rule policy; same-tip template changes and failover; additional malformed/nonempty transaction cases; fee recipients; durable duplicate/replay handling; wallet maturity and payment recovery tests through the actual Miningcore handler; supported-platform/package lanes; complete operator example; current-mainnet compatibility evidence; independent production-like soak. Add the mineable PRL catalogue entry only after that complete path is verified.
+Supported dimensions are `m,n <=2^24`, `k=1024..65536` in multiples of 64, power-of-two rank `128..1024`, `16*rank <= k <=4*rank^2`, 32–256 sampled products, and <=4 MiB sampled matrix input. The maximum scaling factor is `2^24`; difficulty is constrained to `1e-6..1e60`. Verified header/public-data SHA256 identifies work; the first 128 bits identify the existing durable accounting receipt. A conflicting receipt payload fails closed. Alternative proof encodings cannot earn another credit.
 
-No acceptance checkbox in #244 or supported status in #120 should be changed based only on this development harness.
+Mainnet activation fixtures cover immediately before/at/after heights **71935 (V2), 91630 (dense), 96251 (rank penalty), 99000 (salted V3)**. Historical serialization/rule selection is covered by node-validated blocks and independent official Go vectors. The current verifier deliberately cannot mine historical MoE/low-rank work. Unknown certificate versions and future FP proposals require a new reviewed protocol/activation update; draft PIP-3's reused “V3” label is not negotiated as current integer V3.
 
-## Oyster request findings and additional live evidence
+## Resource and process boundaries
 
-A second managed GPU/prover/block-builder test accepted height 103, block `c8076b9bfdd0bcb386654ac03b81e9e1dc72278ddd3aa98144d14e96f607bad1`, coinbase `c025e0fb3b3912bf2b3836fa38aa826b5c1e88fc0b01a503db8d83ce620f9da6`. This block included a real Oyster transaction and its witness commitment, and confirmed payments of exactly 1.25 and 2.5 PRL to two disposable wallet addresses. Transaction: `b0e7b0157316f064830ad69757bd7cf20de1797ee7dd3690631f69ce322eff44`. A locked send was rejected with code -13; unlock, send and relock were exercised. The preceding 102 blocks were generated and proof-checked by the source-built node. This is wallet RPC evidence, **not** a Miningcore payout-handler or recovery test.
+- 32 KiB before authorization; approximately 11.2 MiB proof JSON frame after authorization. Frame-aware pipe backpressure and 16 KiB reads prevent the large-frame deadlock.
+- At most **16 Pearl connections per process**, across pools. Existing global/IP listener admission also applies. Unauthenticated sessions are retired after 10 seconds; authenticated partial frames have a 30-second deadline. Per-connection byte refill is 2 MiB/s with one bounded frame burst.
+- JSON depth 8, 128 tokens, numeric/property tokens <=64 bytes, duplicate object keys rejected. Decode output <=8 MiB. Proof structure/count/index preflight precedes Rust allocation.
+- One proof attempt/second/worker, at most 256 attempts and verified identities per retained job. Two decoding/verification slots and one proving slot per process; no unbounded native wait queue.
+- Verify deadline 5 seconds, native verify address space 1 GiB/CPU 20 seconds. Prove deadline 180 seconds, address space 8 GiB/CPU 600 seconds, four Rayon threads. These are hard ceilings, not expected RSS.
+- One request per helper; embedded circuit caches die with the process. Cancellation kills/reaps the process tree. Linux parent-death SIGKILL prevents orphaned helpers after a pool crash.
+- Global durable candidate capacity is **16 per database**, enforced under a transaction advisory lock. Only network candidates occupy it. Receipt and candidate insertion are atomic. Capacity refusal does not acknowledge unrecorded work.
 
-The request discovery exposed two incompatibilities with Bitcoin: the default BIP86 account is literally `default` (empty string is rejected), and the **required third argument is fee rate in PRL/kB**. `minimumConfirmations` is fourth, and comments are unsupported. The successful exploratory request used `1` as its third argument and therefore paid **0.198 PRL in regtest fees**, not a one-confirmation setting. The managed request builder now represents fee rate explicitly in grains/kB and emits `["default", amounts, feeRatePRLPerKb, minimumConfirmations]`. The parameter contract is pinned in [SendManyCmd](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/node/btcjson/walletsvrcmds.go#L615).
+Use a dedicated pool service account, no wallet filesystem/private-key access for the helper, and service-level memory/CPU/process ceilings appropriate to the host. Allow headroom for two verifiers plus one prover and the managed transport; a separate node host or at least 24–32 GiB host RAM is prudent for the configured worst-case ceilings. The lab measured the pool separately from node/prover/GPU processes; its pool RSS does not certify all-process peak memory.
 
-## Persistent mainnet lab node
+The binary IPC is version 1: `PRLJOB01`, operation byte (0 verify / 1 prove), certificate byte 3, two reserved zeros, header76, big-endian target32, LE32 proof length, proof, EOF. Success: `PRLRES01`, status0, candidate byte, two zeros, public data164, LE32 certificate length, certificate <=60000 bytes. Rejection is a fixed 12-byte frame and nonzero exit. Rust panics/errors never return input-derived diagnostic strings. Managed callers bound stdout/stderr and validate version and every output size.
 
-At the user's request, a separate source-built v1.5.5 mainnet node is running in the Ubuntu lab as `miningcore-pearl-mainnet.service`. RPC listens only on `127.0.0.1:19511`, inbound P2P listening is disabled, and eight outbound peers are allowed. It has no wallet. Configuration and data are under `/home/ubuntu/issue-244/mainnet`; its randomly generated RPC credential file has mode 0600. The systemd service runs as `ubuntu`, with filesystem restrictions, no privilege escalation and a 6 GiB memory ceiling. It preserves data across restarts.
+## Candidates, payouts and recovery
 
-Use `sudo systemctl status miningcore-pearl-mainnet` and `sudo journalctl -u miningcore-pearl-mainnet` for status; `sudo systemctl stop miningcore-pearl-mainnet` stops it cleanly. Do not print or commit `pearld.conf`. Initial synchronization is in progress; starting this node does not certify current-mainnet template compatibility. Mainnet genesis was verified as `a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7`. The reviewed node binary SHA256 is `bb2d531f16faae67216efe65c958272c3d25ed845c205501576432a1145678c9`.
+An acknowledged candidate survives restart in `pearl_candidates`. Proving uses its exact saved header, transactions and proof, cancels on tip/sync retirement, and never replaces it with the latest template. The complete certificate-first block is persisted before submission. A null submit result, duplicate, or lost response is reconciled by exact `getblockheader` identity. Explicit reject strings do not count as acceptance. Uncertain submissions retain their bytes and rotate through bounded retries; a proven competing canonical block makes the candidate an orphan. Row-locked completion inserts the block exactly once.
 
-The downloaded SRBMiner and WildRig archives, extracted binaries and checksum files remain under `/opt/miningcore-test-lab/miners/` for future lab runs.
+Rewards come from GBT, not a fixed subsidy. Classification checks canonical block hash, exact coinbase identity/output, wallet sync and both node/wallet confirmations. Minimum payout confirmation policy is **101** (never below the 100-block maturity boundary). Wrong-network addresses and non-Taproot payout destinations are rejected. One PRL is 100,000,000 grains. Minimum payment is conservatively 0.01 PRL to avoid dust. Payments floor each selected balance to whole grains and retain residual fractions; batches contain at most 100 recipients. Fees are configured in **grains/kB**, converted to Oyster's required third positional `sendmany` argument: `["default", amounts, feeRatePRLPerKb, 1]`. Comments and `getwalletinfo` are not used. The handler unlocks for 60 seconds when configured and always attempts to relock with a bounded cleanup token.
+
+Oyster v1.5.5 cannot sign arbitrary raw transactions through `signrawtransaction`. Therefore every batch first persists an immutable intent with a **fresh wallet-owned 0.01 PRL marker output**. This is change owned by the pool wallet, not a miner fee. The wallet needs spendable headroom for the marker and transaction fee. After the intent exists, an error never authorizes another `sendmany`. Recovery searches that unique marker, verifies the transaction ID and every intended output against raw bytes, requires wallet ownership of every extra change output, bounds the fee, requires node mempool/chain evidence, and idempotently persists the payment batch. If needed it rebroadcasts only those same verified transaction bytes. Missing/ambiguous/conflicting evidence retains the intent for operator reconciliation.
+
+A lost wallet response deliberately stops the payout manager through its existing uncertain-outcome lease policy. Follow [database ownership recovery](database.md): stop the recorded owner, inspect the exact owner/generation and wallet/marker transaction, then release only that dead owner's lease under the prescribed advisory lock. Never delete an intent or mark a payment paid merely to unblock the service. A crash before wallet submission can leave an intent with no transaction; manual wallet audit is required before deciding it was never sent.
+
+Pre-maturity reorgs orphan the reward without changing balances; canonical restoration can reopen it with fresh custody evidence. Confirmed rewards that leave the canonical chain are **quarantined**, holding new payouts for the pool. Already-booked or paid money is never automatically reversed or paid again. PROP/PPLNS out-of-order historical rewards are also quarantined when a later confirmed block could have consumed their share window. Review the chain, wallet and unchanged ledger before any manual release. A bounded rotating scan revisits 64 confirmed/orphaned blocks per cycle within 4032 blocks of the tip; deeper reorgs require operator review of older history.
+
+Back up PostgreSQL, its recovery journal and Oyster's wallet together. Run one active pool instance per pool ID; the existing database-wide payout-owner lease still applies. Do not concurrently migrate schemas or restart a regtest node with production wallet data: this upstream regtest node rebuilds its chain on startup, and Oyster must rescan that changed chain.
+
+## Monitoring and troubleshooting
+
+The pool emits periodic health records for readiness, height, certificate/rank policy, live connection capacity and durable candidate pressure. `miningcore_hash_computation_time` records `PearlHash.verify`/`PearlHash.prove`; debug proof records contain bounded byte counts and verification time, and certificate logs include proof latency/size. Existing RPC telemetry, share accounting, connection, block maturity and payment metrics remain active. Inspect `pearl_candidates` for oldest `created`/`lastattempt`, and `pearl_payout_intents` for unresolved financial work; do not expose their proof/recipient payloads through a public API.
+
+GBT polls every 5 seconds (1–30 configurable), with per-node 10-second deadlines, up to four genesis-checked nodes, and a 45-second freshness gate. Same-tip full-template fingerprints trigger updates. Unknown mandatory rules, certificate changes and sync failures pause work. The fixed bounded polling interval provides reconnect backoff. A stale mainnet template or repeatedly busy prover is an operating fault, not a reason to relax proof verification.
+
+Public-input failures use fixed errors and existing ban/admission controls. RPC/prover diagnostics do not print credentials or arbitrary daemon exception bodies. API payment extension projection exposes fee/minimum-confirmation settings and withholds the wallet password. Review limits before increasing miner concurrency; changing the hard maxima requires code/test review.
+
+## Recorded validation — 1 November 2026
+
+Lab: documented Ubuntu WSL test lab, Ryzen 9 5950X, RTX 3080 Ti 12 GiB, 15 GiB system RAM, source-built proof-enabled Pearl/Oyster 1.5.5. PostgreSQL integration tests used a separate disposable cluster; the running pool used a non-superuser role. No mainnet block or mainnet payment is claimed.
+
+Machine-readable measurements, exact hashes and transcript digests are in [pearl-certification.json](pearl-certification.json). The full regression run passed **5,753 tests, zero failures, 24 skipped**. Following the final reward-scheme runtime guard, the focused run passed **379 tests, zero failures, one opt-in GPU fixture skipped**. PPLNS/PROP tests verify assigned-credit weighting despite different achieved proof difficulties. Skipped lanes are not counted as certification.
+
+The source-built Release package passed the 25-library inventory, 241 managed entry points and eight floating-point load/unload modes, plus the 26 packaged-worker contracts. The final published pool used the shipped `pearl` catalogue entry and SRBMiner over **TLS 1.3**. A deliberately dropped successful `submitblock` response was reconciled to one canonical block record. Archive packaging was contract-tested against lab-built output; a pinned-container build or publicly distributed release binary is not claimed.
+
+- Current-mainnet compatibility: a synchronized eight-peer node supplied height **136635**, bits `1754f66b`, V3, **54 transactions**; the captured template builds through the real managed serializer. Twelve node-validated historical blocks pin all four activation boundaries.
+- Production runtime crash recovery: SRBMiner's share receipt and candidate were committed, Miningcore was killed before submission and restarted, and exactly one share receipt and accepted height-1 block survived: `255946f6fb1cd8b79a5bfe8b70a0d8a1eb56215798af89fcd4dee747a519898b`.
+- After 103 proof-validated successors, the actual payout handler allocated a 2.5% fee recipient and miner balance. The fault proxy dropped the successful wallet response after broadcast. Restart reconciled **one sendmany and one payment batch**, with exact outputs 80.74103351 and 3148.90030711 PRL, plus the owned 0.01 marker. Transaction `15a140706f84acac49f6516ab29163ee15dde8a34c1c22dd0ac56d7727009569`; fee 0.00002990 PRL.
+- Production block `5fd4944928cfd1f16956e06498c3a87da4f6ca98efb9b4d1e5cec554a361d0e2` included that payout transaction and its witness commitment and was accepted by the proof-enabled node.
+- A separate 30-minute real-miner run exercised jobs, target updates, valid-share acknowledgements, candidate retirement and repeated accepted blocks. Detailed counts and resource samples are in the checked-in certification evidence. The miner reported 30 accepted shares and one explicit verifier-busy rejection; no stale or invalid-proof rejection appeared. The bounded admission refusal was not credited. Hard limits, malformed/slow input and helper failures are covered separately; a successful soak is not an unlimited-load claim.
+- Live `invalidateblock`/`reconsiderblock` tests verified pending→orphaned→pending before maturity, and confirmed→quarantined after settlement with unchanged balances/payment batches. The original chain was restored; quarantine release was a separate audited lab action.
+- Native contract suite: **26 cases including real proving**, exact bound-1/bound/bound+1, overflow, malformed input and binding mutations. Typical captured proof verification was about 41 ms and four-thread proof generation about 47 seconds, below Pearl's 194-second target interval.
+
+Run ordinary managed tests with the documented PostgreSQL/native lab lanes. `scripts/pearl/test-worker.py` runs deterministic native fixtures; `--prove` enables the slower real certificate path. `PearlLiveLabTests` is an additional opt-in GPU fixture (`MININGCORE_PEARL_LIVE_LAB=1`, `MININGCORE_PEARL_LAB_ROOT`); it uses a protocol harness and is not substituted for the production-runtime evidence above. The test-only `MiningcoreStratumListenerSmoke` build property cannot publish a pool.
+
+The user-requested mainnet node remains available as `miningcore-pearl-mainnet.service` in the Ubuntu lab, with eight outbound peers and loopback RPC on 19511. Its private configuration/data directory is `/home/ubuntu/issue-244/mainnet`; do not print or commit `pearld.conf`. Use `systemctl status miningcore-pearl-mainnet` and the service journal to inspect it. The saved official miner archives remain under `/opt/miningcore-test-lab/miners/` for future runs.
+
+For repeatable lost-response tests, place `scripts/pearl/fault-proxy.py --listen-port 19509 --upstream http://127.0.0.1:19501 --method submitblock --evidence /private/lab/new-evidence.json` between a disposable pool and node. For wallet tests use the wallet port and `--method sendmany`. It forwards the caller's authentication and drops exactly one successful reply after upstream completion; it does not log credentials or request bodies. Inspect the durable candidate/intent, exact node/wallet transaction and ledger before restarting or releasing a dead payout-owner lease. Use only isolated regtest funds for these faults.
 
 ## Sources and fixture provenance
 
-- [Official header and certificate source](https://github.com/pearl-research-labs/pearl/tree/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/node/wire)
-- [Official plain-proof verifier](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/zk-pow/src/api/verify.rs)
-- [Official V3 seed derivation](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/zk-pow/src/api/seed.rs)
-- [Oyster RPC handlers](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/wallet/rpc/jsonrpc/methods.go)
-- [Pool operator's protocol notes](https://prl.suprnova.cc/stratum-spec.html), used for discovery and checked against local captures; their target prose and abbreviated binary layout are not consensus authority.
+- [Official wire/header/certificate](https://github.com/pearl-research-labs/pearl/tree/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/node/wire), [activation and consensus rules](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/node/blockchain/validate.go).
+- [Plain-proof verification](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/zk-pow/src/api/verify.rs), [V3 seeds](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/zk-pow/src/api/seed.rs), [rank/target checks](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/zk-pow/src/api/sanity_checks.rs).
+- [Oyster RPC handlers](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/wallet/rpc/jsonrpc/methods.go), [wallet request schemas](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/node/btcjson/walletsvrcmds.go).
 
-`scripts/pearl/generate-wire-vectors.go` uses the pinned Go wire implementation to regenerate the synthetic serialization vectors. Its proof bytes are deliberately invalid; those fixtures test framing only. The gzip fixtures are locally generated GPU proofs with metadata, source/miner pins and raw SHA256 digests alongside them. `scripts/pearl/verify_capture.rs` is a research harness for independent verification inside the pinned upstream crate.
+`scripts/pearl/generate-wire-vectors.go` regenerates synthetic framing vectors with official Go code; their placeholder certificate is not valid consensus evidence. The gzip fixtures contain actual locally mined proofs, with metadata and SHA256s. `verify_capture.rs` independently checks captured work in the pinned Rust crate. `mainnet-activations.json` records node-validated headers/public data and certificate digests; `mainnet-template.json` records the actual current template. None contains private keys or RPC credentials.

@@ -499,6 +499,91 @@
         "daemons",
         "id",
         "ports"
+      ],
+      "allOf": [
+        {
+          "anyOf": [
+            {
+              "not": {
+                "properties": {
+                  "coin": {
+                    "enum": [
+                      "pearl"
+                    ]
+                  }
+                },
+                "required": [
+                  "coin"
+                ]
+              }
+            },
+            {
+              "required": [
+                "proofWorker"
+              ],
+              "properties": {
+                "network": {
+                  "type": "string",
+                  "enum": [
+                    "mainnet",
+                    "regtest"
+                  ],
+                  "default": "mainnet"
+                },
+                "proofWorker": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Absolute path to the pinned Linux x64 Pearl proof worker."
+                },
+                "templatePollSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 30,
+                  "default": 5
+                },
+                "jobLifetimeSeconds": {
+                  "type": "integer",
+                  "minimum": 30,
+                  "maximum": 180,
+                  "default": 120
+                },
+                "maximumJobsPerWorker": {
+                  "type": "integer",
+                  "minimum": 2,
+                  "maximum": 16,
+                  "default": 8
+                },
+                "paymentProcessing": {
+                  "properties": {
+                    "minimumPayment": {
+                      "type": "number",
+                      "minimum": 0.01
+                    },
+                    "feeRateGrainsPerKb": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 100000000,
+                      "default": 10000
+                    },
+                    "minimumConfirmations": {
+                      "type": "integer",
+                      "minimum": 101,
+                      "maximum": 100000,
+                      "default": 101
+                    },
+                    "payoutScheme": {
+                      "enum": [
+                        "SOLO",
+                        "PPLNS",
+                        "PROP"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
       ]
     },
     "PoolEndpoint": {

@@ -44,6 +44,8 @@ public class PoolApiControllerTests
         Contract(CoinFamily.Beam, null),
         BitcoinContract(CoinFamily.Bitcoin),
         BitcoinContract(CoinFamily.BitcoinBlake2b),
+        Contract(CoinFamily.Pearl, typeof(Miningcore.Blockchain.Pearl.PearlPaymentProcessingConfigExtra),
+            new Dictionary<string, object> {{"FeeRateGrainsPerKb", 10000L}, {"MinimumConfirmations", 101}}, "WalletPassword"),
         Contract(CoinFamily.Conceal,
             typeof(ConcealPoolPaymentProcessingConfigExtra),
             new Dictionary<string, object>
@@ -464,6 +466,7 @@ public class PoolApiControllerTests
         {
             ("BlockRewardsLockTime", typeof(long?)),
             ("BlockSearchOffset", typeof(uint?)),
+            ("FeeRateGrainsPerKb", typeof(long?)),
             ("Gas", typeof(ulong?)),
             ("HideMinerAddress", typeof(bool?)),
             ("KeepTransactionFees", typeof(bool?)),

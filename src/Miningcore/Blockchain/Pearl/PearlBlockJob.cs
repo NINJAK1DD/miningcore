@@ -16,6 +16,11 @@ internal sealed class PearlBlockTemplate : BlockTemplate
 
     [JsonProperty("vsizelimit")]
     public long VirtualSizeLimit { get; set; }
+
+    [JsonProperty("mintime")]
+    public uint MinimumTime { get; set; }
+    [JsonProperty("maxtime")]
+    public uint MaximumTime { get; set; }
 }
 
 /// <summary>Immutable, worker-specific coinbase, header and transaction snapshot.</summary>
@@ -39,6 +44,10 @@ internal sealed class PearlBlockJob
         if(template.Height == 0 || template.CoinbaseValue <= 0 ||
             template.VirtualSizeLimit is <= 0 or > 4_000_000)
             throw new InvalidDataException("Invalid Pearl template limits");
+        if(template.MinimumTime == 0 || template.MaximumTime < template.MinimumTime ||
+            template.CurTime < template.MinimumTime || template.CurTime > template.MaximumTime ||
+            template.Rules?.Any(x => x.StartsWith('!') && x != "!segwit") == true)
+            throw new InvalidDataException("Unsupported Pearl template time bounds or mandatory rules");
         if(workerJobNonce.Length != 24)
             throw new ArgumentException("Worker job nonce must contain 24 bytes", nameof(workerJobNonce));
         if(template.Transactions == null || template.Transactions.Length > 100000)
@@ -122,6 +131,13 @@ internal sealed class PearlBlockJob
         var certified = PearlConsensus.SerializeCertifiedHeader(header, 3, result.PublicData, result.Certificate);
         using var stream = new MemoryStream();
         stream.Write(certified);
+        stream.Write(ExportTransactions());
+        return stream.ToArray();
+    }
+
+    internal byte[] ExportTransactions()
+    {
+        using var stream = new MemoryStream();
         var bitcoinStream = new BitcoinStream(stream, true);
         var count = (ulong) transactions.Length;
         bitcoinStream.ReadWriteAsVarInt(ref count);

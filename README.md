@@ -313,6 +313,10 @@ interface, use a unique strong RPC credential, and allow the node to synchronize
 pool payout wallet, encrypt and back it up, and test the documented restore procedure away from
 production. Do not expose daemon RPC or wallet RPC to the internet.
 
+Pearl (PRL) uses a dedicated integer V3 proof runtime and a separately packaged proof worker.
+See the [Pearl deployment and validation guide](docs/pearl-development.md) for the certified
+SRBMiner dialect, source-built Linux package, exact work units and Oyster recovery procedure.
+
 Coin-specific RPC, wallet and extension requirements vary. Start with the chosen file in the
 [example index](examples/README.md), then check the matching definition in
 the installed `/opt/miningcore/coins.json` file (repository

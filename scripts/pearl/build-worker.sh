@@ -7,6 +7,7 @@ case "$(uname -s):$(uname -m)" in
   Linux:x86_64) ;;
   *) echo "Pearl worker currently supports Linux x64 only." >&2; exit 1 ;;
 esac
+getconf GNU_LIBC_VERSION >/dev/null
 # Pin rustup's per-directory selection too: upstream's toolchain file says stable.
 export RUSTUP_TOOLCHAIN=1.93.1
 [[ $(rustc --version | cut -d' ' -f2) == 1.93.1 ]] || {
@@ -42,11 +43,15 @@ expected="miningcore-pearl-worker 1 $pin linux-x64"
 [[ $("$worker" --version) == "$expected" ]]
 install -m 0755 "$worker" "$build_root/output/miningcore-pearl-worker"
 cp "$upstream/LICENSE" "$build_root/output/pearl-upstream-LICENSE"
+cargo metadata --locked --format-version 1 --manifest-path "$helper/Cargo.toml" |
+  python3 "$repo_root/scripts/pearl/collect-licenses.py" "$build_root/output/licenses"
+cp "$helper/Cargo.lock" "$build_root/output/Cargo.lock"
 (
   cd "$build_root"
-  sha256sum output/miningcore-pearl-worker upstream/zk-pow/src/circuit/v2_cache.bin upstream/zk-pow/src/v1/v1_cache.bin > output/SHA256SUMS
+  sha256sum upstream/zk-pow/src/circuit/v2_cache.bin upstream/zk-pow/src/v1/v1_cache.bin > output/CACHE-SHA256SUMS
   rustc --version > output/toolchain.txt
   cargo --version >> output/toolchain.txt
   printf '%s\n' "$pin" > output/upstream-commit.txt
 )
+(cd "$build_root/output" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
 printf 'Built %s\n' "$build_root/output/miningcore-pearl-worker"

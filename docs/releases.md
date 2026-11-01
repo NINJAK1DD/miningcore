@@ -22,6 +22,25 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased (after v0.3.0): Pearl mining
+
+PRL is available through the dedicated Pearl pool family, with pinned integer V3
+PearlHash verification/proving, durable candidate recovery and Oyster payouts.
+The certified lane is source-built Ubuntu 26.04 glibc x64 with SRBMiner-MULTI
+3.7.3 and Pearl/Oyster 1.5.5. Other platform/miner combinations are not certified.
+
+Install the separately built, checksum-verified Pearl worker bundle when publishing
+with `-p:PearlWorkerBundle=/absolute/bundle`. Ordinary archives without that bundle
+cannot start a Pearl pool. Before enabling PRL on an existing database, apply the
+existing durable share-accounting migrations and `migrations/add_pearl_candidates.sql`
+as the schema owner, then grant the application its normal table DML privileges.
+Back up the database/recovery journal and Oyster wallet together before upgrading.
+
+Use the [Pearl deployment and recovery guide](pearl-development.md),
+[TLS pool example](../examples/pearl_pool.json) and recorded certification evidence.
+Payouts support custodial SOLO, PPLNS and PROP; uncertain sends and settled reorgs
+hold further payments until transaction or operator reconciliation completes.
+
 ## Unreleased (after v0.3.0): Xelis difficulty targets
 
 Xelis block targets now follow the daemon's exact unsigned 256-bit integer

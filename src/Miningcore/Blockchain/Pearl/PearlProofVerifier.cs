@@ -93,9 +93,7 @@ internal sealed class PearlProofVerifier
             finally
             {
                 // Cancellation alone cannot stop native work. Kill and reap before releasing capacity.
-                if(!process.HasExited)
-                    process.Kill(entireProcessTree: true);
-                await process.WaitForExitAsync(CancellationToken.None);
+                await StopAsync(process);
             }
         }
         finally { slots.Release(); }
@@ -119,10 +117,15 @@ internal sealed class PearlProofVerifier
         }
         finally
         {
-            if(!process.HasExited)
-                process.Kill(entireProcessTree: true);
-            await process.WaitForExitAsync(CancellationToken.None);
+            await StopAsync(process);
         }
+    }
+
+    private static async Task StopAsync(Process process)
+    {
+        try {if(!process.HasExited) process.Kill(entireProcessTree: true);}
+        catch(InvalidOperationException) when(process.HasExited) { }
+        await process.WaitForExitAsync(CancellationToken.None);
     }
 
     private ProcessStartInfo StartInfo()
