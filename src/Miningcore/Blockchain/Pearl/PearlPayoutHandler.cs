@@ -88,9 +88,11 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         foreach(var block in blocks)
         {
             block.PearlCustodialEvidenceVerified = false;
-            var canonical = block.BlockHeight > tip ? null :
-                await RpcAsync<string>(node, "getblockhash", new object[] {block.BlockHeight}, ct);
-            if(block.BlockHeight <= tip && !IsTransactionId(canonical))
+            // A node recovering below this height cannot establish a competing chain.
+            // Leave the reward eligible for reconciliation once the node catches up.
+            if(block.BlockHeight > tip) continue;
+            var canonical = await RpcAsync<string>(node, "getblockhash", new object[] {block.BlockHeight}, ct);
+            if(!IsTransactionId(canonical))
                 throw new InvalidDataException("Missing Pearl canonical block identity");
             if(canonical != block.Hash)
             {

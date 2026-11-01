@@ -156,6 +156,9 @@ or payment. Private transcripts are retained separately; only their hashes are p
 Final payout review also requires valid 64-character lowercase hexadecimal hashes
 from canonical-block lookups and both wallet/node tip lookups. A null, empty or
 malformed RPC result cannot establish a competing block or synchronized wallets.
+If the node tip is below a recorded block's height, classification is deferred
+until catch-up; lag alone cannot orphan or quarantine that reward. Only a valid,
+differing canonical hash at the recorded height establishes a competing block.
 The HTTP/PostgreSQL regressions reproduce both failures against the pre-fix code,
 then verify unchanged reward status and balances until valid evidence returns.
 Existing durable-intent reconciliation still uses exact transaction identity and

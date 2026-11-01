@@ -53,6 +53,7 @@ public class PearlPayoutIntegrationTests
         internal string Genesis = PearlJobManager.Genesis(PearlNetwork.Regtest);
         internal string BestHash = new('a', 64);
         internal string CanonicalHash = new('a', 64);
+        internal ulong Height = 120;
         internal decimal Available = 1000000;
         internal bool Locked, LostResponse, Conflict, Partial, Offline, NodeMissing, NodeOffline, RejectSend, PartialBatch;
         internal int Sends, Relocks, Republishes;
@@ -83,7 +84,7 @@ public class PearlPayoutIntegrationTests
                     {
                         case "getblockhash": result = request["params"][0].Value<long>() == 0 ? Genesis : CanonicalHash; break;
                         case "getbestblockhash": result = BestHash; break;
-                        case "getblockchaininfo": result = new JObject {["blocks"] = 120, ["bestblockhash"] = BestHash}; break;
+                        case "getblockchaininfo": result = new JObject {["blocks"] = Height, ["bestblockhash"] = BestHash}; break;
                         case "validateaddress": result = new JObject {["ismine"] = true}; break;
                         case "chainsynced": result = true; break;
                         case "getbalance": Assert.Equal("default", request["params"][0].Value<string>()); result = Available; break;
@@ -183,6 +184,42 @@ public class PearlPayoutIntegrationTests
             await Db.ExecuteAsync("ROLLBACK; RESET ROLE; SET search_path TO public");
             await Db.ExecuteAsync($"DROP SCHEMA {schema} CASCADE"); await Db.DisposeAsync();
         }
+    }
+
+    [PostgresIntegrationFact]
+    public async Task LaggingNodeDefersRewardsAndConfirmedBlockRemainsPayableAfterCatchup()
+    {
+        await using var lab = await Lab.Create(true);
+        var handler = await lab.Handler();
+        var balances = await lab.Seed();
+        var repository = new BlockRepository(AutoMapperFactory.CreateMapper());
+        var confirmed = new Block {PoolId = lab.Config.Id, BlockHeight = 121, Hash = new string('a',64),
+            Status = BlockStatus.Confirmed, ConfirmationProgress = 1, Created = DateTime.UtcNow,
+            TransactionConfirmationData = new string('b',64), Reward = 1};
+        await lab.Connections.RunTx((con, tx) => repository.InsertAsync(con, tx, confirmed));
+        var pending = new Block {PoolId = lab.Config.Id, BlockHeight = 121, Hash = confirmed.Hash,
+            Status = BlockStatus.Pending, ConfirmationProgress = .5};
+        lab.Server.Calls.Clear();
+        Assert.Empty(await handler.ClassifyBlocksAsync(null, new[] {pending, confirmed}, CancellationToken.None));
+        Assert.DoesNotContain("getblockhash", lab.Server.Calls);
+        Assert.Equal(BlockStatus.Pending, pending.Status);
+        Assert.Equal(.5, pending.ConfirmationProgress);
+        Assert.Equal(BlockStatus.Confirmed, confirmed.Status);
+        Assert.Equal(1, confirmed.ConfirmationProgress);
+        Assert.False(pending.NotifyBlockUnlockedOnUpdate);
+        Assert.False(confirmed.NotifyBlockUnlockedOnUpdate);
+
+        // The same stored block is still eligible when the node reaches its height.
+        lab.Server.Height = confirmed.BlockHeight;
+        var retry = Assert.Single(await handler.ReconciliationBlocksAsync(lab.Server.Height, 0, CancellationToken.None));
+        lab.Server.Calls.Clear();
+        Assert.Empty(await handler.ClassifyBlocksAsync(null, new[] {retry}, CancellationToken.None));
+        Assert.Contains("getblockhash", lab.Server.Calls);
+        Assert.Equal(BlockStatus.Confirmed, retry.Status);
+        Assert.Equal("confirmed", await lab.Db.ExecuteScalarAsync<string>("SELECT status FROM blocks"));
+        await handler.PayoutAsync(null, balances, CancellationToken.None);
+        Assert.Equal(1, lab.Server.Sends);
+        Assert.Equal(1, await lab.Count("payments"));
     }
 
     [PostgresIntegrationFact]
