@@ -7,7 +7,7 @@ This branch contains a **development foundation for [issue #244](https://github.
 - Pearl v1.5.5, commit [d7c517d267f10f5bcbbdc366f3e603942f9a5ab5](https://github.com/pearl-research-labs/pearl/tree/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5).
 - SRBMiner-MULTI [3.7.3](https://github.com/doktor83/SRBMiner-Multi/releases/tag/3.7.3), Linux archive SHA256 `c7250d39fe23549a88ef5d8d2041d75e60166f5d6ab8c8daf7274ab7b0a8da20`.
 - WildRig [0.51.8](https://github.com/andru-kun/wildrig-multi/releases/tag/0.51.8), Linux archive SHA256 `43f4071c743c922f2febf4b8ea44fc9f93dff668f5ffafcc24903dfd78f63771`. Its local probe sent an opaque hexadecimal opening line; interoperability is **not verified**.
-- Miningcore base: `6b183751b` on `dev`.
+- Initial Miningcore base: `6b183751b` on `dev`; subsequently merged `4fe5ebe8e` (FluentValidation 12.2.0).
 
 The currently deployed V3 protocol uses salted integer proofs. Draft floating-point proposals must not be substituted for it.
 
@@ -94,6 +94,8 @@ Host: documented WSL Ubuntu lab; Ryzen 9 5950X, RTX 3080 Ti (12 GiB), 15 GiB sys
 ## Regression checkpoint
 
 The documented Ubuntu native build completed, and the final warning-audited managed build reported zero warnings and errors. The full test run passed **5,704 tests**, with **24 explicitly skipped** (5,728 total), in 8 minutes 44 seconds. Skipped opt-in lanes are not counted as certification. The Pearl GPU fixture was run separately twice and passed both times. The native worker contract suite passed 25 cases after the final toolchain-pinned build.
+
+After merging the FluentValidation update, dependency restore succeeded and the focused Pearl/collection run passed **120 tests**, with one explicitly skipped live GPU fixture. An initial restore attempt aborted with a transient internal CLR error; the successful retry used `--disable-parallel`. The full-suite count above is from the pre-merge checkpoint.
 
 The existing lab PostgreSQL application login was insufficient for administrator-only migration fixtures. A separate administrator resolved those checks but exposed a partition fixture's assumption that its administrator is named `miningcore`. The successful run used a fresh disposable cluster on loopback 55434 with that fixture-specific setup. The existing lab application's privileges on 55432 were not elevated. The temporary cluster is stopped after testing. Logs and TRX evidence remain under `/home/ubuntu/issue-244/evidence` and `/home/ubuntu/issue-244/miningcore/build/test-lab`.
 
