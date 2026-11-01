@@ -1,0 +1,275 @@
+# Run a Pearl (PRL) mining pool
+
+This guide takes an operator from a working Miningcore installation to a verified
+Pearl pool. Pearl needs a proof verifier/prover, a synchronized Pearl node, and an
+Oyster wallet. Adding a coin entry alone is insufficient.
+
+The [development reference](pearl-development.md) describes the protocol, security
+limits, accounting, and recorded certification evidence. All addresses, passwords,
+and hostnames below are placeholders. Never publish a real configuration or wallet
+backup when asking for help.
+
+## 1. Prepare the software and wallet
+
+1. Use the certified Linux glibc x64 platform and Pearl **v1.5.5** source revision
+   `d7c517d267f10f5bcbbdc366f3e603942f9a5ab5`. Build the node with real `xmss,zkpow`
+   support using the [upstream installation guide](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/node/docs/installation.md).
+   A verification-bypass build is unsuitable for a pool.
+2. Start the mainnet node and let it synchronize. Its default RPC and P2P ports
+   are 44107 and 44108. Keep RPC private; it is not a miner endpoint.
+3. Set up [Oyster](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/wallet/README.md)
+   against that same node. Back up the wallet using its documented procedure.
+   Obtain a `prl1p...` address from Oyster's `default` BIP86 account with
+   `getnewaddress`; the pool must own this reward address. Wallet RPC defaults to
+   44207 and must also remain private.
+4. Build/install Miningcore and the pinned Pearl worker as described in
+   [Build and install](pearl-development.md#build-and-install). Confirm that the
+   published installation includes `pearl/miningcore-pearl-worker`, its caches,
+   checksums, and license notices. Ordinary packages without the optional Pearl
+   bundle cannot run this coin.
+5. Apply the documented database migrations as the schema owner, after stopping
+   writers and taking a backup. Use an ordinary application role for Miningcore.
+   Both share-accounting migrations and `add_pearl_candidates.sql` are required.
+
+Allow substantial memory headroom beyond the worker's 8 GiB address-space limit
+for Miningcore, the node, wallet, database, and operating system. Only one
+certificate prover runs at a time; two verification workers may run concurrently.
+GPU hardware is needed by GPU miners, not by Miningcore's verifier service.
+
+## 2. Enable PRL in Miningcore
+
+Copy [examples/pearl_pool.json](../examples/pearl_pool.json) to a private operator
+configuration. It is a complete example; replace **every** `CHANGE_ME` value.
+Merge its pool entry into an existing installation rather than replacing unrelated
+pools or persistence settings.
+
+| Setting | What to enter |
+| --- | --- |
+| `pools[].enabled` | `true` |
+| `pools[].coin` | `pearl` (the shipped PRL catalogue entry) |
+| `pools[].network` | `mainnet`; use a separate installation/data set for `regtest` |
+| `pools[].address` | The Oyster-owned `prl1p...` pool reward address |
+| `pools[].proofWorker` | Absolute path to the installed, pinned worker executable |
+| `pools[].daemons` | Private node RPC endpoint and its credentials |
+| `pools[].daemons` with `category: "wallet"` | Private Oyster RPC endpoint and its credentials |
+| `pools[].ports` | Miner ports, difficulty settings, and the server TLS PFX certificate |
+| `persistence.postgres` | The application database connection |
+| `paymentProcessing` at cluster and pool levels | Enable both when ready to pay rewards |
+
+For the initial smoke test, set both payment-processing `enabled` flags to `false`.
+Keep the node and wallet configured so startup can check synchronization, network,
+and ownership. Start the published executable with your private configuration:
+
+```bash
+chmod 600 /etc/miningcore/pool.json
+/opt/miningcore/Miningcore -c /etc/miningcore/pool.json
+```
+
+The example exposes TLS miner ports 4400 and 4401. Install a certificate for your
+pool's DNS name and replace the PFX path/password. Bind database, RPC, metrics,
+and administrative listeners to loopback or an appropriately restricted network.
+Remote RPC connections require verified TLS; never disable certificate checks as
+a workaround. Open only the intended miner ports to the public.
+
+## 3. Connect a miner
+
+Use the exact certified releases and profiles below. Download only from their
+official release pages and verify the publisher's checksums before execution.
+Different releases, kernels, GPUs, matrix sizes, and merge-mining modes require
+separate validation. A successful connection or a displayed hashrate alone does
+not prove pool compatibility.
+
+### SRBMiner-MULTI 3.7.3: tested GPU path
+
+Download [SRBMiner-MULTI 3.7.3](https://github.com/doktor83/SRBMiner-Multi/releases/tag/3.7.3).
+Replace the endpoint and wallet, then run:
+
+```bash
+./SRBMiner-MULTI --algorithm pearlhash \
+  --pool pool.example.com:4400 --tls true \
+  --wallet prl1pYOUR_MINER_ADDRESS.rig1 --password x \
+  --disable-cpu --gpu-id 0
+```
+
+Use the miner's tested default dense profile: `k=32768`, rank 128, tile 8×16.
+The wallet is the miner's payout address, not a wallet password or private key.
+Worker names may contain ASCII letters, digits, `_`, and `-`, up to 64 characters.
+
+### BzMiner v100.60: CPU profile
+
+Download [BzMiner v100.60](https://github.com/bzminer/bzminer/releases/tag/v100.60).
+For the CPU path, select the bounded dense profile explicitly:
+
+```bash
+export BZ_PEARL_WORKLOAD_M=1024
+export BZ_PEARL_WORKLOAD_N=1024
+export BZ_PEARL_WORKLOAD_K=32768
+export BZ_PEARL_WORKLOAD_RANK=128
+export BZ_PEARL_WORKLOAD_TILE_H=8
+export BZ_PEARL_WORKLOAD_TILE_W=16
+./bzminer -a pearl -p stratum+ssl://pool.example.com:4402 \
+  -w prl1pYOUR_MINER_ADDRESS --worker cpu1 --ssl-verify \
+  --nvidia 0 --amd 0 --intel 0 --cpu 1 --cpu_threads 4
+```
+
+Set a suitable low initial/minimum difficulty on a separate TLS port for slower
+CPU workers; the example GPU difficulty may produce long waits. Tune from measured
+accepted-share intervals, targeting roughly 15 seconds, rather than claimed miner
+hashrate. Keep the one-proof-per-second admission limit in mind.
+
+For example, add this entry inside the Pearl pool's `ports` object, using your
+existing TLS certificate. This gives CPU miners a practical starting difficulty
+and lets VarDiff adjust it:
+
+```json
+"4402": {
+  "name": "PRL-TLS-CPU",
+  "listenAddress": "*",
+  "difficulty": 0.001,
+  "difficultyGraceSeconds": 15,
+  "tls": true,
+  "tlsPfxFile": "/etc/miningcore/stratum.pfx",
+  "tlsPfxPassword": "CHANGE_ME_CERTIFICATE_PASSWORD",
+  "varDiff": {
+    "minDiff": 0.0001,
+    "maxDiff": 10,
+    "targetTime": 15,
+    "retargetTime": 90,
+    "variancePercent": 30
+  }
+}
+```
+
+For a private issuing CA, BzMiner's tested TLS invocation can use
+`SSL_CERT_FILE=/etc/miner/pool-ca.pem` together with `--ssl-verify`. Keep hostname
+verification enabled and use the DNS name covered by the certificate.
+
+The tested GPU's BzMiner kernels required a larger profile that exceeded the
+pool's bounded prover. GPU use of this BzMiner release is **not certified** by the
+CPU test. Do not remove the resource limits to make a larger profile fit. WildRig's
+pool-specific Pearl mode is also outside the supported protocol.
+
+## 4. Use an official gateway client with the pool
+
+This is optional for operators using SRBMiner/BzMiner directly. The stock solo
+gateway does not identify pool workers or account pool shares. Instead, run the
+included [gateway adapter](../scripts/pearl/gateway-adapter.py) on the same machine
+and under the same Unix account as the official miner client. It exposes the
+official `getMiningInfo` and `submitPlainProof` Unix-socket API and connects to
+Miningcore's named-object v2 protocol over verified TLS.
+
+Requires Python 3.12+ and its standard library; the adapter itself needs no Torch,
+CUDA, RPC credentials, wallet password, or private key. The official client retains
+its own upstream dependencies.
+
+Create a private configuration, replacing paths and placeholders:
+
+```json
+{
+  "socket": "/home/miner/pearl-gateway/rpc.sock",
+  "host": "pool.example.com",
+  "port": 4400,
+  "wallet": "prl1pYOUR_MINER_ADDRESS.official1"
+}
+```
+
+```bash
+chmod 600 /home/miner/pearl-gateway.json
+python3 /opt/miningcore-source/scripts/pearl/gateway-adapter.py \
+  --config /home/miner/pearl-gateway.json
+```
+
+The socket's immediate parent must be private and owned by this user (mode 0700);
+the adapter creates it if absent and sets the socket to 0600. The parent of that
+directory must already exist. Configure the official client process with:
+
+```bash
+export MINER_RPC_TRANSPORT=uds
+export MINER_RPC_SOCKET_PATH=/home/miner/pearl-gateway/rpc.sock
+# Start your supported dense-V3 proof-producing client with these settings.
+```
+
+Do not start the solo gateway on this socket. All clients connecting to one adapter
+use the fixed wallet/worker in its private configuration, with separate upstream
+sessions. Run separate adapters/configurations for different workers. The adapter
+does not listen on TCP; for remote miners, install it beside each miner and use
+TLS to reach the pool. Never forward the local unauthenticated socket publicly.
+
+Certification covers the unmodified upstream Python `MiningClient`, `MiningJob`,
+and `PlainProof` APIs, exercised with real BzMiner-generated proofs. It does not
+certify every upstream GPU/LLM mining backend. In particular, the vLLM/MoE and FP8
+paths remain unsupported. A proof-producing client must use dense V3, `m<=32772`,
+`n<=15360`, `k=32768`, rank 128, tile 8×16, and the job's assigned pool target.
+Do not substitute the network target from the header's compact bits.
+
+For a private CA, set `ca_file` to its PEM certificate. Server hostname verification
+remains mandatory. Only a co-located pool bound to a literal `127.0.0.1` or `::1`
+may use the explicit `loopback_plaintext: true` option. TLS is the default.
+
+The returned `target` is an exact 256-bit **pool share target**, represented as a
+JSON integer. Use the official Python `MiningJob` class or an arbitrary-precision
+JSON implementation; JavaScript `Number` cannot represent it exactly. Return the
+same `mining_job` with the proof. Changing its header, target, or certificate
+version is rejected. A successful submission means verified, durable pool share
+admission; it does not mean that a candidate has already become a network block.
+Network block submission and later confirmation happen separately.
+
+With the pinned source checkout and its Python dependencies installed, run the
+included compatibility check from that environment:
+
+```bash
+python /opt/miningcore-source/scripts/pearl/check-gateway-client.py \
+  --upstream /opt/pearl-source \
+  --socket /home/miner/pearl-gateway/rpc.sock
+```
+
+It uses the unmodified official client to check integer targets and explicit
+rejection of tampered/cross-session jobs. It prints only sanitized results. This
+protocol check complements, but does not replace, real-miner proof and block tests.
+
+The adapter limits sessions to four, retained jobs to eight, job age to 90 seconds,
+and submissions to one per second per session. A stalled connection fails closed.
+After an uncertain/disconnected submission, inspect accounting before retrying;
+never assume it was accepted. The pool retains its independent duplicate, stale,
+proof-size, verifier, queue, and accounting protections.
+
+## 5. Verify operation, then enable payouts
+
+1. Confirm startup reports a compatible synchronized node and an online Pearl pool.
+   Check the expected mainnet height; do not compare a regtest height to mainnet.
+2. Connect one worker. Check its accepted-share count and Miningcore's corresponding
+   durable share accounting, not only a miner-side “submitted” message.
+3. Inspect `miningcore_pearl_*` metrics on the private metrics listener. Watch
+   `ShareAccepted`, `ShareInvalid`, `ShareStale`, `NativeFailure`, candidate queue
+   depth, proof latency, and template age. A growing queue without accepted blocks
+   needs investigation before adding miners.
+4. Check candidate acceptance against the node and the pool's block record. Mining
+   a mainnet block is probabilistic; use an isolated proof-enabled regtest for a
+   controlled full-path test. Never reset a test chain under a live accounting ledger.
+5. Choose SOLO, PPLNS, or PROP; set the payment threshold and Oyster unlock settings.
+   Enable payment processing at both configuration levels and restart normally.
+   Optional Pearl fee/confirmation fields have defaults; the example makes them
+   explicit. Default maturity is at least 101 confirmations. Confirm a small payout
+   before increasing exposure. Keep wallet backups current.
+
+## Troubleshooting
+
+| Symptom | Check and action |
+| --- | --- |
+| Pool fails before accepting miners | Check the pinned worker bundle/version, executable permissions, database migrations, RPC connectivity, genesis/network, node synchronization, and wallet ownership. |
+| Miner connects but no work arrives | Check the selected Pearl algorithm, supported release, TLS port, valid network-specific wallet, and `v2` protocol. Inspect template readiness. |
+| Hashrate is zero | Check the miner's device/kernel diagnostics. BzMiner GPU kernel/profile incompatibility is not fixed by changing pool difficulty; use the certified path. |
+| `Unsupported Pearl pool profile` | Use `m<=32772`, `n<=15360`, `k=32768`, rank 128, tile 8×16. Clear conflicting miner environment/config overrides and restart it. Other consensus-valid profiles are not admitted by this bounded pool implementation. |
+| Few shares, no errors | Lower initial/minimum difficulty appropriately for that worker. Mainnet block discovery is probabilistic. Compare accepted work over a meaningful interval. |
+| Stale or unknown job | Refresh work, check connectivity/template freshness, and submit through the same session. Do not replay work after reconnecting or a tip change. |
+| Duplicate share | Stop replaying the same proof. Check the previous durable receipt; repeated acknowledgments must not create additional credit. |
+| Proof service unavailable / verifier busy | Check worker exit status, memory headroom, verification concurrency, and queue depth. Service failures are not proof of miner misconduct. Restore service before increasing load. |
+| Candidate queue keeps growing | Check certificate-generation failures, RPC availability, and node acceptance. Retain the ledger and diagnostics; do not delete durable candidate records to hide the fault. |
+| Gateway fails to start | Check private config/directory ownership and permissions. An existing socket is not overwritten: confirm no adapter is running before removing a stale socket. |
+| Gateway TLS failure | Check DNS name, expiry, and trusted CA. Set `ca_file` for a private CA; do not disable verification. |
+| Official client sees an RPC error | It is a final rejection or service failure, not acceptance. Refresh work and inspect private pool diagnostics. Never convert an error into `submitted`/success. |
+| Reward not paid yet | Check canonical block status, confirmation/maturity threshold, wallet sync/unlock, minimum balance, both payment flags, and transaction status. Avoid blindly resending uncertain payouts. |
+
+When reporting a problem, share versions, profile dimensions, aggregate test counts,
+and sanitized error categories. Remove credentials, wallet secrets, real hostnames,
+host addresses, user names, filesystem paths, and unrelated machine details from logs.

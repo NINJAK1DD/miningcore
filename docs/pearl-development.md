@@ -2,18 +2,22 @@
 
 Pearl uses its own Miningcore family (`pearl`) and **PearlHash salted integer V3** proof verification. It is not a nonce hasher. The pool verifies plain matrix proofs, durably records shares and candidate work, generates a certificate in an isolated worker, submits the exact completed block, and pays matured custodial rewards through Oyster.
 
+For step-by-step setup, enabling PRL, miner commands, official-client access and troubleshooting, use the [pool operator guide](pearl-pool-guide.md).
+
 ## Supported baseline
 
 | Component | Certified scope |
 | --- | --- |
 | Consensus/node/wallet | Pearl **v1.5.5**, commit `d7c517d267f10f5bcbbdc366f3e603942f9a5ab5`; source-built `xmss,zkpow` node and Oyster |
-| Mining | Current dense integer V3, rank penalty, rank >=128; mainnet and proof-enabled regtest |
+| Mining | Current dense integer V3; pool admission limited to m<=32772, n<=15360, k=32768, rank=128, tile 8x16 within the certified prover budget; mainnet and proof-enabled regtest |
 | Miner protocol | SRBMiner-MULTI **3.7.3**, named-object `type: v2` dialect, tested on Linux with RTX 3080 Ti, default dense profile (m=32772, n=15360, k=32768, rank=128, tile 8x16) |
+| Second miner | BzMiner **v100.60**, CPU path, m=n=1024, k=32768, rank=128, tile 8x16; explicit environment settings in the operator guide |
+| Official client | Pinned upstream `MiningClient`, `MiningJob`, `PlainProof` through the private Unix-socket adapter and verified TLS; exact integer pool target and final durable share decisions |
 | Pool/helper package | Source-built **Ubuntu 26.04 glibc x64**, .NET 10, Rust/Cargo **1.93.1** |
 | Reward schemes | Custodial SOLO, PPLNS and PROP; all other schemes rejected |
 | Unsupported | Historical mining, MoE, draft FP8, NoxChain merge mining, testnet/testnet2 pool operation, musl, ARM64, Windows and macOS workers; Ubuntu 22.04 packages are not certified for Pearl |
 
-Only the named SRBMiner release is advertised. WildRig 0.51.8's opening handshake was incompatible with this dialect; no WildRig/BzMiner/ARC/RGMiner/Fl4shMiner/PeakMiner interoperability is claimed. Two-miner certification is required before expanding that claim. Other mining families and their existing transport limits remain independent.
+Only the named releases and profiles are advertised. BzMiner's GPU defaults on the tested GPU used k=65536 and exceeded the bounded certificate prover; that GPU path is not certified. WildRig 0.51.8 documents its Pearl mode as pool-specific and its handshake is incompatible. No ARC/RGMiner/Fl4shMiner/PeakMiner interoperability is claimed. Other mining families and their existing transport limits remain independent.
 
 [Official node/proof source](https://github.com/pearl-research-labs/pearl/tree/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5), [release](https://github.com/pearl-research-labs/pearl/releases/tag/v1.5.5), [SRBMiner release](https://github.com/doktor83/SRBMiner-Multi/releases/tag/3.7.3).
 
@@ -47,11 +51,11 @@ Expose only the public Stratum TLS ports. Bind RPC, PostgreSQL, admin and metric
 The example has public TLS ports 4400/4401 with an operator PFX certificate. On a trusted lab network only, a separate loopback non-TLS listener can be used. The tested miner invocation was:
 
 ```bash
-./SRBMiner-MULTI --algorithm pearlhash --pool 127.0.0.1:19503 \
+./SRBMiner-MULTI --algorithm pearlhash --pool 127.0.0.1:4400 \
   --wallet rprl1pYOUR_LAB_ADDRESS.rig1 --password x --disable-cpu --gpu-id 0
 ```
 
-For production add `--tls true`, use the configured public endpoint and a mainnet `prl1p` address. Do not reuse lab wallets or RPC passwords. The miner archive is retained in the documented lab at `/opt/miningcore-test-lab/miners/srbminer-multi-3.7.3`; SHA-256 `c7250d39fe23549a88ef5d8d2041d75e60166f5d6ab8c8daf7274ab7b0a8da20`.
+For production add `--tls true`, use the configured public endpoint and a mainnet `prl1p` address. Do not reuse lab wallets or RPC passwords. The official miner archive is retained for repeatable testing; SHA-256 `c7250d39fe23549a88ef5d8d2041d75e60166f5d6ab8c8daf7274ab7b0a8da20`. BzMiner v100.60's official Linux archive SHA-256 is `1d736e08189a8bb0a5ebe1b1e1b51509b86af4aeea21337b8f799924d46533c5`, verified against its [release](https://github.com/bzminer/bzminer/releases/tag/v100.60).
 
 ## Pool protocol contract: named-object v2
 
@@ -63,13 +67,18 @@ Messages are newline-delimited JSON-RPC. IDs are required; string IDs are limite
 
 The address must be a network-correct, checksum-valid Bech32m witness-v1 32-byte program. Uppercase addresses are normalized; mixed case is rejected. Worker names are optional, at most 64 ASCII letters/digits/underscore/hyphen. Wallet strings are bounded at 160 and agent strings at 128 characters. Reauthorization is rejected. Authorization is an accounting identity, not proof that the client owns the payout key.
 
+BzMiner v100.60 supplies the worker in a separate string-valued `worker` parameter.
+Both that field and `wallet.worker` are supported with identical validation. If
+both are present they must agree; conflicts, non-string values and overlong names
+are rejected rather than silently crediting a different worker.
+
 For this miner the first `mining.notify` precedes the authorization acknowledgement (`result: true, error: null`). Notify `params` is an object containing `job_id` (32 hex characters), `header` (76 wire bytes as lowercase hex), `target` (32-byte **big-endian exact integer**, hex), `height`, and `cert_version: 3`. Subsequent target/transaction/time updates create a new job/header and are published under the existing per-connection assignment gate.
 
 ```json
 {"id":2,"method":"mining.submit","params":{"job_id":"JOB_ID","plain_proof":"BASE64"}}
 ```
 
-Raw base64 and bounded gzip/zlib proof encodings are accepted. There is no client-selected header, reward address, target, certificate version or credited work in submission. Successful shares receive `result: true, error: null` **after** the database receipt and any candidate intent commit. Codes: 21 unknown/stale job, 22 duplicate proof, 24 unauthorized, 20 unsupported/invalid/busy or capacity refusal. A busy refusal does not promise that retrying the same bytes will be accepted; request/use fresh work. Failed native service execution closes the connection without crediting unverified work. Unknown methods are rejected. On synchronization loss or unsupported upgrades the pool retires work and disconnects miners; miners reconnect when valid templates return.
+Raw base64 and bounded gzip/zlib proof encodings are accepted. There is no client-selected header, reward address, target, certificate version or credited work in submission. Successful shares receive `result: true, error: null` **after** the database receipt and any candidate intent commit. Codes: 21 unknown/stale job, 22 duplicate proof, 24 unauthorized, 20 unsupported/invalid/busy or capacity refusal. A busy refusal does not promise that retrying the same bytes will be accepted; request/use fresh work. Failed native service execution returns a service error without crediting unverified work or penalizing the miner; the failed attempt identity is released. Unknown methods are rejected. On synchronization loss or unsupported upgrades the pool retires work and disconnects miners; miners reconnect when valid templates return.
 
 Jobs are session-local, randomize the coinbase namespace, retain at most 8 snapshots by default (2–16 configurable), and expire after 120 seconds (30–180 configurable). Previous difficulty is accepted only through the configured 0–30 second grace. A changed previous-block hash immediately invalidates an old job. Same-tip transaction/time changes retain immutable old snapshots within those bounds.
 
@@ -83,7 +92,7 @@ Let `D1 = DecodeCompact(0x1b00ffff)`, the Pearl mainnet difficulty-one reference
 
 `NetworkDifficulty = D1/network_target`; reported achieved `ShareDifficulty` and `ActualDifficulty` are `D1*F/max(1,jackpot)`. Financial `Difficulty` is the assigned difficulty capped at network difficulty, never a client-declared rate or lucky achieved value. Equal assigned difficulty therefore buys equal expected normalized work across the allowed dimensions/ranks. API hashrate is credited difficulty/second multiplied by `2^256/D1`: **rank-adjusted work units per second**, not a promise to reproduce a miner's displayed raw matrix TH/s. Regtest's much easier network target caps credit and can make its dashboard rate much lower than the GPU display.
 
-Supported dimensions are `m,n <=2^24`, `k=1024..65536` in multiples of 64, power-of-two rank `128..1024`, `16*rank <= k <=4*rank^2`, 32–256 sampled products, and <=4 MiB sampled matrix input. The maximum scaling factor is `2^24`; difficulty is constrained to `1e-6..1e60`. Verified header/public-data SHA256 identifies work; the first 128 bits identify the existing durable accounting receipt. A conflicting receipt payload fails closed. Alternative proof encodings cannot earn another credit.
+The structural verifier bounds are `m,n <=2^24`, `k=1024..65536` in multiples of 64, power-of-two rank `128..1024`, `16*rank <= k <=4*rank^2`, 32–256 sampled products, and <=4 MiB sampled matrix input. **Pool admission is narrower:** m<=32772, n<=15360, k=32768, rank=128, tile 8x16, the certificate profile tested within the shipped worker's fixed resource budget. Other profiles are rejected before native verification, share accounting or candidate enqueue, even when consensus-valid. This prevents cheaply verified but unprovable candidates from exhausting the durable queue. The general verifier/rank-penalty contract remains independently tested. The maximum structural scaling factor is `2^24`; difficulty is constrained to `1e-6..1e60`. Verified header/public-data SHA256 identifies work; the first 128 bits identify the existing durable accounting receipt. A conflicting receipt payload fails closed. Alternative proof encodings cannot earn another credit.
 
 Mainnet activation fixtures cover immediately before/at/after heights **71935 (V2), 91630 (dense), 96251 (rank penalty), 99000 (salted V3)**. Historical serialization/rule selection is covered by node-validated blocks and independent official Go vectors. The current verifier deliberately cannot mine historical MoE/low-rank work. Unknown certificate versions and future FP proposals require a new reviewed protocol/activation update; draft PIP-3's reused “V3” label is not negotiated as current integer V3.
 
@@ -154,13 +163,15 @@ The source-built Release package passed the 25-library inventory, 241 managed en
 
 Run ordinary managed tests with the documented PostgreSQL/native lab lanes. `scripts/pearl/test-worker.py` runs deterministic native fixtures; `--prove` enables the slower real certificate path. `PearlLiveLabTests` is an additional opt-in GPU fixture (`MININGCORE_PEARL_LIVE_LAB=1`, `MININGCORE_PEARL_LAB_ROOT`); it uses a protocol harness and is not substituted for the production-runtime evidence above. The test-only `MiningcoreStratumListenerSmoke` build property cannot publish a pool.
 
-The user-requested mainnet node remains available as `miningcore-pearl-mainnet.service` in the Ubuntu lab, with eight outbound peers and loopback RPC on 19511. Its private configuration/data directory is `/home/ubuntu/issue-244/mainnet`; do not print or commit `pearld.conf`. Use `systemctl status miningcore-pearl-mainnet` and the service journal to inspect it. The saved official miner archives remain under `/opt/miningcore-test-lab/miners/` for future runs.
+The mainnet compatibility check used a separately synchronized, proof-enabled node. Operational service names, endpoint locations, host details and credentials are retained only in the private lab records. Official miner archives and their checksums are retained for repeatable tests.
 
 For repeatable lost-response tests, place `scripts/pearl/fault-proxy.py --listen-port 19509 --upstream http://127.0.0.1:19501 --method submitblock --evidence /private/lab/new-evidence.json` between a disposable pool and node. For wallet tests use the wallet port and `--method sendmany`. It forwards the caller's authentication and drops exactly one successful reply after upstream completion; it does not log credentials or request bodies. Inspect the durable candidate/intent, exact node/wallet transaction and ledger before restarting or releasing a dead payout-owner lease. Use only isolated regtest funds for these faults.
 
-## Completion checks and optional scope
+## Completion checks and interoperability
 
-The remaining implementation evidence is recorded in [pearl-completion-evidence.json](pearl-completion-evidence.json). Two implementation checklist entries are conditional: a second miner is needed **if broad interoperability is claimed**, and official-gateway access is needed **only if a secure worker/target/final-decision mapping is added**. This release advertises the measured SRBMiner 3.7.3 profile only. It does not advertise a stock solo gateway as a pool client. Those entries remain explicitly optional/unimplemented; neither is silently checked off.
+The earlier implementation evidence is recorded in [pearl-completion-evidence.json](pearl-completion-evidence.json). Its two previously deferred items are completed by the [interoperability report](pearl-interoperability-evidence.json): a second independent miner and a secure mapping for official-client access. Deploying the gateway adapter remains optional for operators who connect supported miners directly; implementing and verifying it is no longer deferred. A stock solo gateway is not advertised as a pool client.
+
+The adapter preserves the official JSON-RPC 2.0 methods, omits the `error` member on success (required by the pinned client), and serializes the target as an exact integer. It binds echoed jobs to immutable per-session upstream assignments; worker identity comes only from a private configuration. Local socket permissions protect access, and remote pool traffic requires hostname-verified TLS. It never returns the solo gateway's early `submitted` result. See the operator guide for installation, limits and failure behavior. Run `python3 -B scripts/pearl/test-gateway-adapter.py` for the automated transport/security contracts; CI runs these alongside the managed suite.
 
 The certified profile's captured network-candidate and share-only plain proofs are each **801,488 bytes**. Their raw-base64 submit frames are **1,068,758 bytes**; re-encoding the same valid proofs gives gzip frames of **9,498/9,502 bytes** and zlib frames of **8,630 bytes**, including one newline and a 32-character job ID. TLS does not change application frame size. These are measurements of the named default profile, not all possible matrix dimensions or a promise about other GPUs/tunings. The parser's wider structural bounds permit consensus-valid work inside hard limits, but other miner profiles require new measurements and certification before being advertised. Encoded JSON, base64, plain proof, nested dimensions, certificate, RPC and native stdout limits remain separate as documented above and enforced in code.
 

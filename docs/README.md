@@ -17,7 +17,8 @@ wallet balances or recovery files.
 | Order a local PostgreSQL service safely with Miningcore under systemd | [systemd PostgreSQL ordering](systemd-postgresql-ordering.md) |
 | Choose a ready-to-edit pool or relay topology | [Example configurations](../examples/README.md) |
 | Configure pools, logging and recovery storage | [Configuration](configuration.md) |
-| Deploy Pearl mining, proof workers and Oyster payouts | [Pearl deployment and validation](pearl-development.md) |
+| Enable Pearl, connect miners and troubleshoot | [Pearl pool operator guide](pearl-pool-guide.md) |
+| Understand Pearl proofs, protocol and validation | [Pearl technical reference](pearl-development.md) |
 | Configure administrative email and Pushover alerts | [Notification activation](notifications.md) |
 | Operate and monitor a production service | [Operator handbook](operations.md) |
 | Diagnose startup, mining, payout or storage problems | [Troubleshooting](troubleshooting.md) |

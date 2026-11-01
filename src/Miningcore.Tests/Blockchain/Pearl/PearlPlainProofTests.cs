@@ -11,6 +11,31 @@ namespace Miningcore.Tests.Blockchain.Pearl;
 
 public class PearlPlainProofTests
 {
+    [Theory]
+    [InlineData(32768u, 128, 8, 16, true)]
+    [InlineData(65536u, 128, 8, 16, false)]
+    [InlineData(32768u, 256, 8, 16, false)]
+    [InlineData(32768u, 128, 16, 8, false)]
+    [InlineData(32768u, 128, 16, 16, false)]
+    [InlineData(2048u, 128, 8, 16, false)]
+    public void PoolRejectsUncertifiedCertificateProfilesBeforeAccounting(uint k, ushort rank, int rows, int columns, bool accepted)
+    {
+        var dimensions = new PearlPlainProof.Dimensions(32772, 15360, k, rank, rows, columns, 0);
+        if(accepted)
+            PearlPlainProof.RequirePoolProfile(dimensions);
+        else
+            Assert.Throws<Miningcore.Stratum.StratumException>(() => PearlPlainProof.RequirePoolProfile(dimensions));
+    }
+
+    [Theory]
+    [InlineData(32773u, 15360u)]
+    [InlineData(32772u, 15361u)]
+    public void PoolBoundsMerkleDepthToTheCertifiedMatrixSizes(uint m, uint n)
+    {
+        Assert.Throws<Miningcore.Stratum.StratumException>(() => PearlPlainProof.RequirePoolProfile(
+            new PearlPlainProof.Dimensions(m, n, 32768, 128, 8, 16, 0)));
+    }
+
     [Fact]
     public void SeededMutationCampaignBoundsNestedStructuresAndCompressedInput()
     {

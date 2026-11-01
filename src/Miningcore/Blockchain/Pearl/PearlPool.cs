@@ -184,13 +184,7 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
                 var agent = parameters?.Value<string>("agent");
                 if(wallet == null || wallet.Length > 160 || agent?.Length > 128 || parameters.Value<string>("type") != "v2")
                     throw new StratumException(StratumError.UnauthorizedWorker, "Unsupported Pearl authorization");
-                var separator = wallet.IndexOf('.');
-                var address = separator < 0 ? wallet : wallet[..separator];
-                PearlAddress.RewardScript(address, PearlNetworkRules.AddressPrefix(network));
-                worker.Miner = address.ToLowerInvariant();
-                worker.Worker = separator < 0 ? string.Empty : wallet[(separator + 1)..];
-                if(worker.Worker.Length > 64 || worker.Worker.Any(x => !(char.IsAsciiLetterOrDigit(x) || x is '-' or '_')))
-                    throw new StratumException(StratumError.UnauthorizedWorker, "Invalid Pearl worker name");
+                (worker.Miner, worker.Worker) = PearlWorkerIdentity.Parse(wallet, parameters["worker"], network);
                 worker.UserAgent = agent;
                 if(!manager.Ready) throw new StratumException(StratumError.Other, "Pearl work is paused");
                 worker.IsAuthorized = true;
@@ -250,6 +244,7 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
         try
         {
             proof = PearlProofEncoding.Decode(parameters.Value<string>("plain_proof"));
+            PearlPlainProof.RequirePoolProfile(PearlPlainProof.Inspect(proof));
             var attempt = Convert.ToHexString(SHA256.HashData(proof));
             worker.RememberAttempt(job, attempt);
             var started = Stopwatch.GetTimestamp();

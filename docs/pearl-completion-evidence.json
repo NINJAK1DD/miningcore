@@ -4,10 +4,11 @@
   "pullRequest": 256,
   "upstream": "d7c517d267f10f5bcbbdc366f3e603942f9a5ab5",
   "scope": "SRBMiner-MULTI 3.7.3, RTX 3080 Ti, default dense rank-128 k-32768 8x16 profile; Linux glibc x64; salted integer V3",
-  "optionalUnimplemented": [
+  "deferredAtThisEarlierValidation": [
     "Second miner certification (required only before claiming broad interoperability)",
     "Official gateway access (requires a separate secure pool protocol mapping)"
   ],
+  "followUp": "pearl-interoperability-evidence.json completes both previously deferred items",
   "tests": {
     "fullRegression": {
       "passed": 5766,

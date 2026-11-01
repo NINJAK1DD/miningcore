@@ -314,8 +314,9 @@ pool payout wallet, encrypt and back it up, and test the documented restore proc
 production. Do not expose daemon RPC or wallet RPC to the internet.
 
 Pearl (PRL) uses a dedicated integer V3 proof runtime and a separately packaged proof worker.
-See the [Pearl deployment and validation guide](docs/pearl-development.md) for the certified
-SRBMiner dialect, source-built Linux package, exact work units and Oyster recovery procedure.
+Start with the [Pearl pool operator guide](docs/pearl-pool-guide.md) for setup, miner commands,
+gateway access and troubleshooting. The [technical reference](docs/pearl-development.md)
+covers the certified profiles, source-built Linux package, work units and Oyster recovery.
 
 Coin-specific RPC, wallet and extension requirements vary. Start with the chosen file in the
 [example index](examples/README.md), then check the matching definition in

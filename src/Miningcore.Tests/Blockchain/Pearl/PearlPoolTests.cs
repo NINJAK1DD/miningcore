@@ -37,8 +37,10 @@ public class PearlPoolTests : TestBase
 {
     internal static readonly Type CoveredPool = typeof(PearlPool);
 
-    [Fact]
-    public async Task ConcretePoolAuthorizesPublishesImmutableTargetsAndSerializesReplacement()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConcretePoolAuthorizesPublishesImmutableTargetsAndSerializesReplacement(bool separateWorker)
     {
         using var cache = new MemoryCache(new MemoryCacheOptions());
         using var scope = container.BeginLifetimeScope(builder =>
@@ -92,9 +94,19 @@ public class PearlPoolTests : TestBase
         {
             while(messages.Count < count) await Task.Delay(10, stop.Token);
         }
-        Task Authorize(string wallet) => Invoke(pool, "OnRequestAsync", connection,
-            new Timestamped<JsonRpcRequest>(new JsonRpcRequest {Id = 1, Method = "mining.authorize",
-                Params = new JObject {["wallet"] = wallet, ["agent"] = "test", ["type"] = "v2"}}, clock.Now), CancellationToken.None);
+        Task Authorize(string wallet)
+        {
+            var parameters = new JObject {["wallet"] = wallet, ["agent"] = "test", ["type"] = "v2"};
+            if(separateWorker && wallet.Contains('.'))
+            {
+                var split = wallet.IndexOf('.');
+                parameters["wallet"] = wallet[..split];
+                parameters["worker"] = wallet[(split + 1)..];
+            }
+            return Invoke(pool, "OnRequestAsync", connection,
+                new Timestamped<JsonRpcRequest>(new JsonRpcRequest {Id = 1, Method = "mining.authorize",
+                    Params = parameters}, clock.Now), CancellationToken.None);
+        }
         await Authorize("invalid");
         await Flush(1);
         Assert.False(worker.IsAuthorized);

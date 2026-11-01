@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.IO;
+using Miningcore.Stratum;
 
 namespace Miningcore.Blockchain.Pearl;
 
@@ -17,6 +18,18 @@ internal static class PearlPlainProof
         internal ulong WorkFactor => checked((ulong) Rows * (ulong) Columns * (K - K % Rank));
         internal ulong RankAdjustedWorkFactor =>
             checked((ulong) Rows * (ulong) Columns * ((K - K % Rank) / Rank) * 128);
+    }
+
+    // Admission policy, not a consensus rule. Larger legal dense profiles can
+    // verify cheaply but exceed the bounded prover and permanently occupy its
+    // durable candidate queue. Admit only the certificate profile tested under
+    // the shipped worker's fixed memory/CPU limits.
+    internal static void RequirePoolProfile(Dimensions dimensions)
+    {
+        if(dimensions.M > 32772 || dimensions.N > 15360 || dimensions.K != 32768 ||
+            dimensions.Rank != 128 || dimensions.Rows != 8 || dimensions.Columns != 16)
+            throw new StratumException(StratumError.Other,
+                "Unsupported Pearl pool profile; use m<=32772, n<=15360, k=32768, rank=128, tile=8x16");
     }
 
     internal static Dimensions Inspect(ReadOnlySpan<byte> data)
