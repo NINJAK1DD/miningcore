@@ -97,7 +97,7 @@
              Pkcs >= 10.0.13; remove only after restore/audit confirms that floor. -->
         <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
         <PackageReference Include="McMaster.Extensions.CommandLineUtils" Version="5.1.0" />
-        <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.12" />
+        <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14" />
         <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.12" />
         <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.12" />
         <PackageReference Include="NBitcoin" Version="7.0.42" />
