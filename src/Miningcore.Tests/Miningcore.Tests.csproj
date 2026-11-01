@@ -65,6 +65,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Fixtures/Beam/gpu-beamhash3.json" />
+    <EmbeddedResource Include="Fixtures/Pearl/*" />
     <None Include="../../README.md" Link="README.md">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
