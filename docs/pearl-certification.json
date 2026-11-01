@@ -44,7 +44,14 @@
     "native_libraries": 25,
     "managed_native_entrypoints": 241,
     "floating_point_modes": 8,
-    "skipped_lanes_are_not_certification": true
+    "skipped_lanes_are_not_certification": true,
+    "final_focused_after_schema_layout_correction": {
+      "passed": 379,
+      "failed": 0,
+      "skipped": 1,
+      "generated_pps_migration_check": "passed"
+    },
+    "documentation_and_stratum_source_guards": "passed"
   },
   "package": {
     "configuration": "Release",
@@ -471,7 +478,7 @@
   ],
   "log_sha256": {
     "full-regression-isolated.log": "0257e66ac36a6103d5bddadac4a5d841834b88c0e4535b81ead03fcc66140802",
-    "runtime-tests.log": "2ade770905080b8f2fbbaba81d417c5ce32dec73577d7ef788b02a885978436f",
+    "runtime-tests.log": "d24cb3d6c1f2b83fdb89357d60cdda92259cafd4993aca0332a84f0550bb7c9e",
     "package-release.log": "b143ecc6e8fcad5a07653db9e28fc820464729692c7c7d4c875b0c8fac32c74d",
     "final-release-managed.log": "2ccc60273d71bffc95efb4348f1a7c3995acd25fd8056e55fc0eafa8886b761e"
   }
