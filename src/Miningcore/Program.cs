@@ -2414,10 +2414,10 @@ public class Program : ProcessStatusBackgroundService
                         pool.Id);
             }
             else if(pool.Template.Family is not (CoinFamily.Bitcoin or
-                    CoinFamily.BitcoinBlake2b))
+                    CoinFamily.BitcoinBlake2b or CoinFamily.Pearl))
                 throw new PoolStartupException(
                     $"Pool '{pool.Id}' uses PPS, which is currently supported only by the " +
-                    "audited Bitcoin-family share and reward contract",
+                    "audited Bitcoin-family and Pearl share and reward contracts",
                     pool.Id);
 
             var recipients = pool.RewardRecipients ?? Array.Empty<RewardRecipient>();

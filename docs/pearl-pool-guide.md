@@ -56,7 +56,9 @@ pools or persistence settings.
 | `persistence.postgres` | The application database connection |
 | `paymentProcessing` at cluster and pool levels | Enable both when ready to pay rewards |
 
-For the initial smoke test, set both payment-processing `enabled` flags to `false`.
+For the initial smoke test with the example's PPLNS scheme, set both
+payment-processing `enabled` flags to `false`. PPS instead requires both enabled
+before accepting work; complete [PPS setup](#pps-setup-and-verification) first.
 Keep the node and wallet configured so startup can check synchronization, network,
 and ownership. Start the published executable with your private configuration:
 
@@ -235,6 +237,9 @@ proof-size, verifier, queue, and accounting protections.
 
 ## 5. Verify operation, then enable payouts
 
+For PPS, complete the reserve and configuration steps in the next section **before
+accepting any shares**. Both payment-processing switches must already be enabled.
+
 1. Confirm startup reports a compatible synchronized node and an online Pearl pool.
    Check the expected mainnet height; do not compare a regtest height to mainnet.
 2. Connect one worker. Check its accepted-share count and Miningcore's corresponding
@@ -246,17 +251,105 @@ proof-size, verifier, queue, and accounting protections.
 4. Check candidate acceptance against the node and the pool's block record. Mining
    a mainnet block is probabilistic; use an isolated proof-enabled regtest for a
    controlled full-path test. Never reset a test chain under a live accounting ledger.
-5. Choose SOLO, PPLNS, or PROP; set the payment threshold and Oyster unlock settings.
+5. Choose PPS, SOLO, PPLNS, or PROP as described below; set the payment threshold and Oyster unlock settings.
    Enable payment processing at both configuration levels and restart normally.
    Optional Pearl fee/confirmation fields have defaults; the example makes them
    explicit. Default maturity is at least 101 confirmations. Confirm a small payout
    before increasing exposure. Keep wallet backups current.
+
+## 6. Choose and configure a reward scheme
+
+All four schemes use the same verified Pearl work, durable receipts, Oyster payment
+handler, minimum-payment threshold, and transaction reconciliation. SOLO is
+custodial: the pool receives the coinbase and later pays the finder through Oyster.
+It does not send the coinbase directly to the miner.
+
+| Scheme | When a miner earns a balance | Distribution |
+| --- | --- | --- |
+| PPS | When a verified share commits, before acknowledgement | Template reward × assigned difficulty / network difficulty × retained reward fraction. Independent of later block success or orphaning. |
+| SOLO | When a pool block has verified custody and reaches maturity | The finder receives the block reward after reward-recipient allocations. |
+| PPLNS | When a pool block has verified custody and reaches maturity | Recent assigned work, newest first, within `factor` network-difficulty units. The boundary share is partially counted; windows may overlap. |
+| PROP | When a pool block has verified custody and reaches maturity | The net reward is proportional to assigned work through the winning share. Those shares are consumed; later shares remain for the next round. |
+
+Assigned difficulty is capped at network difficulty. A lucky proof's achieved
+difficulty never increases its reward weight. PPLNS defaults to `factor: 2`; use a
+positive numeric factor. A partially filled window distributes only its filled
+fraction of the net reward. PROP uses all eligible unconsumed round work.
+
+Edit the existing pool's `paymentProcessing` object in
+[`examples/pearl_pool.json`](../examples/pearl_pool.json). Keep the node, wallet,
+proof-worker and TLS settings from the earlier steps. For example:
+
+```json
+"paymentProcessing": {
+  "enabled": true,
+  "minimumPayment": 1,
+  "payoutScheme": "PPLNS",
+  "payoutSchemeConfig": { "factor": 2 },
+  "minimumConfirmations": 101,
+  "feeRateGrainsPerKb": 10000,
+  "walletPassword": "CHANGE_ME_OYSTER_UNLOCK_PASSPHRASE"
+}
+```
+
+For SOLO or PROP, change `payoutScheme` to the desired name and remove
+`payoutSchemeConfig`. For PPS, set `payoutScheme: "PPS"`, remove
+`payoutSchemeConfig`, and optionally set `ppsShareRetentionDays: 7`. Also enable
+the top-level `paymentProcessing.enabled` scheduler. Start each scheme with a
+distinct pool ID, listener port, and ledger history. To change an established
+pool's scheme or reward percentages, stop admission, drain candidates and recovery
+journals, settle/reconcile its old obligations, then use a new pool ID. Reusing a
+round/window or replaying immutable PPS evidence against changed fee settings is
+not a supported migration.
+
+### PPS setup and verification
+
+1. Complete the [PPS database prerequisites](pps.md#database-prerequisites) and the
+   Pearl migrations in this guide. Every accepting pool needs local PostgreSQL;
+   unavailable or incompatible accounting must prevent share acknowledgement.
+2. Fund Oyster with a separately monitored **spendable reserve** before opening
+   admission. PPS liabilities accrue even when blocks are not found, become
+   orphaned, or candidate proving/submission fails. Immature coinbases are not
+   available funds. Miningcore has no automatic reserve admission circuit breaker;
+   stop new work if the reserve policy cannot be maintained.
+3. The reward basis is the job's pool coinbase value, including its template fees,
+   in grains (`100,000,000` grains per PRL). Configured reward-recipient percentages
+   reduce the miner's PPS basis once. Recipients receive their configured portion
+   of actual matured blocks; they are not additionally credited per share.
+4. The shared ledger retains liabilities at 24 decimal places, credits balances
+   at 12, and carries the remainder per pool/miner. Oyster outputs are floored to
+   eight decimal places; smaller unpaid balance remains on the ledger. Minimum
+   payment must be at least `0.01 PRL`. Wallet fees and the reconciliation marker
+   need additional spendable funds.
+5. Leaving `ppsBinary64Activation` absent uses the existing version-0 arithmetic.
+   Version 1 is also supported, but requires the matching administrator-created
+   database cutover and UTC configuration on all accounting participants. Follow
+   the [arithmetic migration runbook](pps-arithmetic-migration.md); do not simply
+   add a timestamp to a running pool or edit historical credits.
+6. In an isolated proof-enabled lab, confirm one accepted share creates one
+   `pps_share_credits` row and the matching balance/remainder before maturity.
+   Confirm recorder replay does not duplicate it. Verify an Oyster payment by its
+   transaction outputs and ledger debit, then restart and verify no second payment.
+   A pre-maturity orphan leaves the PPS liability intact. A post-settlement reorg
+   quarantines the affected block and holds new payments for manual reconciliation.
+
+For SOLO, PPLNS and PROP, verify no miner allocation before maturity, the expected
+finder/window/round allocation afterwards, and no second allocation on restart.
+The automated PostgreSQL suite exercises unequal assigned work, reward fees,
+consecutive rounds, window boundaries, concurrent settlement, and wallet output
+and ledger reconciliation for all four schemes.
+The [verification report](pearl-reward-schemes-evidence.json) also records real
+proof-enabled chain mining, mature payouts and paid-ledger restart checks for each.
 
 ## Troubleshooting
 
 | Symptom | Check and action |
 | --- | --- |
 | Pool fails before accepting miners | Check the pinned worker bundle/version, executable permissions, database migrations, RPC connectivity, genesis/network, node synchronization, and wallet ownership. |
+| PPS pool refuses startup | Enable payment processing at both levels, configure local PostgreSQL, apply the accounting migrations, and match any arithmetic cutover exactly. Do not bypass the schema/privilege checks. |
+| PPS balances increase but payments wait | Check minimum payment, spendable reserve, Oyster synchronization/unlock state, pending payout intent and quarantined blocks. Stop admission if reserve funding is inadequate; accepted liabilities remain owed. |
+| PPLNS rewards are smaller than a full block | Check `factor` and whether enough assigned work fills the window. Achieved proof difficulty does not determine payout weight. |
+| PPLNS reports an invalid factor | Set a positive JSON number; zero, negative values, null and strings are rejected before mining starts. |
 | Miner connects but no work arrives | Check the selected Pearl algorithm, supported release, TLS port, valid network-specific wallet, and `v2` protocol. Inspect template readiness. |
 | Hashrate is zero | Check the miner's device/kernel diagnostics. BzMiner GPU kernel/profile incompatibility is not fixed by changing pool difficulty; use the certified path. |
 | `Unsupported Pearl pool profile` | Use `m<=32772`, `n<=15360`, `k=32768`, rank 128, tile 8×16. Clear conflicting miner environment/config overrides and restart it. Other consensus-valid profiles are not admitted by this bounded pool implementation. |

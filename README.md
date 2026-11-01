@@ -24,7 +24,7 @@ the original authors and contributors.
 - Multiple pools and currencies in one cluster; see the bundled [coin definitions](src/Miningcore/coins.json)
   and the [Scrypt definition provenance](docs/scrypt-coin-definitions.md).
 - Native proof-of-work validation with fixed difficulty and variable difficulty (vardiff).
-- SOLO, PPLNS and PROP payout schemes, plus transactional Bitcoin-family PPS accounting.
+- SOLO, PPLNS and PROP payout schemes, plus transactional Bitcoin-family and Pearl PPS accounting.
 - Bitcoin direct-coinbase SOLO is enabled by default: when a miner finds a Bitcoin block, the block
   pays that miner directly and pays the pool only its configured fee or donation. Miningcore does
   not hold the miner's block reward first. Canonical BTC coinbases also use the

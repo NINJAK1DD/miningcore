@@ -573,6 +573,7 @@
                     },
                     "payoutScheme": {
                       "enum": [
+                        "PPS",
                         "SOLO",
                         "PPLNS",
                         "PROP"

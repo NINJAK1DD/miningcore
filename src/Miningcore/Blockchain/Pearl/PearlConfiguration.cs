@@ -31,7 +31,7 @@ namespace Miningcore.Blockchain.Pearl
                       "minimumPayment":{"type":"number","minimum":0.01},
                       "feeRateGrainsPerKb":{"type":"integer","minimum":1,"maximum":100000000,"default":10000},
                       "minimumConfirmations":{"type":"integer","minimum":101,"maximum":100000,"default":101},
-                      "payoutScheme":{"enum":["SOLO","PPLNS","PROP"]}
+                      "payoutScheme":{"enum":["PPS","SOLO","PPLNS","PROP"]}
                     }}
                   }}
                 ]}
@@ -46,8 +46,19 @@ namespace Miningcore.Blockchain.Pearl
         internal PearlNetwork Validate(PoolConfig pool)
         {
             if(pool.PaymentProcessing != null && pool.PaymentProcessing.PayoutScheme is not
-                (PayoutScheme.SOLO or PayoutScheme.PPLNS or PayoutScheme.PROP))
-                throw new InvalidDataException("Pearl supports only certified SOLO, PPLNS and PROP reward schemes");
+                (PayoutScheme.PPS or PayoutScheme.SOLO or PayoutScheme.PPLNS or PayoutScheme.PROP))
+                throw new InvalidDataException("Pearl supports only PPS, SOLO, PPLNS and PROP reward schemes");
+            if(pool.PaymentProcessing?.PayoutScheme == PayoutScheme.PPLNS &&
+               pool.PaymentProcessing.PayoutSchemeConfig is {Type: not JTokenType.Null} schemeConfig)
+            {
+                if(schemeConfig is not JObject window)
+                    throw new InvalidDataException("Pearl PPLNS configuration must be an object");
+                // Newtonsoft binds property names case-insensitively. Validate every
+                // matching spelling so a later alias cannot bypass the admission guard.
+                foreach(var factor in window.Properties().Where(x => string.Equals(x.Name, "factor", StringComparison.OrdinalIgnoreCase)).Select(x => x.Value))
+                    if(factor.Type is not (JTokenType.Integer or JTokenType.Float) || factor.Value<decimal>() <= 0)
+                        throw new InvalidDataException("Pearl PPLNS factor must be a positive number");
+            }
             var network = Network switch
             {
                 "mainnet" => PearlNetwork.Mainnet,

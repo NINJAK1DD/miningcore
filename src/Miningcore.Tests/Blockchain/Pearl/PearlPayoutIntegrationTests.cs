@@ -34,7 +34,7 @@ namespace Miningcore.Tests.Blockchain.Pearl;
 public class PearlPayoutIntegrationTests
 {
     private const string Marker = "rprl1pg3h2up2s7a8reykv4nv087xs0r4ynswtw9nz69yxngaul6wjmk9sn7mfw9";
-    private sealed class Factory(string connection) : IConnectionFactory
+    internal sealed class Factory(string connection) : IConnectionFactory
     {
         public async Task<IDbConnection> OpenConnectionAsync()
         {
@@ -44,7 +44,7 @@ public class PearlPayoutIntegrationTests
         }
     }
 
-    private sealed class Rpc : IAsyncDisposable
+    internal sealed class Rpc : IAsyncDisposable
     {
         private readonly HttpListener listener = new();
         private readonly Task loop;
@@ -130,7 +130,7 @@ public class PearlPayoutIntegrationTests
         public async ValueTask DisposeAsync() {listener.Close(); await loop;}
     }
 
-    private sealed class Lab : IAsyncDisposable
+    internal sealed class Lab : IAsyncDisposable
     {
         internal NpgsqlConnection Db;
         internal Factory Connections;

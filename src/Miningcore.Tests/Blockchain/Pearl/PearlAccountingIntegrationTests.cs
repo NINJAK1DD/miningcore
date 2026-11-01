@@ -41,7 +41,8 @@ public class PearlAccountingIntegrationTests
             await admin.ExecuteAsync((await File.ReadAllTextAsync(PostgresTestScripts.PathFor("createdb.sql"))).Replace("SET ROLE miningcore;", ""));
             var factory = new Factory(new NpgsqlConnectionStringBuilder(connectionString) {SearchPath = schema + ",public"}.ConnectionString);
             var repository = new ShareRepository(AutoMapperFactory.CreateMapper());
-            var store = new PearlCandidateStore(factory, repository);
+            var pool = new Miningcore.Configuration.PoolConfig {Id = "pearl"};
+            var store = new PearlCandidateStore(factory, repository, pool);
             var job = new PearlWorkerContext {Difficulty = 1}.Issue(PearlWorkTests.Block(), 2);
             Share CreateShare() => new()
             {
@@ -69,7 +70,7 @@ public class PearlAccountingIntegrationTests
             await Assert.ThrowsAsync<Miningcore.Stratum.StratumException>(() => store.CommitAsync(excess, excess.AccountingId + excess.AccountingId, job, new byte[] {1}, true, CancellationToken.None));
             Assert.Equal(16, await admin.ExecuteScalarAsync<int>("SELECT count(*) FROM shares"));
             Assert.Equal(16, await admin.ExecuteScalarAsync<int>("SELECT count(*) FROM share_accounting_groups"));
-            var reopened = new PearlCandidateStore(factory, repository);
+            var reopened = new PearlCandidateStore(factory, repository, pool);
             var recovered = await reopened.NextAsync("pearl", CancellationToken.None);
             Assert.NotNull(recovered);
             Assert.Equal(job.Block.Header.ToArray(), recovered.Header);

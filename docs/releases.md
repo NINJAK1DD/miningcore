@@ -38,8 +38,12 @@ Back up the database/recovery journal and Oyster wallet together before upgradin
 
 Use the [Pearl deployment and recovery guide](pearl-development.md),
 [TLS pool example](../examples/pearl_pool.json) and recorded certification evidence.
-Payouts support custodial SOLO, PPLNS and PROP; uncertain sends and settled reorgs
+Payouts support PPS plus custodial SOLO, PPLNS and PROP; uncertain sends and settled reorgs
 hold further payments until transaction or operator reconciliation completes.
+Pearl PPS commits verified-share liabilities atomically with durable admission,
+independently of later block outcomes. Both shared arithmetic versions are supported.
+Provision a spendable reserve and enable both payment-processing switches before
+accepting PPS work. See the [four-scheme setup guide](pearl-pool-guide.md#6-choose-and-configure-a-reward-scheme).
 
 ## Unreleased (after v0.3.0): Xelis difficulty targets
 

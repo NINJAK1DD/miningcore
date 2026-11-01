@@ -52,7 +52,7 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
         config = poolConfig.Extra.SafeExtensionDataAs<PearlPoolConfig>();
         network = config.Validate(poolConfig);
         verifier = new PearlProofVerifier(config.ProofWorker);
-        candidates = new PearlCandidateStore(cf, shareRepo);
+        candidates = new PearlCandidateStore(cf, shareRepo, poolConfig);
         if(!await cf.Run(con => shareRepo.HasShareAccountingSchemaAsync(con, ct)))
             throw new InvalidOperationException("Pearl requires the share accounting schema migrations");
         await candidates.CheckSchemaAsync(ct);
@@ -273,6 +273,7 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
             BlockReward = job.Block.RewardGrains / 100_000_000m, TransactionConfirmationData = job.Block.CoinbaseId,
             PreserveCreated = true
         };
+        ShareAccounting.AttachPpsCreditEvidence(poolConfig, share);
         ShareAccounting.ValidateAndFlatten(share, new Dictionary<string, PoolConfig> {{poolConfig.Id, poolConfig}});
         // The receipt and candidate intent commit together. Never acknowledge a memory-only queue entry.
         await candidates.CommitAsync(share, identity, job, proof, verified.IsBlockCandidate, ct);

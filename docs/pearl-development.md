@@ -14,7 +14,7 @@ For step-by-step setup, enabling PRL, miner commands, official-client access and
 | Second miner | BzMiner **v100.60**, CPU path, m=n=1024, k=32768, rank=128, tile 8x16; explicit environment settings in the operator guide |
 | Official client | Pinned upstream `MiningClient`, `MiningJob`, `PlainProof` through the private Unix-socket adapter and verified TLS; exact integer pool target and final durable share decisions |
 | Pool/helper package | Source-built **Ubuntu 26.04 glibc x64**, .NET 10, Rust/Cargo **1.93.1** |
-| Reward schemes | Custodial SOLO, PPLNS and PROP; all other schemes rejected |
+| Reward schemes | PPS plus custodial SOLO, PPLNS and PROP; all other schemes rejected |
 | Unsupported | Historical mining, MoE, draft FP8, NoxChain merge mining, testnet/testnet2 pool operation, musl, ARM64, Windows and macOS workers; Ubuntu 22.04 packages are not certified for Pearl |
 
 Only the named releases and profiles are advertised. BzMiner's GPU defaults on the tested GPU used k=65536 and exceeded the bounded certificate prover; that GPU path is not certified. WildRig 0.51.8 documents its Pearl mode as pool-specific and its handshake is incompatible. No ARC/RGMiner/Fl4shMiner/PeakMiner interoperability is claimed. Other mining families and their existing transport limits remain independent.
@@ -123,6 +123,35 @@ Oyster v1.5.5 cannot sign arbitrary raw transactions through `signrawtransaction
 A lost wallet response deliberately stops the payout manager through its existing uncertain-outcome lease policy. Follow [database ownership recovery](database.md): stop the recorded owner, inspect the exact owner/generation and wallet/marker transaction, then release only that dead owner's lease under the prescribed advisory lock. Never delete an intent or mark a payment paid merely to unblock the service. A crash before wallet submission can leave an intent with no transaction; manual wallet audit is required before deciding it was never sent.
 
 Pre-maturity reorgs orphan the reward without changing balances; canonical restoration can reopen it with fresh custody evidence. Confirmed rewards that leave the canonical chain are **quarantined**, holding new payouts for the pool. Already-booked or paid money is never automatically reversed or paid again. PROP/PPLNS out-of-order historical rewards are also quarantined when a later confirmed block could have consumed their share window. Review the chain, wallet and unchanged ledger before any manual release. A bounded rotating scan revisits 64 confirmed/orphaned blocks per cycle within 4032 blocks of the tip; deeper reorgs require operator review of older history.
+
+PPS snapshots the template reward in grains, capped assigned difficulty, network difficulty,
+recipient fee and arithmetic version at share admission. `PearlCandidateStore` commits the
+same `PpsShareCredit` and payload hash that `ShareRecorder` reconstructs on replay. The
+receipt, statistical share, liability, precision remainder, balance and (when applicable)
+candidate intent share one transaction before acknowledgement. Failed insertion or queue
+admission creates no credit; subsequent candidate rejection or an orphan cannot revoke a
+committed liability. The shared PPS block scheme is a no-op for miner balances, avoiding
+double payment at maturity. Reward recipients retain the usual matured-block allocation.
+Both shared arithmetic versions are supported with their existing durable cutover rules.
+See the [four-scheme operator guide](pearl-pool-guide.md#6-choose-and-configure-a-reward-scheme)
+for configuration, reserve funding, rounding, migration and troubleshooting.
+
+The supported dense profiles share the rank-adjusted jackpot multiplier
+`8 × 16 × (32768 / 128) × 128 = 4,194,304`; changing the full matrix dimensions
+does not change that sampled-work multiplier. The verifier applies it to the
+assigned target and independently checks the network candidate threshold. It
+cancels from the share/network work ratio, so PPS uses assigned difficulty divided
+by network difficulty, capped at one, rather than achieved jackpot difficulty or
+advertised GPU throughput. Immutable jobs preserve the original assignment during
+VarDiff grace. This contract does not extend to unsupported ranks, tiles or kernels.
+
+The [four-scheme verification report](pearl-reward-schemes-evidence.json) records
+5,798 full-suite passes and 568 focused passes, with zero failures. A real miner
+produced one accepted block per scheme over verified TLS; each matured and paid
+through the production Oyster handler. Exact transaction outputs and ledger
+conservation were checked, including PPS precision remainders. Restart preserved
+all payments, balances, PPS credits and financial history without a second credit
+or payment. Private transcripts are retained separately; only their hashes are public.
 
 Back up PostgreSQL, its recovery journal and Oyster's wallet together. Run one active pool instance per pool ID; the existing database-wide payout-owner lease still applies. Do not concurrently migrate schemas or restart a regtest node with production wallet data: this upstream regtest node rebuilds its chain on startup, and Oyster must rescan that changed chain.
 

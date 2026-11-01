@@ -2,6 +2,7 @@ using System.Data;
 using System.Numerics;
 using Dapper;
 using Miningcore.Extensions;
+using Miningcore.Configuration;
 using Miningcore.Mining;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
@@ -12,7 +13,7 @@ using Miningcore.Stratum;
 
 namespace Miningcore.Blockchain.Pearl;
 
-internal sealed class PearlCandidateStore(IConnectionFactory cf, IShareRepository shares)
+internal sealed class PearlCandidateStore(IConnectionFactory cf, IShareRepository shares, PoolConfig pool)
 {
     internal sealed class Candidate
     {
@@ -35,7 +36,10 @@ internal sealed class PearlCandidateStore(IConnectionFactory cf, IShareRepositor
     {
         var id = ShareAccounting.ParseCanonicalId(share.AccountingId);
         var projections = new[] {ShareAccounting.ToPersistenceShare(share)};
-        var credits = Array.Empty<PpsShareCredit>();
+        // Use the same immutable liability and payload as ShareRecorder replay. The
+        // receipt, PPS credit/remainder/balance and candidate must commit before ACK.
+        var credit = ShareAccounting.CreatePpsCredit(pool, share);
+        var credits = credit == null ? Array.Empty<PpsShareCredit>() : new[] {credit};
         var batch = new ShareAccountingBatch {AccountingId = id, Shares = projections, PpsCredits = credits,
             Created = share.Created, PayloadHash = ShareAccounting.ComputePayloadHash(id, projections, credits)};
         await cf.RunTx(async (con, tx) =>

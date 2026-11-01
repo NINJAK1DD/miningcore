@@ -13,7 +13,26 @@ namespace Miningcore.Tests.Blockchain.Pearl;
 public class PearlWorkTests
 {
     [Theory]
-    [InlineData(Miningcore.Configuration.PayoutScheme.PPS)]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("null")]
+    [InlineData("\"two\"")]
+    [InlineData("1,\"Factor\":0")]
+    public void PplnsRejectsInvalidWindowBeforeAcceptingWork(string factor)
+    {
+        var pool = new Miningcore.Configuration.PoolConfig
+        {
+            PaymentProcessing = new Miningcore.Configuration.PoolPaymentProcessingConfig
+            {
+                PayoutScheme = Miningcore.Configuration.PayoutScheme.PPLNS,
+                PayoutSchemeConfig = Newtonsoft.Json.Linq.JObject.Parse("{\"factor\":" + factor + "}")
+            }
+        };
+        var error = Assert.Throws<InvalidDataException>(() => new PearlPoolConfig().Validate(pool));
+        Assert.Contains("positive number", error.Message);
+    }
+
+    [Theory]
     [InlineData(Miningcore.Configuration.PayoutScheme.PPLNSBF)]
     public void RuntimeRejectsUncertifiedRewardSchemes(Miningcore.Configuration.PayoutScheme scheme)
     {
@@ -22,7 +41,7 @@ public class PearlWorkTests
             PaymentProcessing = new Miningcore.Configuration.PoolPaymentProcessingConfig {PayoutScheme = scheme}
         };
         var error = Assert.Throws<InvalidDataException>(() => new PearlPoolConfig().Validate(pool));
-        Assert.Contains("certified SOLO, PPLNS and PROP", error.Message);
+        Assert.Contains("PPS, SOLO, PPLNS and PROP", error.Message);
     }
 
     [Fact]
