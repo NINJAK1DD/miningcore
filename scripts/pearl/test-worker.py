@@ -15,7 +15,7 @@ parser.add_argument("--prove", action="store_true", help="also run the slower bo
 args = parser.parse_args()
 worker = args.worker.resolve(strict=True)
 fixtures = Path(__file__).resolve().parents[2] / "src/Miningcore.Tests/Fixtures/Pearl"
-env = dict(os.environ, RAYON_NUM_THREADS="4")
+env = dict(os.environ, RAYON_NUM_THREADS="4", MALLOC_ARENA_MAX="2")
 version = subprocess.run([str(worker), "--version"], check=True, capture_output=True, timeout=5).stdout.decode().strip()
 assert version == "miningcore-pearl-worker 2 d7c517d267f10f5bcbbdc366f3e603942f9a5ab5 linux-x64"
 

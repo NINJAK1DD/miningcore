@@ -68,6 +68,9 @@ jobs:
     - name: Test Pearl gateway adapter security and transport
       run: python3 -B scripts/pearl/test-gateway-adapter.py
 
+    - name: Test Pearl worker bundle installation and upgrade
+      run: python3 -B scripts/pearl/test-install-worker.py
+
     - name: Test PostgreSQL systemd ordering helper
       shell: bash
       run: sudo bash scripts/release/test-systemd-postgresql-ordering.sh

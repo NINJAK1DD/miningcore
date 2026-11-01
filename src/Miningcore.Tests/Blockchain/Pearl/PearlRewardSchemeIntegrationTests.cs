@@ -157,10 +157,21 @@ public class PearlRewardSchemeIntegrationTests
             var store = new PearlCandidateStore(lab.Connections, shares, config);
             var share = Share(config, Address(1), 1, DateTime.UtcNow);
             share.RewardBasisSatoshis = 1; share.NetworkDifficulty = 3;
-            await Assert.ThrowsAnyAsync<Exception>(() => Commit(store, config, share, true, Array.Empty<byte>()));
+            var worker = new PearlWorkerContext {Difficulty = 1};
+            var job = worker.Issue(PearlWorkTests.Block(), 2);
+            async Task Admit(Share work, byte[] proof)
+            {
+                ShareAccounting.AttachPpsCreditEvidence(config, work);
+                var identity = work.AccountingId + work.AccountingId;
+                worker.RememberAttempt(job, identity);
+                await worker.CommitAsync(job, identity, identity, work,
+                    original => store.CommitAsync(original, identity, job, proof, true, Ct));
+            }
+            await Assert.ThrowsAnyAsync<Exception>(() => Admit(share, Array.Empty<byte>()));
+            Assert.Empty(job.Attempts); Assert.Empty(job.Proofs);
             foreach(var table in new[] {"shares", "share_accounting_groups", "pps_share_credits", "pps_credit_remainders", "balances", "pearl_candidates"})
                 Assert.Equal(0, await lab.Count(table));
-            await Commit(store, config, share, true);
+            await Admit(share, new byte[] {1});
             await Commit(store, config, share, true);
             Assert.Equal(1, await lab.Count("pps_share_credits"));
             Assert.Equal(version, await lab.Db.ExecuteScalarAsync<int>("SELECT arithmeticversion FROM pps_share_credits"));
@@ -195,14 +206,19 @@ public class PearlRewardSchemeIntegrationTests
                 await Commit(store, config, Share(config, share.Miner, 1, share.Created.AddSeconds(10 + i)), true);
             var creditCount = await lab.Count("pps_share_credits");
             var fullBalance = await lab.Db.ExecuteScalarAsync<decimal>("SELECT sum(amount) FROM balances");
-            await Assert.ThrowsAsync<Miningcore.Stratum.StratumException>(() => Commit(store, config,
-                Share(config, share.Miner, 1, share.Created.AddSeconds(30)), true));
+            var excess = Share(config, share.Miner, 1, share.Created.AddSeconds(30));
+            await Assert.ThrowsAsync<Miningcore.Stratum.StratumException>(() => Admit(excess, new byte[] {1}));
+            Assert.DoesNotContain(excess.AccountingId + excess.AccountingId, job.Attempts);
             Assert.Equal(creditCount, await lab.Count("pps_share_credits"));
             Assert.Equal(fullBalance, await lab.Db.ExecuteScalarAsync<decimal>("SELECT sum(amount) FROM balances"));
             // A rejected/obsolete block candidate cannot cancel an accepted PPS liability.
             var candidate = await store.NextAsync(config.Id, Ct);
             Assert.True(await store.CompleteAsync(candidate, null, new BlockRepository(AutoMapperFactory.CreateMapper()), Ct));
             Assert.Equal(fullBalance, await lab.Db.ExecuteScalarAsync<decimal>("SELECT sum(amount) FROM balances"));
+            await Admit(excess, new byte[] {1});
+            await Commit(store, config, excess, true);
+            Assert.Equal(creditCount + 1, await lab.Count("pps_share_credits"));
+            Assert.Empty(job.PendingShares);
         }
     }
 }

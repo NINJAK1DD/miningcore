@@ -82,6 +82,28 @@ public class StratumConnection
     private readonly IMasterClock clock;
     private readonly CancellationToken failStopToken;
     private readonly StratumInputPolicy inputPolicy;
+    private readonly object proofBufferLock = new();
+    private long proofBuffered;
+    private IDisposable proofFrameLease;
+
+    private void AccountProofBuffer(long delta)
+    {
+        if(!inputPolicy.ProofSized) return;
+        lock(proofBufferLock)
+        {
+            proofBuffered += delta;
+            if(proofBuffered > 0x8000 && proofFrameLease == null)
+            {
+                if(context?.IsAuthorized != true) throw new InvalidDataException("Authorization required for proof frames");
+                proofFrameLease = inputPolicy.AcquireFrame();
+            }
+            else if(proofBuffered <= 0x8000)
+            {
+                proofFrameLease?.Dispose();
+                proofFrameLease = null;
+            }
+        }
+    }
 
     internal Func<object, CancellationToken, Task> SendMessageOverride { get; set; }
     internal Func<IPAddress, bool> AdmitProxyIdentity { get; set; }
@@ -400,6 +422,7 @@ public class StratumConnection
         finally
         {
             inputLease?.Dispose();
+            lock(proofBufferLock) { proofFrameLease?.Dispose(); proofFrameLease = null; }
             finishStartup = null;
             this.socket = null;
 
@@ -525,6 +548,7 @@ public class StratumConnection
             if(cb == 0)
                 break; // EOF
             byteBudget.Charge(cb);
+            AccountProofBuffer(cb);
 
             StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.Receive, ConnectionId, bytes: cb);
 
@@ -549,6 +573,7 @@ public class StratumConnection
         Func<StratumConnection, JsonRpcRequest, CancellationToken, Task> onRequestAsync)
     {
         long consumedBytes = 0;
+        long examined = 0;
         using var frameDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var partialFrame = false;
         while(!ct.IsCancellationRequested)
@@ -571,7 +596,7 @@ public class StratumConnection
                         return;
 
                     // Scan buffer for line terminator
-                    position = buffer.PositionOf((byte) '\n');
+                    position = inputPolicy.ProofSized ? StratumInputPolicy.FindLine(buffer, ref examined) : buffer.PositionOf((byte) '\n');
                     if(inputPolicy.ProofSized && (position == null ? buffer.Length : buffer.Slice(0, position.Value).Length)
                         > MaxInboundRequestLength)
                         throw new InvalidDataException("Proof request exceeds its frame limit");
@@ -612,6 +637,7 @@ public class StratumConnection
 
                         // Commit the consumed line before a cancellation exits this read.
                         buffer = buffer.Slice(buffer.GetPosition(1, position.Value));
+                        AccountProofBuffer(-(slice.Length + 1));
                         consumedBytes = lineEnd;
                         ct.ThrowIfCancellationRequested();
                     }

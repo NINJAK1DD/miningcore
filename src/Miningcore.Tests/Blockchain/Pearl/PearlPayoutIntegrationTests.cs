@@ -58,6 +58,8 @@ public class PearlPayoutIntegrationTests
         internal decimal Available = 1000000;
         internal bool Locked, LostResponse, Conflict, Partial, Offline, NodeMissing, NodeOffline, RejectSend, PartialBatch;
         internal int Sends, Relocks, Republishes;
+        internal int CanonicalLookups;
+        internal bool MissingBlockTransaction;
         internal JObject Evidence;
         internal JArray SendArguments;
         internal readonly List<string> Calls = new();
@@ -85,6 +87,7 @@ public class PearlPayoutIntegrationTests
                     {
                         case "getblockhash":
                             var height = request["params"][0].Value<long>();
+                            if(height != 0) CanonicalLookups++;
                             result = height == 0 ? Genesis : CanonicalHash;
                             if(height != 0 && BestHashAfterCanonicalLookup != null) BestHash = BestHashAfterCanonicalLookup;
                             break;
@@ -93,6 +96,13 @@ public class PearlPayoutIntegrationTests
                         case "validateaddress": result = new JObject {["ismine"] = true}; break;
                         case "chainsynced": result = true; break;
                         case "getbalance": Assert.Equal("default", request["params"][0].Value<string>()); result = Available; break;
+                        case "listunspent": result = new JArray(new JObject {["spendable"] = true}); break;
+                        case "getblock":
+                            if(request["params"] is not JArray arguments || arguments.Count != 2 ||
+                                arguments[1].Type != JTokenType.Integer || arguments[1].Value<int>() != 1)
+                            { error = new JObject {["code"] = -32602}; break; }
+                            result = new JObject {["hash"] = CanonicalHash, ["height"] = 10, ["confirmations"] = 110,
+                                ["tx"] = MissingBlockTransaction ? new JArray() : new JArray(Evidence["txid"])}; break;
                         case "walletislocked": result = Locked; break;
                         case "walletpassphrase": Locked = false; break;
                         case "walletlock": Relocks++; Locked = true; break;
@@ -206,7 +216,7 @@ public class PearlPayoutIntegrationTests
             Status = BlockStatus.Pending, ConfirmationProgress = .5};
         lab.Server.Calls.Clear();
         Assert.Empty(await handler.ClassifyBlocksAsync(null, new[] {pending, confirmed}, CancellationToken.None));
-        Assert.DoesNotContain("getblockhash", lab.Server.Calls);
+        Assert.Equal(0, lab.Server.CanonicalLookups);
         Assert.Equal(BlockStatus.Pending, pending.Status);
         Assert.Equal(.5, pending.ConfirmationProgress);
         Assert.Equal(BlockStatus.Confirmed, confirmed.Status);
@@ -344,7 +354,7 @@ public class PearlPayoutIntegrationTests
         handler = await lab.Handler();
         lab.Server.Calls.Clear();
         await handler.PayoutAsync(null, recipients, CancellationToken.None);
-        Assert.DoesNotContain("getblockchaininfo", lab.Server.Calls);
+        Assert.DoesNotContain("getnewaddress", lab.Server.Calls);
         Assert.Equal(1, lab.Server.Sends);
         Assert.Equal(0, await lab.Count("pearl_payout_intents"));
         Assert.Equal(1, await lab.Count("payments"));
@@ -379,6 +389,9 @@ public class PearlPayoutIntegrationTests
         Assert.Equal(2, classified.Length);
         Assert.Equal(BlockStatus.Orphaned, pending.Status);
         Assert.Equal(BlockStatus.Quarantined, confirmed.Status);
+        var orphan = new Block {PoolId = lab.Config.Id, BlockHeight = 10, Hash = new string('a',64), Status = BlockStatus.Orphaned};
+        Assert.Empty(await handler.ClassifyBlocksAsync(null, new[] {orphan}, CancellationToken.None));
+        Assert.False(orphan.NotifyBlockUnlockedOnUpdate);
     }
 
     [PostgresIntegrationFact]
@@ -399,6 +412,98 @@ public class PearlPayoutIntegrationTests
         lab.Server.BestHash = new string('a',64);
         await handler.PayoutAsync(null, balances, CancellationToken.None);
         Assert.Equal(1, lab.Server.Sends);
+        Assert.Equal(1, await lab.Count("payments"));
+    }
+
+    [PostgresIntegrationFact]
+    public async Task AuditedNoBroadcastReleaseArchivesIntentAndPreservesBalances()
+    {
+        await using var lab = await Lab.Create(true);
+        var handler = await lab.Handler(); var recipients = await lab.Seed();
+        lab.Server.RejectSend = true;
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => handler.PayoutAsync(null, recipients, CancellationToken.None));
+        var script = await File.ReadAllTextAsync(PostgresTestScripts.OperatorPathFor("release_pearl_payout_intent.sql"));
+        var body = script[script.IndexOf("DO $$", StringComparison.Ordinal)..script.LastIndexOf("COMMIT;", StringComparison.Ordinal)];
+        Task Release(string ack) => lab.Connections.RunTx(async (con, tx) =>
+        {
+            await con.ExecuteAsync("""
+                SELECT set_config('miningcore.release_pool','pearl',true),
+                set_config('miningcore.release_marker',@marker,true),
+                set_config('miningcore.release_audit',@hash,true),
+                set_config('miningcore.release_reason','Test audit of conclusive pre-broadcast failure',true),
+                set_config('miningcore.release_ack',@ack,true)
+                """, new {marker = Marker, hash = new string('a',64), ack}, tx);
+            await con.ExecuteAsync(body, transaction: tx);
+        });
+        await Assert.ThrowsAsync<PostgresException>(() => Release("not-confirmed"));
+        Assert.Equal(1, await lab.Count("pearl_payout_intents"));
+        await lab.Db.ExecuteAsync("UPDATE pearl_payout_intents SET transactionid=@hash", new {hash = new string('b',64)});
+        await Assert.ThrowsAsync<PostgresException>(() => Release("NO_TRANSACTION_CREATED"));
+        Assert.Equal(0, await lab.Count("pearl_payout_intent_releases"));
+        await lab.Db.ExecuteAsync("UPDATE pearl_payout_intents SET transactionid=NULL");
+        await Release("NO_TRANSACTION_CREATED");
+        Assert.Equal(0, await lab.Count("pearl_payout_intents"));
+        Assert.Equal(1, await lab.Count("pearl_payout_intent_releases"));
+        Assert.Equal(0, await lab.Count("payments"));
+        Assert.Equal(1.234567899m, await lab.Db.ExecuteScalarAsync<decimal>("SELECT amount FROM balances"));
+        lab.Server.RejectSend = false;
+        lab.Server.Locked = false;
+        handler = await lab.Handler();
+        await handler.PayoutAsync(null, recipients, CancellationToken.None);
+        Assert.Equal(1, await lab.Count("payments"));
+    }
+
+    [PostgresIntegrationFact]
+    public async Task ConfirmedIntentWithoutTransactionIndexRequiresCanonicalBlockMembership()
+    {
+        await using var lab = await Lab.Create(true);
+        var handler = await lab.Handler(); var recipients = await lab.Seed();
+        lab.Server.LostResponse = true;
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => handler.PayoutAsync(null, recipients, CancellationToken.None));
+        lab.Server.Evidence["confirmations"] = 110;
+        lab.Server.Evidence["blockhash"] = lab.Server.CanonicalHash;
+        lab.Server.NodeMissing = true;
+        handler = await lab.Handler();
+        lab.Server.MissingBlockTransaction = true;
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => handler.PayoutAsync(null, recipients, CancellationToken.None));
+        Assert.Equal(0, await lab.Count("payments"));
+        lab.Server.MissingBlockTransaction = false;
+        await handler.PayoutAsync(null, recipients, CancellationToken.None);
+        Assert.Equal(1, lab.Server.Sends);
+        Assert.Equal(0, lab.Server.Republishes);
+        Assert.Equal(1, await lab.Count("payments"));
+        Assert.Equal(0, await lab.Count("pearl_payout_intents"));
+    }
+
+    [PostgresIntegrationFact]
+    public async Task FeeShortfallDoesNotCreateIntentAndFundingCanResumeAfterRestart()
+    {
+        await using var lab = await Lab.Create(true);
+        var handler = await lab.Handler(); var recipients = await lab.Seed(1, 1m);
+        lab.Server.Available = 1.011m;
+        await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, recipients, CancellationToken.None));
+        Assert.Equal(0, lab.Server.Sends);
+        Assert.Equal(0, await lab.Count("pearl_payout_intents"));
+        Assert.Equal(1m, await lab.Db.ExecuteScalarAsync<decimal>("SELECT amount FROM balances"));
+        lab.Server.Available = 2m;
+        handler = await lab.Handler();
+        await handler.PayoutAsync(null, recipients, CancellationToken.None);
+        Assert.Equal(1, lab.Server.Sends);
+        Assert.Equal(1, await lab.Count("payments"));
+    }
+
+    [PostgresIntegrationFact]
+    public async Task PayoutFailsOverOnlyToANetworkAndTipValidatedNode()
+    {
+        await using var lab = await Lab.Create(true);
+        await using var wrong = new Rpc {Genesis = new string('b',64)};
+        await using var offline = new Rpc {Offline = true};
+        lab.Config.Daemons = new[] {offline.Endpoint("node"), wrong.Endpoint("node"), lab.Server.Endpoint("node"), lab.Server.Endpoint("wallet")};
+        var handler = await lab.Handler(); var recipients = await lab.Seed();
+        await handler.PayoutAsync(null, recipients, CancellationToken.None);
+        Assert.Equal(1, lab.Server.Sends);
+        Assert.Equal(0, wrong.Sends);
+        Assert.DoesNotContain("getrawtransaction", wrong.Calls);
         Assert.Equal(1, await lab.Count("payments"));
     }
 
@@ -427,7 +532,7 @@ public class PearlPayoutIntegrationTests
         lab.Config.Extra = null;
         lab.Server.Genesis = PearlJobManager.Genesis(PearlNetwork.Mainnet);
         await lab.Handler();
-        foreach(var bad in new object[] {0, -1, 100000001})
+        foreach(var bad in new object[] {0, 1, 999, -1, 100000001})
         {
             lab.Config.PaymentProcessing.Extra = new Dictionary<string,object> {{"feeRateGrainsPerKb", bad}};
             await Assert.ThrowsAsync<InvalidDataException>(() => lab.Handler());

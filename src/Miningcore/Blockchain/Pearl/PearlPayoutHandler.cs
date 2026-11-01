@@ -40,6 +40,7 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
     private readonly PearlMetrics metrics = PearlMetrics.Default;
     private RpcClient wallet;
     private RpcClient node;
+    private RpcClient[] nodes;
     private PearlNetwork network;
     private PearlPaymentProcessingConfigExtra config;
     private bool classificationStarted;
@@ -56,16 +57,17 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         var networkName = (pc.Extra.SafeExtensionDataAs<PearlPoolConfig>() ?? new()).Network;
         network = networkName switch {"mainnet" => PearlNetwork.Mainnet, "regtest" => PearlNetwork.Regtest,
             _ => throw new InvalidDataException("Unsupported Pearl payout network")};
-        if(config.FeeRateGrainsPerKb is null or < 1 or > 100_000_000 || config.MinimumConfirmations is null or < 101 or > 100000)
+        if(config.FeeRateGrainsPerKb is null or < 1000 or > 100_000_000 || config.MinimumConfirmations is null or < 101 or > 100000)
             throw new InvalidDataException("Invalid Pearl payout fee or confirmation policy");
         if(pc.PaymentProcessing.MinimumPayment < MarkerAmount)
             throw new InvalidDataException("Pearl minimum payment must be at least 0.01 PRL to avoid dust outputs");
-        node = new RpcClient(pc.Daemons.First(x => string.IsNullOrEmpty(x.Category) || x.Category == "node"), settings, messageBus, pc.Id);
+        nodes = pc.Daemons.Where(x => string.IsNullOrEmpty(x.Category) || x.Category == "node")
+            .Select(x => new RpcClient(x, settings, messageBus, pc.Id)).ToArray();
+        if(nodes.Length is < 1 or > 4) throw new InvalidDataException("Pearl requires one to four payout nodes");
         wallet = new RpcClient(pc.Daemons.Single(x => x.Category == "wallet"), settings, messageBus, pc.Id);
-        var genesis = await RpcAsync<string>(node, "getblockhash", new object[] {0}, ct);
-        if(genesis != PearlJobManager.Genesis(network) ||
-            await RpcAsync<string>(wallet, "getblockhash", new object[] {0}, ct) != genesis)
+        if(await RpcAsync<string>(wallet, "getblockhash", new object[] {0}, ct) != PearlJobManager.Genesis(network))
             throw new InvalidDataException("Pearl wallet/node network mismatch");
+        await SelectNodeAsync(null, ct);
         var reward = await RpcAsync<JObject>(wallet, "validateaddress", new object[] {pc.Address}, ct);
         if(reward.Value<bool?>("ismine") != true) throw new InvalidDataException("Oyster must own the pool reward address");
         await cf.Run(async con => await con.ExecuteAsync(new CommandDefinition(
@@ -81,10 +83,33 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         return response.Response;
     }
 
+    private async Task SelectNodeAsync(string expectedTip, CancellationToken ct)
+    {
+        foreach(var candidate in nodes)
+        {
+            try
+            {
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                deadline.CancelAfter(TimeSpan.FromSeconds(10));
+                if(await RpcAsync<string>(candidate, "getblockhash", new object[] {0}, deadline.Token) != PearlJobManager.Genesis(network)) continue;
+                var chain = await RpcAsync<JObject>(candidate, "getblockchaininfo", null, deadline.Token);
+                var tip = chain?.Value<string>("bestblockhash");
+                if(chain?.Value<long?>("blocks") is null or < 0 || chain.Value<bool?>("initialblockdownload") == true ||
+                    !IsTransactionId(tip) || expectedTip != null && expectedTip != tip) continue;
+                node = candidate; // Pin one validated endpoint for the entire operation.
+                return;
+            }
+            catch(OperationCanceledException) when(ct.IsCancellationRequested) { throw; }
+            catch(Exception ex) { RpcConsumerDiagnostics.Write(logger, LogLevel.Warn, "PearlPayout.NodeSelection", failure: ex); }
+        }
+        throw new InvalidDataException("No compatible synchronized Pearl payout node");
+    }
+
     public async Task<Block[]> ClassifyBlocksAsync(IMiningPool pool, Block[] blocks, CancellationToken ct)
     {
         classificationStarted = true;
         classifiedTip = null;
+        await SelectNodeAsync(null, ct);
         var synced = (await RpcAsync<JToken>(wallet, "chainsynced", null, ct))?.Value<bool>() == true;
         var chain = await RpcAsync<JObject>(node, "getblockchaininfo", null, ct);
         var tip = chain?.Value<ulong?>("blocks") ?? throw new InvalidDataException("Missing Pearl chain height");
@@ -111,6 +136,7 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
                 throw new InvalidDataException("Missing Pearl canonical block identity");
             if(canonical != block.Hash)
             {
+                if(block.Status == BlockStatus.Orphaned) continue;
                 // A successful canonical lookup proves a competing block; an RPC outage does not.
                 // A post-settlement reorg cannot authorize reversing or re-paying booked funds.
                 block.Status = block.Status == BlockStatus.Confirmed ? BlockStatus.Quarantined : BlockStatus.Orphaned;
@@ -242,6 +268,8 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         if((await RpcAsync<JToken>(wallet, "chainsynced", null, ct))?.Value<bool>() != true)
             throw new InvalidDataException("Oyster is not synchronized with the payout node");
         var walletTip = await RpcAsync<string>(wallet, "getbestblockhash", null, ct);
+        if(!IsTransactionId(walletTip)) throw new InvalidDataException("Invalid Oyster chain tip");
+        await SelectNodeAsync(walletTip, ct);
         var nodeTip = await RpcAsync<string>(node, "getbestblockhash", null, ct);
         if(!IsTransactionId(walletTip) || !IsTransactionId(nodeTip) || walletTip != nodeTip)
             throw new InvalidDataException("Oyster is not synchronized with the payout node");
@@ -263,7 +291,9 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         var amounts = selected.ToDictionary(x => x.Address, x => x.Amount, StringComparer.Ordinal);
         _ = PearlWalletRequest.SendMany(amounts, network, config.FeeRateGrainsPerKb.Value);
         var available = await RpcAsync<JToken>(wallet, "getbalance", new object[] {"default", 1}, ct);
-        if(available == null || available.Value<decimal>() <= selected.Sum(x => x.Amount) + MarkerAmount)
+        var unspent = await RpcAsync<JArray>(wallet, "listunspent", new object[] {1, 9999999}, ct);
+        var feeReserve = PearlWalletRequest.FeeReserve(unspent?.Count ?? 0, selected.Length, config.FeeRateGrainsPerKb.Value);
+        if(available == null || available.Value<decimal>() < selected.Sum(x => x.Amount) + MarkerAmount + feeReserve)
             throw new InvalidDataException("Oyster has insufficient spendable funds including the payout marker and fee");
         try
         {
@@ -327,6 +357,7 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
     {
         try
         {
+            await SelectNodeAsync(null, ct);
             var recipients = JsonConvert.DeserializeObject<Balance[]>(intent.Recipients);
             if(recipients == null || recipients.Length is < 1 or > 100 || recipients.Any(x => x.PoolId != poolConfig.Id))
                 throw new InvalidDataException("Invalid persisted Pearl recipients");
@@ -360,7 +391,13 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
             // Wallet possession alone is insufficient: require node mempool or chain evidence.
             var observed = await node.ExecuteBoundedAsync<JObject>(logger, "getrawtransaction", ct,
                 new RpcResponseLimits(2_000_000, 64), new object[] {intent.TransactionId, 1});
-            if(observed.Error?.Code == -5)
+            var confirmedWithoutIndex = false;
+            if(observed.Error?.Code == -5 && evidence.Value<long>("confirmations") > 0)
+            {
+                confirmedWithoutIndex = await VerifyConfirmedTransactionAsync(evidence.Value<string>("blockhash"), intent.TransactionId, ct);
+                if(!confirmedWithoutIndex) throw new InvalidDataException("Missing canonical Pearl payout inclusion evidence");
+            }
+            else if(observed.Error?.Code == -5)
             {
                 // Re-publish only the exact independently checked transaction, never another sendmany.
                 await node.ExecuteBoundedAsync<JToken>(logger, "sendrawtransaction", ct,
@@ -369,7 +406,7 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
                     new RpcResponseLimits(2_000_000, 64), new object[] {intent.TransactionId, 1});
             }
             var raw = observed.Error == null ? observed.Response : null;
-            if(raw?.Value<string>("txid") != intent.TransactionId || raw.Value<string>("hex") != evidence.Value<string>("hex"))
+            if(!confirmedWithoutIndex && (raw?.Value<string>("txid") != intent.TransactionId || raw.Value<string>("hex") != evidence.Value<string>("hex")))
                 throw new InvalidDataException("Pearl payout is not known to the node");
             await PersistPaymentsAsync(recipients, intent.TransactionId);
             await cf.Run(async con => await con.ExecuteAsync(new CommandDefinition(
@@ -388,6 +425,24 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
 
     internal static bool IsTransactionId(string id) => id?.Length == 64 && id.All(x => x is >= '0' and <= '9' or >= 'a' and <= 'f');
 
+    private async Task<bool> VerifyConfirmedTransactionAsync(string blockHash, string transactionId, CancellationToken ct)
+    {
+        if(!IsTransactionId(blockHash)) return false;
+        var tip = await RpcAsync<string>(node, "getbestblockhash", null, ct);
+        if(!IsTransactionId(tip)) return false;
+        // Unlike getrawtransaction, getblock works without the optional txindex.
+        var response = await node.ExecuteBoundedAsync<JObject>(logger, "getblock", ct,
+            new RpcResponseLimits(12_000_000, 64), new object[] {blockHash, 1});
+        var block = response.Error == null ? response.Response : null;
+        var height = block?.Value<long?>("height");
+        if(block?.Value<string>("hash") != blockHash || height is null or < 0 ||
+            block.Value<long?>("confirmations") is null or <= 0 || block["tx"] is not JArray transactions ||
+            transactions.Count(x => x.Type == JTokenType.String && x.Value<string>() == transactionId) != 1)
+            return false;
+        if(await RpcAsync<string>(node, "getblockhash", new object[] {height.Value}, ct) != blockHash) return false;
+        return await RpcAsync<string>(node, "getbestblockhash", null, ct) == tip;
+    }
+
     internal static void VerifyPayout(JObject evidence, string id, string marker, Balance[] recipients, PearlNetwork network)
     {
         var hex = evidence?.Value<string>("hex");
@@ -398,7 +453,7 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         if(tx.IsCoinBase || tx.GetHash().ToString() != id) throw new InvalidDataException("Payout transaction mismatch");
         var expected = recipients.ToDictionary(x => x.Address, x => x.Amount);
         expected.Add(marker, MarkerAmount);
-        _ = PearlWalletRequest.SendMany(expected, network, 1);
+        _ = PearlWalletRequest.SendMany(expected, network, 1000);
         foreach(var (address, amount) in expected)
         {
             var script = PearlAddress.RewardScript(address, PearlNetworkRules.AddressPrefix(network));

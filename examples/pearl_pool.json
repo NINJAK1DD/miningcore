@@ -73,6 +73,8 @@
       "templatePollSeconds": 5,
       "jobLifetimeSeconds": 120,
       "maximumJobsPerWorker": 8,
+      "maximumConnections": 1024,
+      "maximumProofFrames": 4,
       "rewardRecipients": [
         {
           "type": "op",

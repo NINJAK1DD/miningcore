@@ -8,6 +8,18 @@ internal static class PearlWalletRequest
     internal const long GrainsPerPearl = 100_000_000;
     internal const long MaximumMoney = 2_100_000_000L * GrainsPerPearl;
 
+    internal static decimal FeeReserve(int unspentOutputs, int recipients, long rate)
+    {
+        if(unspentOutputs is < 1 or > 10000 || recipients is < 1 or > 100 || rate is < 1000 or > GrainsPerPearl)
+            throw new InvalidDataException("Invalid Pearl fee funding evidence");
+        // Budget every wallet input (not just the expected coin selection), plus
+        // recipients, marker and change. 300 bytes/input is conservative for Oyster
+        // key spends; the 2x multiplier matches reconciliation's fee ceiling.
+        var bytes = checked(16 + unspentOutputs * 300 + (recipients + 2) * 43);
+        if(bytes > 500000) throw new InvalidDataException("Oyster wallet requires input consolidation before payout");
+        return Math.Max(PearlPayoutHandler.MarkerAmount, decimal.Ceiling(bytes * 2m * rate / 1000) / GrainsPerPearl);
+    }
+
     internal static object[] SendMany(IReadOnlyDictionary<string, decimal> amounts, PearlNetwork network,
         long feeRateGrainsPerKb, int minimumConfirmations = 1)
     {
@@ -15,7 +27,7 @@ internal static class PearlWalletRequest
         if(amounts.Count is < 1 or > 1000)
             throw new ArgumentOutOfRangeException(nameof(amounts));
         // Deliberate pool policy: no zero-fee payment and at most 1 PRL/kB.
-        if(feeRateGrainsPerKb is < 1 or > GrainsPerPearl)
+        if(feeRateGrainsPerKb is < 1000 or > GrainsPerPearl)
             throw new ArgumentOutOfRangeException(nameof(feeRateGrainsPerKb));
         if(minimumConfirmations is < 1 or > 100000)
             throw new ArgumentOutOfRangeException(nameof(minimumConfirmations));

@@ -120,6 +120,14 @@ internal sealed class PearlProofVerifier
 
     internal async Task CheckVersionAsync(CancellationToken ct)
     {
+        if(OperatingSystem.IsLinux())
+        {
+            var untrusted = UnixFileMode.GroupWrite | UnixFileMode.OtherWrite;
+            if((File.GetAttributes(executable) & FileAttributes.ReparsePoint) != 0 ||
+                (File.GetUnixFileMode(executable) & untrusted) != 0 ||
+                (File.GetUnixFileMode(Path.GetDirectoryName(executable)) & untrusted) != 0)
+                throw new InvalidDataException("Pearl worker and its directory must not be writable by untrusted users");
+        }
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(5));
         using var process = new Process { StartInfo = StartInfo() };
@@ -157,6 +165,7 @@ internal sealed class PearlProofVerifier
         };
         result.Environment.Clear();
         result.Environment["RAYON_NUM_THREADS"] = "4";
+        result.Environment["MALLOC_ARENA_MAX"] = "2";
         result.Environment["LANG"] = "C";
         return result;
     }

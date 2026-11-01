@@ -9,29 +9,57 @@ namespace Miningcore.Stratum;
 internal sealed class StratumInputPolicy
 {
     internal static readonly StratumInputPolicy Standard = new(false);
-    internal static readonly StratumInputPolicy Pearl = new(true);
-    private static readonly SemaphoreSlim pearlConnections = new(16, 16);
+    internal static readonly StratumInputPolicy Pearl = CreatePearl();
+    private readonly SemaphoreSlim connections;
+    private readonly SemaphoreSlim frames;
     internal bool ProofSized { get; }
     internal int MaximumLength => ProofSized ? 4 * ((8 * 1024 * 1024 + 2) / 3) + 4096 : 0x8000;
     internal int ReadSize => ProofSized ? 16384 : 0x8001;
-    private StratumInputPolicy(bool proofSized) => ProofSized = proofSized;
+    private StratumInputPolicy(bool proofSized, int maximumConnections = 1024, int maximumFrames = 4)
+    {
+        ProofSized = proofSized;
+        if(proofSized)
+        {
+            connections = new SemaphoreSlim(maximumConnections, maximumConnections);
+            frames = new SemaphoreSlim(maximumFrames, maximumFrames);
+        }
+    }
+    internal static StratumInputPolicy CreatePearl(int maximumConnections = 1024, int maximumFrames = 4)
+    {
+        if(maximumConnections is < 16 or > 4096 || maximumFrames is < 1 or > 32 || maximumFrames > maximumConnections)
+            throw new ArgumentOutOfRangeException(nameof(maximumConnections));
+        return new StratumInputPolicy(true, maximumConnections, maximumFrames);
+    }
 
     internal IDisposable Acquire()
     {
         if(!ProofSized)
             return null;
-        if(!pearlConnections.Wait(0))
+        if(!connections.Wait(0))
             throw new IOException("Proof transport connection capacity reached");
-        return new Lease();
+        return new Lease(connections);
     }
 
-    private sealed class Lease : IDisposable
+    internal IDisposable AcquireFrame()
+    {
+        if(!frames.Wait(0)) throw new IOException("Proof frame capacity reached; retry later");
+        return new Lease(frames);
+    }
+
+    internal static SequencePosition? FindLine(ReadOnlySequence<byte> buffer, ref long examined)
+    {
+        var position = buffer.Slice(examined).PositionOf((byte) '\n');
+        examined = position == null ? buffer.Length : 0;
+        return position;
+    }
+
+    private sealed class Lease(SemaphoreSlim budget) : IDisposable
     {
         private int disposed;
         public void Dispose()
         {
             if(Interlocked.Exchange(ref disposed, 1) == 0)
-                pearlConnections.Release();
+                budget.Release();
         }
     }
 

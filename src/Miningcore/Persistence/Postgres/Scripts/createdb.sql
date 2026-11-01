@@ -382,6 +382,7 @@ CREATE TABLE IF NOT EXISTS pearl_candidates (
 );
 CREATE INDEX IF NOT EXISTS idx_pearl_candidates_created ON pearl_candidates(created);
 ALTER TABLE pearl_candidates ADD COLUMN IF NOT EXISTS lastattempt TIMESTAMPTZ;
+ALTER TABLE pearl_candidates ADD COLUMN IF NOT EXISTS retired TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS pearl_payout_intents (
     poolid TEXT NOT NULL PRIMARY KEY,
@@ -396,6 +397,18 @@ CREATE TABLE IF NOT EXISTS pearl_payout_holds (
     blockid BIGINT NOT NULL REFERENCES blocks(id) ON DELETE RESTRICT,
     blockhash TEXT NOT NULL CHECK (blockhash ~ '^[0-9a-f]{64}$'),
     PRIMARY KEY (poolid, blockid)
+);
+
+CREATE TABLE IF NOT EXISTS pearl_payout_intent_releases (
+    poolid TEXT NOT NULL,
+    marker TEXT NOT NULL,
+    recipients TEXT NOT NULL,
+    created TIMESTAMPTZ NOT NULL,
+    released TIMESTAMPTZ NOT NULL DEFAULT now(),
+    releasedby TEXT NOT NULL,
+    auditsha256 TEXT NOT NULL CHECK (auditsha256 ~ '^[0-9a-f]{64}$'),
+    reason TEXT NOT NULL CHECK (length(reason) BETWEEN 16 AND 2048),
+    PRIMARY KEY (poolid, marker)
 );
 
 -- BEGIN GENERATED PPS ARITHMETIC MIGRATION

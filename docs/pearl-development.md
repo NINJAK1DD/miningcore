@@ -36,7 +36,7 @@ The publish target validates checksums, licenses and the worker version and inst
 
 The helper build checks the exact clean upstream revision, uses both Cargo lockfiles, generates and embeds V1/V2 circuit caches, records cache/binary checksums and toolchain versions, and includes the upstream license inventory and Cargo dependency license/notice files. Keep the whole `pearl/` directory when distributing binaries. Do not replace its worker with an unreviewed executable that merely prints the expected version.
 
-Stop all database writers, back up the database, and apply the ordinary share-accounting migrations plus `migrations/add_pearl_candidates.sql` as the schema owner. Re-run that idempotent Pearl migration when upgrading to create `pearl_payout_holds`; grant the application role SELECT/INSERT/UPDATE/DELETE on the new table. New installations use `createdb.sql`. The application role needs the usual table DML privileges, not PostgreSQL superuser/CREATEDB privileges. The pool checks for durable share-accounting and candidate schemas before accepting miners; payout initialization also requires the hold table.
+Stop all database writers, back up the database, and apply the ordinary share-accounting migrations plus `migrations/add_pearl_candidates.sql` as the schema owner. Re-run that idempotent Pearl migration when upgrading to create `pearl_payout_holds`, candidate archival and the administrator's intent-release audit table. Grant the application role SELECT/INSERT/UPDATE/DELETE on holds and candidates; reserve audit-table writes for administrators. New installations use `createdb.sql`. The application role needs the usual table DML privileges, not PostgreSQL superuser/CREATEDB privileges. The pool checks for durable share-accounting and candidate schemas before accepting miners; payout initialization also requires the hold table.
 
 ## Node, Oyster and pool configuration
 
@@ -78,7 +78,7 @@ For this miner the first `mining.notify` precedes the authorization acknowledgem
 {"id":2,"method":"mining.submit","params":{"job_id":"JOB_ID","plain_proof":"BASE64"}}
 ```
 
-Raw base64 and bounded gzip/zlib proof encodings are accepted. There is no client-selected header, reward address, target, certificate version or credited work in submission. Successful shares receive `result: true, error: null` **after** the database receipt and any candidate intent commit. Codes: 21 unknown/stale job, 22 duplicate proof, 24 unauthorized, 20 unsupported/invalid/busy or capacity refusal. A busy refusal does not promise that retrying the same bytes will be accepted; request/use fresh work. Failed native service execution returns a service error without crediting unverified work or penalizing the miner; the failed attempt identity is released. Unknown methods are rejected. On synchronization loss or unsupported upgrades the pool retires work and disconnects miners; miners reconnect when valid templates return.
+Raw base64 and bounded gzip/zlib proof encodings are accepted. Raw structure is checked before compression magic, including matrix dimensions whose little-endian bytes resemble zlib. There is no client-selected header, reward address, target, certificate version or credited work in submission. Successful shares receive `result: true, error: null` **after** the database receipt and any candidate intent commit. Codes: 21 unknown/stale job, 22 duplicate proof, 24 unauthorized, 20 unsupported/invalid/busy or capacity refusal. Retry a busy/persistence refusal in the same session while its assignment remains valid; stale work requires a fresh job. Failed native service execution releases the attempt identity without crediting unverified work. Busy, stale, capacity and unsupported-method refusals do not increase the invalid-share ban ratio. A transient failed template poll preserves the last snapshot; new work pauses after 45 seconds without a valid template. Unsupported upgrades pause admission immediately and remain paused until a compatible template returns. In-flight proving is retired only on an observed different tip, never merely because readiness expires.
 
 Jobs are session-local, randomize the coinbase namespace, retain at most 8 snapshots by default (2–16 configurable), and expire after 120 seconds (30–180 configurable). Previous difficulty is accepted only through the configured 0–30 second grace. A changed previous-block hash immediately invalidates an old job. Same-tip transaction/time changes retain immutable old snapshots within those bounds.
 
@@ -99,12 +99,12 @@ Mainnet activation fixtures cover immediately before/at/after heights **71935 (V
 ## Resource and process boundaries
 
 - 32 KiB before authorization; approximately 11.2 MiB proof JSON frame after authorization. Frame-aware pipe backpressure and 16 KiB reads prevent the large-frame deadlock.
-- At most **16 Pearl connections per process**, across pools. Existing global/IP listener admission also applies. Unauthenticated sessions are retired after 10 seconds; authenticated partial frames have a 30-second deadline. Per-connection byte refill is 2 MiB/s with one bounded frame burst.
+- Each pool has `maximumConnections` (default 1024, range 16–4096) and `maximumProofFrames` (default 4, range 1–32, no greater than the connection cap). A large-frame slot is held only while an authorized connection buffers more than 32 KiB, including request processing. Idle sessions reserve no large-frame capacity. Existing per-IP/global [connection admission](stratum-connection-admission.md) also applies; configure it for public exposure. Unauthenticated sessions are retired after 10 seconds; authenticated partial frames have a 30-second deadline. Per-connection byte refill is 2 MiB/s with one bounded frame burst. Incremental newline scanning examines each byte once.
 - JSON depth 8, 128 tokens, numeric/property tokens <=64 bytes, duplicate object keys rejected. Decode output <=8 MiB. Proof structure/count/index preflight precedes Rust allocation.
 - One proof attempt/second/worker, at most 256 attempts and verified identities per retained job. Two decoding/verification slots and one proving slot per process; no unbounded native wait queue.
-- Verify deadline 5 seconds, native verify address space 1 GiB/CPU 20 seconds. Prove deadline 180 seconds, address space 8 GiB/CPU 600 seconds, four Rayon threads. These are hard ceilings, not expected RSS.
+- Verify deadline 5 seconds, native verify address space 1 GiB/CPU 20 seconds. Prove deadline 180 seconds, address space 12 GiB/CPU 600 seconds, four Rayon threads and `MALLOC_ARENA_MAX=2`. These are hard ceilings, not expected RSS. The maximum-profile lab gate measures `/proc` VmPeak and requires at most 10 GiB, leaving at least 2 GiB of virtual-address headroom: `python3 scripts/pearl/check-prover-memory.py /absolute/path/to/miningcore-pearl-worker --runs 3`.
 - One request per helper; embedded circuit caches die with the process. Cancellation kills/reaps the process tree. Linux parent-death SIGKILL prevents orphaned helpers after a pool crash.
-- Global durable candidate capacity is **16 per database**, enforced under a transaction advisory lock. Only network candidates occupy it. Receipt and candidate insertion are atomic. Capacity refusal does not acknowledge unrecorded work.
+- Durable active candidate capacity is **16 per pool**, enforced under a transaction advisory lock. Only network candidates occupy it. Receipt and candidate insertion are atomic. Capacity refusal rolls back the receipt and is retryable; sustained saturation emits an error-level alert. After 24 hours, unresolved work is archived in place (`retired` timestamp), preserving evidence while freeing active capacity.
 
 Use a dedicated pool service account, no wallet filesystem/private-key access for the helper, and service-level memory/CPU/process ceilings appropriate to the host. Allow headroom for two verifiers plus one prover and the managed transport; a separate node host or at least 24–32 GiB host RAM is prudent for the configured worst-case ceilings. The initial soak measured the pool separately from node/prover/GPU processes. The follow-up benchmark measured the helper itself at roughly **7.96 GiB peak RSS**; do not size the service from managed-pool RSS alone.
 
@@ -114,13 +114,17 @@ This is stream IPC, not an in-process FFI: there are no exported pointers, C str
 
 ## Candidates, payouts and recovery
 
-An acknowledged candidate survives restart in `pearl_candidates`. Proving uses its exact saved header, transactions and proof, cancels on tip/sync retirement, and never replaces it with the latest template. The complete certificate-first block is persisted before submission. A null submit result, duplicate, or lost response is reconciled by exact `getblockheader` identity. Explicit reject strings do not count as acceptance. Uncertain submissions retain their bytes and rotate through bounded retries; a proven competing canonical block makes the candidate an orphan. Row-locked completion inserts the block exactly once.
+An acknowledged candidate survives restart in `pearl_candidates`. Proving uses its exact saved header, transactions and proof and never replaces it with the latest template. Only an observed different tip cancels an in-flight prover; the tip is checked again after completion. The complete certificate-first block is persisted before submission. A null submit result, duplicate, or lost response is reconciled using **non-verbose** `getblockheader(hash,false)`, a verified 108-byte header hash, and stable canonical-chain evidence from one pinned endpoint. This raw lookup also works for known side-chain blocks, unlike the pinned node's verbose lookup. Known side-chain blocks and explicit rejection strings finish as orphaned block records without occupying queue slots forever. Uncertain submissions retain their bytes and rotate through bounded retries; the 24-hour archival bound retains evidence for operator reconciliation. Row-locked completion inserts the block exactly once.
 
 Rewards come from GBT, not a fixed subsidy. Classification checks canonical block hash, exact coinbase identity/output, wallet sync and both node/wallet confirmations. Minimum payout confirmation policy is **101** (never below the 100-block maturity boundary). Wrong-network addresses and non-Taproot payout destinations are rejected. One PRL is 100,000,000 grains. Minimum payment is conservatively 0.01 PRL to avoid dust. Payments floor each selected balance to whole grains and retain residual fractions; batches contain at most 100 recipients. Fees are configured in **grains/kB**, converted to Oyster's required third positional `sendmany` argument: `["default", amounts, feeRatePRLPerKb, 1]`. Comments and `getwalletinfo` are not used. The handler unlocks for 60 seconds when configured and always attempts to relock with a bounded cleanup token.
 
 Oyster v1.5.5 cannot sign arbitrary raw transactions through `signrawtransaction`. Therefore every batch first persists an immutable intent with a **fresh wallet-owned 0.01 PRL marker output**. This is change owned by the pool wallet, not a miner fee. The wallet needs spendable headroom for the marker and transaction fee. After the intent exists, an error never authorizes another `sendmany`. Recovery searches that unique marker, verifies the transaction ID and every intended output against raw bytes, requires wallet ownership of every extra change output, bounds the fee, requires node mempool/chain evidence, and idempotently persists the payment batch. If needed it rebroadcasts only those same verified transaction bytes. Missing/ambiguous/conflicting evidence retains the intent for operator reconciliation.
 
-A lost wallet response deliberately stops the payout manager through its existing uncertain-outcome lease policy. Follow [database ownership recovery](database.md): stop the recorded owner, inspect the exact owner/generation and wallet/marker transaction, then release only that dead owner's lease under the prescribed advisory lock. Never delete an intent or mark a payment paid merely to unblock the service. A crash before wallet submission can leave an intent with no transaction; manual wallet audit is required before deciding it was never sent.
+A lost wallet response deliberately stops the payout manager through its existing uncertain-outcome lease policy. Follow [database ownership recovery](database.md): stop the recorded owner, inspect the exact owner/generation and wallet/marker transaction, then release only that dead owner's lease under the prescribed advisory lock. Never delete an intent or mark a payment paid merely to unblock the service. The [operator recovery procedure](pearl-pool-guide.md#7-recover-held-work-and-payments) covers documented no-broadcast releases and restored-chain quarantine recovery. Oyster can report the same RPC error class before creation or after attempted publication, so an RPC error alone never authorizes clearing an intent.
+
+The optional node transaction index is **not required**. If a wallet transaction has confirmed and `getrawtransaction` returns -5, recovery verifies the wallet-provided raw transaction and then requires its exact ID in `getblock(blockhash,1)`, positive confirmations, a matching canonical hash at that height and an unchanged node tip. Missing or competing evidence keeps the intent. Unconfirmed unknown transactions may be rebroadcast only as the same verified bytes. One to four node endpoints are supported for payout/classification; network identity and synchronization are validated before selecting and pinning one endpoint for each operation. Fresh payments also require that endpoint to match Oyster's tip.
+
+`feeRateGrainsPerKb` defaults to 10000 and must be at least the 1000-grain relay minimum. Before creating an intent, funding must cover recipients, the 0.01 PRL marker and a conservative fee reserve: twice the configured rate applied to an upper estimate using all spendable wallet UTXOs, at least 0.01 PRL. Excessively fragmented wallets fail preflight and require consolidation. A shortfall therefore creates no intent and can recover after funding; uncertain post-intent sends still require reconciliation.
 
 Pre-maturity reorgs orphan the reward without changing balances; canonical restoration can reopen it with fresh custody evidence. Confirmed rewards that leave the canonical chain are **quarantined**, holding new payouts for the pool. Already-booked or paid money is never automatically reversed or paid again. PROP/PPLNS out-of-order historical rewards are also quarantined when a later confirmed block could have consumed their share window. Review the chain, wallet and unchanged ledger before any manual release. A bounded rotating scan revisits 64 confirmed/orphaned blocks per cycle within 4032 blocks of the tip; deeper reorgs require operator review of older history.
 
@@ -129,7 +133,11 @@ recipient fee and arithmetic version at share admission. `PearlCandidateStore` c
 same `PpsShareCredit` and payload hash that `ShareRecorder` reconstructs on replay. The
 receipt, statistical share, liability, precision remainder, balance and (when applicable)
 candidate intent share one transaction before acknowledgement. Failed insertion or queue
-admission creates no credit; subsequent candidate rejection or an orphan cannot revoke a
+admission creates no credit and releases the in-flight proof/attempt reservations.
+Retries retain the original timestamp and immutable accounting evidence. An ambiguous
+commit checks its durable receipt; if reconciliation is unavailable, an identical
+payload retry remains idempotent even when the original commit finishes late.
+Subsequent candidate rejection or an orphan cannot revoke a
 committed liability. The shared PPS block scheme is a no-op for miner balances, avoiding
 double payment at maturity. Reward recipients retain the usual matured-block allocation.
 Both shared arithmetic versions are supported with their existing durable cutover rules.
@@ -230,13 +238,61 @@ The certified profile's captured network-candidate and share-only plain proofs a
 
 `scripts/pearl/fuzz-worker.py WORKER --output REPORT --benchmark` reproduces a 2,048-case native mutation campaign (seed 244256), real parent-death termination, encoding/frame measurements and 1/2/4/4-thread proving. The managed suite adds 4,096 nested-structure mutations and 256 compressed-input mutations. These finite seeded campaigns supplement deterministic boundary cases; they are not exhaustive fuzz coverage. Both valid fixture classes are checked separately by `test-worker.py`.
 
-The prover uses the official embedded circuit cache, freshly deserialized for each request. Three cache-load measurements were **22.463, 21.552 and 21.473 ms**. No persistent mutable circuit cache survives a helper. Complete proving measured **164.006 s / 99.085 s / 50.907 s / 53.214 s** with 1/2/4/4 Rayon threads respectively; each certificate was **59,560 bytes** and peak RSS was **8,331,056–8,334,428 KiB**. These are wall-clock and process high-water RSS measurements on the documented lab host while the proof-enabled node was also mining; the second four-thread run has warm OS pages but still a fresh circuit cache. The final packaged binary was independently measured again at **46.378 seconds and 8,343,884 KiB peak RSS** after CPU block generation stopped, with its exact digest recorded. Production always selects four threads. Its measured 51–53-second work leaves headroom within the 180-second helper deadline and 194-second chain interval; the 8-GiB address-space ceiling is a failure containment limit, not spare RAM. Larger/different proof configurations are not performance-certified by these results.
+The prover uses the official embedded circuit cache, freshly deserialized for each request. Three cache-load measurements were **22.463, 21.552 and 21.473 ms**. No persistent mutable circuit cache survives a helper. Complete proving measured **164.006 s / 99.085 s / 50.907 s / 53.214 s** with 1/2/4/4 Rayon threads respectively; each certificate was **59,560 bytes** and peak RSS was **8,331,056–8,334,428 KiB**. These are wall-clock and process high-water RSS measurements on the documented lab host while the proof-enabled node was also mining; the second four-thread run has warm OS pages but still a fresh circuit cache. The final packaged binary was independently measured again at **46.378 seconds and 8,343,884 KiB peak RSS** after CPU block generation stopped, with its exact digest recorded. Production always selects four threads. Its measured 51–53-second work leaves headroom within the 180-second helper deadline and 194-second chain interval; those historical runs used the earlier 8-GiB address-space limit. The current worker uses 12 GiB with bounded glibc arenas and a separate 10-GiB VmPeak lab gate. Larger/different proof configurations are not performance-certified by these results.
 
 The production payout handler is tested through HTTP RPC and a real PostgreSQL schema for omitted/default/overridden extension settings, explicit invalid configuration, grain-exact rounding/residual retention, minimum payout filtering, insufficient funds, wallet locking, default-account/fee arguments and 100-recipient batching. Fault tests recreate the handler with durable state and exercise lost replies, wallet and node outages, conflicting transactions, corrupted or incomplete outputs, failed sends and exact-byte pending-transaction rebroadcast. Missing or partial evidence retains the intent and ledger unchanged; it never authorizes sending a second batch. Earlier full-runtime process-crash and lost-response tests remain recorded in the original certification report. A failed send with no marker transaction requires operator audit; that safe hold is intentional, not automatic retry.
 
 Live Oyster RPC certification used a fresh proof-enabled regtest chain past height 103 and a disposable wallet. `getbalance("default",1)`, wallet-owned address validation, `chainsynced`, equal wallet/node tips, `listunspent`, `listtransactions("*",10,0)`, `gettransaction`, `sendtoaddress`, `sendmany`, unlock and relock all passed. Unknown-account balances and account-specific `listtransactions("default",...)` are rejected: transaction history must use `"*"`. Locked sends fail, and successful sends were independently observed in the node. Oyster reports **positive PRL fees** in these `gettransaction` responses; the handler validates their absolute grain-exact magnitude. The two successful catalogue sends are intentional self-payments with distinct fresh output addresses, not a payout-recovery test.
 
 The independent Python fixture was generated from a proof-enabled node's accepted V3 block using **the actual pinned `pearl_mining` extension and gateway classes**, numpy 2.4.2 and the upstream-locked bitcoin-utils 0.7.3. `scripts/pearl/compare-python-block.py` reproduces full certificate/header/transaction serialization and CompactSize boundaries 1, 252, 253, 65535 and 65536. Repeated-transaction boundary vectors test framing only and are not valid consensus blocks. Managed tests use the same serializer as production candidate submission and compare the complete bytes/hash with those Python results; the single-transaction fixture itself is node-accepted.
+
+## Recovery hardening validation
+
+The [hardening evidence](pearl-hardening-evidence.json) records the latest sanitized
+test results and artifact digests. Coverage includes conclusive accounting rollback,
+full-queue retry, an injected lost acknowledgement after a real PostgreSQL commit,
+immutable retry payloads, raw side-chain header reconciliation, explicit rejection,
+mid-proof snapshot loss, tip-change cancellation/reaping, orphan no-op updates,
+per-pool transport isolation, unauthorized socket churn, refusal/ban separation,
+raw/zlib collisions, canonical no-index payout recovery, node failover, fee
+preflight and guarded intent-release audit history. Both PPS arithmetic versions
+exercise rollback and saturation retry through the production admission helper.
+
+Run installer security/upgrade contracts with
+`python3 -B scripts/pearl/test-install-worker.py`. The real worker contracts and
+VmPeak gate are separate commands in this guide; installer tests use a versioned
+fixture executable and do not claim cryptographic validation.
+
+For the opt-in no-index integration test, prepare a separate proof-enabled regtest
+node **without `--txindex`**, its synchronized Oyster wallet with mature spendable
+funds, and a disposable PostgreSQL test database. Set `MININGCORE_TEST_POSTGRES`
+using the lab's private connection configuration. Create a mode-0600 JSON file
+outside source control with this shape (replace placeholders privately):
+
+```json
+{
+  "rewardAddress": "RPRL_WALLET_OWNED_REWARD_ADDRESS",
+  "walletPassphrase": "PRIVATE_WALLET_PASSPHRASE",
+  "node": {"host": "127.0.0.1", "port": 19501, "user": "PRIVATE_USER", "password": "PRIVATE_RPC_PASSWORD"},
+  "wallet": {"host": "127.0.0.1", "port": 19502, "category": "wallet", "user": "PRIVATE_USER", "password": "PRIVATE_RPC_PASSWORD"}
+}
+```
+
+Then run:
+
+```bash
+MININGCORE_PEARL_NOINDEX_CONFIG=/private/lab/noindex.json \
+  dotnet test src/Miningcore.Tests \
+  --filter FullyQualifiedName~PearlNoIndexLiveTests
+```
+
+This spends disposable regtest funds. It forwards a real wallet send, loses its
+reply, mines confirmation before recreating the handler, verifies actual node
+`getrawtransaction` error -5, and requires one ledger payment with no second send.
+The canonical fallback uses Pearl v1.5.5's exact `getblock(hash,1)` signature.
+It does not claim a process-level crash; earlier process-crash certifications are
+separately recorded. The latest packaged TLS miner run also exercised durable
+candidate retry after one transient failure; the cause remains unestablished.
 
 ## Sources and fixture provenance
 

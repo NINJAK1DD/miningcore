@@ -164,9 +164,20 @@ public class PearlPoolTests : TestBase
         Assert.NotNull(messages[4]["error"]);
         Assert.Equal(invalidBefore, worker.Stats.InvalidShares);
         Assert.Empty(first.Attempts);
+        // Unsupported methods, stale jobs and the per-second proof budget are
+        // refusals, not evidence for the miner's invalid-share ban ratio.
+        foreach(var refused in new[]
+        {
+            new JsonRpcRequest {Id = 4, Method = "mining.unsupported", Params = new JObject()},
+            new JsonRpcRequest {Id = 5, Method = "mining.submit", Params = new JObject {["job_id"] = new string('a',32)}},
+            new JsonRpcRequest {Id = 6, Method = "mining.submit", Params = new JObject {["job_id"] = first.Id}}
+        })
+            await Invoke(pool, "OnRequestAsync", connection, new Timestamped<JsonRpcRequest>(refused, clock.Now), CancellationToken.None);
+        await Flush(8);
+        Assert.Equal(invalidBefore, worker.Stats.InvalidShares);
         Set(manager, "current", null);
         await Invoke(pool, "SendJobAsync", connection);
-        Assert.Equal(5, messages.Count);
+        Assert.Equal(8, messages.Count);
         stop.Cancel();
         await dispatch;
     }

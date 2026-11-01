@@ -80,7 +80,7 @@ fn run() -> Result<()> {
         let parent = libc::getppid();
         ensure!(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == 0, "parent lifetime");
         ensure!(libc::getppid() == parent && parent != 1, "parent exited");
-        let memory = libc::rlimit { rlim_cur: 8 * 1024 * 1024 * 1024, rlim_max: 8 * 1024 * 1024 * 1024 };
+        let memory = libc::rlimit { rlim_cur: 12 * 1024 * 1024 * 1024, rlim_max: 12 * 1024 * 1024 * 1024 };
         let cpu = libc::rlimit { rlim_cur: 600, rlim_max: 600 };
         ensure!(libc::setrlimit(libc::RLIMIT_AS, &memory) == 0, "memory limit");
         ensure!(libc::setrlimit(libc::RLIMIT_CPU, &cpu) == 0, "cpu limit");

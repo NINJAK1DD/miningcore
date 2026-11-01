@@ -102,11 +102,20 @@ public class PearlJobManagerTests
         Assert.True(manager.Ready);
         good.Syncing = true;
         Assert.False(await manager.RefreshAsync(stop.Token));
-        Assert.Null(manager.Current);
+        Assert.NotNull(manager.Current);
+        Assert.True(manager.Ready);
+        clock.Seconds += 45;
+        Assert.False(manager.Ready);
         good.Syncing = false;
+        Assert.False(await manager.RefreshAsync(stop.Token));
+        Assert.True(manager.Ready);
         good.Template["requiredcertversion"] = 4;
         Assert.False(await manager.RefreshAsync(stop.Token));
         Assert.False(manager.Ready);
+        good.Syncing = true;
+        Assert.False(await manager.RefreshAsync(stop.Token));
+        Assert.False(manager.Ready); // Outage cannot reopen work after an incompatible upgrade.
+        good.Syncing = false;
         good.Template["requiredcertversion"] = 3;
         good.Template["previousblockhash"] = new string('a',64);
         Assert.True(await manager.RefreshAsync(stop.Token));

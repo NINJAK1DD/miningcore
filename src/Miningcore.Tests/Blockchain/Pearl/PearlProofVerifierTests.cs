@@ -46,6 +46,25 @@ public class PearlProofVerifierTests
     }
 
     [PearlLinuxFact]
+    public async Task GroupWritableExecutableOrDirectoryAndSymlinkAreRejected()
+    {
+        if(!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException();
+        using var helper = new Helper("printf 'unused\\n'");
+        var fileMode = File.GetUnixFileMode(helper.Path);
+        File.SetUnixFileMode(helper.Path, fileMode | UnixFileMode.GroupWrite);
+        await Assert.ThrowsAsync<InvalidDataException>(() => new PearlProofVerifier(helper.Path).CheckVersionAsync(CancellationToken.None));
+        File.SetUnixFileMode(helper.Path, fileMode);
+        var directory = System.IO.Path.GetDirectoryName(helper.Path);
+        var directoryMode = File.GetUnixFileMode(directory);
+        File.SetUnixFileMode(directory, directoryMode | UnixFileMode.OtherWrite);
+        await Assert.ThrowsAsync<InvalidDataException>(() => new PearlProofVerifier(helper.Path).CheckVersionAsync(CancellationToken.None));
+        File.SetUnixFileMode(directory, directoryMode);
+        var link = helper.Path + "-link";
+        File.CreateSymbolicLink(link, helper.Path);
+        await Assert.ThrowsAsync<InvalidDataException>(() => new PearlProofVerifier(link).CheckVersionAsync(CancellationToken.None));
+    }
+
+    [PearlLinuxFact]
     public async Task VersionMismatchFailsClosed()
     {
         using var helper = new Helper("printf 'wrong-worker\\n'");

@@ -15,6 +15,7 @@ internal sealed class PearlJob
     internal long? Retired { get; set; }
     internal HashSet<string> Proofs { get; } = new(StringComparer.Ordinal);
     internal HashSet<string> Attempts { get; } = new(StringComparer.Ordinal);
+    internal Dictionary<string, Share> PendingShares { get; } = new(StringComparer.Ordinal);
 }
 
 internal sealed class PearlWorkerContext : WorkerContextBase
@@ -107,4 +108,32 @@ internal sealed class PearlWorkerContext : WorkerContextBase
 
     internal void Forget(PearlJob job, string identity) { lock(sync) job.Proofs.Remove(identity); }
     internal void ForgetAttempt(PearlJob job, string hash) { lock(sync) job.Attempts.Remove(hash); }
+
+    internal async Task CommitAsync(PearlJob job, string attempt, string identity, Share share, Func<Share, Task> commit)
+    {
+        lock(sync)
+        {
+            if(job.PendingShares.TryGetValue(identity, out var original)) share = original;
+            else
+            {
+                if(job.PendingShares.Count >= 256)
+                    throw new StratumException(StratumError.Other, "Pearl pending receipt capacity reached");
+                job.PendingShares.Add(identity, share);
+            }
+        }
+        Remember(job, identity);
+        try
+        {
+            await commit(share);
+            lock(sync) job.PendingShares.Remove(identity);
+        }
+        catch
+        {
+            // Retain the immutable payload (including Created and PPS evidence).
+            // Retrying the same accounting ID is safe even if COMMIT was ambiguous.
+            Forget(job, identity);
+            ForgetAttempt(job, attempt);
+            throw;
+        }
+    }
 }

@@ -12,6 +12,14 @@ namespace Miningcore.Tests.Blockchain.Pearl;
 
 public class PearlWorkTests
 {
+    [Fact]
+    public void PearlSchemaPreservesExistingPoolConstraints()
+    {
+        var schema = Newtonsoft.Json.Linq.JObject.Parse("{\"definitions\":{\"PoolConfig\":{\"allOf\":[{\"required\":[\"existing\"]}]}}}");
+        PearlPoolConfig.AddSchemaRules(schema);
+        Assert.Equal(2, ((Newtonsoft.Json.Linq.JArray) schema["definitions"]["PoolConfig"]["allOf"]).Count);
+        Assert.Equal("existing", (string) schema["definitions"]["PoolConfig"]["allOf"][0]["required"][0]);
+    }
     [Theory]
     [InlineData("0")]
     [InlineData("-1")]

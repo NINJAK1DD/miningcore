@@ -18,7 +18,8 @@ namespace Miningcore.Blockchain.Pearl
         {
             var pool = (JObject) document["definitions"]?["PoolConfig"] ??
                 throw new InvalidOperationException("Missing pool schema");
-            pool["allOf"] = new JArray(JObject.Parse("""
+            pool["allOf"] ??= new JArray();
+            ((JArray) pool["allOf"]).Add(JObject.Parse("""
                 {"anyOf":[
                   {"not":{"properties":{"coin":{"enum":["pearl"]}},"required":["coin"]}},
                   {"required":["proofWorker"],"properties":{
@@ -27,9 +28,11 @@ namespace Miningcore.Blockchain.Pearl
                     "templatePollSeconds":{"type":"integer","minimum":1,"maximum":30,"default":5},
                     "jobLifetimeSeconds":{"type":"integer","minimum":30,"maximum":180,"default":120},
                     "maximumJobsPerWorker":{"type":"integer","minimum":2,"maximum":16,"default":8},
+                    "maximumConnections":{"type":"integer","minimum":16,"maximum":4096,"default":1024},
+                    "maximumProofFrames":{"type":"integer","minimum":1,"maximum":32,"default":4},
                     "paymentProcessing":{"properties":{
                       "minimumPayment":{"type":"number","minimum":0.01},
-                      "feeRateGrainsPerKb":{"type":"integer","minimum":1,"maximum":100000000,"default":10000},
+                      "feeRateGrainsPerKb":{"type":"integer","minimum":1000,"maximum":100000000,"default":10000},
                       "minimumConfirmations":{"type":"integer","minimum":101,"maximum":100000,"default":101},
                       "payoutScheme":{"enum":["PPS","SOLO","PPLNS","PROP"]}
                     }}
@@ -42,6 +45,8 @@ namespace Miningcore.Blockchain.Pearl
         public int TemplatePollSeconds { get; set; } = 5;
         public int JobLifetimeSeconds { get; set; } = 120;
         public int MaximumJobsPerWorker { get; set; } = 8;
+        public int MaximumConnections { get; set; } = 1024;
+        public int MaximumProofFrames { get; set; } = 4;
 
         internal PearlNetwork Validate(PoolConfig pool)
         {
@@ -70,7 +75,8 @@ namespace Miningcore.Blockchain.Pearl
                 !Path.IsPathFullyQualified(ProofWorker))
                 throw new InvalidDataException("Pearl requires the pinned Linux x64 proof worker at an absolute path");
             if(TemplatePollSeconds is < 1 or > 30 || JobLifetimeSeconds is < 30 or > 180 ||
-                MaximumJobsPerWorker is < 2 or > 16)
+                MaximumJobsPerWorker is < 2 or > 16 || MaximumConnections is < 16 or > 4096 ||
+                MaximumProofFrames is < 1 or > 32 || MaximumProofFrames > MaximumConnections)
                 throw new InvalidDataException("Invalid Pearl job limits");
             if(pool.EnableInternalStratum != true)
                 throw new InvalidDataException("Pearl requires local Stratum and durable local accounting");

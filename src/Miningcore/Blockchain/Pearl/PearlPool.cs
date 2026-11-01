@@ -41,8 +41,9 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
     private PearlCandidateStore candidates;
     private Task background;
     private readonly PearlMetrics metrics = PearlMetrics.Default;
+    private StratumInputPolicy transport = StratumInputPolicy.CreatePearl();
     private long lastHealthLog = Stopwatch.GetTimestamp();
-    private protected override StratumInputPolicy InputPolicy => StratumInputPolicy.Pearl;
+    private protected override StratumInputPolicy InputPolicy => transport;
     protected override WorkerContextBase CreateWorkerContext() => new PearlWorkerContext(VarDiffTimeProvider);
     public override double HashrateFromShares(double shares, double interval) => interval > 0 ? shares * PearlWork.HashesPerDifficulty / interval : 0;
     protected override void NotifyPoolOnline() {UpdateStats(); base.NotifyPoolOnline();}
@@ -51,6 +52,7 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
     {
         config = poolConfig.Extra.SafeExtensionDataAs<PearlPoolConfig>();
         network = config.Validate(poolConfig);
+        transport = StratumInputPolicy.CreatePearl(config.MaximumConnections, config.MaximumProofFrames);
         verifier = new PearlProofVerifier(config.ProofWorker);
         candidates = new PearlCandidateStore(cf, shareRepo, poolConfig);
         if(!await cf.Run(con => shareRepo.HasShareAccountingSchemaAsync(con, ct)))
@@ -126,7 +128,8 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
                 {
                     var pending = await candidates.CountAsync(poolConfig.Id, ct);
                     metrics.Set(poolConfig.Id, PearlMeasure.CandidateQueue, pending);
-                    logger.Info(() => $"Pearl health: ready {manager.Ready}, height {manager.Current?.Height}, certificate 3, minimum rank 128, connections {connections.Count}/16, pending candidates {pending}/16");
+                    logger.Info(() => $"Pearl health: ready {manager.Ready}, height {manager.Current?.Height}, certificate 3, minimum rank 128, connections {connections.Count}/{config.MaximumConnections}, pending candidates {pending}/16");
+                    if(pending >= 16) logger.Error("Pearl candidate queue saturated; new candidate receipts are retryable and operator attention is required");
                 }
                 catch(OperationCanceledException) when(ct.IsCancellationRequested) {throw;}
                 catch(Exception ex) {RpcConsumerDiagnostics.Write(logger, LogLevel.Warn, "PearlPool.Telemetry", failure: ex);}
@@ -213,7 +216,6 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
                 StratumError.UnauthorizedWorker => PearlEvent.Unauthorized,
                 _ => PearlEvent.RequestRejected
             });
-            worker.Stats.InvalidShares++;
             await connection.RespondErrorAsync(ex.Code, ex.Message, message.Id, false);
         }
         catch(Exception ex) when(ex is PearlInvalidProofException or InvalidDataException or FormatException or ArgumentException or JsonException)
@@ -240,12 +242,13 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
             throw new StratumException(StratumError.Other, "Pearl verifier busy; retry later");
         }
         byte[] proof;
+        string attempt;
         PearlProofVerifier.Result verified;
         try
         {
             proof = PearlProofEncoding.Decode(parameters.Value<string>("plain_proof"));
             PearlPlainProof.RequirePoolProfile(PearlPlainProof.Inspect(proof));
-            var attempt = Convert.ToHexString(SHA256.HashData(proof));
+            attempt = Convert.ToHexString(SHA256.HashData(proof));
             worker.RememberAttempt(job, attempt);
             var started = Stopwatch.GetTimestamp();
             try {verified = await verifier.VerifyAsync(job.Block.Header.ToArray(), job.Target, proof, false, ct);}
@@ -257,7 +260,6 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
         }
         finally { decodeSlots.Release(); }
         var identity = PearlWork.Identity(verified.Header, verified.PublicData);
-        worker.Remember(job, identity);
         var dimensions = PearlPlainProof.Inspect(proof);
         var jackpot = new BigInteger(verified.PublicData.AsSpan(116, 32), true, false);
         var achieved = (double) PearlWork.DifficultyOne * dimensions.RankAdjustedWorkFactor / (double) BigInteger.Max(BigInteger.One, jackpot);
@@ -276,7 +278,21 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
         ShareAccounting.AttachPpsCreditEvidence(poolConfig, share);
         ShareAccounting.ValidateAndFlatten(share, new Dictionary<string, PoolConfig> {{poolConfig.Id, poolConfig}});
         // The receipt and candidate intent commit together. Never acknowledge a memory-only queue entry.
-        await candidates.CommitAsync(share, identity, job, proof, verified.IsBlockCandidate, ct);
+        try
+        {
+            await worker.CommitAsync(job, attempt, identity, share, async original =>
+            {
+                share = original;
+                await candidates.CommitAsync(share, identity, job, proof, verified.IsBlockCandidate, ct);
+            });
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested) { throw; }
+        catch(Exception ex)
+        {
+            metrics.Count(poolConfig.Id, PearlEvent.ShareBusy);
+            RpcConsumerDiagnostics.Write(logger, LogLevel.Error, "PearlPool.SharePersistence", failure: ex);
+            throw new StratumException(StratumError.Other, "Pearl share persistence unavailable; retry this work");
+        }
         await PublishShareAndAcknowledgeAsync(share, () => connection.RespondAsync(
             new JsonRpcResponse<bool>(true, request.Id) {Extra = new Dictionary<string, object> {{"error", null}}}),
             onAdmitted: () => {metrics.Count(poolConfig.Id, PearlEvent.ShareAccepted); worker.Stats.ValidShares++; worker.LastActivity = clock.Now;});
@@ -295,14 +311,17 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
         {
             try
             {
-                if(manager.Ready)
+                var candidate = await candidates.NextAsync(poolConfig.Id, ct);
+                if(candidate != null && PearlCandidateSubmission.Expired(candidate.Created, clock.Now))
                 {
-                    var candidate = await candidates.NextAsync(poolConfig.Id, ct);
-                    if(candidate != null)
-                    {
-                        await candidates.MarkAttemptAsync(candidate, ct);
-                        await ProcessCandidateAsync(candidate, ct);
-                    }
+                    await candidates.ArchiveAsync(candidate, ct);
+                    metrics.Count(poolConfig.Id, PearlEvent.CandidateRetired);
+                    logger.Error("Pearl candidate exceeded 24-hour recovery bound; evidence archived for operator reconciliation");
+                }
+                else if(candidate != null && (manager.Ready || candidate.Block != null))
+                {
+                    await candidates.MarkAttemptAsync(candidate, ct);
+                    await ProcessCandidateAsync(candidate, ct);
                 }
             }
             catch(OperationCanceledException) when(ct.IsCancellationRequested) { throw; }
@@ -318,32 +337,25 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
         {
             var previous = candidate.Header.AsSpan(4, 32).ToArray();
             Array.Reverse(previous);
-            if(manager.Current?.Tip != Convert.ToHexString(previous).ToLowerInvariant())
+            if(PearlCandidateSubmission.TipChanged(manager.Current?.Tip, Convert.ToHexString(previous).ToLowerInvariant()))
             {
                 await candidates.CompleteAsync(candidate, null, blocksRepo, ct);
                 metrics.Count(poolConfig.Id, PearlEvent.CandidateRetired);
                 logger.Info("Discarded obsolete, never-submitted Pearl candidate");
                 return;
             }
-            using var proving = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var started = Stopwatch.GetTimestamp();
-            var verification = verifier.VerifyAsync(candidate.Header, new BigInteger(candidate.Target, true, true), candidate.Proof, true, proving.Token);
-            // Tip/synchronization retirement also cancels an already running prover.
+            // Only an observed different tip retires an already running prover.
             // No block has been serialized or submitted at this boundary.
-            while(!verification.IsCompleted)
+            var verified = await PearlCandidateSubmission.ProveWhileCurrentAsync(
+                Convert.ToHexString(previous).ToLowerInvariant(), () => manager.Current?.Tip,
+                token => verifier.VerifyAsync(candidate.Header, new BigInteger(candidate.Target, true, true), candidate.Proof, true, token), ct);
+            if(verified == null)
             {
-                await Task.WhenAny(verification, Task.Delay(TimeSpan.FromSeconds(1), ct));
-                if(ct.IsCancellationRequested || !manager.Ready || manager.Current?.Tip != Convert.ToHexString(previous).ToLowerInvariant())
-                {
-                    proving.Cancel();
-                    try { await verification; }
-                    catch(OperationCanceledException) when(proving.IsCancellationRequested) { }
-                    ct.ThrowIfCancellationRequested();
-                    await candidates.CompleteAsync(candidate, null, blocksRepo, ct);
-                    return;
-                }
+                await candidates.CompleteAsync(candidate, null, blocksRepo, ct);
+                metrics.Count(poolConfig.Id, PearlEvent.CandidateRetired);
+                return;
             }
-            var verified = await verification;
             var elapsed = Stopwatch.GetElapsedTime(started);
             ReportProofTime("PearlHash.prove", elapsed);
             metrics.Proof(poolConfig.Id, PearlProofPhase.Prove, verified.Certificate.Length, elapsed);
@@ -364,30 +376,20 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
         }
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(30));
-        var header = await manager.Node.ExecuteBoundedAsync<JObject>(logger, "getblockheader", deadline.Token,
-            new RpcResponseLimits(262144, 64), new object[] {candidate.BlockHash, true});
-        var rejected = false;
-        if(header.Error != null)
-        {
-            if(header.Error.Code != -5) throw new InvalidDataException("Pearl candidate lookup unavailable");
-            metrics.Count(poolConfig.Id, PearlEvent.CandidateSubmitted);
-            var submission = await manager.Node.ExecuteBoundedAsync<JToken>(logger, "submitblock", deadline.Token,
-                new RpcResponseLimits(4096, 64), new object[] {Convert.ToHexString(candidate.Block).ToLowerInvariant()});
-            rejected = submission.Error == null && submission.Response?.Type == JTokenType.String;
-            // Even a successful or duplicate response is reconciled by exact block identity.
-            header = await manager.Node.ExecuteBoundedAsync<JObject>(logger, "getblockheader", deadline.Token,
-                new RpcResponseLimits(262144, 64), new object[] {candidate.BlockHash, true});
-        }
-        var accepted = header.Error == null && header.Response?.Value<string>("hash") == candidate.BlockHash;
-        if(!accepted && !rejected)
+        var node = manager.Node; // Do not mix endpoints during one evidence check.
+        var outcome = await PearlCandidateSubmission.ReconcileAsync(candidate.BlockHash, candidate.Block,
+            share.BlockHeight, (method, parameters, token) =>
+            {
+                if(method == "submitblock") metrics.Count(poolConfig.Id, PearlEvent.CandidateSubmitted);
+                return node.ExecuteBoundedAsync<JToken>(logger, method, token, new RpcResponseLimits(262144, 64), parameters);
+            }, deadline.Token);
+        if(outcome == PearlCandidateOutcome.Uncertain)
         {
             metrics.Count(poolConfig.Id, PearlEvent.CandidateUncertain);
-            // A competing canonical block makes this no-longer-extendable submission an
-            // orphan. RPC failures alone never justify discarding uncertain submission.
-            if(header.Error?.Code != -5 || manager.Current?.Height <= share.BlockHeight) return;
-            var canonical = await manager.CallAsync<string>(manager.Node, "getblockhash", new object[] {share.BlockHeight}, deadline.Token);
-            if(canonical == candidate.BlockHash) return;
+            return;
         }
+        var accepted = outcome == PearlCandidateOutcome.Accepted;
+        var rejected = outcome == PearlCandidateOutcome.Rejected;
         var blockRecord = new Block
         {
             PoolId = poolConfig.Id, BlockHeight = (ulong) share.BlockHeight, Hash = candidate.BlockHash,

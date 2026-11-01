@@ -19,9 +19,10 @@ internal sealed class PearlJobManager
     private readonly TimeProvider time;
     private Snapshot current;
     private int selected;
+    private bool incompatible;
     internal sealed record Snapshot(string Fingerprint, string Tip, string Json, long Received, uint Height, double Difficulty);
     internal Snapshot Current => Volatile.Read(ref current);
-    internal bool Ready => Current is { } value && time.GetElapsedTime(value.Received).TotalSeconds < 45;
+    internal bool Ready => !Volatile.Read(ref incompatible) && Current is { } value && time.GetElapsedTime(value.Received).TotalSeconds < 45;
     internal double TemplateAgeSeconds => Current is { } value ? time.GetElapsedTime(value.Received).TotalSeconds : -1;
     internal RpcClient Node => nodes[Volatile.Read(ref selected)];
 
@@ -46,6 +47,7 @@ internal sealed class PearlJobManager
 
     internal async Task<bool> RefreshAsync(CancellationToken ct)
     {
+        var unsupported = false;
         for(var attempt = 0; attempt < nodes.Length; attempt++)
         {
             var index = (selected + attempt) % nodes.Length;
@@ -66,7 +68,8 @@ internal sealed class PearlJobManager
                 if(template.Height != info.Value<long>("blocks") + 1)
                     throw new InvalidDataException("Pearl template changed during synchronization check");
                 // Validate all committed fields before exposing the snapshot to any miner.
-                _ = new PearlBlockJob(template, address, network, new byte[24]);
+                try { _ = new PearlBlockJob(template, address, network, new byte[24]); }
+                catch(InvalidDataException) { unsupported = true; throw; }
                 var json = JsonConvert.SerializeObject(template);
                 var fingerprint = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(json)));
                 var changed = Current?.Fingerprint != fingerprint;
@@ -74,6 +77,7 @@ internal sealed class PearlJobManager
                     template.Height, PearlWork.Difficulty(PearlConsensus.DecodeTarget(Convert.ToUInt32(template.Bits, 16))));
                 Volatile.Write(ref selected, index);
                 Volatile.Write(ref current, snapshot);
+                Volatile.Write(ref incompatible, false);
                 return changed;
             }
             catch(OperationCanceledException) when(ct.IsCancellationRequested) { throw; }
@@ -82,7 +86,9 @@ internal sealed class PearlJobManager
                 RpcConsumerDiagnostics.Write(logger, LogLevel.Warn, "PearlJobManager.Refresh", failure: ex);
             }
         }
-        Volatile.Write(ref current, null);
+        // Transient RPC/sync failures do not erase the last observed tip or cancel
+        // in-flight work. Freshness still closes new admission after 45 seconds.
+        if(unsupported) Volatile.Write(ref incompatible, true);
         return false;
     }
 

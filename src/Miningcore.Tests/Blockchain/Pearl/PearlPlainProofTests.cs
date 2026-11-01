@@ -12,6 +12,29 @@ namespace Miningcore.Tests.Blockchain.Pearl;
 public class PearlPlainProofTests
 {
     [Theory]
+    [InlineData(376ul)]
+    [InlineData(7432ul)]
+    [InlineData(8312ul)]
+    public void RawDimensionsResemblingZlibAreNotDecompressed(ulong m)
+    {
+        using var buffer = new MemoryStream();
+        using var writer = new BinaryWriter(buffer);
+        writer.Write(m); writer.Write(15360ul); writer.Write(32768ul); writer.Write(128ul);
+        foreach(var (dimension, rows) in new[] {(m, 8), (15360ul, 16)})
+        {
+            writer.Write(1ul); writer.Write(1024ul); writer.Write(new byte[1024]);
+            writer.Write(1ul); writer.Write(0ul); writer.Write(dimension * 32);
+            writer.Write(new byte[32]); writer.Write(0ul); writer.Write((ulong) rows);
+            for(var row = 0; row < rows; row++) writer.Write((ulong) row);
+        }
+        writer.Write((byte) 0);
+        var raw = buffer.ToArray();
+        Assert.Equal(0, ((raw[0] << 8) + raw[1]) % 31);
+        PearlPlainProof.RequirePoolProfile(PearlPlainProof.Inspect(raw));
+        Assert.Equal(raw, PearlProofEncoding.Decode(Convert.ToBase64String(raw)));
+    }
+
+    [Theory]
     [InlineData(32768u, 128, 8, 16, true)]
     [InlineData(65536u, 128, 8, 16, false)]
     [InlineData(32768u, 256, 8, 16, false)]

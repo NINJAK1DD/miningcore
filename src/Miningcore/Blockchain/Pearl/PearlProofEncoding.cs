@@ -20,6 +20,16 @@ internal static class PearlProofEncoding
         if(wire.Length > PearlPlainProof.MaximumBytes)
             throw new InvalidDataException("Pearl proof exceeds the decoded limit");
 
+        // Dense dimensions are little-endian integers and can resemble zlib magic.
+        // A fully valid raw structure takes precedence over compression heuristics.
+        try
+        {
+            var raw = PearlPlainProof.Inspect(wire);
+            if(wire.Length == raw.CanonicalLength) Array.Resize(ref wire, raw.CanonicalLength + 1);
+            return wire;
+        }
+        catch(InvalidDataException) { }
+
         var gzip = wire.Length >= 2 && wire[0] == 0x1f && wire[1] == 0x8b;
         var zlib = wire.Length >= 2 && (wire[0] & 0x0f) == 8 && wire[0] >> 4 <= 7 &&
             ((wire[0] << 8) + wire[1]) % 31 == 0;

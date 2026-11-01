@@ -39,6 +39,17 @@ public class PearlWalletRequestTests
     }
 
     [Fact]
+    public void FeeReserveIncludesFragmentationAndRoundsUpToGrains()
+    {
+        Assert.Equal(.01m, PearlWalletRequest.FeeReserve(1, 1, 1000));
+        Assert.Equal(.089m, PearlWalletRequest.FeeReserve(1, 1, 10_000_000));
+        Assert.True(PearlWalletRequest.FeeReserve(100, 1, 10_000_000) > PearlWalletRequest.FeeReserve(1, 1, 10_000_000));
+        Assert.Throws<InvalidDataException>(() => PearlWalletRequest.FeeReserve(0, 1, 1000));
+        Assert.Throws<InvalidDataException>(() => PearlWalletRequest.FeeReserve(10000, 1, 1000));
+        Assert.Throws<InvalidDataException>(() => PearlWalletRequest.FeeReserve(1, 1, 999));
+    }
+
+    [Fact]
     public void WrongNetworkDuplicatesAndUnboundedFeesFailBeforeSending()
     {
         var amounts = new Dictionary<string, decimal> {{Address, 1m}};

@@ -17,6 +17,8 @@ backup when asking for help.
    A verification-bypass build is unsuitable for a pool.
 2. Start the mainnet node and let it synchronize. Its default RPC and P2P ports
    are 44107 and 44108. Keep RPC private; it is not a miner endpoint.
+   `--txindex` is optional: confirmed payout recovery can verify canonical block
+   membership when transaction lookup is unavailable without the index.
 3. Set up [Oyster](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/wallet/README.md)
    against that same node. Back up the wallet using its documented procedure.
    Obtain a `prl1p...` address from Oyster's `default` BIP86 account with
@@ -30,13 +32,23 @@ backup when asking for help.
 5. Apply the documented database migrations as the schema owner, after stopping
    writers and taking a backup. Use an ordinary application role for Miningcore.
    Both share-accounting migrations and `add_pearl_candidates.sql` are required.
-   Re-run the idempotent Pearl migration on upgrade to create `pearl_payout_holds`,
-   and grant the application role SELECT/INSERT/UPDATE/DELETE on that table.
+   Re-run the idempotent Pearl migration on upgrade: it adds `pearl_payout_holds`,
+   candidate archival (`retired`), and the administrator's `pearl_payout_intent_releases`
+   audit table. Grant the application role SELECT/INSERT/UPDATE/DELETE on holds and
+   candidates; keep intent-release audit writes restricted to the schema administrator.
 
-Allow substantial memory headroom beyond the worker's 8 GiB address-space limit
+Allow substantial memory headroom beyond the worker's 12 GiB address-space limit
 for Miningcore, the node, wallet, database, and operating system. Only one
 certificate prover runs at a time; two verification workers may run concurrently.
 GPU hardware is needed by GPU miners, not by Miningcore's verifier service.
+
+Install the complete checksum-verified bundle as a trusted deployment administrator.
+The service account must not own or be able to replace the executable, caches,
+bundle directory or any parent directory. The installer uses 0755 directories,
+0644 data and a 0555 executable; set ownership to your trusted deployment account
+after installation. Startup rejects a symlink executable or a group/other-writable
+executable or immediate parent. These checks do not replace secure ownership of
+the entire path. Keep wallet files inaccessible to the pool/proof-worker account.
 
 ## 2. Enable PRL in Miningcore
 
@@ -52,6 +64,8 @@ pools or persistence settings.
 | `pools[].network` | `mainnet`; use a separate installation/data set for `regtest` |
 | `pools[].address` | The Oyster-owned `prl1p...` pool reward address |
 | `pools[].proofWorker` | Absolute path to the installed, pinned worker executable |
+| `pools[].maximumConnections` | Per-pool session cap; default 1024, range 16–4096 |
+| `pools[].maximumProofFrames` | Concurrent authorized buffers larger than 32 KiB; default 4, range 1–32 |
 | `pools[].daemons` | Private node RPC endpoint and its credentials |
 | `pools[].daemons` with `category: "wallet"` | Private Oyster RPC endpoint and its credentials |
 | `pools[].ports` | Miner ports, difficulty settings, and the server TLS PFX certificate |
@@ -74,6 +88,11 @@ pool's DNS name and replace the PFX path/password. Bind database, RPC, metrics,
 and administrative listeners to loopback or an appropriately restricted network.
 Remote RPC connections require verified TLS; never disable certificate checks as
 a workaround. Open only the intended miner ports to the public.
+Size the existing [per-IP connection admission](stratum-connection-admission.md)
+rate, burst and concurrent limits for your miners/NATs. Idle sessions do not
+reserve large proof buffers; exhausting one pool's limits does not consume another
+pool's transport budget. Increasing these settings requires additional memory
+and load testing, not simply raising the prover concurrency.
 
 ## 3. Connect a miner
 
@@ -343,6 +362,122 @@ and ledger reconciliation for all four schemes.
 The [verification report](pearl-reward-schemes-evidence.json) also records real
 proof-enabled chain mining, mature payouts and paid-ledger restart checks for each.
 
+## 7. Recover held work and payments
+
+Keep recovery evidence private. Stop every pool/payment writer for the affected
+database, prove the recorded payout owner is no longer running, and back up the
+database, recovery journal and original Oyster wallet before an administrator
+changes financial state. Follow [payout-owner lease recovery](database.md) for the
+exact owner/generation and advisory lock. Never run two payout owners to work
+around a hold. Record the incident, approver, exact pool/block/marker identities,
+ledger snapshots, chain evidence and actions in an access-controlled audit record.
+
+### Temporary chain or RPC failure
+
+Restore connectivity and allow the same handler to retry. Above-tip confirmed
+rewards acquire durable holds; catching up in height alone is insufficient.
+Classification must verify the original block's canonical identity on a stable
+chain before clearing the hold. Previously submitted payout intents can still
+reconcile while these holds prevent new sends. Do not delete `pearl_payout_holds`.
+Up to four configured node endpoints may fail over at operation boundaries;
+each must have the correct genesis, and new payments require agreement with the
+wallet tip. An unsupported template upgrade stays paused until a compatible
+template is obtained, even if later RPC calls fail.
+
+### Candidate saturation or expired recovery
+
+The active queue holds 16 candidates **per pool**. A capacity or database refusal
+does not acknowledge work or retain its in-flight replay reservation. A miner may
+retry the same proof while its original session/job remains valid. The receipt,
+PPS liability and candidate remain one atomic operation, including ambiguous
+commit recovery. Never manufacture credits for rejected work.
+
+Investigate repeated saturation alerts immediately: verify the worker, CPU/memory
+limits and RPC availability. The pool completes known side-chain/rejected blocks
+as orphaned records. Unresolved candidates older than 24 hours retain all evidence
+with `retired` set, freeing active capacity. Administrators should inspect archived
+rows privately. For a serialized block, verify the stored header/hash and exact
+canonical chain state before any submission or ledger repair. For unproved work,
+verify that its parent is still current. Do not clear `retired` blindly or delete
+evidence; an accepted archived block needs a reviewed, idempotent reconciliation
+into the block ledger, not another share/PPS credit.
+
+### Funding or fee preflight failure
+
+Keep `feeRateGrainsPerKb` at least **1000** (default **10000**). Fund recipients plus the
+0.01 PRL wallet-owned marker and the calculated fee reserve; the reserve is at
+least another 0.01 PRL and grows with the configured rate and wallet UTXO count.
+A preflight shortfall creates no payout intent, so ordinary retries resume after
+funding. If fragmentation exceeds the bounded transaction estimate, consolidate
+under your wallet administration procedure, then retry. An error **after** intent
+creation follows the reconciliation procedure below.
+
+### An intent exists, but the send result is uncertain
+
+1. Inspect the exact `pearl_payout_intents` row and its original wallet. Use
+   `listaddresstransactions([marker],"*")` and `gettransaction(txid)`; verify the
+   raw transaction, every recipient amount, marker, owned change and fee. Preserve
+   the wallet and node evidence. A missing marker result from an unsynchronized,
+   replaced or incomplete wallet proves nothing.
+2. If a transaction exists, retain the intent and restore node/wallet access so
+   Miningcore can reconcile it. Confirmed transactions do not require `txindex`:
+   the handler verifies membership in the canonical block on a stable tip.
+   Unknown unconfirmed transactions may be rebroadcast as the **same bytes**.
+   Never manually call a new `sendmany` or mark the balance paid.
+3. If transaction absence cannot be established conclusively, retain the hold.
+   Oyster RPC errors alone are insufficient: the same error category can occur
+   after attempted publication. Adding funds does not make a second send safe.
+4. Only a schema administrator with a documented, approved **no transaction was
+   created or broadcast** determination may release an unused intent. This needs
+   authoritative original-wallet/process evidence of the pre-creation failure,
+   corroborated wallet history, mempool/chain checks and unchanged payment ledger.
+   An empty lookup by itself does not satisfy that requirement. Preserve the
+   approved evidence privately and compute its SHA-256.
+5. With writers stopped and the dead-owner lease handled, run the
+   [guarded script](../scripts/ops/release_pearl_payout_intent.sql)
+   using placeholders replaced privately (use your normal secure database login):
+
+   ```bash
+   psql -v pool=POOL_ID -v marker=EXACT_UNUSED_MARKER \
+     -v audit_sha256=SHA256_OF_APPROVED_PRIVATE_AUDIT \
+     -v reason='Approved audit establishes failure before transaction creation' \
+     -v acknowledge=NO_TRANSACTION_CREATED \
+     -f scripts/ops/release_pearl_payout_intent.sql
+   ```
+
+   The script locks the exact intent, refuses any known transaction ID, archives
+   its recipients/time plus administrator, reason and audit hash, then removes
+   only that intent atomically. It neither pays nor changes balances. It cannot
+   establish transaction absence for you. Review the resulting audit row and
+   unchanged ledger before restarting one owner. The next normal payment creates
+   a fresh marker and must reconcile to one actual transaction.
+
+### A settled reward is quarantined
+
+Quarantine means balances may already include a reward that lost canonical
+backing, or a historical round/window requires accounting review. It is a financial
+hold, not an ordinary stale job. Record the exact block, coinbase, prior allocation,
+PPS credits, balances and any payments; never reverse paid money automatically.
+
+For a previously confirmed block whose **same hash is restored**, independently
+verify canonical `getblockhash(height)`, stable node/wallet tips, exact wallet-owned
+coinbase and at least the configured confirmations. An administrator may then,
+with writers stopped and an approved audit, change only that exact already-settled
+row from `quarantined` back to `confirmed` and set confirmation progress to 1.
+Use a transaction, row lock and predicates for pool ID, database block ID, original
+hash and current `quarantined` status; require exactly one affected row. Preserve
+balances, payments, share windows, reward and any durable hold. On restart the
+handler must verify the original canonical identity before removing the hold;
+restoration to `confirmed` cannot run allocation a second time. Record before/after
+rows and audit approval privately.
+
+Do **not** use that procedure for a permanently invalid reward or an unsettled
+historical-window quarantine. There is no generic safe status flip for those
+cases: keep payments held while an authorized financial reconciliation determines
+liabilities, external payments and reserve replenishment. Any ledger correction
+requires a separate reviewed migration and evidence that no reward can be credited
+or paid twice.
+
 ## Troubleshooting
 
 | Symptom | Check and action |
@@ -362,6 +497,8 @@ proof-enabled chain mining, mature payouts and paid-ledger restart checks for ea
 | Duplicate share | Stop replaying the same proof. Check the previous durable receipt; repeated acknowledgments must not create additional credit. |
 | Proof service unavailable / verifier busy | Check worker exit status, memory headroom, verification concurrency, and queue depth. Service failures are not proof of miner misconduct. Restore service before increasing load. |
 | Candidate queue keeps growing | Check certificate-generation failures, RPC availability, and node acceptance. Retain the ledger and diagnostics; do not delete durable candidate records to hide the fault. |
+| Confirmed payout cannot be found by `getrawtransaction` | `txindex` may be disabled. Restore canonical `getblock` evidence and wallet history; the handler can reconcile without the index. Do not create another send. |
+| Intent has no known transaction after a rejected send | Follow the approved no-broadcast audit above. RPC error text or an empty lookup alone cannot justify releasing it. |
 | Gateway fails to start | Check private config/directory ownership and permissions. An existing socket is not overwritten: confirm no adapter is running before removing a stale socket. |
 | Gateway TLS failure | Check DNS name, expiry, and trusted CA. Set `ca_file` for a private CA; do not disable verification. |
 | Official client sees an RPC error | It is a final rejection or service failure, not acceptance. Refresh work and inspect private pool diagnostics. Never convert an error into `submitted`/success. |
