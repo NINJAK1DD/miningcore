@@ -153,6 +153,14 @@ conservation were checked, including PPS precision remainders. Restart preserved
 all payments, balances, PPS credits and financial history without a second credit
 or payment. Private transcripts are retained separately; only their hashes are public.
 
+Final payout review also requires valid 64-character lowercase hexadecimal hashes
+from canonical-block lookups and both wallet/node tip lookups. A null, empty or
+malformed RPC result cannot establish a competing block or synchronized wallets.
+The HTTP/PostgreSQL regressions reproduce both failures against the pre-fix code,
+then verify unchanged reward status and balances until valid evidence returns.
+Existing durable-intent reconciliation still uses exact transaction identity and
+does not authorize another wallet send.
+
 Back up PostgreSQL, its recovery journal and Oyster's wallet together. Run one active pool instance per pool ID; the existing database-wide payout-owner lease still applies. Do not concurrently migrate schemas or restart a regtest node with production wallet data: this upstream regtest node rebuilds its chain on startup, and Oyster must rescan that changed chain.
 
 ## Monitoring and troubleshooting

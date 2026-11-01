@@ -90,6 +90,8 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
             block.PearlCustodialEvidenceVerified = false;
             var canonical = block.BlockHeight > tip ? null :
                 await RpcAsync<string>(node, "getblockhash", new object[] {block.BlockHeight}, ct);
+            if(block.BlockHeight <= tip && !IsTransactionId(canonical))
+                throw new InvalidDataException("Missing Pearl canonical block identity");
             if(canonical != block.Hash)
             {
                 // A successful canonical lookup proves a competing block; an RPC outage does not.
@@ -196,8 +198,11 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
             await ReconcileAsync(pending, ct);
             return;
         }
-        if((await RpcAsync<JToken>(wallet, "chainsynced", null, ct))?.Value<bool>() != true ||
-            await RpcAsync<string>(wallet, "getbestblockhash", null, ct) != await RpcAsync<string>(node, "getbestblockhash", null, ct))
+        if((await RpcAsync<JToken>(wallet, "chainsynced", null, ct))?.Value<bool>() != true)
+            throw new InvalidDataException("Oyster is not synchronized with the payout node");
+        var walletTip = await RpcAsync<string>(wallet, "getbestblockhash", null, ct);
+        var nodeTip = await RpcAsync<string>(node, "getbestblockhash", null, ct);
+        if(!IsTransactionId(walletTip) || !IsTransactionId(nodeTip) || walletTip != nodeTip)
             throw new InvalidDataException("Oyster is not synchronized with the payout node");
         var selected = balances.Take(100).Select(x => x with { Amount = decimal.Floor(x.Amount * 100_000_000m) / 100_000_000m })
             .Where(x => x.Amount >= poolConfig.PaymentProcessing.MinimumPayment).ToArray();

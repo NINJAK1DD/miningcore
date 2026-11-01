@@ -27,6 +27,7 @@ using Newtonsoft.Json.Linq;
 using Npgsql;
 using NSubstitute;
 using Xunit;
+using Block = Miningcore.Persistence.Model.Block;
 
 namespace Miningcore.Tests.Blockchain.Pearl;
 
@@ -50,6 +51,8 @@ public class PearlPayoutIntegrationTests
         private readonly Task loop;
         internal readonly int Port;
         internal string Genesis = PearlJobManager.Genesis(PearlNetwork.Regtest);
+        internal string BestHash = new('a', 64);
+        internal string CanonicalHash = new('a', 64);
         internal decimal Available = 1000000;
         internal bool Locked, LostResponse, Conflict, Partial, Offline, NodeMissing, NodeOffline, RejectSend, PartialBatch;
         internal int Sends, Relocks, Republishes;
@@ -78,8 +81,9 @@ public class PearlPayoutIntegrationTests
                     if(Offline) error = new JObject {["code"] = -28, ["message"] = "temporarily unavailable"};
                     else switch(method)
                     {
-                        case "getblockhash": result = Genesis; break;
-                        case "getbestblockhash": result = new string('a',64); break;
+                        case "getblockhash": result = request["params"][0].Value<long>() == 0 ? Genesis : CanonicalHash; break;
+                        case "getbestblockhash": result = BestHash; break;
+                        case "getblockchaininfo": result = new JObject {["blocks"] = 120, ["bestblockhash"] = BestHash}; break;
                         case "validateaddress": result = new JObject {["ismine"] = true}; break;
                         case "chainsynced": result = true; break;
                         case "getbalance": Assert.Equal("default", request["params"][0].Value<string>()); result = Available; break;
@@ -179,6 +183,50 @@ public class PearlPayoutIntegrationTests
             await Db.ExecuteAsync("ROLLBACK; RESET ROLE; SET search_path TO public");
             await Db.ExecuteAsync($"DROP SCHEMA {schema} CASCADE"); await Db.DisposeAsync();
         }
+    }
+
+    [PostgresIntegrationFact]
+    public async Task MissingOrMalformedCanonicalHashCannotOrphanOrQuarantineRewards()
+    {
+        await using var lab = await Lab.Create(true);
+        var handler = await lab.Handler();
+        var pending = new Block {PoolId = lab.Config.Id, BlockHeight = 10, Hash = new string('a',64), Status = BlockStatus.Pending};
+        var confirmed = new Block {PoolId = lab.Config.Id, BlockHeight = 11, Hash = new string('a',64), Status = BlockStatus.Confirmed};
+        foreach(var invalid in new[] {null, "", "unavailable", new string('g',64)})
+        {
+            lab.Server.CanonicalHash = invalid;
+            foreach(var block in new[] {pending, confirmed})
+                await Assert.ThrowsAsync<InvalidDataException>(() => handler.ClassifyBlocksAsync(null, new[] {block}, CancellationToken.None));
+            Assert.Equal(BlockStatus.Pending, pending.Status);
+            Assert.Equal(BlockStatus.Confirmed, confirmed.Status);
+        }
+        // Valid competing-chain evidence still triggers the intended protection.
+        lab.Server.CanonicalHash = new string('b',64);
+        var classified = await handler.ClassifyBlocksAsync(null, new[] {pending, confirmed}, CancellationToken.None);
+        Assert.Equal(2, classified.Length);
+        Assert.Equal(BlockStatus.Orphaned, pending.Status);
+        Assert.Equal(BlockStatus.Quarantined, confirmed.Status);
+    }
+
+    [PostgresIntegrationFact]
+    public async Task MatchingInvalidTipsCannotAuthorizeWalletSubmission()
+    {
+        await using var lab = await Lab.Create(true);
+        var handler = await lab.Handler(); var balances = await lab.Seed();
+        foreach(var invalid in new[] {null, "", "unavailable", new string('g',64)})
+        {
+            // Both endpoints returning the same invalid value must not count as sync.
+            lab.Server.BestHash = invalid;
+            await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, balances, CancellationToken.None));
+            Assert.Equal(0, lab.Server.Sends);
+            Assert.Equal(0, await lab.Count("pearl_payout_intents"));
+            Assert.Equal(0, await lab.Count("payments"));
+            Assert.Equal(1.234567899m, await lab.Db.ExecuteScalarAsync<decimal>("SELECT amount FROM balances"));
+        }
+        lab.Server.BestHash = new string('a',64);
+        await handler.PayoutAsync(null, balances, CancellationToken.None);
+        Assert.Equal(1, lab.Server.Sends);
+        Assert.Equal(1, await lab.Count("payments"));
     }
 
     [PostgresIntegrationFact]

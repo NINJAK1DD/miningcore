@@ -348,6 +348,7 @@ proof-enabled chain mining, mature payouts and paid-ledger restart checks for ea
 | Pool fails before accepting miners | Check the pinned worker bundle/version, executable permissions, database migrations, RPC connectivity, genesis/network, node synchronization, and wallet ownership. |
 | PPS pool refuses startup | Enable payment processing at both levels, configure local PostgreSQL, apply the accounting migrations, and match any arithmetic cutover exactly. Do not bypass the schema/privilege checks. |
 | PPS balances increase but payments wait | Check minimum payment, spendable reserve, Oyster synchronization/unlock state, pending payout intent and quarantined blocks. Stop admission if reserve funding is inadequate; accepted liabilities remain owed. |
+| Missing canonical block identity or payout synchronization fails | Check that RPC returns valid block hashes, not null, empty or malformed results. Restore node/wallet RPC health and retry; do not manually orphan rewards or resend payments to bypass this hold. |
 | PPLNS rewards are smaller than a full block | Check `factor` and whether enough assigned work fills the window. Achieved proof difficulty does not determine payout weight. |
 | PPLNS reports an invalid factor | Set a positive JSON number; zero, negative values, null and strings are rejected before mining starts. |
 | Miner connects but no work arrives | Check the selected Pearl algorithm, supported release, TLS port, valid network-specific wallet, and `v2` protocol. Inspect template readiness. |
