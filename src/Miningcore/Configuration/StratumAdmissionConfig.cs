@@ -10,6 +10,7 @@ public class StratumAdmissionConfig
     public int ConnectionsPerSecondPerAddress { get; set; } = 2;
     public int BurstPerAddress { get; set; } = 32;
     public int MaxConcurrentConnectionsPerAddress { get; set; } = 256;
+    public int Ipv6PrefixLength { get; set; } = 64;
     public int MaxTrackedAddresses { get; set; } = 32768;
     public int IdleExpirySeconds { get; set; } = 120;
     public int StartupTimeoutSeconds { get; set; } = 10;

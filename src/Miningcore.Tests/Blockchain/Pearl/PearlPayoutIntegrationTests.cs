@@ -63,6 +63,10 @@ public class PearlPayoutIntegrationTests
         internal bool MissingBlockTransaction;
         internal JObject Evidence;
         internal string RawHeader;
+        internal bool HeaderUnknown;
+        internal string SubmissionResult;
+        internal int Submissions;
+        internal string SubmittedBlock;
         internal JArray SendArguments;
         internal readonly List<string> Calls = new();
         internal Rpc()
@@ -94,7 +98,13 @@ public class PearlPayoutIntegrationTests
                             if(height != 0 && BestHashAfterCanonicalLookup != null) BestHash = BestHashAfterCanonicalLookup;
                             break;
                         case "getbestblockhash": result = BestHash; break;
-                        case "getblockheader": result = RawHeader; break;
+                        case "getblockheader":
+                            if(HeaderUnknown) error = new JObject {["code"] = -5, ["message"] = "unknown"};
+                            else result = RawHeader;
+                            break;
+                        case "submitblock":
+                            Submissions++; SubmittedBlock = request["params"][0].Value<string>();
+                            result = SubmissionResult; break;
                         case "getblockchaininfo": result = new JObject {["blocks"] = Height, ["bestblockhash"] = BestHash}; break;
                         case "validateaddress": result = new JObject {["ismine"] = true}; break;
                         case "chainsynced": result = true; break;
@@ -240,6 +250,29 @@ public class PearlPayoutIntegrationTests
         Assert.Equal(0, await lab.Count("pearl_payout_intents"));
         await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, balances, CancellationToken.None));
         Assert.Equal(1, lab.Server.Sends);
+    }
+
+    [PostgresIntegrationFact]
+    public async Task DivergentWalletCannotPreventReorgObservationOrAuthorizeFreshCredit()
+    {
+        await using var lab = await Lab.Create(true);
+        await using var observation = new Rpc {BestHash = new string('b',64), CanonicalHash = new string('c',64)};
+        lab.Config.Daemons = new[] {observation.Endpoint("node"), lab.Server.Endpoint("wallet")};
+        var handler = await lab.Handler();
+        var confirmed = new Block {PoolId = "pearl", BlockHeight = 10, Hash = new string('d',64), Status = BlockStatus.Confirmed};
+        var orphan = new Block {PoolId = "pearl", BlockHeight = 10, Hash = new string('e',64), Status = BlockStatus.Pending};
+        var canonical = new Block {PoolId = "pearl", BlockHeight = 10, Hash = observation.CanonicalHash, Status = BlockStatus.Pending};
+        var classified = await handler.ClassifyBlocksAsync(null, new[] {confirmed, orphan, canonical}, CancellationToken.None);
+        Assert.Equal(2, classified.Length);
+        Assert.Equal(BlockStatus.Quarantined, confirmed.Status);
+        Assert.Equal(BlockStatus.Orphaned, orphan.Status);
+        Assert.Equal(BlockStatus.Pending, canonical.Status);
+        Assert.False(canonical.PearlCustodialEvidenceVerified);
+        Assert.DoesNotContain("gettransaction", lab.Server.Calls);
+        var balances = await lab.Seed();
+        await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, balances, CancellationToken.None));
+        Assert.Equal(0, lab.Server.Sends);
+        Assert.Equal(0, await lab.Count("pearl_payout_intents"));
     }
 
     [PostgresIntegrationFact]

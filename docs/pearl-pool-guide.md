@@ -67,8 +67,9 @@ pools or persistence settings.
 | `pools[].proofWorker` | Absolute path to the installed, pinned worker executable |
 | `pools[].maximumConnections` | Per-pool session cap; default 1024, range 16–4096 |
 | `pools[].maximumProofFrames` | Concurrent uploads above 32 KiB; default 256, range 1–4096, automatically capped at the connection limit |
-| `pools[].maximumProofFramesPerIp` | Concurrent uploads per validated client IP; default 4, range 1–64 |
-| `pools[].maximumProofBufferMiB` | Retained proof bytes above each session's first 32 KiB; default 256, range 64–1024; one quarter maximum per IP |
+| `pools[].maximumProofFramesPerIp` | Concurrent uploads per validated client quota identity; default 4, range 1–64 |
+| `pools[].connectionAdmission.ipv6PrefixLength` | IPv6 quota prefix shared by connection and proof budgets; default 64, range 0–128; 128 uses exact addresses |
+| `pools[].maximumProofBufferMiB` | Retained proof bytes above each session's first 32 KiB; default 256, range 64–1024; one quarter maximum per quota identity, including reserved completion headroom |
 | `pools[].daemons` | Private node RPC endpoint and its credentials |
 | `pools[].daemons` with `category: "wallet"` | Private Oyster RPC endpoint and its credentials |
 | `pools[].ports` | Miner ports, difficulty settings, and the server TLS PFX certificate |
@@ -544,3 +545,23 @@ and retry; these diagnostics do not establish the cause of earlier incidents.
 When reporting a problem, share versions, profile dimensions, aggregate test counts,
 and sanitized error categories. Remove credentials, wallet secrets, real hostnames,
 host addresses, user names, filesystem paths, and unrelated machine details from logs.
+
+
+Proof uploads are limited to 1,090,028 JSON bytes for the certified tile/profile.
+The raw proof ceiling is 810,353 bytes. Gzip/zlib remain supported; prefer gzip
+when your miner offers it. Oversized or unsupported-profile proofs are rejected
+before native verification. Large uploads reserve enough budget to finish; busy
+miners may wait under the existing 30-second deadline even when upload slots
+remain. Size limits from measured traffic rather than simply increasing them.
+
+IPv6 clients in one /64 share the default connection and proof quotas. Adjust
+`connectionAdmission.ipv6PrefixLength` for the actual delegated client networks;
+setting 128 restores exact-address accounting but allows address rotation within
+a subnet. Proxy trust and bans still use exact client addresses. For large NAT
+or IPv6 fleets, tune per-identity limits together with the total memory budget.
+
+A wallet/node tip mismatch no longer stops orphan/quarantine observation, but
+new reward credit and payments remain held until chain evidence agrees. Candidate
+submission strings such as duplicate-orphan or storage failures leave unknown
+blocks retryable; investigate node health if retries persist. The 24-hour archive
+and audited manual recovery procedure still apply.

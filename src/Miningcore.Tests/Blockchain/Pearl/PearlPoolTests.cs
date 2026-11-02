@@ -40,7 +40,15 @@ public class PearlPoolTests : TestBase
     internal static readonly Type CoveredPool = typeof(PearlPool);
 
     [PostgresIntegrationFact]
-    public async Task ShorterNodeRetainsSerializedCandidateAndCatchupCompletesTheSameBytes()
+    public Task ShorterNodeRetainsSerializedCandidateAndCatchupCompletesTheSameBytes() => CandidateRecovery(null);
+
+    [PostgresIntegrationFact]
+    public Task DuplicateOrphanRetainsSerializedCandidateUntilParentArrival() => CandidateRecovery("rejected: already have block (orphan)");
+
+    [PostgresIntegrationFact]
+    public Task StorageFailureRetainsSerializedCandidateUntilNodeRecovery() => CandidateRecovery("rejected: database storage failure");
+
+    private async Task CandidateRecovery(string rejection)
     {
         await using var lab = await PearlPayoutIntegrationTests.Lab.Create(true);
         using var cache = new MemoryCache(new MemoryCacheOptions());
@@ -78,17 +86,30 @@ public class PearlPoolTests : TestBase
             VALUES(@PoolId,@Identity,@Header,@Transactions,@Proof,@Target,@Share,@Block,@BlockHash,@Created)
             """, candidate);
         lab.Server.RawHeader = Convert.ToHexString(raw);
+        lab.Server.HeaderUnknown = rejection != null;
+        lab.Server.SubmissionResult = rejection;
         lab.Server.Height = 999;
         await Invoke(pool, "ProcessCandidateAsync", candidate, CancellationToken.None);
         Assert.Equal(0, await lab.Count("blocks"));
         Assert.Equal(raw, (await store.ReadAsync(candidate, CancellationToken.None)).Block);
         Assert.Equal(0, lab.Server.CanonicalLookups);
+        if(rejection != null)
+        {
+            await Invoke(pool, "ProcessCandidateAsync", candidate, CancellationToken.None);
+            Assert.Equal(2, lab.Server.Submissions);
+            Assert.Equal(Convert.ToHexString(raw).ToLowerInvariant(), lab.Server.SubmittedBlock);
+            Assert.Equal(raw, (await store.ReadAsync(candidate, CancellationToken.None)).Block);
+            Assert.Equal(0, await lab.Count("blocks"));
+        }
+        lab.Server.HeaderUnknown = false;
         lab.Server.Height = 1000; lab.Server.CanonicalHash = hash;
         await Invoke(pool, "ProcessCandidateAsync", candidate, CancellationToken.None);
         Assert.Null(await store.ReadAsync(candidate, CancellationToken.None));
         Assert.Equal(1, await lab.Count("blocks"));
         Assert.Equal("pending", await lab.Db.ExecuteScalarAsync<string>("SELECT status FROM blocks"));
         Assert.Equal(hash, await lab.Db.ExecuteScalarAsync<string>("SELECT hash FROM blocks"));
+        await Invoke(pool, "ProcessCandidateAsync", candidate, CancellationToken.None);
+        Assert.Equal(1, await lab.Count("blocks"));
     }
 
     [Theory]

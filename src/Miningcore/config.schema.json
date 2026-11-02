@@ -1101,6 +1101,9 @@
         "idleExpirySeconds": {
           "type": "integer"
         },
+        "ipv6PrefixLength": {
+          "type": "integer"
+        },
         "maxConcurrentConnections": {
           "type": "integer"
         },

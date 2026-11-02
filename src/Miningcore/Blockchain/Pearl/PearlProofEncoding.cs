@@ -6,7 +6,9 @@ namespace Miningcore.Blockchain.Pearl;
 /// <summary>Strict base64 and bounded gzip/zlib decoding for the named-parameter Pearl dialect.</summary>
 internal static class PearlProofEncoding
 {
-    internal const int MaximumEncodedCharacters = 4 * ((PearlPlainProof.MaximumBytes + 2) / 3);
+    // Allow bounded deflate/gzip framing overhead even for incompressible data.
+    internal const int MaximumWireBytes = PearlPlainProof.PoolMaximumBytes + 4096;
+    internal const int MaximumEncodedCharacters = 4 * ((MaximumWireBytes + 2) / 3);
 
     internal static byte[] Decode(string encoded)
     {
@@ -17,7 +19,7 @@ internal static class PearlProofEncoding
         byte[] wire;
         try { wire = Convert.FromBase64String(encoded); }
         catch(FormatException) { throw new InvalidDataException("Invalid Pearl proof encoding"); }
-        if(wire.Length > PearlPlainProof.MaximumBytes)
+        if(wire.Length > MaximumWireBytes)
             throw new InvalidDataException("Pearl proof exceeds the decoded limit");
 
         // Dense dimensions are little-endian integers and can resemble zlib magic.
@@ -25,6 +27,7 @@ internal static class PearlProofEncoding
         try
         {
             var raw = PearlPlainProof.Inspect(wire);
+            if(wire.Length > PearlPlainProof.PoolMaximumBytes) throw new InvalidDataException("Pearl proof exceeds the pool profile limit");
             if(wire.Length == raw.CanonicalLength) Array.Resize(ref wire, raw.CanonicalLength + 1);
             return wire;
         }
@@ -44,9 +47,9 @@ internal static class PearlProofEncoding
             var buffer = new byte[16384];
             int count;
             while((count = compressed.Read(buffer, 0,
-                Math.Min(buffer.Length, PearlPlainProof.MaximumBytes - (int) output.Length + 1))) != 0)
+                Math.Min(buffer.Length, PearlPlainProof.PoolMaximumBytes - (int) output.Length + 1))) != 0)
             {
-                if(output.Length + count > PearlPlainProof.MaximumBytes)
+                if(output.Length + count > PearlPlainProof.PoolMaximumBytes)
                     throw new InvalidDataException("Pearl decompressed proof exceeds the limit");
                 output.Write(buffer, 0, count);
             }
@@ -56,6 +59,7 @@ internal static class PearlProofEncoding
             result = wire;
 
         var dimensions = PearlPlainProof.Inspect(result);
+        if(result.Length > PearlPlainProof.PoolMaximumBytes) throw new InvalidDataException("Pearl proof exceeds the pool profile limit");
         // Canonicalize legacy omitted-None and current None formats before replay hashing.
         if(result.Length == dimensions.CanonicalLength)
             Array.Resize(ref result, dimensions.CanonicalLength + 1);

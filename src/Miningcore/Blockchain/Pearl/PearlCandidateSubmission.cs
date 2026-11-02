@@ -40,18 +40,17 @@ internal static class PearlCandidateSubmission
         Func<string, object, CancellationToken, Task<RpcResponse<JToken>>> rpc, CancellationToken ct)
     {
         var header = await rpc("getblockheader", new object[] {hash, false}, ct);
-        var rejected = false;
         if(header.Error?.Code == -5)
         {
-            var submission = await rpc("submitblock", new object[] {Convert.ToHexString(block).ToLowerInvariant()}, ct);
-            rejected = submission.Error == null && submission.Response?.Type == JTokenType.String &&
-                !string.IsNullOrEmpty(submission.Response.Value<string>());
+            // Upstream uses rejection strings for duplicate orphan-pool entries
+            // and storage errors as well as invalid blocks. None is conclusive
+            // while the indexed header remains unavailable. Retain durable bytes.
+            await rpc("submitblock", new object[] {Convert.ToHexString(block).ToLowerInvariant()}, ct);
             header = await rpc("getblockheader", new object[] {hash, false}, ct);
         }
         if(header.Error != null)
         {
             if(header.Error.Code != -5) return PearlCandidateOutcome.Uncertain;
-            if(rejected) return PearlCandidateOutcome.Rejected;
             // A missing header alone is not rejection evidence. Retire only when a
             // stable canonical chain has actually passed a competing block at this height.
             return await CanonicalOutcomeAsync(hash, height, true, rpc, ct);

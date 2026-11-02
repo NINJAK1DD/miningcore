@@ -1,0 +1,72 @@
+{
+  "recordedUtc": "2026-11-02T01:58:05.689280+00:00",
+  "baseCommit": "b128153132efec769ae15bb638f6d00bf8e88c1f",
+  "issue": 244,
+  "pullRequest": 256,
+  "scope": "Linux glibc x64; pinned Pearl/Oyster 1.5.5; isolated regtest and PostgreSQL",
+  "focusedTests": {
+    "passed": 839,
+    "failed": 0,
+    "skipped": 4,
+    "trxSha256": "aaa0e32a70210a62c283a09ab0c8f60b804f83583797cfc30f8625bce8f1c1df"
+  },
+  "proofLimits": {
+    "decodedBytes": 810353,
+    "compressedWireBytes": 814449,
+    "jsonFrameBytes": 1090028,
+    "openedLeaves": 768,
+    "maximumSiblingHashes": 352,
+    "exactRowCoverageChecked": true,
+    "legacyRawGzipZlibVerified": true,
+    "oversizedTcpFrameRejected": true,
+    "completionHeadroomReserved": true,
+    "concurrentRawUploadsVerified": 16
+  },
+  "ipv6Quotas": {
+    "defaultPrefixLength": 64,
+    "configurableRange": [
+      0,
+      128
+    ],
+    "sharedByAdmissionAndProofBudgets": true,
+    "directAndProxyConcurrencyTested": true,
+    "proxyReconnectRotationTested": true,
+    "ipv4MappedAndScopeNormalizationTested": true,
+    "trustAndClientIdentityRemainExact": true
+  },
+  "candidateRecovery": {
+    "realNodeDuplicateOrphanRetries": 2,
+    "unknownIndexedHeaderError": -5,
+    "parentArrivalAccepted": true,
+    "postgresDuplicateOrphanAndStorageFailureTestsPassed": true,
+    "candidateBytesRetained": true,
+    "exactlyOnePersistedBlock": true
+  },
+  "classification": {
+    "walletTipPreferredWithObservationFallback": true,
+    "divergentWalletCannotPreventQuarantine": true,
+    "divergentWalletCannotAuthorizeFreshCreditOrPayment": true
+  },
+  "packagedLiveMining": {
+    "scheme": "SOLO",
+    "acceptedReceipts": 1,
+    "acceptedBlocks": 1,
+    "ppsCredits": 0,
+    "preMaturityBalance": "0",
+    "durationSeconds": 59,
+    "miner": "BzMiner v100.60 CPU",
+    "tlsHostnameVerification": true,
+    "workerFailures": 0,
+    "candidateFailures": 0,
+    "managedAssemblySha256": "fa5b2034032ce7c4143ae367d3d89bd7c45bcd21612adb63774b7fa2cb70e809"
+  },
+  "releaseWarningAuditPassed": true,
+  "fullSuiteAndFinalHeadCi": "Final results and digest recorded in PR #256 after completion",
+  "limitations": [
+    "Regtest node-generated blocks exercise orphan handling; live miner proof acceptance is separately verified",
+    "Storage failure is injected in the HTTP/PostgreSQL regression, not induced by corrupting a real node database",
+    "No new mainnet block or payout certification",
+    "Automatic marker sweeping and accepted archived-candidate reconciliation retain the documented operator procedures"
+  ],
+  "privacy": "Private host identities, credentials, wallet addresses and operational paths are omitted"
+}

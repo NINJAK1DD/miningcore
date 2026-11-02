@@ -81,7 +81,7 @@ public class PearlCandidateSubmissionTests
     [Theory]
     [InlineData(false, false, (int) PearlCandidateOutcome.Accepted)]
     [InlineData(true, false, (int) PearlCandidateOutcome.Orphaned)]
-    [InlineData(false, true, (int) PearlCandidateOutcome.Rejected)]
+    [InlineData(false, true, (int) PearlCandidateOutcome.Uncertain)]
     public async Task RawHeaderReconciliationHandlesMainChainSideChainAndRejectedSubmission(bool sideChain, bool rejected, int expected)
     {
         var raw = new byte[PearlConsensus.HeaderSize];

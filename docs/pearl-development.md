@@ -98,9 +98,9 @@ Mainnet activation fixtures cover immediately before/at/after heights **71935 (V
 
 ## Resource and process boundaries
 
-- 32 KiB before authorization; approximately 11.2 MiB proof JSON frame after authorization. Frame-aware pipe backpressure and 16 KiB reads prevent the large-frame deadlock.
-- Each pool has `maximumConnections` (default 1024, range 16–4096), `maximumProofFrames` (default 256, range 1–4096, automatically capped at the connection limit), `maximumProofFramesPerIp` (default 4, range 1–64), and `maximumProofBufferMiB` (default 256, range 64–1024). Upload slots end when LF arrives; byte reservations remain through verification and receipt persistence. Each connection's first 32 KiB is bounded separately; additional buffered bytes share the pool budget, with at most one quarter per validated client IP. Budget exhaustion applies backpressure within the 30-second frame deadline. Idle sessions reserve no proof capacity. Existing per-IP/global [connection admission](stratum-connection-admission.md) also applies. Unauthenticated sessions are retired after 10 seconds. Per-connection byte refill is 2 MiB/s with one bounded frame burst; incremental newline scanning examines each byte once. Allow memory above these wire-byte budgets for pipe segments, the 16 KiB staging buffer per session, JSON/proof decoding, TLS and native workers. Prefer gzip proofs where the miner supports them; retain raw proof compatibility.
-- JSON depth 8, 128 tokens, numeric/property tokens <=64 bytes, duplicate object keys rejected. Decode output <=8 MiB. Proof structure/count/index preflight precedes Rust allocation.
+- 32 KiB before authorization; 1,090,028-byte proof JSON frame after authorization. Frame-aware pipe backpressure and 16 KiB reads prevent the large-frame deadlock.
+- Each pool has `maximumConnections` (default 1024, range 16–4096), `maximumProofFrames` (default 256, range 1–4096, automatically capped at the connection limit), `maximumProofFramesPerIp` (default 4, range 1–64), and `maximumProofBufferMiB` (default 256, range 64–1024). Upload slots end when LF arrives; byte reservations remain through verification and receipt persistence. Each connection's first 32 KiB is bounded separately; additional buffered bytes share the pool budget, with at most one quarter per validated client quota identity. IPv6 identities aggregate by `connectionAdmission.ipv6PrefixLength` (default /64); mapped IPv4 remains one IPv4 identity. Completion headroom is reserved when a large upload starts, preventing all partial uploads from holding the entire budget while waiting for more bytes. This can reduce simultaneously active uploads below the configured slot maximum. Budget exhaustion applies backpressure within the 30-second frame deadline. Idle sessions reserve no proof capacity. Existing per-IP/global [connection admission](stratum-connection-admission.md) also applies. Unauthenticated sessions are retired after 10 seconds. Per-connection byte refill is 2 MiB/s with one bounded frame burst; incremental newline scanning examines each byte once. Allow memory above these wire-byte budgets for pipe segments, the 16 KiB staging buffer per session, JSON/proof decoding, TLS and native workers. Prefer gzip proofs where the miner supports them; retain raw proof compatibility.
+- JSON depth 8, 128 tokens, numeric/property tokens <=64 bytes, duplicate object keys rejected. Decoded pool proofs are at most 810,353 bytes; gzip/zlib wire data permits an additional 4,096 bytes of compression framing overhead. The structural parser retains its separate 8 MiB generic ceiling, but pool decoding and transport use the smaller admitted-profile ceiling. Proof structure/count/index preflight precedes Rust allocation.
 - One proof attempt/second/worker, at most 256 attempts and verified identities per retained job. Two decoding/verification slots and one proving slot per process; no unbounded native wait queue.
 - Verify deadline 5 seconds, native verify address space 1 GiB/CPU 20 seconds. Prove deadline 180 seconds, address space 12 GiB/CPU 600 seconds, four Rayon threads and `MALLOC_ARENA_MAX=2`. These are hard ceilings, not expected RSS. The maximum-profile lab gate measures `/proc` VmPeak and requires at most 10 GiB, leaving at least 2 GiB of virtual-address headroom: `python3 scripts/pearl/check-prover-memory.py /absolute/path/to/miningcore-pearl-worker --runs 3`.
 - One request per helper; embedded circuit caches die with the process. Cancellation kills/reaps the process tree. Linux parent-death SIGKILL prevents orphaned helpers after a pool crash.
@@ -116,7 +116,7 @@ The managed launcher retains a dedicated background thread until each worker is 
 
 ## Candidates, payouts and recovery
 
-An acknowledged candidate survives restart in `pearl_candidates`. Proving uses its exact saved header, transactions and proof and never replaces it with the latest template. Only an observed different tip cancels an in-flight prover; the tip is checked again after completion. The complete certificate-first block is persisted before submission. A null submit result, duplicate, or lost response is reconciled using **non-verbose** `getblockheader(hash,false)`, a verified 108-byte header hash, and stable canonical-chain evidence from one pinned endpoint. This raw lookup also works for known side-chain blocks, unlike the pinned node's verbose lookup. Known side-chain blocks and explicit rejection strings finish as orphaned block records without occupying queue slots forever. Uncertain submissions retain their bytes and rotate through bounded retries; the 24-hour archival bound retains evidence for operator reconciliation. Row-locked completion inserts the block exactly once.
+An acknowledged candidate survives restart in `pearl_candidates`. Proving uses its exact saved header, transactions and proof and never replaces it with the latest template. Only an observed different tip cancels an in-flight prover; the tip is checked again after completion. The complete certificate-first block is persisted before submission. A null submit result, duplicate, or lost response is reconciled using **non-verbose** `getblockheader(hash,false)`, a verified 108-byte header hash, and stable canonical-chain evidence from one pinned endpoint. This raw lookup also works for known side-chain blocks, unlike the pinned node's verbose lookup. Known side-chain blocks finish as orphaned block records on stable competing canonical evidence. Arbitrary submission rejection strings are not permanent-invalidity evidence: the pinned node uses them for duplicate orphan-pool entries and storage failures. Unknown headers retain the candidate until the canonical comparison is conclusive or the explicit archival bound applies. Uncertain submissions retain their bytes and rotate through bounded retries; the 24-hour archival bound retains evidence for operator reconciliation. Row-locked completion inserts the block exactly once.
 
 Rewards come from GBT, not a fixed subsidy. Classification checks canonical block hash, exact coinbase identity/output, wallet sync and both node/wallet confirmations. Minimum payout confirmation policy is **101** (never below the 100-block maturity boundary). Wrong-network addresses and non-Taproot payout destinations are rejected. One PRL is 100,000,000 grains. Minimum payment is conservatively 0.01 PRL to avoid dust. Payments floor each selected balance to whole grains and retain residual fractions; batches contain at most 100 recipients. Fees are configured in **grains/kB**, converted to Oyster's required third positional `sendmany` argument: `["default", amounts, feeRatePRLPerKb, 1]`. Comments and `getwalletinfo` are not used. The handler unlocks for 60 seconds when configured and always attempts to relock with a bounded cleanup token.
 
@@ -253,7 +253,7 @@ The independent Python fixture was generated from a proof-enabled node's accepte
 The [hardening evidence](pearl-hardening-evidence.json) records the latest sanitized
 test results and artifact digests. Coverage includes conclusive accounting rollback,
 full-queue retry, an injected lost acknowledgement after a real PostgreSQL commit,
-immutable retry payloads, raw side-chain header reconciliation, explicit rejection,
+immutable retry payloads, raw side-chain header reconciliation, ambiguous submission responses,
 mid-proof snapshot loss, tip-change cancellation/reaping, orphan no-op updates,
 per-pool transport isolation, unauthorized socket churn, refusal/ban separation,
 raw/zlib collisions, canonical no-index payout recovery, node failover, fee
@@ -350,3 +350,40 @@ payout certification is added by this verification.
 `scripts/pearl/generate-wire-vectors.go` regenerates synthetic framing vectors with official Go code; their placeholder certificate is not valid consensus evidence. The gzip fixtures contain actual locally mined proofs, with metadata and SHA256s. `verify_capture.rs` independently checks captured work in the pinned Rust crate. `mainnet-activations.json` records node-validated headers/public data and certificate digests; `mainnet-template.json` records the actual current template. None contains private keys or RPC credentials.
 
 Completion validation: **5,766 full-suite passes** (zero failures, 24 explicit skips) and **389 final focused passes** (zero failures, one opt-in skip). The updated Release pool accepted **16 SRBMiner shares and one block** through IPC v2; its live metrics were scraped. The final height gauge was separately compared with the node after its chain-height correction. See the completion report for exact public transaction/block identities, final binary digests and transcript hashes.
+
+
+### Admitted-profile limits and recovery observation
+
+The fixed k=32768 profile opens 32 aligned 1024-byte leaves per sampled row: 256
+for A and 512 for B. Their maximum tree depths are 21 and 19, so at most
+8*(21-5) + 16*(19-5) = 352 sibling hashes are needed above those row subtrees.
+Including bincode lengths, roots, indices, dimensions and the None tag gives
+810,353 bytes. Preflight checks these counts and exact row-to-leaf coverage;
+cryptographic validity still belongs to the native verifier. Raw, legacy, gzip
+and zlib encodings remain supported within the tighter bound. See the pinned
+[upstream row mapping and multiproof construction](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/pearl-blake3/src/merkle.rs).
+
+Classification prefers a healthy node on Oyster's tip, then falls back to a
+validated node for reorg observation if none matches. Fallback may orphan or
+quarantine displaced rewards but cannot allocate fresh credit. New wallet
+submissions still require matching classified/node/wallet tips and cleared
+durable holds. Existing broadcast intents retain their independent reconciliation.
+
+To run the isolated real-node orphan regression, set `MININGCORE_TEST_PEARLD` to
+the pinned Pearl 1.5.5 executable, then run:
+
+```sh
+dotnet test src/Miningcore.Tests --filter FullyQualifiedName~PearlCandidateNodeTests
+```
+
+The fixture starts two disposable regtest nodes, submits a child before its
+parent, retries the node-held orphan twice, and verifies canonical acceptance
+after parent arrival. It does not use an existing wallet or mainnet node. Real
+PostgreSQL tests separately verify preserved candidate bytes and exactly-once
+block persistence after both duplicate-orphan and injected storage failures.
+The native ownership check requires the glibc `statx` wrapper (glibc 2.28+);
+unsupported environments fail closed and remain outside certification.
+
+The [profile and recovery evidence](pearl-profile-hardening-evidence.json) records
+focused regressions and packaged live mining, including test and binary digests.
+Final full-suite and CI results are reported in PR #256.

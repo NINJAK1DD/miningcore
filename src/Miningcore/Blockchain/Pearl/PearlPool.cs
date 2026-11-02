@@ -53,7 +53,8 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
         config = poolConfig.Extra.SafeExtensionDataAs<PearlPoolConfig>();
         network = config.Validate(poolConfig);
         transport = StratumInputPolicy.CreatePearl(config.MaximumConnections, config.MaximumProofFrames,
-            config.MaximumProofBufferMiB, config.MaximumProofFramesPerIp);
+            config.MaximumProofBufferMiB, config.MaximumProofFramesPerIp,
+            poolConfig.ConnectionAdmission?.Ipv6PrefixLength ?? 64);
         verifier = new PearlProofVerifier(config.ProofWorker);
         candidates = new PearlCandidateStore(cf, shareRepo, poolConfig);
         if(!await cf.Run(con => shareRepo.HasShareAccountingSchemaAsync(con, ct)))

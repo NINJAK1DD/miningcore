@@ -11,6 +11,12 @@ namespace Miningcore.Blockchain.Pearl;
 internal static class PearlPlainProof
 {
     internal const int MaximumBytes = 8 * 1024 * 1024;
+    // Certified k=32768 opens 32 aligned 1024-byte leaves per row. Each row's
+    // subtree has depth 5; above it at most one sibling per remaining level.
+    // A has ceil(log2(32772*32))=21 levels; B has 19. Includes all bincode
+    // vector lengths, roots, indices, dimensions and the current None tag.
+    internal const int PoolMaximumBytes = 32 + 2 * 72 + (8 + 16) * 32 * 1040 +
+        (8 * (21 - 5) + 16 * (19 - 5)) * 32 + (8 + 16) * 8 + 1;
 
     internal readonly record struct Dimensions(uint M, uint N, uint K, ushort Rank,
         int Rows, int Columns, int CanonicalLength)
@@ -45,8 +51,9 @@ internal static class PearlPlainProof
         if((rank & (rank - 1)) != 0 || k % 64 != 0 || k < 16 * rank || k > 4 * rank * rank)
             throw new InvalidDataException("Invalid Pearl matrix dimensions");
 
-        var rows = reader.Matrix(m, k);
-        var columns = reader.Matrix(n, k);
+        var poolProfile = m <= 32772 && n <= 15360 && k == 32768 && rank == 128;
+        var rows = reader.Matrix(m, k, poolProfile ? 8u : 0u);
+        var columns = reader.Matrix(n, k, poolProfile ? 16u : 0u);
         var inputSize = (ulong) (rows + columns) * (k - k % rank);
         if(rows * columns is < 32 or > 256 || inputSize > 1 << 22)
             throw new InvalidDataException("Invalid Pearl sampled matrix dimensions");
@@ -86,10 +93,11 @@ internal static class PearlPlainProof
             return (uint) value;
         }
 
-        internal int Matrix(uint dimension, uint k)
+        internal int Matrix(uint dimension, uint k, uint poolRows)
         {
             var totalExpected = ((ulong) dimension * k + 1023) / 1024;
-            var leaves = BoundedInteger(1, (uint) (MaximumBytes / 1032));
+            var leaves = poolRows != 0 ? BoundedInteger(poolRows * 32, poolRows * 32) :
+                BoundedInteger(1, (uint) (MaximumBytes / 1032));
             // Each nested leaf is a length-prefixed Vec<u8>, not a raw [u8; 1024].
             if(leaves > (uint) (Remaining / 1032))
                 throw new InvalidDataException("Truncated Pearl leaves");
@@ -100,14 +108,27 @@ internal static class PearlPlainProof
             }
 
             BoundedInteger(leaves, leaves);
+            var indicesStart = Position;
             SortedIndices(leaves, totalExpected);
             if(Integer() != totalExpected)
                 throw new InvalidDataException("Pearl Merkle tree size does not match dimensions");
             Take(32); // Committed root; the cryptographic verifier must check it.
-            var siblings = BoundedInteger(0, (uint) Math.Min((ulong) leaves * 30, MaximumBytes / 32));
+            var depth = System.Numerics.BitOperations.Log2(totalExpected - 1) + 1;
+            var maximumSiblings = poolRows != 0 ? poolRows * (uint) Math.Max(0, depth - 5) :
+                (uint) Math.Min((ulong) leaves * 30, MaximumBytes / 32);
+            var siblings = BoundedInteger(0, maximumSiblings);
             Take(checked((int) siblings * 32));
-            var rowCount = BoundedInteger(1, 128);
+            var rowCount = poolRows != 0 ? BoundedInteger(poolRows, poolRows) : BoundedInteger(1, 128);
+            var rowsStart = Position;
             SortedIndices(rowCount, dimension);
+            if(poolRows != 0)
+                for(var row = 0; row < rowCount; row++)
+                {
+                    var rowIndex = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(rowsStart + row * 8, 8));
+                    for(var leaf = 0; leaf < 32; leaf++)
+                        if(BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(indicesStart + (row * 32 + leaf) * 8, 8)) != rowIndex * 32 + (ulong) leaf)
+                            throw new InvalidDataException("Pearl leaves do not match the admitted row openings");
+                }
             return (int) rowCount;
         }
 

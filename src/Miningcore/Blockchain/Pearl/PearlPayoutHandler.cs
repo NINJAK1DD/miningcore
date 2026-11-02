@@ -115,11 +115,14 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         if(synced && !IsTransactionId(walletTip)) throw new InvalidDataException("Missing Pearl wallet chain identity");
         // Prefer the same chain used by new payouts. While Oyster rescans, still
         // observe reorgs, but do not authorize fresh reward allocations.
-        await SelectNodeAsync(walletTip, ct);
+        await SelectNodeAsync(walletTip, ct, allowFallback: true);
         var chain = await RpcAsync<JObject>(node, "getblockchaininfo", null, ct);
         var tip = chain?.Value<ulong?>("blocks") ?? throw new InvalidDataException("Missing Pearl chain height");
         var bestHash = chain.Value<string>("bestblockhash");
         if(!IsTransactionId(bestHash)) throw new InvalidDataException("Missing Pearl chain identity");
+        // Fallback is for reorg observation only. A wallet claiming synchronization
+        // on another tip cannot authorize fresh reward allocations on this node.
+        synced = synced && walletTip == bestHash;
         // Record all affected credited rewards, including those outside this cycle's
         // bounded reconciliation batch. A later height increase is not canonical proof.
         await cf.Run(con => con.ExecuteAsync(new CommandDefinition("""

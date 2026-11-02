@@ -77,6 +77,9 @@
       "maximumProofFrames": 256,
       "maximumProofBufferMiB": 256,
       "maximumProofFramesPerIp": 4,
+      "connectionAdmission": {
+        "ipv6PrefixLength": 64
+      },
       "rewardRecipients": [
         {
           "type": "op",

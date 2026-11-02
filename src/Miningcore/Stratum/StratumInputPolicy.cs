@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Text.Json;
+using Miningcore.Blockchain.Pearl;
 
 namespace Miningcore.Stratum;
 
@@ -18,14 +19,16 @@ internal sealed class StratumInputPolicy
     private readonly int maximumFrames;
     private readonly int maximumFramesPerIp;
     private readonly long maximumBytes;
+    private readonly int ipv6PrefixLength;
     private long bufferedBytes;
+    private long reservedBytes;
     private int uploads;
-    private sealed class Usage { internal long Bytes; internal int Uploads; }
+    private sealed class Usage { internal long Bytes; internal long Reserved; internal int Uploads; }
     internal bool ProofSized { get; }
-    internal int MaximumLength => ProofSized ? 4 * ((8 * 1024 * 1024 + 2) / 3) + 4096 : 0x8000;
+    internal int MaximumLength => ProofSized ? PearlProofEncoding.MaximumEncodedCharacters + 4096 : 0x8000;
     internal int ReadSize => ProofSized ? 16384 : 0x8001;
     private StratumInputPolicy(bool proofSized, int maximumConnections = 1024, int maximumFrames = 256,
-        int maximumBufferMiB = 256, int maximumFramesPerIp = 4)
+        int maximumBufferMiB = 256, int maximumFramesPerIp = 4, int ipv6PrefixLength = 64)
     {
         ProofSized = proofSized;
         if(proofSized)
@@ -33,16 +36,17 @@ internal sealed class StratumInputPolicy
             connections = new SemaphoreSlim(maximumConnections, maximumConnections);
             this.maximumFrames = Math.Min(maximumFrames, maximumConnections);
             this.maximumFramesPerIp = maximumFramesPerIp;
+            this.ipv6PrefixLength = ipv6PrefixLength;
             maximumBytes = maximumBufferMiB * 1024L * 1024;
         }
     }
     internal static StratumInputPolicy CreatePearl(int maximumConnections = 1024, int maximumFrames = 256,
-        int maximumBufferMiB = 256, int maximumFramesPerIp = 4)
+        int maximumBufferMiB = 256, int maximumFramesPerIp = 4, int ipv6PrefixLength = 64)
     {
         if(maximumConnections is < 16 or > 4096 || maximumFrames is < 1 or > 4096 ||
-            maximumBufferMiB is < 64 or > 1024 || maximumFramesPerIp is < 1 or > 64)
+            maximumBufferMiB is < 64 or > 1024 || maximumFramesPerIp is < 1 or > 64 || ipv6PrefixLength is < 0 or > 128)
             throw new ArgumentOutOfRangeException(nameof(maximumConnections));
-        return new StratumInputPolicy(true, maximumConnections, maximumFrames, maximumBufferMiB, maximumFramesPerIp);
+        return new StratumInputPolicy(true, maximumConnections, maximumFrames, maximumBufferMiB, maximumFramesPerIp, ipv6PrefixLength);
     }
 
     internal IDisposable Acquire()
@@ -62,6 +66,7 @@ internal sealed class StratumInputPolicy
     internal sealed class ProofBuffer(StratumInputPolicy policy) : IDisposable
     {
         private long bytes;
+        private long headroom;
         private IPAddress peer;
         private bool uploading;
         private bool disposed;
@@ -70,7 +75,7 @@ internal sealed class StratumInputPolicy
         internal async Task AddAsync(int count, bool largeFrame, IPAddress address, CancellationToken ct, bool authorized = true)
         {
             if(count < 0) throw new ArgumentOutOfRangeException(nameof(count));
-            address = address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+            address = StratumAddressQuota.Key(address, policy.ipv6PrefixLength);
             while(true)
             {
                 ct.ThrowIfCancellationRequested();
@@ -84,8 +89,12 @@ internal sealed class StratumInputPolicy
                     if(peer != null && !peer.Equals(address)) throw new InvalidDataException("Proof identity changed");
                     policy.peers.TryGetValue(address, out var usage);
                     var slot = largeFrame && !uploading;
-                    if(policy.bufferedBytes + extra <= policy.maximumBytes &&
-                        (usage?.Bytes ?? 0) + extra <= policy.maximumBytes / 4 &&
+                    // Reserve completion headroom at admission. Otherwise many
+                    // partial frames can hold every byte while all need more.
+                    var reserve = slot ? policy.MaximumLength : 0;
+                    var spent = Math.Min(headroom, extra);
+                    if(policy.bufferedBytes + policy.reservedBytes + extra + reserve - spent <= policy.maximumBytes &&
+                        (usage?.Bytes ?? 0) + (usage?.Reserved ?? 0) + extra + reserve - spent <= policy.maximumBytes / 4 &&
                         (!slot || policy.uploads < policy.maximumFrames && (usage?.Uploads ?? 0) < policy.maximumFramesPerIp))
                     {
                         bytes += count;
@@ -95,6 +104,9 @@ internal sealed class StratumInputPolicy
                             if(usage == null) policy.peers.Add(address, usage = new());
                             usage.Bytes += extra;
                             policy.bufferedBytes += extra;
+                            headroom += reserve - spent;
+                            usage.Reserved += reserve - spent;
+                            policy.reservedBytes += reserve - spent;
                             if(slot) { uploading = true; usage.Uploads++; policy.uploads++; }
                         }
                         return;
@@ -110,7 +122,11 @@ internal sealed class StratumInputPolicy
             lock(policy.sync)
             {
                 if(disposed) return;
-                if(uploading) { policy.uploads--; policy.peers[peer].Uploads--; uploading = false; }
+                if(uploading)
+                {
+                    policy.uploads--; policy.peers[peer].Uploads--; uploading = false;
+                    policy.reservedBytes -= headroom; policy.peers[peer].Reserved -= headroom; headroom = 0;
+                }
                 Signal();
             }
         }

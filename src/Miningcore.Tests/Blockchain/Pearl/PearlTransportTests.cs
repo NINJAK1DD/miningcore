@@ -82,9 +82,10 @@ public class PearlTransportTests
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task LargeFrameCrossesPipeThresholdOnlyAfterAuthorization(bool authorized)
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task LargeFrameCrossesPipeThresholdOnlyAfterAuthorization(bool authorized, bool oversized)
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -106,10 +107,10 @@ public class PearlTransportTests
         try
         {
             var frame = Encoding.UTF8.GetBytes("{\"id\":1,\"method\":\"mining.submit\",\"params\":{\"plain_proof\":\"" +
-                new string('a', 200000) + "\"}}\n");
+                new string('a', oversized ? StratumInputPolicy.Pearl.MaximumLength : 200000) + "\"}}\n");
             try { await client.GetStream().WriteAsync(frame, stop.Token); }
-            catch(IOException) when(!authorized) { }
-            Assert.Equal(authorized, await done.Task.WaitAsync(stop.Token));
+            catch(IOException) when(!authorized || oversized) { }
+            Assert.Equal(authorized && !oversized, await done.Task.WaitAsync(stop.Token));
         }
         finally { stop.Cancel(); await dispatched; }
     }
@@ -208,25 +209,71 @@ public class PearlTransportTests
     [Fact]
     public async Task ByteBudgetRemainsReservedAfterUploadAndWaitersResumeAfterConsumption()
     {
-        var policy = StratumInputPolicy.CreatePearl(16, 16, 64);
+        var policy = StratumInputPolicy.CreatePearl(128, 128, 64);
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        var buffers = Enumerable.Range(0, 8).Select(_ => policy.CreateBuffer()).ToArray();
+        var buffers = Enumerable.Range(0, 62).Select(_ => policy.CreateBuffer()).ToArray();
         try
         {
             for(var i = 0; i < buffers.Length; i++)
             {
-                await buffers[i].AddAsync(8 * 1024 * 1024 + 32768, true, IPAddress.Parse($"127.0.0.{i / 2 + 1}"), stop.Token);
+                await buffers[i].AddAsync(1024 * 1024 + 32768, true, IPAddress.Parse($"127.0.0.{i + 1}"), stop.Token);
                 buffers[i].EndUpload();
             }
             using var next = policy.CreateBuffer();
-            var pending = next.AddAsync(65536, true, IPAddress.Parse("127.0.0.9"), stop.Token);
+            var pending = next.AddAsync(1024 * 1024 + 32768, true, IPAddress.Parse("127.0.0.99"), stop.Token);
             Assert.False(pending.IsCompleted);
-            buffers[0].Consume(65536);
+            buffers[0].Consume(1024 * 1024);
             await pending.WaitAsync(stop.Token);
         }
         finally { foreach(var buffer in buffers) buffer.Dispose(); }
         using var recovered = policy.CreateBuffer();
-        await recovered.AddAsync(8 * 1024 * 1024, true, IPAddress.Loopback, stop.Token);
+        await recovered.AddAsync(1024 * 1024, true, IPAddress.Loopback, stop.Token);
+    }
+
+    [Fact]
+    public async Task PartialUploadsReserveCompletionCapacityRatherThanDeadlocking()
+    {
+        var policy = StratumInputPolicy.CreatePearl(256, 256, 64);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var buffers = Enumerable.Range(0, 100).Select(_ => policy.CreateBuffer()).ToArray();
+        try
+        {
+            Task waiting = null;
+            var admitted = 0;
+            for(; admitted < buffers.Length; admitted++)
+            {
+                waiting = buffers[admitted].AddAsync(65536, true, IPAddress.Parse($"192.0.2.{admitted + 1}"), stop.Token);
+                if(!waiting.IsCompleted) break;
+                await waiting;
+            }
+            Assert.InRange(admitted, 40, 99);
+            Assert.False(waiting.IsCompleted);
+            // Every admitted partial upload can finish even when a new upload waits.
+            for(var i = 0; i < admitted; i++)
+            {
+                await buffers[i].AddAsync(policy.MaximumLength - 65536, true, IPAddress.Parse($"192.0.2.{i + 1}"), stop.Token);
+                buffers[i].EndUpload();
+            }
+            buffers[0].Consume(policy.MaximumLength);
+            await waiting.WaitAsync(stop.Token);
+        }
+        finally { foreach(var buffer in buffers) buffer.Dispose(); }
+    }
+
+    [Theory]
+    [InlineData(64, true)]
+    [InlineData(128, false)]
+    public async Task Ipv6ProofBudgetsUseTheConfiguredPrefix(int prefix, bool grouped)
+    {
+        var policy = StratumInputPolicy.CreatePearl(16, 16, 64, 1, prefix);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var first = policy.CreateBuffer(); using var second = policy.CreateBuffer(); using var other = policy.CreateBuffer();
+        await first.AddAsync(65536, true, IPAddress.Parse("2001:db8:1::1"), stop.Token);
+        var pending = second.AddAsync(65536, true, IPAddress.Parse("2001:db8:1::2"), stop.Token);
+        Assert.Equal(grouped, !pending.IsCompleted);
+        await other.AddAsync(65536, true, IPAddress.Parse("2001:db8:2::1"), stop.Token);
+        first.EndUpload(); await pending.WaitAsync(stop.Token);
+        Assert.InRange(policy.MaximumLength, 1070000, 1200000);
     }
 
     [Fact]

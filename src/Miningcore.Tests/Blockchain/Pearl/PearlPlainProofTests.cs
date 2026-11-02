@@ -22,8 +22,11 @@ public class PearlPlainProofTests
         writer.Write(m); writer.Write(15360ul); writer.Write(32768ul); writer.Write(128ul);
         foreach(var (dimension, rows) in new[] {(m, 8), (15360ul, 16)})
         {
-            writer.Write(1ul); writer.Write(1024ul); writer.Write(new byte[1024]);
-            writer.Write(1ul); writer.Write(0ul); writer.Write(dimension * 32);
+            writer.Write((ulong) rows * 32);
+            for(var leaf = 0; leaf < rows * 32; leaf++) { writer.Write(1024ul); writer.Write(new byte[1024]); }
+            writer.Write((ulong) rows * 32);
+            for(var leaf = 0; leaf < rows * 32; leaf++) writer.Write((ulong) leaf);
+            writer.Write(dimension * 32);
             writer.Write(new byte[32]); writer.Write(0ul); writer.Write((ulong) rows);
             for(var row = 0; row < rows; row++) writer.Write((ulong) row);
         }
@@ -101,6 +104,30 @@ public class PearlPlainProofTests
     }
 
     [Fact]
+    public void AdmittedProfileBoundsLeavesSiblingsAndRowCoverage()
+    {
+        var original = RealProof();
+        Assert.True(original.Length <= PearlPlainProof.PoolMaximumBytes);
+        Assert.Equal(810353, PearlPlainProof.PoolMaximumBytes);
+        foreach(var leaves in new[] {255ul, 257ul})
+        {
+            var proof = original.ToArray();
+            BinaryPrimitives.WriteUInt64LittleEndian(proof.AsSpan(32), leaves);
+            Assert.Throws<InvalidDataException>(() => PearlPlainProof.Inspect(proof));
+        }
+        var indices = 32 + 8 + 256 * 1032 + 8;
+        var siblings = indices + 256 * 8 + 8 + 32;
+        var excessive = original.ToArray();
+        BinaryPrimitives.WriteUInt64LittleEndian(excessive.AsSpan(siblings), 129); // 8*(21-5)+1
+        Assert.Throws<InvalidDataException>(() => PearlPlainProof.Inspect(excessive));
+        var misaligned = original.ToArray();
+        // Preserve index ordering while omitting one required row leaf.
+        BinaryPrimitives.WriteUInt64LittleEndian(misaligned.AsSpan(indices),
+            BinaryPrimitives.ReadUInt64LittleEndian(misaligned.AsSpan(indices)) - 1);
+        Assert.Throws<InvalidDataException>(() => PearlPlainProof.Inspect(misaligned));
+    }
+
+    [Fact]
     public void RealMinerFixtureMatchesPinnedDimensionsAndDigest()
     {
         var proof = RealProof();
@@ -175,7 +202,7 @@ public class PearlPlainProofTests
     {
         using var compressed = new MemoryStream();
         using(var encoder = new GZipStream(compressed, CompressionLevel.SmallestSize, true))
-            encoder.Write(new byte[PearlPlainProof.MaximumBytes + 1]);
+            encoder.Write(new byte[PearlPlainProof.PoolMaximumBytes + 1]);
         Assert.Throws<InvalidDataException>(() => PearlProofEncoding.Decode(Convert.ToBase64String(compressed.ToArray())));
     }
 
