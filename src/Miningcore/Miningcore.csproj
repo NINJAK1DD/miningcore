@@ -241,4 +241,8 @@
     <ItemGroup>
         <EmbeddedResource Include="Persistence/Postgres/Scripts/add_pps_arithmetic_version.sql" />
     </ItemGroup>
+    <Target Name="InstallPearlWorkerBundle" AfterTargets="Publish" Condition="'$(PearlWorkerBundle)' != ''">
+        <Error Condition="'$(IsLinux)' != 'true'" Text="Pearl worker packages require Linux glibc x64." />
+        <Exec Command="bash &quot;$(ProjectDir)../../scripts/pearl/install-worker.sh&quot; &quot;$(PearlWorkerBundle)&quot; &quot;$(PublishDir)&quot;" />
+    </Target>
 </Project>

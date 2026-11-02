@@ -48,11 +48,23 @@ public class StratumConnection
     public StratumConnection(ILogger logger, RecyclableMemoryStreamManager rmsm,
         IMasterClock clock, string connectionId, bool gpdrCompliantLogging,
         CancellationToken failStopToken = default)
+        : this(logger, rmsm, clock, connectionId, gpdrCompliantLogging, failStopToken, StratumInputPolicy.Standard)
+    {
+    }
+
+    internal StratumConnection(ILogger logger, RecyclableMemoryStreamManager rmsm,
+        IMasterClock clock, string connectionId, bool gpdrCompliantLogging,
+        CancellationToken failStopToken, StratumInputPolicy inputPolicy)
     {
         this.logger = logger;
         this.rmsm = rmsm;
 
-        receivePipe = new Pipe(PipeOptions.Default);
+        this.inputPolicy = inputPolicy ?? throw new ArgumentNullException(nameof(inputPolicy));
+        proofBuffer = inputPolicy.CreateBuffer();
+        receivePipe = new Pipe(inputPolicy.ProofSized
+            ? new PipeOptions(pauseWriterThreshold: inputPolicy.MaximumLength + 32768,
+                resumeWriterThreshold: inputPolicy.MaximumLength / 2, minimumSegmentSize: 16384)
+            : PipeOptions.Default);
 
         sendQueue = new BufferBlock<object>(new DataflowBlockOptions
         {
@@ -70,6 +82,8 @@ public class StratumConnection
     private readonly RecyclableMemoryStreamManager rmsm;
     private readonly IMasterClock clock;
     private readonly CancellationToken failStopToken;
+    private readonly StratumInputPolicy inputPolicy;
+    private readonly StratumInputPolicy.ProofBuffer proofBuffer;
 
     internal Func<object, CancellationToken, Task> SendMessageOverride { get; set; }
     internal Func<IPAddress, bool> AdmitProxyIdentity { get; set; }
@@ -84,9 +98,11 @@ public class StratumConnection
         (!validatedProxyIdentity || RemoteEndpoint.Address.Equals(TransportEndpoint.Address))
             ? null : RemoteEndpoint?.Address;
     internal TimeSpan StartupTimeout { get; set; } = TimeSpan.FromSeconds(10);
+    internal TimeSpan ProofFrameTimeout { get; set; } = TimeSpan.FromSeconds(30);
     private Action finishStartup;
 
-    private const int MaxInboundRequestLength = 0x8000;
+    private int MaxInboundRequestLength => inputPolicy.ProofSized && context?.IsAuthorized != true
+        ? 0x8000 : inputPolicy.MaximumLength;
     public static readonly Encoding Encoding = new UTF8Encoding(false);
 
     private Stream networkStream;
@@ -160,6 +176,7 @@ public class StratumConnection
             StratumSocketCleanup.ConfigureAbortiveClose(socket));
 
         var terminalCallbackSignalled = false;
+        IDisposable inputLease = null;
         // Exactly one of first-request admission and deadline expiry wins. Disarming
         // a timer alone cannot prevent an already queued callback cancelling a handler.
         var startupState = 0; // 0 pending, 1 complete, 2 expired
@@ -180,6 +197,7 @@ public class StratumConnection
 
         try
         {
+            inputLease = inputPolicy.Acquire();
             // Standalone dispatch callers have no accept loop. Production supplies the
             // already frozen listener policy used for transport admission above.
             var proxyPolicy = ProxyPolicy ?? new StratumProxyPolicy(endpoint.PoolEndpoint.TcpProxyProtocol);
@@ -383,6 +401,8 @@ public class StratumConnection
 
         finally
         {
+            inputLease?.Dispose();
+            proofBuffer?.Dispose();
             finishStartup = null;
             this.socket = null;
 
@@ -493,12 +513,13 @@ public class StratumConnection
 
     private async Task FillReceivePipeAsync(CancellationToken ct)
     {
+        if(inputPolicy.ProofSized) { await FillProofPipeAsync(ct); return; }
         long receivedBytes = 0;
         while(!ct.IsCancellationRequested)
         {
             StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.ReceiveWait, ConnectionId);
 
-            var memory = receivePipe.Writer.GetMemory(MaxInboundRequestLength + 1);
+            var memory = receivePipe.Writer.GetMemory(inputPolicy.ReadSize);
 
             // read from network directly into pipe memory
             var cb = await networkStream.ReadAsync(memory, ct);
@@ -523,21 +544,69 @@ public class StratumConnection
         }
     }
 
+    private async Task FillProofPipeAsync(CancellationToken ct)
+    {
+        long receivedBytes = 0, frameBytes = 0;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var byteBudget = new StratumInputPolicy.ByteBudget(inputPolicy);
+        var staging = ArrayPool<byte>.Shared.Rent(inputPolicy.ReadSize);
+        try
+        {
+            while(!ct.IsCancellationRequested)
+            {
+                var count = await networkStream.ReadAsync(staging.AsMemory(0, inputPolicy.ReadSize), deadline.Token);
+                if(count == 0) break;
+                byteBudget.Charge(count);
+                LastReceive = clock.Now;
+                var receipt = context?.CaptureShareReceipt() ?? new ShareReceipt(TimeProvider.System, TimeProvider.System.GetTimestamp());
+                for(var offset = 0; offset < count;)
+                {
+                    if(frameBytes == 0) deadline.CancelAfter(ProofFrameTimeout);
+                    var end = staging.AsSpan(offset, count - offset).IndexOf((byte) '\n');
+                    var length = end < 0 ? count - offset : end + 1;
+                    frameBytes += length;
+                    if(frameBytes - (end >= 0 ? 1 : 0) > MaxInboundRequestLength)
+                        throw new InvalidDataException("Proof request exceeds its frame limit");
+                    await proofBuffer.AddAsync(length, frameBytes > 0x8000, RemoteEndpoint.Address, deadline.Token, context?.IsAuthorized == true);
+                    staging.AsMemory(offset, length).CopyTo(receivePipe.Writer.GetMemory(length));
+                    offset += length;
+                    receivedBytes += length;
+                    if(end >= 0)
+                    {
+                        // Receipt belongs to arrival, not time spent awaiting capacity.
+                        receiveStamps.Enqueue((receivedBytes, receipt));
+                        proofBuffer.EndUpload();
+                        frameBytes = 0;
+                        deadline.CancelAfter(Timeout.InfiniteTimeSpan);
+                    }
+                    receivePipe.Writer.Advance(length);
+                    // Publish complete lines before waiting on a coalesced next
+                    // frame, so the consumer can release their byte reservations.
+                    if((await receivePipe.Writer.FlushAsync(deadline.Token)).IsCompleted) return;
+                }
+            }
+        }
+        finally { ArrayPool<byte>.Shared.Return(staging); }
+    }
+
     private async Task ProcessReceivePipeAsync(CancellationToken ct,
         StratumProxyPolicy proxyProtocol,
         Func<StratumConnection, JsonRpcRequest, CancellationToken, Task> onRequestAsync)
     {
         long consumedBytes = 0;
+        long examined = 0;
+        using var frameDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var partialFrame = false;
         while(!ct.IsCancellationRequested)
         {
             StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.BufferWait, ConnectionId);
 
-            var result = await receivePipe.Reader.ReadAsync(ct);
+            var result = await receivePipe.Reader.ReadAsync(inputPolicy.ProofSized ? frameDeadline.Token : ct);
 
             var buffer = result.Buffer;
             try
             {
-                if(buffer.Length > MaxInboundRequestLength)
+                if(!inputPolicy.ProofSized && buffer.Length > MaxInboundRequestLength)
                     throw new InvalidDataException($"Incoming data exceeds maximum of {MaxInboundRequestLength}");
 
                 StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.Buffer, ConnectionId, bytes: buffer.Length);
@@ -548,7 +617,10 @@ public class StratumConnection
                         return;
 
                     // Scan buffer for line terminator
-                    position = buffer.PositionOf((byte) '\n');
+                    position = inputPolicy.ProofSized ? StratumInputPolicy.FindLine(buffer, ref examined) : buffer.PositionOf((byte) '\n');
+                    if(inputPolicy.ProofSized && (position == null ? buffer.Length : buffer.Slice(0, position.Value).Length)
+                        > MaxInboundRequestLength)
+                        throw new InvalidDataException("Proof request exceeds its frame limit");
 
                     // Bound a PROXY line while it is still wire bytes, even if a sender
                     // withholds LF. Optional ordinary JSON retains its normal line limit.
@@ -557,6 +629,11 @@ public class StratumConnection
 
                     if(position != null)
                     {
+                        if(partialFrame)
+                        {
+                            frameDeadline.CancelAfter(Timeout.InfiniteTimeSpan);
+                            partialFrame = false;
+                        }
                         var slice = buffer.Slice(0, position.Value);
                         var lineEnd = consumedBytes + slice.Length + 1;
                         while(receiveStamps.TryPeek(out var stamp) && stamp.End < lineEnd)
@@ -581,10 +658,16 @@ public class StratumConnection
 
                         // Commit the consumed line before a cancellation exits this read.
                         buffer = buffer.Slice(buffer.GetPosition(1, position.Value));
+                        proofBuffer?.Consume(slice.Length + 1);
                         consumedBytes = lineEnd;
                         ct.ThrowIfCancellationRequested();
                     }
                 } while(position != null);
+                if(inputPolicy.ProofSized && !buffer.IsEmpty && !partialFrame)
+                {
+                    partialFrame = true;
+                    frameDeadline.CancelAfter(ProofFrameTimeout);
+                }
             }
             finally
             {
@@ -685,6 +768,7 @@ public class StratumConnection
         Func<StratumConnection, JsonRpcRequest, CancellationToken, Task> onRequestAsync,
         ReadOnlySequence<byte> lineBuffer, ShareReceipt receipt)
     {
+        inputPolicy.ValidateJson(lineBuffer);
         await using var stream = rmsm.GetStream(nameof(StratumConnection), lineBuffer.ToSpan()) as RecyclableMemoryStream;
         using var reader = new JsonTextReader(new StreamReader(stream!, Encoding));
 

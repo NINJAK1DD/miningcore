@@ -1,0 +1,149 @@
+{
+  "date": "2026-11-01",
+  "issue": 244,
+  "pullRequest": 256,
+  "upstream": "d7c517d267f10f5bcbbdc366f3e603942f9a5ab5",
+  "runtime": "source-built Ubuntu 26.04 glibc x64 Release, IPC v2; isolated proof-enabled regtest",
+  "admissionPolicy": {
+    "maximumM": 32772,
+    "maximumN": 15360,
+    "k": 32768,
+    "rank": 128,
+    "tile": [
+      8,
+      16
+    ],
+    "reason": "Larger BzMiner GPU defaults verified as shares but exhausted the 8 GiB certificate worker. Uncertified profiles are now rejected before native verification or durable accounting."
+  },
+  "miners": [
+    {
+      "name": "SRBMiner-MULTI",
+      "release": "3.7.3",
+      "source": "https://github.com/doktor83/SRBMiner-Multi/releases/tag/3.7.3",
+      "archiveSha256": "c7250d39fe23549a88ef5d8d2041d75e60166f5d6ab8c8daf7274ab7b0a8da20",
+      "deviceClass": "RTX 3080 Ti GPU",
+      "profile": {
+        "m": 32772,
+        "n": 15360,
+        "k": 32768,
+        "rank": 128,
+        "tile": [
+          8,
+          16
+        ]
+      },
+      "transport": "TLS",
+      "acceptedShares": 1,
+      "nodeAcceptedBlocks": 1,
+      "durationSeconds": 78
+    },
+    {
+      "name": "BzMiner",
+      "release": "v100.60",
+      "source": "https://github.com/bzminer/bzminer/releases/tag/v100.60",
+      "archiveSha256": "1d736e08189a8bb0a5ebe1b1e1b51509b86af4aeea21337b8f799924d46533c5",
+      "deviceClass": "x64 CPU, four mining threads",
+      "profile": {
+        "m": 1024,
+        "n": 1024,
+        "k": 32768,
+        "rank": 128,
+        "tile": [
+          8,
+          16
+        ]
+      },
+      "transport": "TLS with --ssl-verify and trusted test CA",
+      "acceptedShares": 8,
+      "nodeAcceptedBlocks": 1,
+      "durationSeconds": 67,
+      "separateWorkerIdentityVerified": true
+    }
+  ],
+  "officialClient": {
+    "officialRevision": "d7c517d267f10f5bcbbdc366f3e603942f9a5ab5",
+    "client": "unmodified MiningClient + MiningJob + PlainProof",
+    "transport": "private UDS to adapter, hostname-verified TLS to production Release pool",
+    "proofSource": "BzMiner v100.60 CPU, m=n=1024 k=32768 rank=128 tile=8x16",
+    "acceptedProofs": 17,
+    "rejectedProofs": 18,
+    "newBlocks": 1,
+    "durationSeconds": 141,
+    "checks": {
+      "exactIntegerTarget": true,
+      "poolTargetDiffersFromNetworkTarget": true,
+      "targetTamper": true,
+      "workerInjection": true,
+      "crossSessionRejected": true,
+      "fixedWorkerAccounting": true,
+      "duplicateOrStaleRejected": true
+    }
+  },
+  "liveSecurity": {
+    "untrustedCertificateRejected": true,
+    "hostnameMismatchRejected": true,
+    "oversizedCertificateProfileRejectedBeforeAccounting": true
+  },
+  "tests": {
+    "fullRegression": {
+      "passed": 5789,
+      "failed": 0,
+      "skipped": 24
+    },
+    "finalFocused": {
+      "passed": 413,
+      "failed": 0,
+      "skipped": 1
+    },
+    "gatewayContracts": 20,
+    "scopeNote": "Full regression covers worker-identity implementation; the final focused run also includes the two added M/N upper-bound cases. GitHub CI reruns the complete suite on the final commit."
+  },
+  "artifactsSha256": {
+    "miningcoreDll": "922c4ec581bb6fc0531150b8af74cc58b96e7580864f12961279e70ac2114499",
+    "nativeWorker": "9b97d5ba28c363928a4a425960bae2af36bba46253e94f5d4110eae864eb0aa7",
+    "gatewayAdapter": "55c16655d0bedef2880a831f4b31368e76ddd2f535c5bc275fc758b67d211011",
+    "fullRegressionTrx": "f6be440f17c6455aec06bc80c4c6ea5aa56cac2899e4995233394d2bb1758171",
+    "focusedTrx": "5e1d5cbc95837192ec136239f26fd55516a3104af703570d6481aac7717934c8"
+  },
+  "limits": [
+    "BzMiner GPU defaults and untested miners/releases/backends are not certified.",
+    "Official client API compatibility is tested with BzMiner-generated proofs; vLLM/MoE and FP8 backends remain unsupported.",
+    "Gateway deployment is optional for operators using direct named-object v2 miners.",
+    "No mainnet block/payment is claimed. Private lab identities, endpoints, credentials and operational paths are omitted."
+  ],
+  "recoveryObservation": {
+    "transientCandidateFailures": 2,
+    "finalGatewayBlockAcceptedAfterSeconds": 141,
+    "outcome": "Durable candidate retry recovered; final share receipts remained committed. No allocator failure was captured and the cause was not reproduced.",
+    "privateDiagnosticReplays": [
+      {
+        "attempt": 1,
+        "exit": 0,
+        "responseStatus": 0,
+        "responseBytes": 59740,
+        "seconds": 45
+      },
+      {
+        "attempt": 2,
+        "exit": 0,
+        "responseStatus": 0,
+        "responseBytes": 59740,
+        "seconds": 45
+      },
+      {
+        "attempt": 3,
+        "exit": 0,
+        "responseStatus": 0,
+        "responseBytes": 59740,
+        "seconds": 46
+      }
+    ],
+    "additionalDiagnosticRun": {
+      "miner": "BzMiner v100.60",
+      "shares": 40,
+      "newBlocks": 3,
+      "durationSeconds": 207
+    },
+    "diagnosticScope": "Three replays and three additional node-accepted blocks used a private diagnostic-only worker with unchanged proof algorithms and limits; they are supplementary to the normal packaged-worker runs above."
+  }
+}

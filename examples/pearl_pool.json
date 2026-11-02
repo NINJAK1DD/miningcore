@@ -1,0 +1,160 @@
+{
+  "logging": {
+    "level": "info",
+    "enableConsoleLog": true,
+    "enableConsoleColors": true,
+    "logFile": "miningcore.log",
+    "apiLogFile": "miningcore-api.log",
+    "logBaseDirectory": "logs",
+    "perPoolLogFile": false
+  },
+  "banning": {
+    "manager": "Integrated",
+    "banOnJunkReceive": true,
+    "banOnInvalidShares": true,
+    "banOnLoginFailure": true
+  },
+  "notifications": {
+    "email": {
+      "host": "smtp.example.com",
+      "port": 587,
+      "tlsMode": "startTls",
+      "user": "CHANGE_ME_SMTP_USER",
+      "password": "CHANGE_ME_SMTP_PASSWORD",
+      "fromAddress": "pool@example.com",
+      "fromName": "Miningcore operator"
+    },
+    "admin": {
+      "enabled": false,
+      "emailAddress": "user@example.com",
+      "notifyBlockFound": true
+    }
+  },
+  "persistence": {
+    "postgres": {
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "miningcore",
+      "password": "CHANGE_ME_POSTGRES_PASSWORD",
+      "database": "miningcore"
+    }
+  },
+  "paymentProcessing": {
+    "enabled": true,
+    "interval": 600,
+    "coinbaseString": "Miningcore"
+  },
+  "shareRecoveryFile": "/var/lib/miningcore/recovered-shares.txt",
+  "api": {
+    "enabled": true,
+    "listenAddress": "127.0.0.1",
+    "port": 4000,
+    "adminPort": 4001,
+    "metricsPort": 4002,
+    "adminIpWhitelist": [
+      "127.0.0.1"
+    ],
+    "metricsIpWhitelist": [
+      "127.0.0.1"
+    ],
+    "legacyNullValueHandling": false,
+    "rateLimiting": {
+      "disabled": true
+    }
+  },
+  "pools": [
+    {
+      "id": "prl1",
+      "enabled": true,
+      "coin": "pearl",
+      "address": "CHANGE_ME_PEARL_POOL_TAPROOT_ADDRESS",
+      "network": "mainnet",
+      "proofWorker": "/opt/miningcore/pearl/miningcore-pearl-worker",
+      "templatePollSeconds": 5,
+      "jobLifetimeSeconds": 120,
+      "maximumJobsPerWorker": 8,
+      "maximumConnections": 1024,
+      "maximumProofFrames": 256,
+      "maximumProofBufferMiB": 256,
+      "maximumProofFramesPerIp": 4,
+      "rewardRecipients": [
+        {
+          "type": "op",
+          "address": "CHANGE_ME_PEARL_FEE_TAPROOT_ADDRESS",
+          "percentage": 0
+        }
+      ],
+      "enableInternalStratum": true,
+      "clientConnectionTimeout": 600,
+      "vardiffIdleSweepInterval": 30,
+      "banning": {
+        "checkThreshold": 50,
+        "enabled": true,
+        "invalidPercent": 50,
+        "time": 600
+      },
+      "ports": {
+        "4400": {
+          "varDiff": {
+            "retargetTime": 90,
+            "targetTime": 15,
+            "minDiff": 5,
+            "maxDiff": 10000,
+            "variancePercent": 30
+          },
+          "difficultyGraceSeconds": 15,
+          "name": "PRL-TLS-LOW-DIFF",
+          "tlsPfxPassword": "CHANGE_ME_CERTIFICATE_PASSWORD",
+          "tlsPfxFile": "/etc/miningcore/CHANGE_ME_stratum.pfx",
+          "listenAddress": "*",
+          "difficulty": 10,
+          "tls": true
+        },
+        "4401": {
+          "varDiff": {
+            "retargetTime": 90,
+            "targetTime": 15,
+            "minDiff": 50,
+            "maxDiff": 1000000,
+            "variancePercent": 30
+          },
+          "difficultyGraceSeconds": 15,
+          "name": "PRL-TLS-HIGH-DIFF",
+          "tlsPfxPassword": "CHANGE_ME_CERTIFICATE_PASSWORD",
+          "tlsPfxFile": "/etc/miningcore/CHANGE_ME_stratum.pfx",
+          "listenAddress": "*",
+          "difficulty": 100,
+          "tls": true
+        }
+      },
+      "daemons": [
+        {
+          "password": "CHANGE_ME_NODE_RPC_PASSWORD",
+          "port": 44107,
+          "host": "127.0.0.1",
+          "user": "CHANGE_ME_NODE_RPC_USER"
+        },
+        {
+          "category": "wallet",
+          "password": "CHANGE_ME_WALLET_RPC_PASSWORD",
+          "port": 44207,
+          "host": "127.0.0.1",
+          "user": "CHANGE_ME_WALLET_RPC_USER"
+        }
+      ],
+      "paymentProcessing": {
+        "enabled": true,
+        "minimumPayment": 1,
+        "payoutSchemeConfig": {
+          "factor": 2
+        },
+        "minimumConfirmations": 101,
+        "feeRateGrainsPerKb": 10000,
+        "payoutScheme": "PPLNS",
+        "walletPassword": "CHANGE_ME_OYSTER_UNLOCK_PASSPHRASE"
+      },
+      "blockRefreshInterval": 0,
+      "jobRebroadcastTimeout": 0
+    }
+  ]
+}

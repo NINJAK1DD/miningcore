@@ -463,14 +463,14 @@ internal static class ShareAccounting
         bool allowUnavailableTemplate)
     {
         // Recovery may continue after optional template enrichment fails. A present template
-        // remains authoritative, and live/configured PPS admission always requires Bitcoin.
+        // remains authoritative; live PPS requires an audited synchronous share contract.
         if(pool.Template == null && allowUnavailableTemplate)
             return;
 
         if(pool.Template?.Family is not (CoinFamily.Bitcoin or
-               CoinFamily.BitcoinBlake2b))
+               CoinFamily.BitcoinBlake2b or CoinFamily.Pearl))
             throw new InvalidDataException(
-                $"PPS accounting is currently restricted to the audited Bitcoin-family share contract ({pool.Id})");
+                $"PPS accounting is restricted to the audited Bitcoin-family and Pearl share contracts ({pool.Id})");
     }
 
     private static (BigInteger Value, int Scale) GetDecimalParts(decimal value)

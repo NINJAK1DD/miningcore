@@ -56,4 +56,5 @@ public class Block
     /// header and wallet coinbase. Never restored from a database/API projection.
     /// </summary>
     public bool BitcoinBlake2bCustodialEvidenceVerified { get; set; }
+    public bool PearlCustodialEvidenceVerified { get; set; }
 }

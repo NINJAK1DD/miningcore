@@ -5,6 +5,7 @@ using System.Reflection;
 using Miningcore.Tests.Blockchain;
 using Miningcore.Tests.Blockchain.Bitcoin;
 using Miningcore.Tests.Blockchain.BitcoinBlake2b;
+using Miningcore.Tests.Blockchain.Pearl;
 using Miningcore.Tests.Mining;
 using Miningcore.Tests.Payments;
 using Miningcore.Tests.Persistence.Postgres;
@@ -95,6 +96,10 @@ public class NonParallelCollectionTests
 
     public static IEnumerable<object[]> ReviewedCollections()
     {
+        // Pearl's process-wide worker capacity is exercised to exhaustion. Its live GPU
+        // fixture shares that capacity and must not overlap the cancellation test.
+        yield return new object[] { typeof(PearlProofWorkerCollection),
+            new[] { typeof(PearlProofVerifierTests), typeof(PearlLiveLabTests), typeof(PearlNoIndexLiveTests), typeof(PearlTransportTests) } };
         // The deadline collection has its own exact-membership contract.
         yield return new object[] { typeof(AdminApiEnvironmentCollection), new[] { typeof(AdminApiSecurityTests) } };
         yield return new object[] { typeof(BitcoinCorePayoutIntegrationCollection),

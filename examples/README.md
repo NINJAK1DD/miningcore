@@ -43,6 +43,7 @@ for the expected miner fleet before deployment.
 
 | Example | Use it for |
 | --- | --- |
+| [`pearl_pool.json`](pearl_pool.json) | Pearl integer V3 with SRBMiner 3.7.3, a local proof worker, and Oyster; read [the Pearl deployment guide](../docs/pearl-development.md). |
 | [`bitcoin_pool.json`](bitcoin_pool.json) | One direct-coinbase Bitcoin SOLO pool with low- and high-difficulty Stratum ports |
 | [`bitcoin_blake2b_pool.json`](bitcoin_blake2b_pool.json) | Separate BLAKE2b header-v2 chain, custodial SOLO; requires the [pinned Knots and miner contract](../docs/bitcoin-blake2b.md), not SHA-256d Bitcoin hardware |
 | [`bitcoin_direct_solo_pool.json`](bitcoin_direct_solo_pool.json) | Direct-coinbase Bitcoin SOLO with an operator fee output; complete the [direct-SOLO guide](../docs/bitcoin-direct-solo.md) before use |

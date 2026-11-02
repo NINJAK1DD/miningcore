@@ -143,7 +143,7 @@ public class PpsConfigurationTests
     }
 
     [Fact]
-    public void NonBitcoinPps_FailsBeforeMiningStarts()
+    public void UnauditedFamilyPps_FailsBeforeMiningStarts()
     {
         var config = CreateConfig(CoinFamily.Ethereum);
 
@@ -151,6 +151,23 @@ public class PpsConfigurationTests
             Program.ValidatePpsDeployment(config));
 
         Assert.Contains("Bitcoin-family", error.Message);
+    }
+
+    [Fact]
+    public void PearlPps_RequiresLocalAccountingAndBothPaymentSwitches()
+    {
+        var config = CreateConfig(CoinFamily.Bitcoin);
+        config.Pools[0].Template = new PearlCoinTemplate {Family = CoinFamily.Pearl};
+        Program.ValidatePpsDeployment(config, requireAssignedTemplates: true);
+        Assert.True(Program.RequiresShareAccountingPersistence(config));
+        config.Persistence = null;
+        Assert.Throws<PoolStartupException>(() => Program.ValidatePpsDeployment(config));
+        config.Persistence = new PersistenceConfig {Postgres = new PostgresConfig()};
+        config.PaymentProcessing.Enabled = false;
+        Assert.Throws<PoolStartupException>(() => Program.ValidatePpsDeployment(config));
+        config.PaymentProcessing.Enabled = true;
+        config.Pools[0].PaymentProcessing.Enabled = false;
+        Assert.Throws<PoolStartupException>(() => Program.ValidatePpsDeployment(config));
     }
 
     [Fact]
