@@ -64,7 +64,8 @@ internal sealed class PearlProofVerifier
             using var process = new Process { StartInfo = StartInfo() };
             try {process.Start();}
             catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or InvalidOperationException)
-            {throw new PearlWorkerException("Pearl worker could not start", ex);}
+            {throw new PearlWorkerException("Pearl worker could not start", ex, PearlWorkerFailure.Start);}
+            PearlWorkerException failure = null;
             try
             {
                 var outputTask = ReadBoundedAsync(process.StandardOutput.BaseStream, 60180, deadline.Token);
@@ -74,7 +75,10 @@ internal sealed class PearlProofVerifier
                 var response = await outputTask;
                 if(process.ExitCode == 1 && response.AsSpan().SequenceEqual("PRLRES02\x01\0\0\0"u8))
                     throw new PearlInvalidProofException();
-                if(process.ExitCode != 0 || response.Length < 180 || !response.AsSpan(0, 8).SequenceEqual("PRLRES02"u8) ||
+                if(process.ExitCode != 0)
+                    throw new PearlWorkerException("Pearl worker failed", failure: process.ExitCode == 2 &&
+                        response.AsSpan().SequenceEqual("PRLRES02\x02\0\0\0"u8) ? PearlWorkerFailure.Native : PearlWorkerFailure.Exit);
+                if(response.Length < 180 || !response.AsSpan(0, 8).SequenceEqual("PRLRES02"u8) ||
                     response[8] != 0 || response[9] > 1 || response[10] != 0 || response[11] != 0)
                     throw new PearlWorkerException("Pearl worker failed or returned an invalid response");
 
@@ -97,37 +101,34 @@ internal sealed class PearlProofVerifier
                     throw new PearlWorkerException("Pearl worker candidate classification mismatch");
                 return new Result(header.ToArray(), publicData, candidate, response[180..]);
             }
+            catch(PearlWorkerException ex) { failure = ex; throw; }
             catch(OperationCanceledException ex) when(!ct.IsCancellationRequested)
             {
-                throw new PearlWorkerException("Pearl worker exceeded its deadline", ex);
+                throw failure = new PearlWorkerException("Pearl worker exceeded its deadline", ex, PearlWorkerFailure.Timeout);
             }
             catch(InvalidDataException ex)
             {
-                throw new PearlWorkerException("Pearl worker exceeded its response limits", ex);
+                throw failure = new PearlWorkerException("Pearl worker exceeded its response limits", ex, PearlWorkerFailure.OutputLimit);
             }
             catch(IOException ex)
             {
-                throw new PearlWorkerException("Pearl worker communication failed", ex);
+                throw failure = new PearlWorkerException("Pearl worker communication failed", ex, PearlWorkerFailure.Pipe);
             }
             finally
             {
                 // Cancellation alone cannot stop native work. Kill and reap before releasing capacity.
                 await StopAsync(process);
+                if(failure != null) failure.ExitCode = process.ExitCode;
             }
         }
+        catch(PearlWorkerException ex) { ex.Phase = prove ? PearlProofPhase.Prove : PearlProofPhase.Verify; throw; }
         finally { slots.Release(); }
     }
 
     internal async Task CheckVersionAsync(CancellationToken ct)
     {
         if(OperatingSystem.IsLinux())
-        {
-            var untrusted = UnixFileMode.GroupWrite | UnixFileMode.OtherWrite;
-            if((File.GetAttributes(executable) & FileAttributes.ReparsePoint) != 0 ||
-                (File.GetUnixFileMode(executable) & untrusted) != 0 ||
-                (File.GetUnixFileMode(Path.GetDirectoryName(executable)) & untrusted) != 0)
-                throw new InvalidDataException("Pearl worker and its directory must not be writable by untrusted users");
-        }
+            PearlWorkerTrust.Validate(executable);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(5));
         using var process = new Process { StartInfo = StartInfo() };
@@ -194,5 +195,15 @@ internal sealed class PearlProofVerifier
 }
 
 // Deliberately distinct from malformed client input: infrastructure failures must not ban miners.
-internal sealed class PearlWorkerException(string message, Exception inner = null) : Exception(message, inner);
+internal enum PearlWorkerFailure { Start, Native, Exit, Response, Timeout, OutputLimit, Pipe }
+internal sealed class PearlWorkerException(string message, Exception inner = null,
+    PearlWorkerFailure failure = PearlWorkerFailure.Response) : Exception(message, inner)
+{
+    internal PearlWorkerFailure Failure { get; } = failure;
+    internal PearlProofPhase Phase { get; set; }
+    internal int? ExitCode { get; set; }
+    // Only finite enums and an OS integer are exposed; never stderr, input or paths.
+    internal void WriteDiagnostic(NLog.ILogger logger) => logger.Warn(
+        "Pearl proof worker failure: phase={0}, class={1}, exit={2}", Phase, Failure, ExitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unavailable");
+}
 internal sealed class PearlInvalidProofException() : Exception("Invalid Pearl proof");

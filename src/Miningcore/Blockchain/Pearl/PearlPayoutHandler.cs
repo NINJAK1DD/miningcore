@@ -83,7 +83,7 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         return response.Response;
     }
 
-    private async Task SelectNodeAsync(string expectedTip, CancellationToken ct)
+    private async Task SelectNodeAsync(string expectedTip, CancellationToken ct, bool allowFallback = false)
     {
         foreach(var candidate in nodes)
         {
@@ -102,6 +102,7 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
             catch(OperationCanceledException) when(ct.IsCancellationRequested) { throw; }
             catch(Exception ex) { RpcConsumerDiagnostics.Write(logger, LogLevel.Warn, "PearlPayout.NodeSelection", failure: ex); }
         }
+        if(allowFallback && expectedTip != null) { await SelectNodeAsync(null, ct); return; }
         throw new InvalidDataException("No compatible synchronized Pearl payout node");
     }
 
@@ -109,8 +110,12 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
     {
         classificationStarted = true;
         classifiedTip = null;
-        await SelectNodeAsync(null, ct);
         var synced = (await RpcAsync<JToken>(wallet, "chainsynced", null, ct))?.Value<bool>() == true;
+        var walletTip = synced ? await RpcAsync<string>(wallet, "getbestblockhash", null, ct) : null;
+        if(synced && !IsTransactionId(walletTip)) throw new InvalidDataException("Missing Pearl wallet chain identity");
+        // Prefer the same chain used by new payouts. While Oyster rescans, still
+        // observe reorgs, but do not authorize fresh reward allocations.
+        await SelectNodeAsync(walletTip, ct);
         var chain = await RpcAsync<JObject>(node, "getblockchaininfo", null, ct);
         var tip = chain?.Value<ulong?>("blocks") ?? throw new InvalidDataException("Missing Pearl chain height");
         var bestHash = chain.Value<string>("bestblockhash");
@@ -291,8 +296,15 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
         var amounts = selected.ToDictionary(x => x.Address, x => x.Amount, StringComparer.Ordinal);
         _ = PearlWalletRequest.SendMany(amounts, network, config.FeeRateGrainsPerKb.Value);
         var available = await RpcAsync<JToken>(wallet, "getbalance", new object[] {"default", 1}, ct);
-        var unspent = await RpcAsync<JArray>(wallet, "listunspent", new object[] {1, 9999999}, ct);
-        var feeReserve = PearlWalletRequest.FeeReserve(unspent?.Count ?? 0, selected.Length, config.FeeRateGrainsPerKb.Value);
+        var inventory = await wallet.ExecuteBoundedAsync<JArray>(logger, "listunspent", ct,
+            new RpcResponseLimits(PearlWalletRequest.UnspentResponseBytes, 64), new object[] {1, 9999999});
+        if(inventory.Error != null || inventory.Response == null) throw new InvalidDataException("Pearl wallet funding inventory unavailable");
+        var unspent = inventory.Response;
+        metrics.Set(poolConfig.Id, PearlMeasure.WalletUtxos, unspent.Count);
+        if(unspent.Count >= 5000)
+            logger.Warn("Pearl wallet has at least 5000 unspent outputs; schedule audited wallet maintenance before the 65536-output inventory limit");
+        var feeReserve = PearlWalletRequest.FeeReserve(unspent, selected.Sum(x => x.Amount) + MarkerAmount,
+            selected.Length, config.FeeRateGrainsPerKb.Value);
         if(available == null || available.Value<decimal>() < selected.Sum(x => x.Amount) + MarkerAmount + feeReserve)
             throw new InvalidDataException("Oyster has insufficient spendable funds including the payout marker and fee");
         try
@@ -357,7 +369,11 @@ public sealed class PearlPayoutHandler(IConnectionFactory cf, IMapper mapper, IS
     {
         try
         {
-            await SelectNodeAsync(null, ct);
+            // Prefer Oyster's chain without requiring catch-up to recover an
+            // existing broadcast. Canonical/mempool evidence is still checked
+            // against one pinned endpoint; this never authorizes a new send.
+            var preferredTip = await RpcAsync<string>(wallet, "getbestblockhash", null, ct);
+            await SelectNodeAsync(IsTransactionId(preferredTip) ? preferredTip : null, ct, allowFallback: true);
             var recipients = JsonConvert.DeserializeObject<Balance[]>(intent.Recipients);
             if(recipients == null || recipients.Length is < 1 or > 100 || recipients.Any(x => x.PoolId != poolConfig.Id))
                 throw new InvalidDataException("Invalid persisted Pearl recipients");

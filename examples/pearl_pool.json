@@ -74,7 +74,9 @@
       "jobLifetimeSeconds": 120,
       "maximumJobsPerWorker": 8,
       "maximumConnections": 1024,
-      "maximumProofFrames": 4,
+      "maximumProofFrames": 256,
+      "maximumProofBufferMiB": 256,
+      "maximumProofFramesPerIp": 4,
       "rewardRecipients": [
         {
           "type": "op",

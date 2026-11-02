@@ -3,7 +3,7 @@ using Prometheus;
 namespace Miningcore.Blockchain.Pearl;
 
 // Labels are configuration-owned pool IDs and finite enums, never miner/RPC/proof text.
-internal enum PearlMeasure { Height, CertificateVersion, MinimumRank, TemplateAgeSeconds, ActiveJobs, StaleJobs, CandidateQueue, ActiveVerifiers, ActiveProvers, CircuitCaches, PayoutState }
+internal enum PearlMeasure { Height, CertificateVersion, MinimumRank, TemplateAgeSeconds, ActiveJobs, StaleJobs, CandidateQueue, ActiveVerifiers, ActiveProvers, CircuitCaches, PayoutState, WalletUtxos }
 internal enum PearlEvent { ShareAccepted, ShareInvalid, ShareStale, ShareDuplicate, ShareBusy, RequestRejected, Unauthorized, NativeFailure, CandidateSubmitted, CandidateUncertain, CandidateAccepted, CandidateRejected, CandidateRetired, RewardPending, RewardMature, RewardOrphaned, RewardQuarantined, PayoutAttempt, PayoutUncertain, PayoutCompleted, PayoutHeld }
 internal enum PearlProofPhase { Verify, Prove }
 

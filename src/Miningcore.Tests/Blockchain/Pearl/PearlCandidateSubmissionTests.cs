@@ -12,6 +12,36 @@ namespace Miningcore.Tests.Blockchain.Pearl;
 
 public class PearlCandidateSubmissionTests
 {
+    [Theory]
+    [InlineData(false, 999, false, false, (int) PearlCandidateOutcome.Uncertain)]
+    [InlineData(false, 1000, false, false, (int) PearlCandidateOutcome.Accepted)]
+    [InlineData(true, 1000, true, false, (int) PearlCandidateOutcome.Uncertain)]
+    [InlineData(true, 1001, true, false, (int) PearlCandidateOutcome.Orphaned)]
+    [InlineData(true, 1001, true, true, (int) PearlCandidateOutcome.Uncertain)]
+    [InlineData(true, 1001, false, false, (int) PearlCandidateOutcome.Uncertain)]
+    public async Task RecoveryRequiresStableCompetingEvidenceBeforeRetiring(bool unknown, int height, bool competing, bool moving, int expected)
+    {
+        var raw = new byte[108];
+        var digest = SHA256.HashData(SHA256.HashData(raw)); Array.Reverse(digest);
+        var hash = Convert.ToHexString(digest).ToLowerInvariant();
+        Task<RpcResponse<JToken>> Rpc(string method, object args, CancellationToken ct)
+        {
+            if(method == "getblockheader") return Task.FromResult(unknown
+                ? new RpcResponse<JToken>(null, new JsonRpcError(-5, "unknown", null)) : new RpcResponse<JToken>(Convert.ToHexString(raw)));
+            if(method == "submitblock") return Task.FromResult(new RpcResponse<JToken>(null, new JsonRpcError(-32603, "unavailable", null)));
+            if(method == "getblockhash") Assert.True(height >= 1000);
+            JToken value = method switch
+            {
+                "getblockchaininfo" => new JObject {["blocks"] = height, ["bestblockhash"] = new string('b',64)},
+                "getblockhash" => competing ? new string('c',64) : hash,
+                "getbestblockhash" => new string(moving ? 'd' : 'b',64),
+                _ => throw new InvalidOperationException(method)
+            };
+            return Task.FromResult(new RpcResponse<JToken>(value));
+        }
+        Assert.Equal((PearlCandidateOutcome) expected, await PearlCandidateSubmission.ReconcileAsync(hash, raw, 1000, Rpc, CancellationToken.None));
+    }
+
     [Fact]
     public async Task TemporaryMissingSnapshotDuringProofDoesNotCancelAndCompletionRechecksTip()
     {

@@ -562,7 +562,19 @@
                 "maximumProofFrames": {
                   "type": "integer",
                   "minimum": 1,
-                  "maximum": 32,
+                  "maximum": 4096,
+                  "default": 256
+                },
+                "maximumProofBufferMiB": {
+                  "type": "integer",
+                  "minimum": 64,
+                  "maximum": 1024,
+                  "default": 256
+                },
+                "maximumProofFramesPerIp": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 64,
                   "default": 4
                 },
                 "paymentProcessing": {

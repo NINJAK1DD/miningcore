@@ -29,7 +29,9 @@ namespace Miningcore.Blockchain.Pearl
                     "jobLifetimeSeconds":{"type":"integer","minimum":30,"maximum":180,"default":120},
                     "maximumJobsPerWorker":{"type":"integer","minimum":2,"maximum":16,"default":8},
                     "maximumConnections":{"type":"integer","minimum":16,"maximum":4096,"default":1024},
-                    "maximumProofFrames":{"type":"integer","minimum":1,"maximum":32,"default":4},
+                    "maximumProofFrames":{"type":"integer","minimum":1,"maximum":4096,"default":256},
+                    "maximumProofBufferMiB":{"type":"integer","minimum":64,"maximum":1024,"default":256},
+                    "maximumProofFramesPerIp":{"type":"integer","minimum":1,"maximum":64,"default":4},
                     "paymentProcessing":{"properties":{
                       "minimumPayment":{"type":"number","minimum":0.01},
                       "feeRateGrainsPerKb":{"type":"integer","minimum":1000,"maximum":100000000,"default":10000},
@@ -46,7 +48,9 @@ namespace Miningcore.Blockchain.Pearl
         public int JobLifetimeSeconds { get; set; } = 120;
         public int MaximumJobsPerWorker { get; set; } = 8;
         public int MaximumConnections { get; set; } = 1024;
-        public int MaximumProofFrames { get; set; } = 4;
+        public int MaximumProofFrames { get; set; } = 256;
+        public int MaximumProofBufferMiB { get; set; } = 256;
+        public int MaximumProofFramesPerIp { get; set; } = 4;
 
         internal PearlNetwork Validate(PoolConfig pool)
         {
@@ -76,7 +80,8 @@ namespace Miningcore.Blockchain.Pearl
                 throw new InvalidDataException("Pearl requires the pinned Linux x64 proof worker at an absolute path");
             if(TemplatePollSeconds is < 1 or > 30 || JobLifetimeSeconds is < 30 or > 180 ||
                 MaximumJobsPerWorker is < 2 or > 16 || MaximumConnections is < 16 or > 4096 ||
-                MaximumProofFrames is < 1 or > 32 || MaximumProofFrames > MaximumConnections)
+                MaximumProofFrames is < 1 or > 4096 ||
+                MaximumProofBufferMiB is < 64 or > 1024 || MaximumProofFramesPerIp is < 1 or > 64)
                 throw new InvalidDataException("Invalid Pearl job limits");
             if(pool.EnableInternalStratum != true)
                 throw new InvalidDataException("Pearl requires local Stratum and durable local accounting");

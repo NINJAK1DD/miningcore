@@ -16,6 +16,74 @@ public class PearlProofWorkerCollection { }
 [Collection("Pearl proof worker processes")]
 public class PearlProofVerifierTests
 {
+    [Theory]
+    [InlineData(0, 1000, true)]
+    [InlineData(1000, 1000, true)]
+    [InlineData(1001, 1000, false)]
+    [InlineData(1001, 0, false)]
+    public void OnlyRootOrServiceUidIsTrusted(int owner, int service, bool expected) =>
+        Assert.Equal(expected, PearlWorkerTrust.TrustedOwner((uint) owner, (uint) service));
+
+    [PearlLinuxFact]
+    public async Task WorkerFailuresExposeOnlyBoundedDiagnosticFields()
+    {
+        var (header, target, proof) = Input();
+        foreach(var (script, category, code) in new[]
+        {
+            ("/bin/cat >/dev/null; printf 'private-secret' >&2; printf 'PRLRES02\\002\\000\\000\\000'; exit 2", PearlWorkerFailure.Native, 2),
+            ("/bin/cat >/dev/null; kill -KILL $$", PearlWorkerFailure.Exit, 137),
+            ("/bin/cat >/dev/null; printf 'malformed-private-response'", PearlWorkerFailure.Response, 0),
+            ("/bin/cat >/dev/null; exec /bin/sleep 60", PearlWorkerFailure.Timeout, 137)
+        })
+        {
+            using var helper = new Helper(script);
+            var error = await Assert.ThrowsAsync<PearlWorkerException>(() => new PearlProofVerifier(helper.Path)
+                .VerifyAsync(header, target, proof, false, CancellationToken.None));
+            Assert.Equal(category, error.Failure);
+            Assert.Equal(code, error.ExitCode);
+            Assert.Equal(PearlProofPhase.Verify, error.Phase);
+            using var log = new NLog.LogFactory();
+            var targetLog = new NLog.Targets.MemoryTarget {Layout = "${message}${exception:format=tostring}"};
+            var configuration = new NLog.Config.LoggingConfiguration();
+            configuration.AddRuleForAllLevels(targetLog); log.Configuration = configuration;
+            error.WriteDiagnostic(log.GetLogger("test"));
+            var entry = Assert.Single(targetLog.Logs);
+            Assert.Contains("phase=Verify", entry);
+            Assert.Contains("class=" + category, entry);
+            Assert.Contains("exit=" + code, entry);
+            Assert.DoesNotContain("private", entry);
+            Assert.DoesNotContain(helper.Path, entry);
+        }
+        var start = await Assert.ThrowsAsync<PearlWorkerException>(() => new PearlProofVerifier("/nonexistent/pearl-worker")
+            .VerifyAsync(header, target, proof, true, CancellationToken.None));
+        Assert.Equal(PearlProofPhase.Prove, start.Phase);
+        Assert.Equal(PearlWorkerFailure.Start, start.Failure);
+        Assert.Null(start.ExitCode);
+    }
+
+    [PearlOwnershipFact]
+    public async Task ForeignOwnedExecutableAndAncestorAreRejectedBeforeExecution()
+    {
+        using var helper = new Helper("printf '" + PearlProofVerifier.ExpectedVersion + "\\n'");
+        var verifier = new PearlProofVerifier(helper.Path);
+        await verifier.CheckVersionAsync(CancellationToken.None);
+        async Task Owner(string path, string uid)
+        {
+            var info = new ProcessStartInfo("/usr/bin/chown") {UseShellExecute = false};
+            info.ArgumentList.Add(uid); info.ArgumentList.Add(path);
+            using var process = Process.Start(info); await process.WaitForExitAsync(); Assert.Equal(0, process.ExitCode);
+        }
+        var directory = Path.GetDirectoryName(helper.Path);
+        try
+        {
+            await Owner(helper.Path, "65534");
+            await Assert.ThrowsAsync<InvalidDataException>(() => verifier.CheckVersionAsync(CancellationToken.None));
+            await Owner(helper.Path, "0");
+            await Owner(directory, "65534");
+            await Assert.ThrowsAsync<InvalidDataException>(() => verifier.CheckVersionAsync(CancellationToken.None));
+        }
+        finally { await Owner(helper.Path, "0"); await Owner(directory, "0"); }
+    }
     private sealed class Helper : IDisposable
     {
         private readonly string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "miningcore-pearl-" + Guid.NewGuid().ToString("N"));
@@ -132,6 +200,15 @@ public class PearlProofVerifierTests
         using var next = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             verifier.VerifyAsync(header, target, proof, false, next.Token));
+    }
+}
+
+internal sealed class PearlOwnershipFactAttribute : FactAttribute
+{
+    public PearlOwnershipFactAttribute()
+    {
+        if(!OperatingSystem.IsLinux() || Environment.GetEnvironmentVariable("MININGCORE_TEST_PEARL_OWNERSHIP") != "1")
+            Skip = "Requires the opt-in disposable root ownership lab";
     }
 }
 

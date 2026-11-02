@@ -60,6 +60,7 @@ public class StratumConnection
         this.rmsm = rmsm;
 
         this.inputPolicy = inputPolicy ?? throw new ArgumentNullException(nameof(inputPolicy));
+        proofBuffer = inputPolicy.CreateBuffer();
         receivePipe = new Pipe(inputPolicy.ProofSized
             ? new PipeOptions(pauseWriterThreshold: inputPolicy.MaximumLength + 32768,
                 resumeWriterThreshold: inputPolicy.MaximumLength / 2, minimumSegmentSize: 16384)
@@ -82,28 +83,7 @@ public class StratumConnection
     private readonly IMasterClock clock;
     private readonly CancellationToken failStopToken;
     private readonly StratumInputPolicy inputPolicy;
-    private readonly object proofBufferLock = new();
-    private long proofBuffered;
-    private IDisposable proofFrameLease;
-
-    private void AccountProofBuffer(long delta)
-    {
-        if(!inputPolicy.ProofSized) return;
-        lock(proofBufferLock)
-        {
-            proofBuffered += delta;
-            if(proofBuffered > 0x8000 && proofFrameLease == null)
-            {
-                if(context?.IsAuthorized != true) throw new InvalidDataException("Authorization required for proof frames");
-                proofFrameLease = inputPolicy.AcquireFrame();
-            }
-            else if(proofBuffered <= 0x8000)
-            {
-                proofFrameLease?.Dispose();
-                proofFrameLease = null;
-            }
-        }
-    }
+    private readonly StratumInputPolicy.ProofBuffer proofBuffer;
 
     internal Func<object, CancellationToken, Task> SendMessageOverride { get; set; }
     internal Func<IPAddress, bool> AdmitProxyIdentity { get; set; }
@@ -422,7 +402,7 @@ public class StratumConnection
         finally
         {
             inputLease?.Dispose();
-            lock(proofBufferLock) { proofFrameLease?.Dispose(); proofFrameLease = null; }
+            proofBuffer?.Dispose();
             finishStartup = null;
             this.socket = null;
 
@@ -533,22 +513,18 @@ public class StratumConnection
 
     private async Task FillReceivePipeAsync(CancellationToken ct)
     {
+        if(inputPolicy.ProofSized) { await FillProofPipeAsync(ct); return; }
         long receivedBytes = 0;
-        var byteBudget = new StratumInputPolicy.ByteBudget(inputPolicy);
         while(!ct.IsCancellationRequested)
         {
             StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.ReceiveWait, ConnectionId);
 
             var memory = receivePipe.Writer.GetMemory(inputPolicy.ReadSize);
-            if(inputPolicy.ProofSized)
-                memory = memory[..inputPolicy.ReadSize];
 
             // read from network directly into pipe memory
             var cb = await networkStream.ReadAsync(memory, ct);
             if(cb == 0)
                 break; // EOF
-            byteBudget.Charge(cb);
-            AccountProofBuffer(cb);
 
             StratumDiagnostics.Write(logger, LogLevel.Debug, StratumDiagnostics.Event.Receive, ConnectionId, bytes: cb);
 
@@ -566,6 +542,51 @@ public class StratumConnection
             if(result.IsCompleted)
                 break;
         }
+    }
+
+    private async Task FillProofPipeAsync(CancellationToken ct)
+    {
+        long receivedBytes = 0, frameBytes = 0;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var byteBudget = new StratumInputPolicy.ByteBudget(inputPolicy);
+        var staging = ArrayPool<byte>.Shared.Rent(inputPolicy.ReadSize);
+        try
+        {
+            while(!ct.IsCancellationRequested)
+            {
+                var count = await networkStream.ReadAsync(staging.AsMemory(0, inputPolicy.ReadSize), deadline.Token);
+                if(count == 0) break;
+                byteBudget.Charge(count);
+                LastReceive = clock.Now;
+                var receipt = context?.CaptureShareReceipt() ?? new ShareReceipt(TimeProvider.System, TimeProvider.System.GetTimestamp());
+                for(var offset = 0; offset < count;)
+                {
+                    if(frameBytes == 0) deadline.CancelAfter(ProofFrameTimeout);
+                    var end = staging.AsSpan(offset, count - offset).IndexOf((byte) '\n');
+                    var length = end < 0 ? count - offset : end + 1;
+                    frameBytes += length;
+                    if(frameBytes - (end >= 0 ? 1 : 0) > MaxInboundRequestLength)
+                        throw new InvalidDataException("Proof request exceeds its frame limit");
+                    await proofBuffer.AddAsync(length, frameBytes > 0x8000, RemoteEndpoint.Address, deadline.Token, context?.IsAuthorized == true);
+                    staging.AsMemory(offset, length).CopyTo(receivePipe.Writer.GetMemory(length));
+                    offset += length;
+                    receivedBytes += length;
+                    if(end >= 0)
+                    {
+                        // Receipt belongs to arrival, not time spent awaiting capacity.
+                        receiveStamps.Enqueue((receivedBytes, receipt));
+                        proofBuffer.EndUpload();
+                        frameBytes = 0;
+                        deadline.CancelAfter(Timeout.InfiniteTimeSpan);
+                    }
+                    receivePipe.Writer.Advance(length);
+                    // Publish complete lines before waiting on a coalesced next
+                    // frame, so the consumer can release their byte reservations.
+                    if((await receivePipe.Writer.FlushAsync(deadline.Token)).IsCompleted) return;
+                }
+            }
+        }
+        finally { ArrayPool<byte>.Shared.Return(staging); }
     }
 
     private async Task ProcessReceivePipeAsync(CancellationToken ct,
@@ -637,7 +658,7 @@ public class StratumConnection
 
                         // Commit the consumed line before a cancellation exits this read.
                         buffer = buffer.Slice(buffer.GetPosition(1, position.Value));
-                        AccountProofBuffer(-(slice.Length + 1));
+                        proofBuffer?.Consume(slice.Length + 1);
                         consumedBytes = lineEnd;
                         ct.ThrowIfCancellationRequested();
                     }

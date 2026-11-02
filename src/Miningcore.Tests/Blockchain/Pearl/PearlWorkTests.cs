@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Numerics;
+using System.Threading.Tasks;
 using Miningcore.Blockchain.Pearl;
 using Miningcore.Stratum;
 using Miningcore.Time;
@@ -12,6 +13,22 @@ namespace Miningcore.Tests.Blockchain.Pearl;
 
 public class PearlWorkTests
 {
+    [Fact]
+    public async Task DuplicateAndCapacityRefusalsDoNotLeakPendingReceiptMetadata()
+    {
+        var worker = new PearlWorkerContext { Difficulty = 1 };
+        var job = worker.Issue(Block(), 2);
+        var share = new Miningcore.Blockchain.Share();
+        await worker.CommitAsync(job, "attempt", "first", share, _ => Task.CompletedTask);
+        await Assert.ThrowsAsync<StratumException>(() => worker.CommitAsync(job, "attempt", "first", share, _ => Task.CompletedTask));
+        Assert.Empty(job.PendingShares);
+        for(var i = 1; i < 256; i++) worker.Remember(job, i.ToString());
+        await Assert.ThrowsAsync<StratumException>(() => worker.CommitAsync(job, "attempt", "full", share, _ => Task.CompletedTask));
+        Assert.Empty(job.PendingShares);
+        job.PendingShares.Add("original", share);
+        await Assert.ThrowsAsync<StratumException>(() => worker.CommitAsync(job, "attempt", "original", new(), _ => Task.CompletedTask));
+        Assert.Same(share, job.PendingShares["original"]);
+    }
     [Fact]
     public void PearlSchemaPreservesExistingPoolConstraints()
     {

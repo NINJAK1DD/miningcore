@@ -52,7 +52,8 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
     {
         config = poolConfig.Extra.SafeExtensionDataAs<PearlPoolConfig>();
         network = config.Validate(poolConfig);
-        transport = StratumInputPolicy.CreatePearl(config.MaximumConnections, config.MaximumProofFrames);
+        transport = StratumInputPolicy.CreatePearl(config.MaximumConnections, config.MaximumProofFrames,
+            config.MaximumProofBufferMiB, config.MaximumProofFramesPerIp);
         verifier = new PearlProofVerifier(config.ProofWorker);
         candidates = new PearlCandidateStore(cf, shareRepo, poolConfig);
         if(!await cf.Run(con => shareRepo.HasShareAccountingSchemaAsync(con, ct)))
@@ -202,8 +203,9 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
             }
             else throw new StratumException(StratumError.Other, "Unsupported Pearl method");
         }
-        catch(PearlWorkerException)
+        catch(PearlWorkerException ex)
         {
+            ex.WriteDiagnostic(logger);
             metrics.Count(poolConfig.Id, PearlEvent.NativeFailure);
             await connection.RespondErrorAsync(StratumError.Other, "Pearl proof service unavailable", message.Id, false);
         }
@@ -325,6 +327,7 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
                 }
             }
             catch(OperationCanceledException) when(ct.IsCancellationRequested) { throw; }
+            catch(PearlWorkerException ex) { metrics.Count(poolConfig.Id, PearlEvent.CandidateUncertain); ex.WriteDiagnostic(logger); }
             catch(Exception ex) { metrics.Count(poolConfig.Id, PearlEvent.CandidateUncertain); RpcConsumerDiagnostics.Write(logger, LogLevel.Error, "PearlPool.Candidate", failure: ex); }
             await Task.Delay(TimeSpan.FromSeconds(2), ct);
         }

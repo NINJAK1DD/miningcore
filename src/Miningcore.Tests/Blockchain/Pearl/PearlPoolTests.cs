@@ -10,6 +10,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
+using Dapper;
 using AutoMapper;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.IO;
@@ -23,6 +24,7 @@ using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
 using Miningcore.Stratum;
 using Miningcore.Time;
+using Miningcore.Tests.Persistence.Postgres;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NLog;
@@ -36,6 +38,58 @@ namespace Miningcore.Tests.Blockchain.Pearl;
 public class PearlPoolTests : TestBase
 {
     internal static readonly Type CoveredPool = typeof(PearlPool);
+
+    [PostgresIntegrationFact]
+    public async Task ShorterNodeRetainsSerializedCandidateAndCatchupCompletesTheSameBytes()
+    {
+        await using var lab = await PearlPayoutIntegrationTests.Lab.Create(true);
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var mapper = container.Resolve<IMapper>();
+        var blocks = new Miningcore.Persistence.Postgres.Repositories.BlockRepository(mapper);
+        var shares = new Miningcore.Persistence.Postgres.Repositories.ShareRepository(mapper);
+        using var scope = container.BeginLifetimeScope(builder =>
+        {
+            builder.RegisterInstance<IBlockRepository>(blocks);
+            builder.RegisterInstance<IShareRepository>(shares);
+        });
+        var bus = Substitute.For<IMessageBus>();
+        var logger = LogManager.CreateNullLogger();
+        var clock = new StandardClock();
+        lab.Config.Ports = new Dictionary<int, PoolEndpoint> {{19503, new() {Difficulty = 1}}};
+        var pool = new PearlPool(scope, jsonSerializerSettings, lab.Connections, Substitute.For<IStatsRepository>(),
+            mapper, clock, bus, new RecyclableMemoryStreamManager(), new NicehashService(Substitute.For<IHttpClientFactory>(), cache));
+        pool.Configure(lab.Config, new ClusterConfig());
+        var store = new PearlCandidateStore(lab.Connections, shares, lab.Config);
+        Set(pool, "candidates", store);
+        Set(pool, "manager", new PearlJobManager(lab.Config, PearlNetwork.Regtest, jsonSerializerSettings, bus, logger));
+        Set(pool, "logger", logger);
+        var raw = new byte[PearlConsensus.HeaderSize];
+        var digest = System.Security.Cryptography.SHA256.HashData(System.Security.Cryptography.SHA256.HashData(raw));
+        Array.Reverse(digest);
+        var hash = Convert.ToHexString(digest).ToLowerInvariant();
+        var candidate = new PearlCandidateStore.Candidate {PoolId = lab.Config.Id, Identity = new string('e',64),
+            Header = new byte[76], Transactions = new byte[] {0}, Proof = new byte[] {1}, Target = new byte[32],
+            Block = raw, BlockHash = hash, Created = DateTime.UtcNow,
+            Share = JsonConvert.SerializeObject(new Miningcore.Blockchain.Share {PoolId = lab.Config.Id, BlockHeight = 1000,
+                Created = DateTime.UtcNow, Miner = PearlWorkTests.Address, NetworkDifficulty = 1, BlockReward = 1,
+                TransactionConfirmationData = new string('f',64)})};
+        await lab.Db.ExecuteAsync("""
+            INSERT INTO pearl_candidates(poolid,identity,header,transactions,proof,target,share,block,blockhash,created)
+            VALUES(@PoolId,@Identity,@Header,@Transactions,@Proof,@Target,@Share,@Block,@BlockHash,@Created)
+            """, candidate);
+        lab.Server.RawHeader = Convert.ToHexString(raw);
+        lab.Server.Height = 999;
+        await Invoke(pool, "ProcessCandidateAsync", candidate, CancellationToken.None);
+        Assert.Equal(0, await lab.Count("blocks"));
+        Assert.Equal(raw, (await store.ReadAsync(candidate, CancellationToken.None)).Block);
+        Assert.Equal(0, lab.Server.CanonicalLookups);
+        lab.Server.Height = 1000; lab.Server.CanonicalHash = hash;
+        await Invoke(pool, "ProcessCandidateAsync", candidate, CancellationToken.None);
+        Assert.Null(await store.ReadAsync(candidate, CancellationToken.None));
+        Assert.Equal(1, await lab.Count("blocks"));
+        Assert.Equal("pending", await lab.Db.ExecuteScalarAsync<string>("SELECT status FROM blocks"));
+        Assert.Equal(hash, await lab.Db.ExecuteScalarAsync<string>("SELECT hash FROM blocks"));
+    }
 
     [Theory]
     [InlineData(false)]

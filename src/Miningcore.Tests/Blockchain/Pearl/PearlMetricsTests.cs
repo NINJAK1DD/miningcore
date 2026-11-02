@@ -27,6 +27,7 @@ public class PearlMetricsTests
         await registry.CollectAndExportAsTextAsync(output);
         var text = Encoding.UTF8.GetString(output.ToArray());
         Assert.Contains("miningcore_pearl_state{pool=\"pearl\",measure=\"Height\"} 2", text);
+        Assert.Contains("miningcore_pearl_state{pool=\"pearl\",measure=\"WalletUtxos\"} 2", text);
         Assert.Contains("miningcore_pearl_events_total{pool=\"pearl\",event=\"PayoutUncertain\"} 1", text);
         Assert.Contains("miningcore_pearl_proof_bytes_sum{pool=\"pearl\",phase=\"Verify\"} 800000", text);
         Assert.Contains("miningcore_pearl_proof_seconds_sum{pool=\"pearl\",phase=\"Prove\"} 47", text);

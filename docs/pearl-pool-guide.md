@@ -43,12 +43,13 @@ certificate prover runs at a time; two verification workers may run concurrently
 GPU hardware is needed by GPU miners, not by Miningcore's verifier service.
 
 Install the complete checksum-verified bundle as a trusted deployment administrator.
-The service account must not own or be able to replace the executable, caches,
-bundle directory or any parent directory. The installer uses 0755 directories,
-0644 data and a 0555 executable; set ownership to your trusted deployment account
-after installation. Startup rejects a symlink executable or a group/other-writable
-executable or immediate parent. These checks do not replace secure ownership of
-the entire path. Keep wallet files inaccessible to the pool/proof-worker account.
+Prefer root ownership of the executable, caches, bundle and all parent directories,
+so the service cannot replace them. The installer uses 0755 directories, 0644 data
+and a 0555 executable. Startup checks the executable and every ancestor: only root
+or the service UID may own them, symlinks are rejected, and group/other writes are
+rejected except on trusted sticky ancestors such as `/tmp`. Service-owned bundles
+are accepted for development but provide weaker protection against service compromise.
+Keep wallet files inaccessible to the pool/proof-worker account.
 
 ## 2. Enable PRL in Miningcore
 
@@ -65,7 +66,9 @@ pools or persistence settings.
 | `pools[].address` | The Oyster-owned `prl1p...` pool reward address |
 | `pools[].proofWorker` | Absolute path to the installed, pinned worker executable |
 | `pools[].maximumConnections` | Per-pool session cap; default 1024, range 16–4096 |
-| `pools[].maximumProofFrames` | Concurrent authorized buffers larger than 32 KiB; default 4, range 1–32 |
+| `pools[].maximumProofFrames` | Concurrent uploads above 32 KiB; default 256, range 1–4096, automatically capped at the connection limit |
+| `pools[].maximumProofFramesPerIp` | Concurrent uploads per validated client IP; default 4, range 1–64 |
+| `pools[].maximumProofBufferMiB` | Retained proof bytes above each session's first 32 KiB; default 256, range 64–1024; one quarter maximum per IP |
 | `pools[].daemons` | Private node RPC endpoint and its credentials |
 | `pools[].daemons` with `category: "wallet"` | Private Oyster RPC endpoint and its credentials |
 | `pools[].ports` | Miner ports, difficulty settings, and the server TLS PFX certificate |
@@ -406,11 +409,21 @@ into the block ledger, not another share/PPS credit.
 
 Keep `feeRateGrainsPerKb` at least **1000** (default **10000**). Fund recipients plus the
 0.01 PRL wallet-owned marker and the calculated fee reserve; the reserve is at
-least another 0.01 PRL and grows with the configured rate and wallet UTXO count.
+least another 0.01 PRL and grows with the configured rate and selected input count.
 A preflight shortfall creates no payout intent, so ordinary retries resume after
 funding. If fragmentation exceeds the bounded transaction estimate, consolidate
-under your wallet administration procedure, then retry. An error **after** intent
+under your wallet administration procedure, then retry. Oyster selects largest
+inputs first; thousands of small markers alone do not prevent a funded payment.
+Monitor `miningcore_pearl_state{measure="WalletUtxos"}` and the warning at 5,000
+outputs. Plan maintenance well before the bounded 65,536-output / 32 MiB inventory
+limit. Use a dedicated default-account Taproot wallet. An error **after** intent
 creation follows the reconciliation procedure below.
+
+Automatic marker sweeping is intentionally optional and disabled: a sweep is an
+additional wallet broadcast needing its own durable recovery protocol. Stop payout
+writers, reconcile every pending intent, preserve wallet history/backups, and use
+your audited wallet administration process for consolidation. Never sweep or delete
+an unresolved intent's marker as a way to release a hold.
 
 ### An intent exists, but the send result is uncertain
 
@@ -452,6 +465,13 @@ creation follows the reconciliation procedure below.
    unchanged ledger before restarting one owner. The next normal payment creates
    a fresh marker and must reconcile to one actual transaction.
 
+   Apply `add_pearl_candidates.sql` with a separate database administrator login
+   when upgrading. Both fresh installation and re-running this migration transfer
+   `pearl_payout_intent_releases` to that administrator and remove previous table
+   and column grants. The application receives SELECT only; it must not inherit
+   the administrator role. Do not grant application DML on this audit table when
+   granting access to the operational Pearl tables. Keep external audit copies.
+
 ### A settled reward is quarantined
 
 Quarantine means balances may already include a reward that lost canonical
@@ -479,6 +499,23 @@ requires a separate reviewed migration and evidence that no reward can be credit
 or paid twice.
 
 ## Troubleshooting
+
+Upload capacity applies backpressure for up to the 30-second frame deadline;
+completed uploads release their upload slots while retaining memory accounting
+through processing. Prefer gzip proofs if supported by the miner. For miners
+behind one NAT, size the per-IP upload limit and byte budget together with the
+existing connection-admission settings. A trusted PROXY gateway must forward
+validated client addresses. Keep memory headroom for native proving, decoding,
+TLS, staging and pipe segments; wire-byte limits are not an overall RAM limit.
+
+Worker failures record only `phase` (`Verify` or `Prove`), a bounded `class`
+(`Start`, `Native`, `Exit`, `Response`, `Timeout`, `OutputLimit`, or `Pipe`) and
+the process exit code, or `unavailable` if it could not start. `Native` means an
+explicit IPC service failure; `Exit` includes abnormal termination. A `Timeout`
+exit code may reflect Miningcore killing the worker after its deadline. Retain
+private OS/resource diagnostics when investigating, without publishing stderr,
+proofs, credentials or host details. Transient candidate failures remain durable
+and retry; these diagnostics do not establish the cause of earlier incidents.
 
 | Symptom | Check and action |
 | --- | --- |

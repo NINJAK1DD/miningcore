@@ -49,7 +49,13 @@ internal static class PearlCandidateSubmission
             header = await rpc("getblockheader", new object[] {hash, false}, ct);
         }
         if(header.Error != null)
-            return header.Error.Code == -5 && rejected ? PearlCandidateOutcome.Rejected : PearlCandidateOutcome.Uncertain;
+        {
+            if(header.Error.Code != -5) return PearlCandidateOutcome.Uncertain;
+            if(rejected) return PearlCandidateOutcome.Rejected;
+            // A missing header alone is not rejection evidence. Retire only when a
+            // stable canonical chain has actually passed a competing block at this height.
+            return await CanonicalOutcomeAsync(hash, height, true, rpc, ct);
+        }
         var encoded = header.Response?.Type == JTokenType.String ? header.Response.Value<string>() : null;
         if(encoded?.Length != PearlConsensus.HeaderSize * 2) throw new InvalidDataException("Invalid Pearl candidate header evidence");
         var digest = SHA256.HashData(SHA256.HashData(Convert.FromHexString(encoded)));
@@ -57,18 +63,21 @@ internal static class PearlCandidateSubmission
         if(Convert.ToHexString(digest).ToLowerInvariant() != hash)
             throw new InvalidDataException("Pearl candidate header identity mismatch");
 
+        return await CanonicalOutcomeAsync(hash, height, false, rpc, ct);
+    }
+
+    private static async Task<PearlCandidateOutcome> CanonicalOutcomeAsync(string hash, long height, bool unknown,
+        Func<string, object, CancellationToken, Task<RpcResponse<JToken>>> rpc, CancellationToken ct)
+    {
         var chain = await rpc("getblockchaininfo", null, ct);
         var tip = chain.Response?["blocks"]?.Value<long>();
         var best = chain.Response?["bestblockhash"]?.Value<string>();
         if(chain.Error != null || tip is null or < 0 || !PearlPayoutHandler.IsTransactionId(best)) return PearlCandidateOutcome.Uncertain;
-        var outcome = PearlCandidateOutcome.Orphaned;
-        if(tip >= height)
-        {
-            var canonical = await rpc("getblockhash", new object[] {height}, ct);
-            var identity = canonical.Response?.Type == JTokenType.String ? canonical.Response.Value<string>() : null;
-            if(canonical.Error != null || !PearlPayoutHandler.IsTransactionId(identity)) return PearlCandidateOutcome.Uncertain;
-            if(identity == hash) outcome = PearlCandidateOutcome.Accepted;
-        }
+        if(tip < height || unknown && tip == height) return PearlCandidateOutcome.Uncertain;
+        var canonical = await rpc("getblockhash", new object[] {height}, ct);
+        var identity = canonical.Response?.Type == JTokenType.String ? canonical.Response.Value<string>() : null;
+        if(canonical.Error != null || !PearlPayoutHandler.IsTransactionId(identity)) return PearlCandidateOutcome.Uncertain;
+        var outcome = identity == hash ? (unknown ? PearlCandidateOutcome.Uncertain : PearlCandidateOutcome.Accepted) : PearlCandidateOutcome.Orphaned;
         var end = await rpc("getbestblockhash", null, ct);
         return end.Error == null && end.Response?.Value<string>() == best ? outcome : PearlCandidateOutcome.Uncertain;
     }

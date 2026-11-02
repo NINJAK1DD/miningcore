@@ -113,6 +113,10 @@ internal sealed class PearlWorkerContext : WorkerContextBase
     {
         lock(sync)
         {
+            // Reserve before adding retry metadata. A duplicate/capacity refusal
+            // must leave the original pending payload and reservations untouched.
+            if(job.Proofs.Contains(identity)) throw new StratumException(StratumError.DuplicateShare, "Duplicate Pearl share");
+            if(job.Proofs.Count >= 256) throw new StratumException(StratumError.Other, "Pearl job share capacity reached");
             if(job.PendingShares.TryGetValue(identity, out var original)) share = original;
             else
             {
@@ -120,8 +124,8 @@ internal sealed class PearlWorkerContext : WorkerContextBase
                     throw new StratumException(StratumError.Other, "Pearl pending receipt capacity reached");
                 job.PendingShares.Add(identity, share);
             }
+            job.Proofs.Add(identity);
         }
-        Remember(job, identity);
         try
         {
             await commit(share);

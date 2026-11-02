@@ -56,11 +56,13 @@ public class PearlPayoutIntegrationTests
         internal string BestHashAfterCanonicalLookup;
         internal ulong Height = 120;
         internal decimal Available = 1000000;
+        internal JArray Unspent;
         internal bool Locked, LostResponse, Conflict, Partial, Offline, NodeMissing, NodeOffline, RejectSend, PartialBatch;
         internal int Sends, Relocks, Republishes;
         internal int CanonicalLookups;
         internal bool MissingBlockTransaction;
         internal JObject Evidence;
+        internal string RawHeader;
         internal JArray SendArguments;
         internal readonly List<string> Calls = new();
         internal Rpc()
@@ -92,11 +94,12 @@ public class PearlPayoutIntegrationTests
                             if(height != 0 && BestHashAfterCanonicalLookup != null) BestHash = BestHashAfterCanonicalLookup;
                             break;
                         case "getbestblockhash": result = BestHash; break;
+                        case "getblockheader": result = RawHeader; break;
                         case "getblockchaininfo": result = new JObject {["blocks"] = Height, ["bestblockhash"] = BestHash}; break;
                         case "validateaddress": result = new JObject {["ismine"] = true}; break;
                         case "chainsynced": result = true; break;
                         case "getbalance": Assert.Equal("default", request["params"][0].Value<string>()); result = Available; break;
-                        case "listunspent": result = new JArray(new JObject {["spendable"] = true}); break;
+                        case "listunspent": result = Unspent ?? new JArray(PearlWalletRequestTests.Coin(Available)); break;
                         case "getblock":
                             if(request["params"] is not JArray arguments || arguments.Count != 2 ||
                                 arguments[1].Type != JTokenType.Integer || arguments[1].Value<int>() != 1)
@@ -199,6 +202,58 @@ public class PearlPayoutIntegrationTests
             await Db.ExecuteAsync("ROLLBACK; RESET ROLE; SET search_path TO public");
             await Db.ExecuteAsync($"DROP SCHEMA {schema} CASCADE"); await Db.DisposeAsync();
         }
+    }
+
+    [PostgresIntegrationFact]
+    public async Task ClassificationAndPaymentPreferTheWalletChainOverTheFirstHealthyNode()
+    {
+        await using var lab = await Lab.Create(true);
+        await using var divergent = new Rpc {BestHash = new string('d',64), CanonicalHash = new string('d',64)};
+        lab.Config.Daemons = new[] {divergent.Endpoint("node"), lab.Server.Endpoint("node"), lab.Server.Endpoint("wallet")};
+        var handler = await lab.Handler();
+        var balances = await lab.Seed();
+        var confirmed = new Block {PoolId = "pearl", BlockHeight = 10, Hash = lab.Server.CanonicalHash, Status = BlockStatus.Confirmed};
+        Assert.Empty(await handler.ClassifyBlocksAsync(null, new[] {confirmed}, CancellationToken.None));
+        Assert.Equal(BlockStatus.Confirmed, confirmed.Status);
+        Assert.Equal(0, divergent.CanonicalLookups);
+        Assert.Equal(1, lab.Server.CanonicalLookups);
+        await handler.PayoutAsync(null, balances, CancellationToken.None);
+        Assert.Equal(1, lab.Server.Sends);
+        Assert.Equal(1, await lab.Count("payments"));
+    }
+
+    [PostgresIntegrationFact]
+    public async Task ExistingIntentCanReconcileWhenNoNodeMatchesTheWalletTip()
+    {
+        await using var lab = await Lab.Create(true);
+        var balances = await lab.Seed();
+        var handler = await lab.Handler();
+        lab.Server.LostResponse = true;
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => handler.PayoutAsync(null, balances, CancellationToken.None));
+        await using var advanced = new Rpc {BestHash = new string('b',64), Evidence = lab.Server.Evidence};
+        lab.Config.Daemons = new[] {advanced.Endpoint("node"), lab.Server.Endpoint("wallet")};
+        handler = await lab.Handler();
+        await handler.PayoutAsync(null, balances, CancellationToken.None);
+        Assert.Equal(1, lab.Server.Sends);
+        Assert.Equal(0, advanced.Sends);
+        Assert.Equal(1, await lab.Count("payments"));
+        Assert.Equal(0, await lab.Count("pearl_payout_intents"));
+        await Assert.ThrowsAsync<InvalidDataException>(() => handler.PayoutAsync(null, balances, CancellationToken.None));
+        Assert.Equal(1, lab.Server.Sends);
+    }
+
+    [PostgresIntegrationFact]
+    public async Task FragmentedInventoryLargerThanTheOrdinaryRpcLimitStillPaysFromLargeInputs()
+    {
+        await using var lab = await Lab.Create(true);
+        lab.Server.Unspent = new JArray(Enumerable.Range(0, 10000).Select(i => PearlWalletRequestTests.Coin(.01m, i)));
+        lab.Server.Unspent.Add(PearlWalletRequestTests.Coin(10m, 10000));
+        Assert.True(Encoding.UTF8.GetByteCount(lab.Server.Unspent.ToString(Formatting.None)) > 2000000);
+        var handler = await lab.Handler();
+        await handler.PayoutAsync(null, await lab.Seed(), CancellationToken.None);
+        Assert.Equal(1, lab.Server.Sends);
+        Assert.Equal(1, await lab.Count("payments"));
+        Assert.Equal(0, await lab.Count("pearl_payout_intents"));
     }
 
     [PostgresIntegrationFact]
