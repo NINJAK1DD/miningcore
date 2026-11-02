@@ -27,15 +27,15 @@ for the SIGILL investigation, runtime-dispatch policy and regression checks.
 `v0.4.0-rc.1` is the first candidate for v0.4.0, collecting the changes after
 v0.3.0. Use controlled staging and the
 [upgrade/commissioning guide](upgrade-v0.4.0-rc.1.md) before moving live miners or funds.
-The version examples in this branch take effect after the tag's release assets
-are published. The latest stable baseline remains v0.3.0 until a newer stable
-release is published.
+Runnable installation examples select the published stable version. Select this
+candidate only if its release page and required assets are available.
+The latest stable baseline remains v0.3.0 until a newer stable release is published.
 
 - Preserve BTC direct/custodial SOLO and LTC/DOGE SOLO/SOLO operation while fixing
   work publication, difficulty negotiation, immutable candidate credit and recovery.
 - Validate SMTP and daemon TLS, remove credential-bearing diagnostic output,
   bound Stratum admission and retain financial failure/reconciliation evidence.
-- Support the reviewed XBT/Knots 29.4.3 rolling maturity contract in the separate
+- Support the reviewed BTCB2B/Knots 29.4.3 rolling maturity contract in the separate
   Bitcoin BLAKE2b family. DATUM pool/server support is not included.
 - Correct Xelis v1/v2 targets and native verification; unsupported algorithms fail
   closed. This does not certify current-mainnet Xelis v3.
@@ -57,8 +57,9 @@ Review explicit SMTP `tlsMode`, notification activation, daemon certificate trus
 PostgreSQL timeout/TLS syntax, NAT/nginx/PROXY attribution and connection quotas.
 Old configuration can now be rejected deliberately. Ubuntu 22.04 remains supported
 through its source build and matching compatibility archive; .NET 10 remains the
-framework. Rebuild the complete native/managed installation for the documented CPU
-baseline. Do not substitute the Ubuntu 26.04 archive on an older host.
+framework. Source operators must rebuild the complete native/managed installation;
+archive operators must replace it with the complete verified archive for their host.
+Both require the documented CPU baseline. Do not substitute the Ubuntu 26.04 archive on an older host.
 
 The detailed entries below describe this candidate. Dated evidence and historical
 release sections retain their original scope; none establishes a new mainnet
@@ -1668,10 +1669,12 @@ download the archive matching the host and the checksum manifest:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
-The examples below use `v0.4.0-rc.1` after its assets are published. Substitute the version you selected.
+The executable installation examples below use the published stable `v0.3.0`.
+For controlled candidate testing, follow the [RC.1 upgrade guide](upgrade-v0.4.0-rc.1.md)
+and substitute `v0.4.0-rc.1` only after its release page and required assets are available.
 
 ```console
-export MININGCORE_VERSION=v0.4.0-rc.1
+export MININGCORE_VERSION=v0.3.0
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
 MININGCORE_INSTALL_READY=
@@ -2077,10 +2080,16 @@ notes or migration guide requires it. Never run old and new payout managers conc
 ## Use the GitHub Container Registry image
 
 Release images are published for Linux AMD64 at
-`ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
+`ghcr.io/ninjak1dd/miningcore`. Pin a published stable version in production rather than `latest`.
+Release candidates are for controlled validation, not the default production install.
+
+The setup block below is for a new container installation only. It downloads a configuration
+and creates an administrative token. Existing operators must not run it over their configuration
+or environment file; follow the [container upgrade path](upgrade-v0.4.0-rc.1.md#container-upgrades)
+and retain their mounts, credentials and persistent state.
 
 ```console
-export MININGCORE_VERSION=v0.4.0-rc.1  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.3.0  # Replace with the published release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
@@ -3048,8 +3057,10 @@ transient resolution failures use status 69.
 > does not report a status on unrelated pull requests. Do not configure it as a required status
 > check; require the always-running build and release checks instead.
 
-Before tagging a new release, update every release-locked quick-start sentence as well as the
-`MININGCORE_VERSION`, `NEXT_VERSION` and `TAG` assignments. In particular, replace the README's
+Before tagging a new release, review every release-locked quick-start sentence as well as the
+`MININGCORE_VERSION`, `NEXT_VERSION` and `TAG` assignments. Keep runnable installation defaults on
+the published stable version until a deliberate, post-publication change selects another version.
+In particular, replace the README's
 named stable-version substitution boundary and its release-documentation assertion when the stable
 baseline changes.
 
@@ -3057,9 +3068,22 @@ For a candidate, keep the latest stable baseline explicitly separate from the se
 candidate examples. Update the RC highlights, upgrade matrix, guide index and
 `scripts/release/test-release-install-docs.sh` together. Historical release/evidence
 versions identify their original behavior and must not be replaced globally.
+For changes after this candidate, use `## Unreleased (after v0.4.0-rc.1): subject`.
+The documentation guard permits this next-cycle heading but rejects unqualified
+Unreleased entries and entries still assigned to the previous v0.3.0 boundary. Do not
+label a later change RC.1 or invent an RC.2 version just to pass CI.
+Keep the 33 pre-RC anchors in the independent frozen baseline under
+`scripts/release/fixtures/`; do not regenerate it from edited headings. The release
+documentation suite runs mutation tests for these links, both SOLO migration rows
+and the separate stable/candidate version inventories. Its new preparation checks
+must remain effective with Python optimisation enabled.
 Do not add a speculative `next-version` or edit assembly constants merely to prepare
 this PR: the validated release tag supplies the packaged version and source identity.
 Publication must mark `v0.4.0-rc.1` as a prerelease; it must not advance stable GHCR aliases.
+After publication, record the actual source SHA, release URL, archive checksums/BUILD-INFO,
+runtime version, immutable container tag/digest and prerelease status. Confirm that all
+identities match the intended tag and that stable aliases were not advanced. Retain this
+release-boundary evidence before promotion; a successful PR build is not publication evidence.
 
 The tagged build injects the validated tag and commit as assembly metadata because development
 branches intentionally retain GitVersion's prerelease calculation; the runtime check requires an

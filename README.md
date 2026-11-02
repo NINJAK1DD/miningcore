@@ -51,10 +51,12 @@ different runtime packages; Ubuntu 24.04 is a source-build target. Use the
 [release guide](docs/releases.md) for those paths or for an upgrade/rollback.
 
 > [!IMPORTANT]
-> This quick start pins the `v0.4.0-rc.1` release candidate. Use it only after its release assets are
-> published; until then, this branch prepares the release and is not a published download. Read the
-> [v0.3.0 upgrade guide](docs/upgrade-v0.4.0-rc.1.md) before replacing an existing pool.
+> This quick start pins the published `v0.3.0` stable release.
 > The latest stable baseline remains v0.3.0 until a newer stable release is published.
+> For controlled candidate testing, read the
+> [v0.3.0 to v0.4.0-rc.1 upgrade guide](docs/upgrade-v0.4.0-rc.1.md).
+> Select `v0.4.0-rc.1` only if its release page and required assets are available;
+> otherwise use the stable version below. Never substitute an unpublished tag into download commands.
 > To install another published version, select it
 > from the [releases page](https://github.com/NINJAK1DD/miningcore/releases) and substitute that tag
 > in every command below. Release candidates should be tested on regtest or a controlled staging
@@ -93,7 +95,7 @@ sudo systemctl is-active postgresql
 Select the release and download it into private temporary storage:
 
 ```console
-export MININGCORE_VERSION=v0.4.0-rc.1
+export MININGCORE_VERSION=v0.3.0
 export MININGCORE_UBUNTU=26.04
 MININGCORE_QUICKSTART_READY=
 download_dir="$(mktemp -d "${TMPDIR:-/tmp}/miningcore-release.XXXXXXXX")"
@@ -662,7 +664,7 @@ confirm it works:
 
 ```console
 sudo docker run --rm hello-world
-MININGCORE_VERSION=v0.4.0-rc.1  # Replace with the published release you selected.
+MININGCORE_VERSION=v0.3.0  # Replace with the published release you selected.
 sudo docker pull ghcr.io/ninjak1dd/miningcore:${MININGCORE_VERSION}
 ```
 
@@ -676,7 +678,7 @@ follow the [upgrade guide](docs/upgrade-v0.4.0-rc.1.md) and retain their configu
 service environment and persistent state; do not rerun the new-install downloads over them.
 
 ```console
-MININGCORE_VERSION=v0.4.0-rc.1  # Replace with the published release you selected.
+MININGCORE_VERSION=v0.3.0  # Replace with the published release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json \

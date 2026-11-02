@@ -11,6 +11,10 @@ connection quotas, corrected candidate credit and new opt-in mining families.
 An old configuration that started successfully can now fail validation or refuse
 connections. Do not replace a working configuration with an example.
 
+Operators skipping v0.3.0 must first satisfy the [v0.3.0 upgrade prerequisites](releases.md#v030-highlights),
+including applicable direct-SOLO and payout-ownership migrations. This guide does
+not replace the earlier cumulative upgrade boundaries.
+
 ## Database migration matrix
 
 Stop every writer and payout manager using the database and take a proven backup
@@ -21,11 +25,11 @@ release symlink. Never run `createdb.sql` over an existing database.
 | --- | --- |
 | Canonical BTC SOLO, retaining its existing direct-coinbase or custodial mode | No new SQL solely for this upgrade when the v0.3.0 prerequisites are installed. Preserve `soloCoinbasePayout` and existing settlement evidence. |
 | LTC/DOGE merged SOLO/SOLO, retaining both payout modes | No new SQL solely for this upgrade when the v0.3.0 prerequisites are installed. Keep both pool IDs, auxiliary address policy and existing claim/payment evidence. |
-| Existing PPS or pooled merged accounting, including PROP/PPLNS without PPS | Upgrade the accounting schema. An otherwise current v0.3.0 accounting database needs `add_pps_arithmetic_version.sql`, even when retaining version 0. |
+| Existing PPS, or merged-mining parent/aux accounting on PROP/PPLNS/PPLNSBF even without PPS | Upgrade the accounting schema. An otherwise current v0.3.0 accounting database needs `add_pps_arithmetic_version.sql`, even when retaining version 0. |
 | Adding PPS or pooled merged accounting to a database without those prerequisites | Follow the ordered [database upgrade](database.md#upgrade-an-existing-database); the candidate's cumulative `add_share_accounting.sql` includes the arithmetic migration. |
 | Opting into PPS arithmetic version 1 | Upgrade every producer/relay/recorder first, then follow the separate [one-way cutoff procedure](pps-arithmetic-migration.md). Schema installation alone does not activate it. |
 | Enabling Pearl | Install the required accounting prerequisites and `add_pearl_candidates.sql`, plus the reviewed worker bundle and node/wallet contracts in the [Pearl guide](pearl-pool-guide.md). |
-| Other unchanged supported families and payout modes | No general new SQL migration. Review the family-specific configuration and settlement changes below. |
+| Other unchanged supported families and payout modes, including plain non-merged PROP/PPLNS/PPLNSBF | No general new SQL migration. Review the family-specific configuration and settlement changes below. |
 
 The existing AuxPoW idempotency, payout ownership and Bitcoin direct-SOLO migration
 files are unchanged from v0.3.0. Their original requirements still apply; this does
@@ -41,6 +45,13 @@ access, not activation or mutation privileges. Use the
 [ownership and privilege procedure](pps-arithmetic-migration.md) if the database,
 table and runtime roles differ. Unchanged SOLO/SOLO pools do not require creating
 these tables just to replace their application.
+
+The startup schema error uses generic `add_share_accounting.sql` advice. For an
+otherwise complete v0.3.0 accounting schema, use the standalone arithmetic
+migration selected above, not an unnecessary cumulative reinstallation (which
+also rebuilds the pruning index). A failed schema preflight can also indicate
+incorrect privileges or defaults; diagnose the failure rather than rerunning SQL
+blindly or granting the application administrative privileges.
 
 ## Configuration checks
 
@@ -133,11 +144,32 @@ difficulty, wrong-width, duplicate and timeout counters. Use the
 [issued-work guide](difficulty-assignment-grace.md) and
 [Bitcoin minimum-difficulty policy](bitcoin-minimum-difficulty.md).
 
+### Monitoring and log consumers
+
+Update dashboards, alerts and log parsers before relying on cutover monitoring:
+
+- RPC batch-method labels now use `batch`; unknown/custom RPC method labels use
+  `other`, rather than raw or joined method names. Unknown Stratum request methods
+  also use `other`; recognised methods retain their bounded labels. See the
+  [RPC transport changes](releases.md#v040-rc1-credential-safe-rpc-transport-diagnostics)
+  and [Stratum diagnostic contract](stratum-diagnostics.md).
+- Ban log parsers must match `Disconnecting banned address @` instead of
+  `Disconnecting banned client @`; review the [ban-attribution policy](stratum-ban-attribution.md).
+- PostgreSQL startup filters must match `Using PostgreSQL persistence ` instead
+  of `Using postgres connection string:`. Do not expect endpoint or credential
+  values in the new diagnostic. See [PostgreSQL diagnostics](releases.md#v040-rc1-postgresql-credential-safe-diagnostics).
+- `--dumpconfig` emits diagnostic format version 2. Consumers must check
+  `diagnosticFormatVersion`; the allowlisted, lossy output is not a runnable
+  configuration or backup. Review [the dump contract](configuration.md#safe-configuration-dumps).
+
+Exercise representative logs/metrics against updated consumers in staging. An
+empty dashboard or silent alert rule is not evidence of a healthy pool.
+
 ## Family and payout boundaries
 
 - BTC, LTC and DOGE retain their existing chain identities and SOLO modes.
   Keep pool IDs, wallet addresses, coin keys and direct/custodial choices unchanged.
-  The new XBT maturity rules do not apply to ordinary SHA256d BTC, LTC or DOGE.
+  The new BTCB2B maturity rules do not apply to ordinary SHA256d BTC, LTC or DOGE.
 - PROP, PPLNS and PPLNSBF now stop settlement on invalid stored/adjusted/network
   difficulty. Run the [read-only historical audit](bitcoin-minimum-difficulty.md#pre-upgrade-settlement-audit--all-coin-families)
   before affected pooled payouts. Missing/pruned receipt evidence means incomplete
@@ -154,7 +186,7 @@ difficulty, wrong-width, duplicate and timeout counters. Use the
 - Xelis supports canonical v1/v2, not current-mainnet v3 certification.
   Unsupported work suspends mining and releases miners without IP bans.
   Extensions must adopt the [changed Xelis APIs](xelis-target-validation.md#xelis-extension-api-changes).
-- XBT uses the separate `bitcoin-blake2b` family and reviewed Knots 29.4.3.
+- BTCB2B uses the separate `bitcoin-blake2b` family and reviewed Knots 29.4.3.
   Historical/rolling/post-cutoff wallet thresholds differ; expiry is not a blanket
   unlock. Follow the [node upgrade/revalidation runbook](bitcoin-blake2b-knots-29.4.3-review.md).
   DATUM pool/server implementation remains outside this candidate.
@@ -171,7 +203,9 @@ difficulty, wrong-width, duplicate and timeout counters. Use the
    22.04 archive or a clean 22.04 source build; never copy 26.04 native libraries
    onto it. .NET 10 remains the framework. Linux native builds require x86-64-v2,
    AES-NI and PCLMULQDQ. Build helpers reject inherited compiler/Make overrides.
-   Build the complete native/managed output; a managed-DLL-only replacement is insufficient.
+   Source operators must build the complete native/managed output; archive
+   operators replace it with a complete verified host-matching archive. A
+   managed-DLL-only replacement is insufficient.
    Build scripts install packages, so rehearse on a separate matching host before
    running them during production maintenance.
 2. Preserve the original config, service environment, custom coin files, certificates,
@@ -200,6 +234,49 @@ difficulty, wrong-width, duplicate and timeout counters. Use the
    Before stable promotion, complete a controlled soak and the applicable
    [production commissioning checks](mainnet-validation.md).
 
+## Container upgrades
+
+The published GHCR image is assembled from the release archive and includes
+`/app/migrations/` and `/app/BUILD-INFO`. Source-built images using the root
+Dockerfile copy the publish output instead; do not assume they contain the same
+SQL directory. Neither image automatically upgrades the database. Do not try to
+retrieve all migrations from embedded application resources.
+
+1. Select the published candidate, pull its versioned image and record the
+   immutable image digest and `org.opencontainers.image.revision` label. Match that revision to the
+   selected release's source SHA and archive `BUILD-INFO` using the
+   [release identity checks](releases.md#install-the-archive). Do not
+   mix an image from one commit with SQL from a moving `dev` branch.
+2. Obtain SQL from the published candidate image's `/app/migrations/` and inspect
+   its `/app/BUILD-INFO`, or use the same verified release archive's `migrations/`
+   directory. Files can be copied from a newly created, stopped container without
+   starting Miningcore or attaching live configuration/volumes; remove that
+   temporary container and its anonymous volumes afterwards. For source-built
+   images, use an immutable checkout of that exact release source SHA. In a source
+   checkout the directory is `src/Miningcore/Persistence/Postgres/Scripts/`.
+   Retain the complete directory and verify its source identity before running
+   any SQL; do not execute archive binaries on an incompatible host just to get
+   the text files. An existing PPS/pooled-merged v0.3.0 schema needs
+   `add_pps_arithmetic_version.sql`; choose other scripts only from the matrix.
+3. Preserve the existing container/Compose definition, previous image digest,
+   config/environment files, custom coin mounts, certificates and persistent
+   volumes. Do not run the new-install download/token-generation blocks in the
+   README or release guide over this state. Review UID/GID 10001 access and
+   private network/RPC reachability without widening permissions.
+4. Rehearse on isolated database/wallet copies. At cutover stop every writer and
+   payout manager sharing the live database, including other containers and
+   external relays. Back up the quiescent database, then have the database
+   administrator apply only the selected verified scripts with `ON_ERROR_STOP`.
+   Do not grant schema ownership or transition-activation rights to the container.
+5. Recreate the service with the recorded candidate image/digest and the same
+   protected mounts, environment, network and port definitions. Keep only one
+   payout owner; do not launch an old and new container side by side against the
+   live database. A Compose image change does not justify removing volumes or
+   regenerating credentials.
+6. Apply the same [cutover checks](#staging-and-cutover) and financial rollback
+   boundary below. On rollback retain new database/wallet evidence and select
+   the recorded previous image, not a mutable `latest` tag.
+
 ## Rollback and release evidence
 
 Retain the new database, journals and wallet history before stopping the candidate.
@@ -208,9 +285,15 @@ PPS transitions or replay payouts merely because an acknowledgement was lost.
 Reconcile liabilities, submissions and wallet transactions before selecting a
 compatible application/database pair. PPS arithmetic activation is one-way;
 the [migration rollback boundary](pps-arithmetic-migration.md) takes precedence.
+Installing only the version-0 arithmetic metadata does not itself prevent the
+v0.3.0 schema contract from working; this is not permission to discard payments,
+recovery records or other new evidence, nor to roll back after a version-1 cutover.
 
 The RC does not certify every daemon, miner, operating system or mainnet payout
 combination. Dated lab/mainnet results retain their original source identities.
 Record the final candidate commit, exact dependencies, test results, exclusions
 and deployment-specific observations. A release tag and green CI do not replace
 the commissioning checks for an operator's private configuration.
+After publication, retain the actual source SHA, archive identity/checksums,
+container tag/digest and prerelease status, and confirm they refer to that same
+candidate. Do not mark tag/publication gates complete based only on PR CI.

@@ -196,16 +196,16 @@ assert_contains 'the Ubuntu 26.04 choose-one label' \
   '(choose this on Ubuntu 26.04)'
 assert_contains 'the Ubuntu 22.04 choose-one label' \
   '(choose this on Ubuntu 22.04)'
-assert_file_contains 'the v0.4.0-rc.1 release example' \
-  'export MININGCORE_VERSION=v0.4.0-rc.1' "$document"
-assert_file_contains 'the v0.4.0-rc.1 container example' \
-  'MININGCORE_VERSION=v0.4.0-rc.1' "$readme"
+assert_file_contains 'the published stable release example' \
+  'export MININGCORE_VERSION=v0.3.0' "$document"
+assert_file_contains 'the published stable container example' \
+  'MININGCORE_VERSION=v0.3.0' "$readme"
 assert_file_contains 'the v0.4.0-rc.1 database migration example' \
   'export MININGCORE_VERSION=v0.4.0-rc.1' "$database_document"
-assert_file_contains 'the selected RC quick-start boundary' \
-  'This quick start pins the `v0.4.0-rc.1` release candidate' "$readme"
+assert_file_contains 'the published stable quick-start boundary' \
+  'This quick start pins the published `v0.3.0` stable release.' "$readme"
 assert_readme_prose_contains 'the unpublished-artifact boundary' \
-  'Use it only after its release assets are published'
+  'Select `v0.4.0-rc.1` only if its release page and required assets are available;'
 assert_readme_prose_contains 'the retained latest stable baseline' \
   'The latest stable baseline remains v0.3.0 until a newer stable release is published.'
 assert_file_contains 'the RC release heading' \
@@ -214,8 +214,6 @@ assert_file_contains 'the RC upgrade boundary' \
   '### Upgrade boundary from v0.3.0' "$document"
 assert_file_contains 'the RC guide index route' \
   '(upgrade-v0.4.0-rc.1.md)' "$repository_root/docs/README.md"
-assert_file_contains 'the unchanged SOLO migration boundary' \
-  'No new SQL solely for this upgrade when the v0.3.0 prerequisites are installed.' "$rc_upgrade_document"
 assert_file_contains 'the legacy PPS schema upgrade boundary' \
   'even when retaining version 0.' "$rc_upgrade_document"
 assert_file_contains 'the authenticated port-587 SMTP migration' \
@@ -230,28 +228,10 @@ assert_file_contains 'the PROXY/TLS ordering boundary' \
 assert_file_contains 'the RC evidence boundary' \
   'This is dated production evidence, not certification of v0.4.0-rc.1.' \
   "$repository_root/docs/mainnet-validation.md"
-if grep -Eq '^## Unreleased' "$document"; then
-  echo 'RC release notes still contain unassigned Unreleased sections' >&2
-  exit 1
-fi
-# Preserve links already published in issues/PRs before the 33 entries received
-# their RC heading. Check each alias against the next heading, not just its count.
-python3 - "$document" <<'PY'
-import pathlib
-import re
-import sys
-
-text = pathlib.Path(sys.argv[1]).read_text()
-aliases = re.findall(
-    r'^<a id="(unreleased[^"]*)"></a>\n\n## v0\.4\.0-rc\.1: (.+)$',
-    text, re.MULTILINE,
-)
-assert len(aliases) == 33, 'The 33 pre-RC release anchors must remain usable'
-assert len({alias for alias, _ in aliases}) == 33, 'Duplicate legacy release anchor'
-for alias, heading in aliases:
-    suffix = re.sub(r'[^\w\- ]', '', heading.lower()).replace(' ', '-')
-    assert alias in (f'unreleased-{suffix}', f'unreleased-after-v030-{suffix}'), alias
-PY
+# These guards use unconditional checks (also under PYTHONOPTIMIZE=1), a frozen
+# historical-anchor baseline and separate mutations of each migration row.
+python3 -B "$repository_root/scripts/release/check-release-preparation-docs.py"
+python3 -B "$repository_root/scripts/release/test-release-preparation-docs.py"
 assert_file_contains 'the v0.2.1 hotfix task route' \
   '| v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |' "$document"
 assert_file_contains 'the v0.2.1 troubleshooting route' \
@@ -846,23 +826,8 @@ if grep -Eq \
   exit 1
 fi
 
-if grep -Eh \
-    '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v[0-9]+\.[0-9]+\.[0-9]+' \
-    "$readme" "$document" "$database_document" |
-    grep -Ev \
-      '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.4\.0-rc\.1([[:space:]]|$)'; then
-  echo 'README, release guide or database guide contains a stale copy-paste release assignment' >&2
-  exit 1
-fi
-
-if [[ $(grep -Ec '^(export )?MININGCORE_VERSION=v0\.4\.0-rc\.1([[:space:]]|$)' "$readme") -ne 3 ]] ||
-    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.4\.0-rc\.1([[:space:]]|$)' "$document") -ne 2 ]] ||
-    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.4\.0-rc\.1([[:space:]]|$)' "$database_document") -ne 1 ]] ||
-    [[ $(grep -Ec '^NEXT_VERSION=v0\.4\.0-rc\.1([[:space:]]|$)' "$document") -ne 1 ]] ||
-    [[ $(grep -Ec '^export TAG=v0\.4\.0-rc\.1([[:space:]]|$)' "$document") -ne 1 ]]; then
-  echo 'The v0.4.0-rc.1 copy-paste assignment inventory is incomplete or duplicated' >&2
-  exit 1
-fi
+# Per-document stable-installation / candidate-maintenance assignment inventories
+# are checked by check-release-preparation-docs.py above.
 
 recovery_section=$(awk '
   /^### Recover an interrupted publication$/ { capture = 1 }

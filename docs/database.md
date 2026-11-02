@@ -147,7 +147,7 @@ A backup is not proven until it has been restored and checked.
 
 For the v0.3.0-to-v0.4.0-rc.1 transition, first use the
 [release-specific migration matrix](upgrade-v0.4.0-rc.1.md#database-migration-matrix).
-An unchanged canonical Bitcoin SOLO plus LTC/DOGE SOLO/SOLO deployment needs no new
+An unchanged canonical Bitcoin SOLO or LTC/DOGE merged SOLO/SOLO deployment needs no new
 SQL solely for this upgrade when its v0.3.0 prerequisites are already installed.
 PPS and pooled merged accounting require the new arithmetic schema even when
 arithmetic version 0 is retained. Pearl has additional opt-in tables.
@@ -155,9 +155,9 @@ The cumulative sequence below is for deployments needing those accounting prereq
 do not run it merely because an already prepared SOLO service is being replaced.
 
 > [!IMPORTANT]
-> The current release series changes the payout safety contract for every coin family. The payout-manager
-> ownership migration is mandatory before starting any node with payment processing enabled, not
-> only an LTC/DOGE node. Treat this as a breaking upgrade and schedule a maintenance window.
+> Payout-manager ownership was already required before v0.3.0; it is not a new RC.1 migration.
+> A deployment missing that prerequisite must install it before starting any node with payment
+> processing enabled, not only an LTC/DOGE node. Schedule a maintenance window for schema changes.
 
 First extract and verify the selected candidate release without changing `/opt/miningcore`, following
 the [release upgrade procedure](releases.md#upgrade-or-roll-back). Stop Miningcore block writers,
