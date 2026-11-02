@@ -293,8 +293,53 @@ reply, mines confirmation before recreating the handler, verifies actual node
 `getrawtransaction` error -5, and requires one ledger payment with no second send.
 The canonical fallback uses Pearl v1.5.5's exact `getblock(hash,1)` signature.
 It does not claim a process-level crash; earlier process-crash certifications are
-separately recorded. The latest packaged TLS miner run also exercised durable
+separately recorded. The earlier packaged TLS miner run also exercised durable
 candidate retry after one transient failure; the cause remains unestablished.
+
+## Recovery and transport hardening verification (2026-11-02)
+
+[Sanitized evidence](pearl-recovery-hardening-evidence.json) records **5,847 full-suite
+passes** with zero failures and 26 explicit skips, plus **617 focused passes** with
+zero failures and seven opt-in skips. The real no-index payout and privileged
+ownership tests each passed separately. Installer contracts (5) and gateway
+contracts (20) passed; the Release build passed the warning audit.
+
+Sixteen concurrent TCP uploads, each with a 1,070,000-byte synthetic proof field,
+completed while their handlers were blocked. Separate tests cover per-IP isolation,
+IPv4-mapped addresses, retained-byte accounting, deadline/cancellation release,
+unauthenticated pipelining and connection churn. This tests transport capacity,
+not acceptance of synthetic proofs. A real BzMiner CPU proof over hostname-verified
+TLS produced one durable SOLO receipt and one node-accepted block on the final
+package, with zero worker failures after the launch-thread fix.
+
+The actual candidate consumer retains serialized bytes when a known block is above
+the node tip, then completes the same candidate after matching catch-up. PostgreSQL
+tests verify deferred payout holds, competing catch-up, preferred wallet-chain
+selection, and existing-intent reconciliation even without a matching wallet tip.
+A 10,001-output inventory exceeding the ordinary RPC response limit pays from its
+large input without charging fees for unselected markers. Fresh and upgraded audit
+tables deny application INSERT/UPDATE/DELETE/TRUNCATE/ALTER, including historical
+PUBLIC, inherited-role and column grants; administrator recovery remains available.
+
+The live pre-fix failure recorded `Prove / Exit / 137`. A separate native test
+reproduced launching-thread death, and the managed regression failed before the
+dedicated-thread fix and passed afterward. True parent-process death cleanup still
+passed. This establishes the lifetime defect; it does not retrospectively identify
+every earlier transient incident. The unchanged native worker also passed 64 bounded
+mutation cases and its parent-death contract.
+
+The ownership regression changes only temporary test-file owners and requires an
+isolated root lab. Run it separately from ordinary PostgreSQL fixtures:
+
+```bash
+sudo env MININGCORE_TEST_PEARL_OWNERSHIP=1 dotnet test src/Miningcore.Tests \
+  --filter FullyQualifiedName~ForeignOwnedExecutableAndAncestorAreRejectedBeforeExecution
+```
+
+Automatic marker consolidation remains optional and disabled; use the audited
+wallet maintenance procedure in the operator guide. Archived accepted candidates
+still require manual idempotent block-ledger reconciliation. No mainnet mining or
+payout certification is added by this verification.
 
 ## Sources and fixture provenance
 
