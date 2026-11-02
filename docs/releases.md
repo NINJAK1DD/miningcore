@@ -22,7 +22,51 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
-## Unreleased (after v0.3.0): IPv6 admission quotas for all pools
+## v0.4.0-rc.1 highlights
+
+`v0.4.0-rc.1` is the first candidate for v0.4.0, collecting the changes after
+v0.3.0. Use controlled staging and the
+[upgrade/commissioning guide](upgrade-v0.4.0-rc.1.md) before moving live miners or funds.
+The version examples in this branch take effect after the tag's release assets
+are published. The latest stable baseline remains v0.3.0 until a newer stable
+release is published.
+
+- Preserve BTC direct/custodial SOLO and LTC/DOGE SOLO/SOLO operation while fixing
+  work publication, difficulty negotiation, immutable candidate credit and recovery.
+- Validate SMTP and daemon TLS, remove credential-bearing diagnostic output,
+  bound Stratum admission and retain financial failure/reconciliation evidence.
+- Support the reviewed XBT/Knots 29.4.3 rolling maturity contract in the separate
+  Bitcoin BLAKE2b family. DATUM pool/server support is not included.
+- Correct Xelis v1/v2 targets and native verification; unsupported algorithms fail
+  closed. This does not certify current-mainnet Xelis v3.
+- Add opt-in Pearl mining/Oyster payouts with a separate worker bundle and a
+  narrowly certified Ubuntu 26.04 lane; ordinary packages do not include that bundle.
+- Add an explicit, administrator-controlled PPS arithmetic transition; existing
+  liabilities remain unchanged and version 1 is not enabled automatically.
+
+### Upgrade boundary from v0.3.0
+
+Unchanged canonical BTC SOLO and LTC/DOGE merged SOLO/SOLO pools need no new SQL
+solely for this application upgrade when their v0.3.0 prerequisites are installed.
+Preserve pool IDs, beneficiaries and the existing `soloCoinbasePayout` choice.
+Existing PPS or pooled merged accounting requires the new arithmetic schema even
+when keeping version 0; Pearl requires additional tables. Use the
+[migration matrix](upgrade-v0.4.0-rc.1.md#database-migration-matrix), not a new-install schema.
+
+Review explicit SMTP `tlsMode`, notification activation, daemon certificate trust,
+PostgreSQL timeout/TLS syntax, NAT/nginx/PROXY attribution and connection quotas.
+Old configuration can now be rejected deliberately. Ubuntu 22.04 remains supported
+through its source build and matching compatibility archive; .NET 10 remains the
+framework. Rebuild the complete native/managed installation for the documented CPU
+baseline. Do not substitute the Ubuntu 26.04 archive on an older host.
+
+The detailed entries below describe this candidate. Dated evidence and historical
+release sections retain their original scope; none establishes a new mainnet
+financial cycle for this RC.
+
+<a id="unreleased-after-v030-ipv6-admission-quotas-for-all-pools"></a>
+
+## v0.4.0-rc.1: IPv6 admission quotas for all pools
 
 All pool families now group IPv6 clients by /64 for connection rate and concurrent
 connection quotas. Pearl also uses this grouping for proof-upload quotas. Miners
@@ -34,7 +78,9 @@ exact-address quota behavior; values from 0 through 128 are supported. This opti
 changes quota grouping only: client identity, trusted proxies and bans still use
 exact addresses. IPv4 behavior is unchanged. See [connection admission configuration](stratum-connection-admission.md).
 
-## Unreleased (after v0.3.0): Pearl mining
+<a id="unreleased-after-v030-pearl-mining"></a>
+
+## v0.4.0-rc.1: Pearl mining
 
 PRL is available through the dedicated Pearl pool family, with pinned integer V3
 PearlHash verification/proving, durable candidate recovery and Oyster payouts.
@@ -57,7 +103,9 @@ independently of later block outcomes. Both shared arithmetic versions are suppo
 Provision a spendable reserve and enable both payment-processing switches before
 accepting PPS work. See the [four-scheme setup guide](pearl-pool-guide.md#6-choose-and-configure-a-reward-scheme).
 
-## Unreleased (after v0.3.0): Xelis difficulty targets
+<a id="unreleased-after-v030-xelis-difficulty-targets"></a>
+
+## v0.4.0-rc.1: Xelis difficulty targets
 
 Xelis block targets now follow the daemon's exact unsigned 256-bit integer
 division and big-endian byte order, including difficulty 1 and full-width
@@ -129,7 +177,9 @@ rebuild. `ProcessShare` and `ProcessShareInternal` return a share/template tuple
 `DifficultyToTarget(double)` is replaced by the exact `BigInteger` API. See the
 [extension migration table](xelis-target-validation.md#xelis-extension-api-changes).
 
-## Unreleased (after v0.3.0): SMTP notification TLS migration
+<a id="unreleased-after-v030-smtp-notification-tls-migration"></a>
+
+## v0.4.0-rc.1: SMTP notification TLS migration
 
 Before upgrading a pool with administrative email enabled, set
 `notifications.email.tlsMode` to `"startTls"` on ports 25/587 or `"implicitTls"` on
@@ -140,7 +190,9 @@ relay on the same host, the explicit `"localPlaintext"` mode accepts only a
 numeric loopback address and no SMTP credentials. Update copied example files
 before enabling alerts. See the [SMTP transport migration guide](configuration.md#smtp-transport-migration).
 
-## Unreleased: administrative notification activation
+<a id="unreleased-administrative-notification-activation"></a>
+
+## v0.4.0-rc.1: administrative notification activation
 
 `notifications.admin.enabled` now consistently controls validation, event
 subscriptions and critical delivery. The legacy top-level
@@ -174,7 +226,9 @@ Timeouts bound the local wait and do not prove the provider rejected a message;
 Pushover `status: 1` confirms queueing by the provider, not human receipt.
 See [notification activation and migration](notifications.md).
 
-## Unreleased (after v0.3.0): verify daemon RPC TLS certificates
+<a id="unreleased-after-v030-verify-daemon-rpc-tls-certificates"></a>
+
+## v0.4.0-rc.1: verify daemon RPC TLS certificates
 
 HTTPS/HTTP2 and WSS daemon RPC transports now use platform certificate validation
 instead of accepting arbitrary server certificates. All coin families using the
@@ -190,7 +244,9 @@ bodies from reaching a redirected origin. Configure the final daemon/proxy URL
 directly. See
 [daemon TLS compatibility and testing](rpc-tls.md).
 
-## Unreleased (after v0.3.0): daemon REST TLS and redirects
+<a id="unreleased-after-v030-daemon-rest-tls-and-redirects"></a>
+
+## v0.4.0-rc.1: daemon REST TLS and redirects
 
 Beam explorer, Conceal and Warthog node REST calls now honor the selected
 endpoint's `ssl` and `http2` settings and refuse redirects. Existing
@@ -211,7 +267,9 @@ If a daemon does not reconnect, look for `RPC diagnostic` Warnings with
 logging the host, port or wallet URL.
 With `perPoolLogFile` enabled, the warning also appears in that pool's log.
 
-## Unreleased (after v0.3.0): Warthog wallet private key secrecy
+<a id="unreleased-after-v030-warthog-wallet-private-key-secrecy"></a>
+
+## v0.4.0-rc.1: Warthog wallet private key secrecy
 
 Warthog wallet address checks now derive the address locally, removing the
 private key from daemon REST URLs and startup errors. Invalid keys and
@@ -220,7 +278,9 @@ processing is enabled for both the cluster and pool. If an older version ran
 with Warthog payments enabled, follow the
 [Warthog key incident guidance](warthog-wallet-key-security.md).
 
-## Unreleased (after v0.3.0): native floating-point state on CryptoNote load
+<a id="unreleased-after-v030-native-floating-point-state-on-cryptonote-load"></a>
+
+## v0.4.0-rc.1: native floating-point state on CryptoNote load
 
 CryptoNote's Linux shared-library link no longer passes `-Ofast` to the linker
 driver. GCC 12 and earlier, and affected Clang versions, can otherwise add startup
@@ -245,7 +305,9 @@ in eight floating-point modes before managed tests. This does not establish that
 every subsequent exported hashing call preserves state; see the
 [native contract and validation limits](native-cpu-portability.md#floating-point-environment-at-native-library-load).
 
-## Unreleased (after v0.3.0): Ergo exact proof and network difficulty
+<a id="unreleased-after-v030-ergo-exact-proof-and-network-difficulty"></a>
+
+## v0.4.0-rc.1: Ergo exact proof and network difficulty
 
 Ergo now derives proof difficulty, candidate credit limits and accepted-share
 `NetworkDifficulty` from the full Autolykos integers, removing Bitcoin compact
@@ -259,7 +321,9 @@ persisted shares and financial receipts are not repriced. A PostgreSQL settlemen
 regression verifies exact network metadata, replay, rollback and partial-window
 allocation. See [the accounting audit](non-bitcoin-candidate-credit.md#ergo-exact-difficulty-follow-up).
 
-## Unreleased (after v0.3.0): settlement inputs and candidate credit
+<a id="unreleased-after-v030-settlement-inputs-and-candidate-credit"></a>
+
+## v0.4.0-rc.1: settlement inputs and candidate credit
 
 PROP, PPLNS and PPLNSBF now fail closed on nonpositive or nonfinite stored,
 adjusted or network difficulty **across all coin families**. A bad legacy row or
@@ -351,7 +415,9 @@ only when upstream packages resolve that version or later and restore/audit
 checks pass. The native export regression probe now searches the test assembly
 directory, matching VSTest's native-library deployment layout.
 
-## Unreleased: in-flight difficulty assignments
+<a id="unreleased-in-flight-difficulty-assignments"></a>
+
+## v0.4.0-rc.1: in-flight difficulty assignments
 
 Static/NiceHash and minimum-difficulty assignments preserve original credit for
 retained generic jobs for less than 30 monotonic seconds. Newly issued work has
@@ -406,7 +472,9 @@ each accepted candidate's private nonce-bearing block, correcting a pre-existing
 concurrent nonce overwrite race; ordinary shares avoid protobuf header cloning.
 Physical IceRiver/Bitmain ASIC commissioning remains **pending** in the GPU-only lab.
 
-## Unreleased: Handshake difficulty notification and CryptoNote-family targets
+<a id="unreleased-handshake-difficulty-notification-and-cryptonote-family-targets"></a>
+
+## v0.4.0-rc.1: Handshake difficulty notification and CryptoNote-family targets
 
 Handshake static-difficulty authorization now sends `mining.set_difficulty` under
 the worker assignment gate, so miners receive the difficulty the server enforces.
@@ -469,7 +537,9 @@ required. See the [assignment and target validation](vardiff-monotonic.md).
 Large proxy/NiceHash connections can exceed the configured target share rate at this
 ceiling. Compatible higher-precision targets are tracked in [Issue #213](https://github.com/NINJAK1DD/miningcore/issues/213).
 
-## Unreleased: Stratum ban attribution and address normalization
+<a id="unreleased-stratum-ban-attribution-and-address-normalization"></a>
+
+## v0.4.0-rc.1: Stratum ban attribution and address normalization
 
 Stratum bans now reject a normalized forwarded client on its validated trusted
 PROXY header alone, before request parsing or address admission. Automatic
@@ -497,7 +567,9 @@ Request-time rejection logs changed from `Disconnecting banned client @` to
 `Disconnecting banned address @`
 because the selected address may be the transport. Update external log parsers.
 
-## Unreleased: portable native builds and inherited overrides
+<a id="unreleased-portable-native-builds-and-inherited-overrides"></a>
+
+## v0.4.0-rc.1: portable native builds and inherited overrides
 
 Linux source and release builds now use a fixed CPU baseline, guard optional ISA
 dispatch against unavailable OS state, and explicitly select reviewed Makefiles.
@@ -526,21 +598,24 @@ Use this guide by task:
 | Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
 | Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
 | Install or upgrade to v0.3.0 | [v0.3.0 highlights](#v030-highlights) |
+| Upgrade v0.3.0 to v0.4.0-rc.1 | [RC.1 upgrade guide](upgrade-v0.4.0-rc.1.md) |
 | Existing v0.1.0 operator | [v0.2.0 highlights](#v020-highlights) |
 | v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |
 | Enable Bitcoin-family PPS | [PPS operator guide](pps.md) |
 | Prepare an existing database for default Bitcoin direct-coinbase SOLO | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
 | Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
-| Review or rotate credentials exposed by earlier debug logs | [PostgreSQL credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics) |
-| Review historical RPC Trace/WebSocket Debug exposure | [Credential-safe RPC diagnostics](#unreleased-credential-safe-rpc-transport-diagnostics) |
-| Review historical full configuration dumps and the null-output bug | [Credential-safe configuration dumps](#unreleased-credential-safe-configuration-dumps) |
+| Review or rotate credentials exposed by earlier debug logs | [PostgreSQL credential-safe diagnostics](#v040-rc1-postgresql-credential-safe-diagnostics) |
+| Review historical RPC Trace/WebSocket Debug exposure | [Credential-safe RPC diagnostics](#v040-rc1-credential-safe-rpc-transport-diagnostics) |
+| Review historical full configuration dumps and the null-output bug | [Credential-safe configuration dumps](#v040-rc1-credential-safe-configuration-dumps) |
 | Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
 | Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
 
 For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
 copying a recovery command from the maintainer section.
 
-## Unreleased: Bitcoin-family duplicate subscription policy
+<a id="unreleased-bitcoin-family-duplicate-subscription-policy"></a>
+
+## v0.4.0-rc.1: Bitcoin-family duplicate subscription policy
 
 Pools served by `BitcoinPool`, including Bitcoin, Litecoin, Dogecoin, Bitcoin Cash
 and inherited merged-mining Stratum, now preserve the original extranonce and work
@@ -559,7 +634,9 @@ already admitted shares retain their accounting ownership. Independent pool
 dispatchers are outside this fix. See the [protocol scope, telemetry and proxy
 guidance](bitcoin-subscription-policy.md).
 
-## Unreleased: bounded Stratum connection admission
+<a id="unreleased-bounded-stratum-connection-admission"></a>
+
+## v0.4.0-rc.1: bounded Stratum connection admission
 
 Every internal Stratum pool now limits reconnect startup rate and concurrent dispatches
 across all its ports, with bounded client-address retention and monotonic expiry.
@@ -607,7 +684,9 @@ Invalid trust-list entries now fail configuration validation. See
 [Stratum connection admission](stratum-connection-admission.md) for operator controls,
 NAT/proxy policy, bounded metrics, firmware reconnect recovery and validation evidence.
 
-## Unreleased: BLAKE2b difficulty request budget
+<a id="unreleased-blake2b-difficulty-request-budget"></a>
+
+## v0.4.0-rc.1: BLAKE2b difficulty request budget
 
 [#152](https://github.com/NINJAK1DD/miningcore/issues/152) limits miner-requested BLAKE2b
 difficulty negotiation to an eight-request burst and one replenished request per ten
@@ -637,7 +716,9 @@ BLAKE2b templates must disable version rolling. Cross-connection churn defenses 
 tracked separately in [#180](https://github.com/NINJAK1DD/miningcore/issues/180).
 See the [policy and validation evidence](bitcoin-blake2b.md#miner-requested-difficulty-budget).
 
-## Unreleased: Bitcoin-family response publication failures
+<a id="unreleased-bitcoin-family-response-publication-failures"></a>
+
+## v0.4.0-rc.1: Bitcoin-family response publication failures
 
 [#183](https://github.com/NINJAK1DD/miningcore/issues/183) closes a Bitcoin-family
 connection when work publication fails after its response has started. It does
@@ -679,7 +760,9 @@ evidence stays within the real-clock replay horizon. Production replay protectio
 and transactional assertions are unchanged; see the
 [repair and validation evidence](integration-deadline-tests.md#october-recovery-fixture-repair-and-validation).
 
-## Unreleased: BLAKE2b assignment ordering
+<a id="unreleased-blake2b-assignment-ordering"></a>
+
+## v0.4.0-rc.1: BLAKE2b assignment ordering
 
 [#182](https://github.com/NINJAK1DD/miningcore/issues/182) serializes worker difficulty
 changes, server broadcasts and immediate VarDiff updates per connection. Difficulty
@@ -712,7 +795,9 @@ Omitted BLAKE2b VarDiff maxima now use the highest representable difficulty as a
 runtime ceiling, without modifying configuration. The shared timing and arithmetic changes
 are described separately below.
 
-## Unreleased: shared VarDiff timing and arithmetic
+<a id="unreleased-shared-vardiff-timing-and-arithmetic"></a>
+
+## v0.4.0-rc.1: shared VarDiff timing and arithmetic
 
 **Upgrade action required:** every configured `varDiff` block, across all pool families,
 must specify a finite `minDiff` greater than zero. Omitting `minDiff` deserializes to zero
@@ -775,7 +860,9 @@ propagate notification failures, so a queue that recovers after rejecting the di
 cannot receive an unmatched job. Failed response enqueues are covered even when configure
 already changed difficulty; recoverable pre-response protocol errors remain supported.
 
-## Unreleased: Bitcoin-family verified job gate
+<a id="unreleased-bitcoin-family-verified-job-gate"></a>
+
+## v0.4.0-rc.1: Bitcoin-family verified job gate
 
 [#141](https://github.com/NINJAK1DD/miningcore/issues/141) prevents a forced
 rebroadcast from publishing a null job while the first Litecoin–Dogecoin merged
@@ -795,7 +882,9 @@ Error-free RPC envelopes with no template payload are now handled as unavailable
 at warning level across these managers instead of reaching job construction and
 producing an error-level exception.
 
-## Unreleased: independent Bitcoin-family job notifications
+<a id="unreleased-independent-bitcoin-family-job-notifications"></a>
+
+## v0.4.0-rc.1: independent Bitcoin-family job notifications
 
 Bitcoin-family `mining.notify` messages now retain the `clean_jobs` flag supplied
 for each notification, even when another call occurs before queued work is
@@ -830,7 +919,9 @@ for the relevant broadcast. BitcoinBlake2bPool's obsolete assignment was removed
 MergedMiningBitcoinPool did not use the field. Both compile in CI, but neither has
 a dedicated regression test for this field removal.
 
-## Unreleased: bounded PostgreSQL command timeout
+<a id="unreleased-bounded-postgresql-command-timeout"></a>
+
+## v0.4.0-rc.1: bounded PostgreSQL command timeout
 
 [#147](https://github.com/NINJAK1DD/miningcore/issues/147) defines
 `persistence.postgres.commandTimeout` as an integer from **1 to 86,400 seconds**.
@@ -864,7 +955,9 @@ Connection and cancellation timeouts retain their driver defaults. Review
 before changing a timeout. It is not a deadline for an entire transaction, and a
 timeout does not establish the outcome of an in-flight COMMIT or wallet payment.
 
-## Unreleased: credential-safe Stratum diagnostics
+<a id="unreleased-credential-safe-stratum-diagnostics"></a>
+
+## v0.4.0-rc.1: credential-safe Stratum diagnostics
 
 [#157](https://github.com/NINJAK1DD/miningcore/issues/157) closes the unbounded
 Stratum request-method telemetry-label path: distinct miner-supplied method names
@@ -894,14 +987,16 @@ Debug logs or error fragments for historical credential exposure. This is not gl
 redaction of databases, statistics, APIs, notifications or third-party logs. See the
 [complete inventory, retained metadata and verification contract](stratum-diagnostics.md).
 
-## Unreleased: credential-safe configuration dumps
+<a id="unreleased-credential-safe-configuration-dumps"></a>
+
+## v0.4.0-rc.1: credential-safe configuration dumps
 
 [PR #159](https://github.com/NINJAK1DD/miningcore/pull/159) restores useful `-dc`/`--dumpconfig`
 output and hardens it with an exact-type/member allowlist. The command reads `-c <configfile>`
 without starting services, resolving environment credentials or loading coin-template files.
 There is no database, daemon, payout or runtime serialization change.
 
-The unreleased diagnostic format is **version 2** (superseding PR #159's initial, unreleased
+The candidate's diagnostic format is **version 2** (superseding PR #159's initial, unreleased
 version 1). Reviewed numeric settings and Boolean switches remain visible. Bounded enum names
 such as `PPLNS` and `Integrated` replace the old serializer's numeric enum values. Reviewed
 strings become null/`[blank]`/`[set]`, logging level uses a closed vocabulary, API and Stratum addresses become
@@ -942,7 +1037,9 @@ Tools consuming the previously broken command should explicitly check `diagnosti
 No unsafe export option is provided. Topology, presence, counts and feature switches remain
 sensitive operational metadata; normal startup logs and other commands are outside this boundary.
 
-## Unreleased: credential-safe RPC consumer diagnostics
+<a id="unreleased-credential-safe-rpc-consumer-diagnostics"></a>
+
+## v0.4.0-rc.1: credential-safe RPC consumer diagnostics
 
 Audited job managers, payout handlers and shared recovery/notification consumers
 no longer render daemon error messages or parsing exceptions directly. Bounded
@@ -973,7 +1070,9 @@ See the [consumer audit and operator guide](rpc-consumer-diagnostics.md) for
 covered families, historical exposure guidance and explicit scope limits. This
 complements transport hardening; it is not a global log/configuration redactor.
 
-## Unreleased: credential-safe RPC transport diagnostics
+<a id="unreleased-credential-safe-rpc-transport-diagnostics"></a>
+
+## v0.4.0-rc.1: credential-safe RPC transport diagnostics
 
 **Monitoring change:** Prometheus/Grafana dashboards using joined RPC batch-method labels
 must switch to `batch`; custom/unrecognized single-method labels now become `other`.
@@ -1044,7 +1143,9 @@ established by safe logging. The design follows the
 by excluding payloads and endpoint data entirely rather than enumerating secret-bearing RPC
 methods. Method labels are separately allowlisted from source-controlled protocol constants.
 
-## Unreleased: Bitcoin BLAKE2b header-v2
+<a id="unreleased-bitcoin-blake2b-header-v2"></a>
+
+## v0.4.0-rc.1: Bitcoin BLAKE2b header-v2
 
 The current compatibility update removes the BLAKE2b startup dependency on the removed
 `getdifficulty` RPC and keeps expected BLAKE2b hash work separate from accounting units. Startup/runtime
@@ -1126,19 +1227,24 @@ before coinbase construction. Header byte order and the supported miner profile 
 
 Full-process GPU validation also exposed shared startup issues fixed independently in
 PRs #142 and #143. Their current behavior and compatibility boundaries are documented under
-[optional notification startup](#unreleased-optional-notification-startup) and
-[PostgreSQL credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics).
+[optional notification startup](#v040-rc1-optional-notification-startup) and
+[PostgreSQL credential-safe diagnostics](#v040-rc1-postgresql-credential-safe-diagnostics).
 
-## Unreleased: Bitcoin-family initial work refresh
+<a id="unreleased-bitcoin-family-initial-work-refresh"></a>
+
+## v0.4.0-rc.1: Bitcoin-family initial work refresh
 
 The shared Bitcoin-family refresh loop no longer forces a null-job rebroadcast before
 its first valid job when a template RPC fails. Existing verified work can still be rebroadcast;
 generic-Bitcoin and BLAKE2b lifecycle regressions cover error-return and exception paths.
 This also affects canonical SHA-256d Bitcoin, not only the new BLAKE2b family.
-The separate generic notification-array snapshot concern is tracked in
-[#153](https://github.com/NINJAK1DD/miningcore/issues/153); it is not changed here.
+The original refresh-loop fix did not address notification-array ownership.
+That separate [#153](https://github.com/NINJAK1DD/miningcore/issues/153) follow-up is
+also included in this candidate; see [independent job notifications](#v040-rc1-independent-bitcoin-family-job-notifications).
 
-## Unreleased: optional notification startup
+<a id="unreleased-optional-notification-startup"></a>
+
+## v0.4.0-rc.1: optional notification startup
 
 Omitting the optional `notifications` section no longer causes a constructor null reference
 in the email/Pushover service graph. Omitted or empty sections and disabled admin notifications
@@ -1158,10 +1264,14 @@ that aggregate. Other configured critical transports can still be attempted. Con
 sender or disable admin notifications; do not rely on
 undeliverable critical alerts. No coin-family, accounting or schema change is made.
 
-The existing top-level/admin/channel switch semantics are unchanged. Their validation and
-documentation mismatch is tracked separately in [issue #148](https://github.com/NINJAK1DD/miningcore/issues/148).
+That original optional-section fix retained the then-existing switch semantics.
+The separate [issue #148](https://github.com/NINJAK1DD/miningcore/issues/148) follow-up
+is also included in this candidate: [administrative notification activation](#v040-rc1-administrative-notification-activation)
+defines the current authoritative `admin.enabled` policy.
 
-## Unreleased: PostgreSQL certificate validation (issue #146)
+<a id="unreleased-postgresql-certificate-validation-issue-146"></a>
+
+## v0.4.0-rc.1: PostgreSQL certificate validation (issue #146)
 
 PostgreSQL configuration now supports explicit `sslMode` values, including
 `VerifyCA` and recommended `VerifyFull`, and `tlsRootCert` for a trusted CA file.
@@ -1187,10 +1297,12 @@ CA paths do not freeze file contents, and an unset root permits Npgsql to consul
 environment/default trust sources at later physical opens. Review the
 [migration and trust-source rules](postgres-tls.md) before upgrading.
 
-## Unreleased: PostgreSQL credential-safe diagnostics
+<a id="unreleased-postgresql-credential-safe-diagnostics"></a>
+
+## v0.4.0-rc.1: PostgreSQL credential-safe diagnostics
 
 The next two paragraphs describe the original PR #142 logging-only change. Its mode and
-field contracts are superseded by the [certificate-validation update](#unreleased-postgresql-certificate-validation-issue-146):
+field contracts are superseded by the [certificate-validation update](#v040-rc1-postgresql-certificate-validation-issue-146):
 the current diagnostic reports the effective mode, omits host/database/user strings and adds
 root-certificate presence. Connection-open exception details are now omitted as well.
 
@@ -1220,10 +1332,10 @@ treated as safe to publish or collect indiscriminately. Separate hardening is tr
 [configuration-dump issue #144](https://github.com/NINJAK1DD/miningcore/issues/144) and
 [RPC-trace issue #145](https://github.com/NINJAK1DD/miningcore/issues/145).
 That historical scope warning is superseded for the dump command by
-[credential-safe configuration dumps](#unreleased-credential-safe-configuration-dumps) and
+[credential-safe configuration dumps](#v040-rc1-credential-safe-configuration-dumps) and
 [PR #159](https://github.com/NINJAK1DD/miningcore/pull/159); the section also clarifies which older
 implementations emitted full dumps versus literal `null`. RPC changes are documented separately
-in the unreleased transport/consumer sections above.
+in the candidate's transport/consumer sections above.
 Connection-policy follow-ups are tracked separately in
 [TLS verification #146](https://github.com/NINJAK1DD/miningcore/issues/146)
 and [command-timeout policy #147](https://github.com/NINJAK1DD/miningcore/issues/147).
@@ -1545,7 +1657,7 @@ before upgrading from an older release candidate.
 
 ## Choose a version
 
-Versions containing a suffix such as `v0.3.0-rc.2` are release candidates. Test them before relying
+Versions containing a suffix such as `v0.4.0-rc.1` are release candidates. Test them before relying
 on them for real funds. A version without a suffix, such as `v0.3.0`, is a stable release and updates
 the `latest` container tag.
 
@@ -1556,10 +1668,10 @@ download the archive matching the host and the checksum manifest:
 - `miningcore-VERSION-linux-x64-ubuntu-22.04.tar.gz` (choose this on Ubuntu 22.04)
 - `SHA256SUMS`
 
-The examples below use `v0.3.0`. Substitute the version you selected.
+The examples below use `v0.4.0-rc.1` after its assets are published. Substitute the version you selected.
 
 ```console
-export MININGCORE_VERSION=v0.3.0
+export MININGCORE_VERSION=v0.4.0-rc.1
 MININGCORE_UBUNTU=
 MININGCORE_RELEASE_READY=
 MININGCORE_INSTALL_READY=
@@ -1867,6 +1979,13 @@ loss, use the guarded [payout-manager recovery runbook](database.md#recover-payo
 
 ## Upgrade or roll back
 
+For v0.3.0-to-v0.4.0-rc.1 upgrades, select the
+[release-specific migration path](upgrade-v0.4.0-rc.1.md#database-migration-matrix)
+first. The cumulative SQL block below is for a deployment needing those accounting
+prerequisites. An already prepared, unchanged SOLO/SOLO deployment should follow
+the [RC.1 cutover checklist](upgrade-v0.4.0-rc.1.md#staging-and-cutover) without applying
+unnecessary accounting migrations.
+
 If this maintenance changes the PostgreSQL major version or cluster unit name, follow the
 [ordering upgrade procedure](systemd-postgresql-ordering.md#postgresql-upgrades-and-removal) before
 starting Miningcore. Start/select the replacement database service and rerun the helper with its
@@ -1961,7 +2080,7 @@ Release images are published for Linux AMD64 at
 `ghcr.io/ninjak1dd/miningcore`. Pin a specific version in production rather than `latest`:
 
 ```console
-export MININGCORE_VERSION=v0.3.0  # Replace with the release you selected.
+export MININGCORE_VERSION=v0.4.0-rc.1  # Replace with the release you selected.
 sudo mkdir -p /etc/miningcore /var/lib/miningcore
 sudo curl -fL \
   "https://raw.githubusercontent.com/NINJAK1DD/miningcore/${MININGCORE_VERSION}/config.example.json" \
@@ -1999,7 +2118,7 @@ return to them after completing the deployment steps above.
 
 PostgreSQL startup debug-log filters must now match `Using PostgreSQL persistence ` instead of
 `Using postgres connection string:`. The new single-line JSON diagnostic intentionally omits
-credential values; see [credential-safe diagnostics](#unreleased-postgresql-credential-safe-diagnostics).
+credential values; see [credential-safe diagnostics](#v040-rc1-postgresql-credential-safe-diagnostics).
 
 ### Ubuntu 26.04 primary release and source-build support
 
@@ -2013,7 +2132,7 @@ forms.
 
 The Linux native build driver now propagates each component failure explicitly and stops before a
 later component can hide an incomplete build. The Ubuntu 26.04 validation publishes the shared
-24-library inventory also required by release packaging, checks x86-64 architecture, managed
+native-library inventory also required by release packaging, checks x86-64 architecture, managed
 exports and dynamic relocation providers, and runs targeted CryptoNote, Flex, yescrypt and ZanoNote
 load tests against the freshly built libraries. It also exercises version/help/schema paths and
 reaches a controlled startup safety boundary. Ubuntu 24.04 retains required source-build
@@ -2052,7 +2171,7 @@ Three Linux hashing defects are corrected and deserve particular attention from 
   now uses the same single-round operation as Xelis v2. A no-AES build and known-answer test run on
   every supported Linux lane; AES-capable lanes additionally compare it directly with AES-NI.
 
-All 24 packaged Linux hashing libraries now link with `-Wl,--no-undefined`. CryptoNote explicitly
+All packaged Linux hashing libraries now link with `-Wl,--no-undefined`. CryptoNote explicitly
 links its Boost.Regex, OpenSSL and libsodium providers and includes its parsing-only Miningcore
 stubs; Dero includes HighwayHash's runtime instruction-set resolver; and ZanoNote includes the
 cryptographic and proof objects its parsing exports reference. This closes latent load-time failures
@@ -2793,7 +2912,7 @@ the task links at the top of this guide and the [troubleshooting guide](troubles
 
 ### Build and package contract
 
-The release workflow accepts SemVer tags reachable from `dev`, for example `v0.3.0-rc.2` or
+The release workflow accepts SemVer tags reachable from `dev`, for example `v0.4.0-rc.1` or
 `v0.3.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
 fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
 is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
@@ -2934,6 +3053,14 @@ Before tagging a new release, update every release-locked quick-start sentence a
 named stable-version substitution boundary and its release-documentation assertion when the stable
 baseline changes.
 
+For a candidate, keep the latest stable baseline explicitly separate from the selected
+candidate examples. Update the RC highlights, upgrade matrix, guide index and
+`scripts/release/test-release-install-docs.sh` together. Historical release/evidence
+versions identify their original behavior and must not be replaced globally.
+Do not add a speculative `next-version` or edit assembly constants merely to prepare
+this PR: the validated release tag supplies the packaged version and source identity.
+Publication must mark `v0.4.0-rc.1` as a prerelease; it must not advance stable GHCR aliases.
+
 The tagged build injects the validated tag and commit as assembly metadata because development
 branches intentionally retain GitVersion's prerelease calculation; the runtime check requires an
 exact match before packaging can begin.
@@ -2948,7 +3075,7 @@ failures before publication. Prefer a signed annotated tag:
 ```console
 git switch dev
 git pull --ff-only origin dev
-NEXT_VERSION=v0.3.0  # Replace with the next unused SemVer version.
+NEXT_VERSION=v0.4.0-rc.1  # Replace with the next unused SemVer version.
 git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
 git push origin "$NEXT_VERSION"
 ```
@@ -3042,7 +3169,7 @@ do not move the Git tag:
 
 ```console
 export REPOSITORY=NINJAK1DD/miningcore
-export TAG=v0.3.0
+export TAG=v0.4.0-rc.1
 export IMAGE=ghcr.io/ninjak1dd/miningcore
 export STAGING_TAG="publication-staging-$TAG"
 

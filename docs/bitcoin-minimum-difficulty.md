@@ -134,7 +134,7 @@ cycle; later blocks stay unpaid until the cause is reconciled. Previously
 unvalidated zero/negative legacy share rows now fail closed. No row is silently
 skipped or deleted, and this policy also applies to non-Bitcoin pools.
 
-Before upgrading to v0.3.0, back up retained shares and financial receipts, then
+Before upgrading to v0.4.0-rc.1, back up retained shares and financial receipts, then
 run the [read-only audit](../scripts/release/audit-settlement-shares.sql) against
 each deployment database with a role allowed to read both `shares` and
 `pps_share_credits`. Both tables and their accounting identity/role columns must

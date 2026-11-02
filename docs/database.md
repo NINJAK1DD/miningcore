@@ -145,6 +145,15 @@ A backup is not proven until it has been restored and checked.
 
 ## Upgrade an existing database
 
+For the v0.3.0-to-v0.4.0-rc.1 transition, first use the
+[release-specific migration matrix](upgrade-v0.4.0-rc.1.md#database-migration-matrix).
+An unchanged canonical Bitcoin SOLO plus LTC/DOGE SOLO/SOLO deployment needs no new
+SQL solely for this upgrade when its v0.3.0 prerequisites are already installed.
+PPS and pooled merged accounting require the new arithmetic schema even when
+arithmetic version 0 is retained. Pearl has additional opt-in tables.
+The cumulative sequence below is for deployments needing those accounting prerequisites;
+do not run it merely because an already prepared SOLO service is being replaced.
+
 > [!IMPORTANT]
 > The current release series changes the payout safety contract for every coin family. The payout-manager
 > ownership migration is mandatory before starting any node with payment processing enabled, not
@@ -157,7 +166,7 @@ that uses the database, take a verified backup, then point this shell at that ex
 candidate and apply the migrations with `ON_ERROR_STOP`:
 
 ```console
-export MININGCORE_VERSION=v0.3.0
+export MININGCORE_VERSION=v0.4.0-rc.1
 export MININGCORE_UBUNTU=26.04 # use 22.04 with the compatibility archive
 export MININGCORE_CANDIDATE_DIR="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
 test -d "$MININGCORE_CANDIDATE_DIR/migrations"

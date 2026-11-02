@@ -3,6 +3,10 @@
 This is the day-to-day checklist for a production Miningcore service. It deliberately links to the
 authoritative procedures instead of duplicating recovery SQL or release commands.
 
+For v0.4.0-rc.1, review the [v0.3.0 upgrade and commissioning guide](upgrade-v0.4.0-rc.1.md)
+before replacing a service. The candidate is for controlled validation; dated mainnet
+evidence does not certify a newer binary or a different deployment.
+
 ## Before accepting miners
 
 - Use a maintained Linux host and keep the .NET 10 runtime, PostgreSQL and coin daemons serviced.

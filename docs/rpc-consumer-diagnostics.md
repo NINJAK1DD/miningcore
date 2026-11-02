@@ -5,7 +5,7 @@ text: a daemon or proxy can echo request credentials into them. Escaping that te
 prevents line injection, but does not make it safe to disclose.
 
 This change addresses [#154](https://github.com/NINJAK1DD/miningcore/issues/154),
-complementing the [transport boundary](releases.md#unreleased-credential-safe-rpc-transport-diagnostics).
+complementing the [transport boundary](releases.md#v040-rc1-credential-safe-rpc-transport-diagnostics).
 
 ## Diagnostic contract
 

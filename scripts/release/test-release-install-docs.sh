@@ -11,6 +11,7 @@ config_example="$repository_root/config.example.json"
 pps_document="$repository_root/docs/pps.md"
 pps_arithmetic_document="$repository_root/docs/pps-arithmetic-migration.md"
 database_document="$repository_root/docs/database.md"
+rc_upgrade_document="$repository_root/docs/upgrade-v0.4.0-rc.1.md"
 merged_mining_document="$repository_root/docs/merged-mining-litecoin-dogecoin.md"
 bitcoin_direct_document="$repository_root/docs/bitcoin-direct-solo.md"
 licence_document="$repository_root/docs/lucky-penny-licence.md"
@@ -22,7 +23,7 @@ zeromq_probe="$repository_root/scripts/release/fixtures/zeromq-runtime-probe/Pro
 capability_dir=
 fixture_dir=
 normalized_document=$(tr '\r\n\t' '   ' < "$document" | sed -E 's/[[:space:]]+/ /g')
-normalized_readme=$(tr '\r\n\t' '   ' < "$readme" | sed -E 's/[[:space:]]+/ /g')
+normalized_readme=$(sed -E 's/^> ?//' "$readme" | tr '\r\n\t' '   ' | sed -E 's/[[:space:]]+/ /g')
 release_document=$(tr -d '\r' < "$document")
 readme_features_section=$(awk '
   { sub(/\r$/, "") }
@@ -195,12 +196,62 @@ assert_contains 'the Ubuntu 26.04 choose-one label' \
   '(choose this on Ubuntu 26.04)'
 assert_contains 'the Ubuntu 22.04 choose-one label' \
   '(choose this on Ubuntu 22.04)'
-assert_file_contains 'the v0.3.0 release example' \
-  'export MININGCORE_VERSION=v0.3.0' "$document"
-assert_file_contains 'the v0.3.0 container example' \
-  'MININGCORE_VERSION=v0.3.0' "$readme"
-assert_file_contains 'the v0.3.0 database migration example' \
-  'export MININGCORE_VERSION=v0.3.0' "$database_document"
+assert_file_contains 'the v0.4.0-rc.1 release example' \
+  'export MININGCORE_VERSION=v0.4.0-rc.1' "$document"
+assert_file_contains 'the v0.4.0-rc.1 container example' \
+  'MININGCORE_VERSION=v0.4.0-rc.1' "$readme"
+assert_file_contains 'the v0.4.0-rc.1 database migration example' \
+  'export MININGCORE_VERSION=v0.4.0-rc.1' "$database_document"
+assert_file_contains 'the selected RC quick-start boundary' \
+  'This quick start pins the `v0.4.0-rc.1` release candidate' "$readme"
+assert_readme_prose_contains 'the unpublished-artifact boundary' \
+  'Use it only after its release assets are published'
+assert_readme_prose_contains 'the retained latest stable baseline' \
+  'The latest stable baseline remains v0.3.0 until a newer stable release is published.'
+assert_file_contains 'the RC release heading' \
+  '## v0.4.0-rc.1 highlights' "$document"
+assert_file_contains 'the RC upgrade boundary' \
+  '### Upgrade boundary from v0.3.0' "$document"
+assert_file_contains 'the RC guide index route' \
+  '(upgrade-v0.4.0-rc.1.md)' "$repository_root/docs/README.md"
+assert_file_contains 'the unchanged SOLO migration boundary' \
+  'No new SQL solely for this upgrade when the v0.3.0 prerequisites are installed.' "$rc_upgrade_document"
+assert_file_contains 'the legacy PPS schema upgrade boundary' \
+  'even when retaining version 0.' "$rc_upgrade_document"
+assert_file_contains 'the authenticated port-587 SMTP migration' \
+  'For an existing authenticated port-587 configuration, add `"tlsMode": "startTls"`' \
+  "$rc_upgrade_document"
+assert_file_contains 'the empty SMTP password rejection' \
+  'A nonempty `user` with `password: ""` is' "$rc_upgrade_document"
+assert_file_contains 'the isolated staging wallet boundary' \
+  'Never connect a staging payout manager to production wallets.' "$rc_upgrade_document"
+assert_file_contains 'the PROXY/TLS ordering boundary' \
+  'before its handshake is unsupported.' "$rc_upgrade_document"
+assert_file_contains 'the RC evidence boundary' \
+  'This is dated production evidence, not certification of v0.4.0-rc.1.' \
+  "$repository_root/docs/mainnet-validation.md"
+if grep -Eq '^## Unreleased' "$document"; then
+  echo 'RC release notes still contain unassigned Unreleased sections' >&2
+  exit 1
+fi
+# Preserve links already published in issues/PRs before the 33 entries received
+# their RC heading. Check each alias against the next heading, not just its count.
+python3 - "$document" <<'PY'
+import pathlib
+import re
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text()
+aliases = re.findall(
+    r'^<a id="(unreleased[^"]*)"></a>\n\n## v0\.4\.0-rc\.1: (.+)$',
+    text, re.MULTILINE,
+)
+assert len(aliases) == 33, 'The 33 pre-RC release anchors must remain usable'
+assert len({alias for alias, _ in aliases}) == 33, 'Duplicate legacy release anchor'
+for alias, heading in aliases:
+    suffix = re.sub(r'[^\w\- ]', '', heading.lower()).replace(' ', '-')
+    assert alias in (f'unreleased-{suffix}', f'unreleased-after-v030-{suffix}'), alias
+PY
 assert_file_contains 'the v0.2.1 hotfix task route' \
   '| v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |' "$document"
 assert_file_contains 'the v0.2.1 troubleshooting route' \
@@ -389,10 +440,10 @@ assert_file_contains 'the terminal-logger opt-out contract' \
   'The standard `MSBUILDTERMINALLOGGER=off` environment setting remains available' "$readme"
 assert_prose_contains 'the private source-build audit-log contract' \
   'Warning enforcement uses a separate private normal-verbosity MSBuild log'
-assert_contains 'the v0.3.0 recovery example' \
-  'export TAG=v0.3.0'
-assert_contains 'the v0.3.0 tagging example' \
-  'NEXT_VERSION=v0.3.0'
+assert_contains 'the v0.4.0-rc.1 recovery example' \
+  'export TAG=v0.4.0-rc.1'
+assert_contains 'the v0.4.0-rc.1 tagging example' \
+  'NEXT_VERSION=v0.4.0-rc.1'
 assert_file_contains 'the direct PPS Bitcoin-family boundary' \
   'Direct audited `Bitcoin`-family pool' "$pps_document"
 assert_file_contains 'the PPS reserve warning' \
@@ -799,17 +850,17 @@ if grep -Eh \
     '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v[0-9]+\.[0-9]+\.[0-9]+' \
     "$readme" "$document" "$database_document" |
     grep -Ev \
-      '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.3\.0([[:space:]]|$)'; then
+      '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.4\.0-rc\.1([[:space:]]|$)'; then
   echo 'README, release guide or database guide contains a stale copy-paste release assignment' >&2
   exit 1
 fi
 
-if [[ $(grep -Ec '^(export )?MININGCORE_VERSION=v0\.3\.0([[:space:]]|$)' "$readme") -ne 3 ]] ||
-    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0([[:space:]]|$)' "$document") -ne 2 ]] ||
-    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0([[:space:]]|$)' "$database_document") -ne 1 ]] ||
-    [[ $(grep -Ec '^NEXT_VERSION=v0\.3\.0([[:space:]]|$)' "$document") -ne 1 ]] ||
-    [[ $(grep -Ec '^export TAG=v0\.3\.0([[:space:]]|$)' "$document") -ne 1 ]]; then
-  echo 'The v0.3.0 copy-paste assignment inventory is incomplete or duplicated' >&2
+if [[ $(grep -Ec '^(export )?MININGCORE_VERSION=v0\.4\.0-rc\.1([[:space:]]|$)' "$readme") -ne 3 ]] ||
+    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.4\.0-rc\.1([[:space:]]|$)' "$document") -ne 2 ]] ||
+    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.4\.0-rc\.1([[:space:]]|$)' "$database_document") -ne 1 ]] ||
+    [[ $(grep -Ec '^NEXT_VERSION=v0\.4\.0-rc\.1([[:space:]]|$)' "$document") -ne 1 ]] ||
+    [[ $(grep -Ec '^export TAG=v0\.4\.0-rc\.1([[:space:]]|$)' "$document") -ne 1 ]]; then
+  echo 'The v0.4.0-rc.1 copy-paste assignment inventory is incomplete or duplicated' >&2
   exit 1
 fi
 
@@ -1000,6 +1051,12 @@ find_unique_line() {
   printf '%s\n' "${matches[0]}"
 }
 
+release_candidate_heading_line=$(
+  find_unique_line release-candidate-heading '## v0.4.0-rc.1 highlights' "$release_document"
+)
+release_candidate_upgrade_line=$(
+  find_unique_line release-candidate-upgrade '### Upgrade boundary from v0.3.0' "$release_document"
+)
 release_stable_heading_line=$(
   find_unique_line release-stable-heading '## v0.3.0 highlights' "$release_document"
 )
@@ -1029,7 +1086,9 @@ release_tag_command_line=$(
   find_unique_line release-tag-command 'git switch dev' "$release_document"
 )
 
-if [[ "$release_rc_heading_line" -le "$release_stable_heading_line" ||
+if [[ "$release_candidate_upgrade_line" -le "$release_candidate_heading_line" ||
+    "$release_stable_heading_line" -le "$release_candidate_upgrade_line" ||
+    "$release_rc_heading_line" -le "$release_stable_heading_line" ||
     "$release_previous_rc_heading_line" -le "$release_rc_heading_line" ||
     "$release_upgrade_heading_line" -le "$release_previous_rc_heading_line" ||
     "$release_feature_heading_line" -le "$release_upgrade_heading_line" ||
