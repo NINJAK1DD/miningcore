@@ -10,7 +10,7 @@ replace that per-connection negotiation limit.
 ## Policy and operator controls
 
 `pools[].connectionAdmission` is optional. Omitting it, or individual properties,
-uses these defaults. All limits are enabled; zero does not disable enforcement.
+uses these defaults. All limits are enabled; zero does not disable enforcement. For the IPv6 prefix, zero groups all IPv6 clients together.
 Changes take effect on process restart. Each server instance starts only once and
 snapshots its policy; restarting requires a new instance. One INFO line at pool
 startup reports every effective limit, including defaults.
@@ -24,6 +24,7 @@ startup reports every effective limit, including defaults.
   "connectionsPerSecondPerAddress": 2,
   "burstPerAddress": 32,
   "maxConcurrentConnectionsPerAddress": 256,
+  "ipv6PrefixLength": 64,
   "maxTrackedAddresses": 32768,
   "idleExpirySeconds": 120,
   "startupTimeoutSeconds": 10
@@ -37,6 +38,7 @@ startup reports every effective limit, including defaults.
 | `maxPendingIdentities` | Additional pool-wide cap on trusted-proxy transports awaiting their first validated identity. Direct clients do not use this allowance. |
 | `connectionsPerSecondPerAddress`, `burstPerAddress` | Second token bucket shared by reconnects from one normalized client IP. A successful identity admission costs one token. |
 | `maxConcurrentConnectionsPerAddress` | Bounds simultaneously admitted dispatches for that IP; several miners may share it. |
+| `ipv6PrefixLength` | IPv6 prefix used only for resource quotas; default 64, range 0–128. A value of 128 uses exact addresses. Pearl proof budgets use the same setting. |
 | `maxTrackedAddresses` | Hard cap on active plus retained idle identities. Must cover `maxConcurrentConnections + burst + connectionsPerSecond * idleExpirySeconds`. New identities are refused when full; existing identities retain their allowances. |
 | `idleExpirySeconds` | Retention after the last dispatch releases the identity. Must be at least `burstPerAddress / connectionsPerSecondPerAddress`. |
 | `startupTimeoutSeconds` | Relative deadline covering TLS detection/handshake, optional PROXY header and the first complete JSON request. Partial bytes do not reset it. It stops before invoking the first handler. |
@@ -94,8 +96,12 @@ an upstream aggregate policy if they share a protection boundary.
 
 Direct clients are keyed by the socket peer IP, with IPv4-mapped IPv6 normalized to
 IPv4. Ports, usernames, worker names, passwords and JSON fields cannot create a new
-identity. IPv6 addresses use their full address; prefix rotation remains subject to
-the pool limits and finite identity table.
+identity. IPv6 addresses aggregate by the configured prefix (default /64), so
+rotating host addresses within a subnet cannot reset quotas. IPv6 scope IDs do
+not create additional quota buckets. Prefix aggregation applies only to resource
+accounting; trusted proxy lists, endpoints, authorization and bans retain exact
+addresses. A /128 restores the earlier exact-address accounting; narrower
+prefixes suit larger delegated client networks but also group more miners.
 
 For `tcpProxyProtocol.enable=true`, only a peer in `proxyAddresses` may assert an
 address. The existing omitted/empty allowlist default trusts exactly IPv4/IPv6

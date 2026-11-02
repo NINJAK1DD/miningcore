@@ -1,6 +1,6 @@
 # Pay Per Share (PPS)
 
-Miningcore supports transactional PPS accounting for audited Bitcoin-family pools. A valid share
+Miningcore supports transactional PPS accounting for audited Bitcoin-family and Pearl pools. A valid share
 creates a miner liability when its accounting envelope commits to PostgreSQL; finding, losing or
 orphaning a later block does not change that credit.
 
@@ -45,7 +45,8 @@ Current support is deliberately narrow:
 | Direct audited `Bitcoin`-family pool | Supported |
 | Integrated LTC/DOGE | Supported independently on parent and auxiliary |
 | Isolated `bitcoin-blake2b` family | Uses the same ledger; requires its [reviewed daemon/miner contract](bitcoin-blake2b.md) |
-| Other non-Bitcoin-family pools | Rejected before listeners open |
+| Pearl (`PRL`) | Supported with synchronous verified-proof accounting; see the [Pearl PPS guide](pearl-pool-guide.md#pps-setup-and-verification) |
+| Other unaudited families | Rejected before listeners open |
 | `PPBS` | No production payout-scheme implementation |
 | `PPLNSBF` | Separate scheme; excluded from integrated LTC/DOGE pooled accounting |
 

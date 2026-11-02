@@ -32,6 +32,7 @@ public sealed class ApiPoolPaymentProcessingExtra
     public string WalletAccount { get; internal set; }
     public string VersionEnablingMaxFee { get; internal set; }
     public ulong? MaxFee { get; internal set; }
+    public long? FeeRateGrainsPerKb { get; internal set; }
     public decimal? MaximumTransactionFees { get; internal set; }
     public int? MaxDegreeOfParallelPayouts { get; internal set; }
     public bool? RevealPoolAddress { get; internal set; }
@@ -60,6 +61,12 @@ public sealed class ApiPoolPaymentProcessingExtra
         Register(ApiPoolPaymentProcessingExtraField.WalletName, name,
             wireValue);
         WalletName = value;
+    }
+
+    internal void SetFeeRateGrainsPerKb(string name, long? value, JToken wireValue)
+    {
+        Register(ApiPoolPaymentProcessingExtraField.FeeRateGrainsPerKb, name, wireValue);
+        FeeRateGrainsPerKb = value;
     }
 
     internal void SetBlockRewardsLockTime(string name, long? value,
@@ -251,6 +258,7 @@ internal enum ApiPoolPaymentProcessingExtraField
     MaxDegreeOfParallelPayouts,
     RevealPoolAddress,
     HideMinerAddress,
+    FeeRateGrainsPerKb,
 }
 
 internal static class ApiPoolPaymentProcessingExtraFieldNames
@@ -456,6 +464,9 @@ internal sealed class ApiPoolPaymentProcessingExtraSystemTextJsonConverter :
             case ApiPoolPaymentProcessingExtraField.MaxFee:
                 target.SetMaxFee(name, value.ToObject<ulong?>(), value);
                 break;
+            case ApiPoolPaymentProcessingExtraField.FeeRateGrainsPerKb:
+                target.SetFeeRateGrainsPerKb(name, value.ToObject<long?>(), value);
+                break;
             case ApiPoolPaymentProcessingExtraField.MaximumTransactionFees:
                 target.SetMaximumTransactionFees(name,
                     value.ToObject<decimal?>(), value);
@@ -645,6 +656,9 @@ internal sealed class ApiPoolPaymentProcessingExtraNewtonsoftJsonConverter :
             case ApiPoolPaymentProcessingExtraField.MaxFee:
                 target.SetMaxFee(name, value.ToObject<ulong?>(serializer),
                     value);
+                break;
+            case ApiPoolPaymentProcessingExtraField.FeeRateGrainsPerKb:
+                target.SetFeeRateGrainsPerKb(name, value.ToObject<long?>(serializer), value);
                 break;
             case ApiPoolPaymentProcessingExtraField.MaximumTransactionFees:
                 target.SetMaximumTransactionFees(name,

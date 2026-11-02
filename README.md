@@ -24,7 +24,7 @@ the original authors and contributors.
 - Multiple pools and currencies in one cluster; see the bundled [coin definitions](src/Miningcore/coins.json)
   and the [Scrypt definition provenance](docs/scrypt-coin-definitions.md).
 - Native proof-of-work validation with fixed difficulty and variable difficulty (vardiff).
-- SOLO, PPLNS and PROP payout schemes, plus transactional Bitcoin-family PPS accounting.
+- SOLO, PPLNS and PROP payout schemes, plus transactional Bitcoin-family and Pearl PPS accounting.
 - Bitcoin direct-coinbase SOLO is enabled by default: when a miner finds a Bitcoin block, the block
   pays that miner directly and pays the pool only its configured fee or donation. Miningcore does
   not hold the miner's block reward first. Canonical BTC coinbases also use the
@@ -312,6 +312,11 @@ Install each daemon from its authoritative project, verify its release, bind RPC
 interface, use a unique strong RPC credential, and allow the node to synchronize fully. Create the
 pool payout wallet, encrypt and back it up, and test the documented restore procedure away from
 production. Do not expose daemon RPC or wallet RPC to the internet.
+
+Pearl (PRL) uses a dedicated integer V3 proof runtime and a separately packaged proof worker.
+Start with the [Pearl pool operator guide](docs/pearl-pool-guide.md) for setup, miner commands,
+gateway access and troubleshooting. The [technical reference](docs/pearl-development.md)
+covers the certified profiles, source-built Linux package, work units and Oyster recovery.
 
 Coin-specific RPC, wallet and extension requirements vary. Start with the chosen file in the
 [example index](examples/README.md), then check the matching definition in

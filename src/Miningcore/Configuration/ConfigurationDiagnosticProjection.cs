@@ -87,6 +87,7 @@ internal static class ConfigurationDiagnosticProjection
                 nameof(StratumAdmissionConfig.MaxPendingIdentities),
                 nameof(StratumAdmissionConfig.ConnectionsPerSecondPerAddress), nameof(StratumAdmissionConfig.BurstPerAddress),
                 nameof(StratumAdmissionConfig.MaxConcurrentConnectionsPerAddress),
+                nameof(StratumAdmissionConfig.Ipv6PrefixLength),
                 nameof(StratumAdmissionConfig.MaxTrackedAddresses), nameof(StratumAdmissionConfig.IdleExpirySeconds),
                 nameof(StratumAdmissionConfig.StartupTimeoutSeconds)),
             [typeof(PoolEndpoint)] = Fields<PoolEndpoint>(

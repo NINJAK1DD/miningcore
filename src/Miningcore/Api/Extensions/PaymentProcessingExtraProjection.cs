@@ -146,6 +146,11 @@ internal static class PaymentProcessingExtraProjection
             [CoinFamily.Beam] = Contract(),
             [CoinFamily.Bitcoin] = bitcoin,
             [CoinFamily.BitcoinBlake2b] = bitcoin,
+            [CoinFamily.Pearl] = Contract<Miningcore.Blockchain.Pearl.PearlPaymentProcessingConfigExtra>(
+                Field<long?>("FeeRateGrainsPerKb", static (result, name, value, wireValue) =>
+                    result.SetFeeRateGrainsPerKb(name, value, wireValue)),
+                Field<int?>("MinimumConfirmations", static (result, name, value, wireValue) =>
+                    result.SetMinimumConfirmations(name, value, wireValue))),
             [CoinFamily.Conceal] =
                 Contract<ConcealPoolPaymentProcessingConfigExtra>(
                 Field<decimal?>(nameof(ConcealPoolPaymentProcessingConfigExtra.

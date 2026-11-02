@@ -69,6 +69,9 @@ public enum CoinFamily
     // Append new families to preserve existing public enum numeric values.
     [EnumMember(Value = "bitcoin-blake2b")]
     BitcoinBlake2b,
+
+    [EnumMember(Value = "pearl")]
+    Pearl,
 }
 
 public abstract partial class CoinTemplate
@@ -175,6 +178,7 @@ public abstract partial class CoinTemplate
         {CoinFamily.Beam, typeof(BeamCoinTemplate)},
         {CoinFamily.Bitcoin, typeof(BitcoinTemplate)},
         {CoinFamily.BitcoinBlake2b, typeof(BitcoinBlake2bTemplate)},
+        {CoinFamily.Pearl, typeof(PearlCoinTemplate)},
         {CoinFamily.Conceal, typeof(ConcealCoinTemplate)},
         {CoinFamily.Cryptonote, typeof(CryptonoteCoinTemplate)},
         {CoinFamily.Equihash, typeof(EquihashCoinTemplate)},

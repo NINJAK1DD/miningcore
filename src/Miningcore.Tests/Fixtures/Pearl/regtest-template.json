@@ -1,0 +1,29 @@
+{
+  "bits": "1e010000",
+  "curtime": 1793494364,
+  "height": 1,
+  "previousblockhash": "78d0ab27df6a51a8e9dbbdefffca1ebbbeb3818cb083ce2c2f43b047247e5832",
+  "vsizelimit": 1000000,
+  "transactions": [],
+  "version": 536870912,
+  "coinbaseaux": {
+    "flags": "0d2f503253482f706561726c642f"
+  },
+  "coinbasevalue": 322964134063,
+  "default_witness_commitment": "e2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf9",
+  "longpollid": "78d0ab27df6a51a8e9dbbdefffca1ebbbeb3818cb083ce2c2f43b047247e5832-1793494364",
+  "target": "0000010000000000000000000000000000000000000000000000000000000000",
+  "maxtime": 1793501564,
+  "mintime": 1776675601,
+  "mutable": [
+    "time",
+    "transactions/add",
+    "prevblock",
+    "coinbase/append"
+  ],
+  "noncerange": "00000000ffffffff",
+  "capabilities": [
+    "proposal"
+  ],
+  "requiredcertversion": 3
+}

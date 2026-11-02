@@ -17,6 +17,34 @@ namespace Miningcore.Tests.Payments;
 
 public class MergedMiningPooledSchemeTests
 {
+    [Theory]
+    [InlineData(PayoutScheme.PPLNS)]
+    [InlineData(PayoutScheme.PROP)]
+    public async Task Pearl_PooledRewardsUseAssignedCreditRatherThanLuckyAchievedDifficulty(PayoutScheme kind)
+    {
+        var fixture = CreateFixture();
+        var pool = CreatePool("pearl", kind, 1m);
+        pool.Config.Template = new PearlCoinTemplate {Symbol = "PRL", Family = CoinFamily.Pearl};
+        var block = CreateBlock("pearl", 100);
+        var first = CreateShare("pearl", "miner-a", 25, 100, block.Created) with
+            {ShareDifficulty = 1_000_000, ActualDifficulty = 1_000_000};
+        var second = CreateShare("pearl", "miner-b", 75, 100, block.Created.AddSeconds(-1)) with
+            {ShareDifficulty = 100, ActualDifficulty = 100};
+        fixture.ShareRepository.ReadSharesBeforeAsync(fixture.ReadConnection, "pearl", block.Created,
+            true, Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(new[] {first, second});
+        IPayoutScheme scheme = kind == PayoutScheme.PPLNS
+            ? new PPLNSPaymentScheme(fixture.ConnectionFactory, fixture.ShareRepository, fixture.BlockRepository, fixture.BalanceRepository)
+            : new PROPPaymentScheme(fixture.ConnectionFactory, fixture.ShareRepository, fixture.BlockRepository, fixture.BalanceRepository);
+
+        // A 10 PRL reward after the independently tested 2.5% operator allocation.
+        await scheme.UpdateBalancesAsync(fixture.WriteConnection, fixture.Transaction, pool,
+            fixture.PayoutHandler, block, 9.75m, CancellationToken.None);
+        await fixture.BalanceRepository.Received(1).AddAmountAsync(fixture.WriteConnection,
+            fixture.Transaction, "pearl", "miner-a", 2.4375m, Arg.Any<string>());
+        await fixture.BalanceRepository.Received(1).AddAmountAsync(fixture.WriteConnection,
+            fixture.Transaction, "pearl", "miner-b", 7.3125m, Arg.Any<string>());
+    }
+
     [Fact]
     public async Task Prop_UsesEachProjectedPoolsIndependentRound()
     {
