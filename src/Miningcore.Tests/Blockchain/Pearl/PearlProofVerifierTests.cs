@@ -5,6 +5,7 @@ using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
 using Miningcore.Blockchain.Pearl;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -23,6 +24,35 @@ public class PearlProofVerifierTests
     [InlineData(1001, 0, false)]
     public void OnlyRootOrServiceUidIsTrusted(int owner, int service, bool expected) =>
         Assert.Equal(expected, PearlWorkerTrust.TrustedOwner((uint) owner, (uint) service));
+
+    [PearlLinuxFact]
+    public async Task LaunchingThreadExitDoesNotKillAnActiveWorker()
+    {
+        var (header, target, proof) = Input();
+        using var helper = new Helper("unused");
+        var ready = helper.Path + ".ready";
+        File.WriteAllText(helper.Path, "#!/usr/bin/python3\nimport ctypes,sys,time\n" +
+            "assert ctypes.CDLL(None).prctl(1,9,0,0,0)==0\n" +
+            "open(" + JsonConvert.SerializeObject(ready) + ", 'w').close()\n" +
+            "sys.stdin.buffer.read()\ntime.sleep(0.5)\nsys.stdout.buffer.write(b'PRLRES02\\x02\\0\\0\\0')\nsys.exit(2)\n");
+        var launched = new TaskCompletionSource<Task<PearlProofVerifier.Result>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var work = new PearlProofVerifier(helper.Path).VerifyAsync(header, target, proof, false, CancellationToken.None);
+                Assert.True(SpinWait.SpinUntil(() => File.Exists(ready), TimeSpan.FromSeconds(5)));
+                launched.SetResult(work);
+            }
+            catch(Exception ex) { launched.TrySetException(ex); }
+        }) { IsBackground = true };
+        thread.Start();
+        var pending = await launched.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(thread.Join(TimeSpan.FromSeconds(5)));
+        var error = await Assert.ThrowsAsync<PearlWorkerException>(() => pending);
+        Assert.Equal(PearlWorkerFailure.Native, error.Failure);
+        Assert.Equal(2, error.ExitCode); // The helper completed; it was not killed with its launch thread.
+    }
 
     [PearlLinuxFact]
     public async Task WorkerFailuresExposeOnlyBoundedDiagnosticFields()

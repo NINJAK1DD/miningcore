@@ -62,7 +62,8 @@ internal sealed class PearlProofVerifier
             BinaryPrimitives.WriteUInt32LittleEndian(fixedInput.AsSpan(120), (uint) proof.Length);
 
             using var process = new Process { StartInfo = StartInfo() };
-            try {process.Start();}
+            Task lifetime;
+            try {lifetime = await StartOwnedAsync(process);}
             catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or InvalidOperationException)
             {throw new PearlWorkerException("Pearl worker could not start", ex, PearlWorkerFailure.Start);}
             PearlWorkerException failure = null;
@@ -117,7 +118,8 @@ internal sealed class PearlProofVerifier
             finally
             {
                 // Cancellation alone cannot stop native work. Kill and reap before releasing capacity.
-                await StopAsync(process);
+                try { await StopAsync(process); }
+                finally { await lifetime; }
                 if(failure != null) failure.ExitCode = process.ExitCode;
             }
         }
@@ -133,10 +135,10 @@ internal sealed class PearlProofVerifier
         deadline.CancelAfter(TimeSpan.FromSeconds(5));
         using var process = new Process { StartInfo = StartInfo() };
         process.StartInfo.ArgumentList.Add("--version");
-        process.Start();
-        process.StandardInput.Close();
+        var lifetime = await StartOwnedAsync(process);
         try
         {
+            process.StandardInput.Close();
             var output = ReadBoundedAsync(process.StandardOutput.BaseStream, 256, deadline.Token);
             var error = ReadBoundedAsync(process.StandardError.BaseStream, 4096, deadline.Token);
             await Task.WhenAll(output, error, process.WaitForExitAsync(deadline.Token));
@@ -145,8 +147,34 @@ internal sealed class PearlProofVerifier
         }
         finally
         {
-            await StopAsync(process);
+            try { await StopAsync(process); }
+            finally { await lifetime; }
         }
+    }
+
+    private static Task<Task> StartOwnedAsync(Process process)
+    {
+        // Linux PR_SET_PDEATHSIG follows the spawning THREAD. A thread-pool
+        // thread may retire during proving even while Miningcore stays alive.
+        // Keep the launch thread until reaping; process death still kills it and
+        // therefore the child. The existing worker slots bound these threads.
+        var started = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var exited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        new Thread(() =>
+        {
+            try
+            {
+                if(!process.Start()) throw new InvalidOperationException("Pearl worker did not start");
+                started.SetResult(exited.Task);
+                process.WaitForExit();
+            }
+            catch(Exception ex)
+            {
+                if(!started.TrySetException(ex)) exited.TrySetException(ex);
+            }
+            finally { exited.TrySetResult(); }
+        }) {IsBackground = true, Name = "Pearl worker lifetime"}.Start();
+        return started.Task;
     }
 
     private static async Task StopAsync(Process process)
