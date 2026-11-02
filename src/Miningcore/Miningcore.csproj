@@ -76,7 +76,7 @@
           <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
         <PackageReference Include="Isopoh.Cryptography.Argon2" Version="2.0.0" />
-        <PackageReference Include="Microsoft.IO.RecyclableMemoryStream" Version="3.0.0" />
+        <PackageReference Include="Microsoft.IO.RecyclableMemoryStream" Version="4.0.1" />
         <PackageReference Include="Newtonsoft.Json.Schema" Version="4.0.1" />
         <PackageReference Include="Npgsql" Version="9.0.3" />
         <PackageReference Include="NSwag.AspNetCore" Version="14.7.1" />
