@@ -674,7 +674,7 @@ public API, binds the admin and metrics ports to host loopback, and publishes th
 Stratum port. Publish every additional port used by your configuration:
 
 The setup block below is for a new container installation. Existing operators should
-follow the [upgrade guide](docs/upgrade-v0.4.0-rc.1.md) and retain their configuration,
+follow the [container upgrade guide](docs/upgrade-v0.4.0-rc.1.md#container-upgrades) and retain their configuration,
 service environment and persistent state; do not rerun the new-install downloads over them.
 
 ```console

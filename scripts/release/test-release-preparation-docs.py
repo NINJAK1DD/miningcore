@@ -2,7 +2,11 @@
 """Mutation tests for the release contracts; safe under python -O as well."""
 
 import importlib.util
+import os
 from pathlib import Path
+import subprocess
+import tempfile
+import textwrap
 import unittest
 
 
@@ -41,6 +45,118 @@ class ReleasePreparationTests(unittest.TestCase):
                 documents = self.original.copy()
                 documents['docs/releases.md'] += '\n' + heading + '\n'
                 self.assertTrue(guard.validate(documents, self.baseline))
+
+    def test_unreleased_heading_level_and_case_cannot_bypass_guard(self):
+        for level in ('#', '##', '###', '####', '#####', '######'):
+            for title in ('unreleased: fix', 'UNRELEASED: fix', 'Unreleased: fix',
+                          'Unreleased (after v0.4.0-rc.1): fix'):
+                if level == '##' and title.startswith('Unreleased (after'):
+                    continue
+                with self.subTest(level=level, title=title):
+                    documents = self.original.copy()
+                    documents['docs/releases.md'] += f'\n{level} {title}\n'
+                    self.assertTrue(guard.validate(documents, self.baseline))
+
+    def test_fenced_unreleased_examples_do_not_become_release_entries(self):
+        for marker in ('```', '~~~', '````'):
+            with self.subTest(marker=marker):
+                documents = self.original.copy()
+                documents['docs/releases.md'] += f'\n{marker}markdown\n### unreleased: example\n{marker}\n'
+                self.assertEqual([], guard.validate(documents, self.baseline))
+
+    def test_exact_release_commit_is_required(self):
+        self.mutation('docs/releases.md', 'git tag -s "$NEXT_VERSION" "$RELEASE_COMMIT" -m',
+                      'git tag -s "$NEXT_VERSION" -m')
+
+    def test_release_commit_reachability_is_required(self):
+        self.mutation('docs/releases.md', 'git merge-base --is-ancestor "$RELEASE_COMMIT" origin/dev', 'true')
+
+    def test_stable_version_flip_policy_is_required(self):
+        self.mutation('docs/releases.md', 'For a stable release, put the version flip', 'Leave every version unchanged')
+
+    def test_database_candidate_exception_is_required(self):
+        self.mutation('docs/database.md', 'The cumulative example below deliberately targets v0.4.0-rc.1',
+                      'This block applies to every release')
+
+    def test_readme_links_directly_to_container_upgrade(self):
+        self.mutation('README.md', 'docs/upgrade-v0.4.0-rc.1.md#container-upgrades',
+                      'docs/upgrade-v0.4.0-rc.1.md')
+
+    def test_sql_extraction_cleanup_is_required(self):
+        self.mutation('docs/upgrade-v0.4.0-rc.1.md', 'docker rm -v "$container"', 'true')
+
+    def run_shell_example(self, name, needle, prefix, failure='', replacements=()):
+        blocks = guard.console_blocks(self.original[name], needle)
+        self.assertEqual(1, len(blocks))
+        block = textwrap.dedent(blocks[0])
+        for old, new in replacements:
+            self.assertIn(old, block)
+            block = block.replace(old, new, 1)
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / 'trace'
+            env = dict(os.environ, TRACE=str(trace), FAIL=failure, TMPDIR=directory)
+            result = subprocess.run(['bash', '-c', prefix + '\n' + block], env=env,
+                                    capture_output=True, text=True, timeout=15)
+            calls = trace.read_text().splitlines() if trace.exists() else []
+        return result, calls
+
+    @unittest.skipIf(os.name == 'nt', 'Execute Bash examples in the Linux documentation suite')
+    def test_tagging_example_uses_reviewed_commit_and_fails_closed(self):
+        prefix = r'''
+git() {
+  printf '%s\n' "$*" >> "$TRACE"
+  [[ "$FAIL" != "$1" ]] || return 1
+  case "$1" in
+    rev-parse) printf '%s\n' "$RELEASE_COMMIT" ;;
+    fetch|merge-base|show|tag|push) return 0 ;;
+    *) return 95 ;;
+  esac
+}
+'''
+        sha = 'a' * 40
+        for failure in ('', 'placeholder', 'fetch', 'rev-parse', 'merge-base', 'show', 'tag'):
+            with self.subTest(failure=failure):
+                replacements = () if failure == 'placeholder' else (('REPLACE_WITH_REVIEWED_MERGE_SHA', sha),)
+                result, calls = self.run_shell_example('docs/releases.md', 'RELEASE_COMMIT=', prefix,
+                                                       failure=failure, replacements=replacements)
+                if not failure:
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertIn(f'tag -s v0.4.0-rc.1 {sha} -m Miningcore v0.4.0-rc.1', calls)
+                    self.assertIn('push origin v0.4.0-rc.1', calls)
+                else:
+                    self.assertFalse(any(call.startswith('push ') for call in calls), calls)
+                    if failure != 'tag':
+                        self.assertFalse(any(call.startswith('tag ') for call in calls), calls)
+
+    @unittest.skipIf(os.name == 'nt', 'Execute Bash examples in the Linux documentation suite')
+    def test_sql_extraction_example_never_starts_container_and_always_cleans_up(self):
+        prefix = r'''
+docker() {
+  printf '%s\n' "$*" >> "$TRACE"
+  case "$1" in
+    create) [[ "$FAIL" != create ]] || return 1; printf '%s\n' fixture-container ;;
+    cp) [[ "$FAIL" != "$2" ]] || return 1 ;;
+    rm) return 0 ;;
+    *) return 95 ;;
+  esac
+}
+'''
+        for failure in ('', 'create', 'fixture-container:/app/migrations', 'fixture-container:/app/BUILD-INFO'):
+            with self.subTest(failure=failure):
+                result, calls = self.run_shell_example('docs/upgrade-v0.4.0-rc.1.md',
+                                                       'extract_candidate_sql()', prefix, failure=failure)
+                self.assertTrue(calls[0].startswith('create --network none ghcr.io/ninjak1dd/miningcore@sha256:'))
+                self.assertFalse(any(call.startswith(('start ', 'run ', 'exec ')) for call in calls), calls)
+                if failure == 'create':
+                    self.assertEqual(1, len(calls))
+                else:
+                    self.assertEqual('rm -v fixture-container', calls[-1])
+                if not failure:
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertIn('Inspect candidate SQL and BUILD-INFO', result.stdout)
+                else:
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertNotIn('Inspect candidate SQL and BUILD-INFO', result.stdout)
 
     def test_each_stable_boundary_is_required(self):
         for name in ('README.md', 'docs/releases.md'):

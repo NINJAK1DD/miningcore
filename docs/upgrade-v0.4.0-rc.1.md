@@ -258,6 +258,28 @@ retrieve all migrations from embedded application resources.
    any SQL; do not execute archive binaries on an incompatible host just to get
    the text files. An existing PPS/pooled-merged v0.3.0 schema needs
    `add_pps_arithmetic_version.sql`; choose other scripts only from the matrix.
+
+   To extract from the published image, replace the digest below with the verified
+   digest from step 1. This creates a stopped container with no network, copies to
+   a new private directory and removes the temporary container/anonymous volumes
+   on success or failure. It never starts Miningcore or applies SQL. Inspect the
+   copied `BUILD-INFO` and migrations before using them; copied files alone do not
+   prove that the image's source identity matches the selected release.
+
+   ```console
+   extract_candidate_sql() (
+     umask 077
+     image='ghcr.io/ninjak1dd/miningcore@sha256:REPLACE_WITH_VERIFIED_DIGEST'
+     container=$(docker create --network none "$image") || return
+     trap 'docker rm -v "$container" >/dev/null' EXIT
+     output=$(mktemp -d "${TMPDIR:-/tmp}/miningcore-sql.XXXXXXXX") || return
+     docker cp "$container:/app/migrations" "$output/" &&
+       docker cp "$container:/app/BUILD-INFO" "$output/" &&
+       printf 'Inspect candidate SQL and BUILD-INFO in %s\n' "$output"
+   )
+   extract_candidate_sql
+   ```
+
 3. Preserve the existing container/Compose definition, previous image digest,
    config/environment files, custom coin mounts, certificates and persistent
    volumes. Do not run the new-install download/token-generation blocks in the

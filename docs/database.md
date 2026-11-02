@@ -154,6 +154,12 @@ arithmetic version 0 is retained. Pearl has additional opt-in tables.
 The cumulative sequence below is for deployments needing those accounting prerequisites;
 do not run it merely because an already prepared SOLO service is being replaced.
 
+The cumulative example below deliberately targets v0.4.0-rc.1, unlike the stable
+installation defaults. Use it only after the candidate's assets are published.
+For a v0.2.x-to-v0.3.0 stable upgrade, follow the [v0.3.0 prerequisites](releases.md#v030-highlights)
+and use SQL from the verified v0.3.0 archive, not this RC directory. The RC
+accounting migration contains newer schema changes absent from v0.3.0.
+
 > [!IMPORTANT]
 > Payout-manager ownership was already required before v0.3.0; it is not a new RC.1 migration.
 > A deployment missing that prerequisite must install it before starting any node with payment

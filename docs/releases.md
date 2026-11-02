@@ -3058,8 +3058,13 @@ transient resolution failures use status 69.
 > check; require the always-running build and release checks instead.
 
 Before tagging a new release, review every release-locked quick-start sentence as well as the
-`MININGCORE_VERSION`, `NEXT_VERSION` and `TAG` assignments. Keep runnable installation defaults on
-the published stable version until a deliberate, post-publication change selects another version.
+`MININGCORE_VERSION`, `NEXT_VERSION` and `TAG` assignments. For release candidates, keep runnable
+installation defaults on the published stable version; candidate selection stays explicit.
+For a stable release, put the version flip in the final release-preparation commit selected
+for that stable tag, so its README and packaged INSTALL.md select that same stable version.
+During its pre-publication window, explicitly warn that assets may not exist yet and link to
+the previous published stable tag's README as the runnable fallback. Do not claim that the
+new stable release is published before publication succeeds, or move a tag to repair its docs.
 In particular, replace the README's
 named stable-version substitution boundary and its release-documentation assertion when the stable
 baseline changes.
@@ -3091,17 +3096,32 @@ exact match before packaging can begin.
 This additional source-container gate makes release runs longer but catches Dockerfile-only build
 failures before publication. Prefer a signed annotated tag:
 
+Record the full SHA of the release-preparation commit as it actually lands on `dev`
+(the merge commit, or the resulting squash/rebase commit). Validate and commission
+that exact source identity. Tag that recorded SHA, not the later tip of `dev` or
+the PR head/synthetic test-merge ref. Later changes may use the next-cycle Unreleased
+heading and must not silently enter RC.1 during a gap before tagging. If a later
+commit is deliberately selected instead, review its full delta and repeat the
+applicable validation/commissioning gates before recording the new release target.
+
 > **Release retry rule:** if any Release workflow job fails, select **Re-run all jobs**.
 > Do not use **Re-run failed jobs**. GitHub Actions artifacts are scoped to a run attempt, so the
 > collector may be rerun without a successful sibling archive from the earlier attempt and will
 > correctly reject the incomplete set.
 
 ```console
-git switch dev
-git pull --ff-only origin dev
 NEXT_VERSION=v0.4.0-rc.1  # Replace with the next unused SemVer version.
-git tag -s "$NEXT_VERSION" -m "Miningcore $NEXT_VERSION"
-git push origin "$NEXT_VERSION"
+RELEASE_COMMIT=REPLACE_WITH_REVIEWED_MERGE_SHA
+if [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] &&
+   git fetch origin dev &&
+   test "$(git rev-parse --verify "${RELEASE_COMMIT}^{commit}")" = "$RELEASE_COMMIT" &&
+   git merge-base --is-ancestor "$RELEASE_COMMIT" origin/dev; then
+  git show --no-patch --format=fuller "$RELEASE_COMMIT" &&
+    git tag -s "$NEXT_VERSION" "$RELEASE_COMMIT" -m "Miningcore $NEXT_VERSION" &&
+    git push origin "$NEXT_VERSION"
+else
+  echo "STOP: select the reviewed full commit SHA reachable from origin/dev" >&2
+fi
 ```
 
 If signed tags are not configured, use an annotated tag (`git tag -a`) rather than a lightweight

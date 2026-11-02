@@ -1048,7 +1048,7 @@ release_tag_preference_line=$(
     "$release_document"
 )
 release_tag_command_line=$(
-  find_unique_line release-tag-command 'git switch dev' "$release_document"
+  find_unique_line release-tag-command 'RELEASE_COMMIT=REPLACE_WITH_REVIEWED_MERGE_SHA' "$release_document"
 )
 
 if [[ "$release_candidate_upgrade_line" -le "$release_candidate_heading_line" ||

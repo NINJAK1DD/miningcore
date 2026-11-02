@@ -19,6 +19,31 @@ def prose(text):
     return ' '.join(re.sub(r'^> ?', '', text, flags=re.MULTILINE).split())
 
 
+def headings(text):
+    """Read ATX headings at every level, ignoring fenced examples."""
+    fence = None
+    for line in text.splitlines():
+        marker = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', line)
+        if marker:
+            delimiter, trailing = marker.groups()
+            if fence is None:
+                fence = (delimiter[0], len(delimiter))
+            elif delimiter[0] == fence[0] and len(delimiter) >= fence[1] and not trailing.strip():
+                fence = None
+            continue
+        if fence is not None:
+            continue
+        heading = re.match(r'^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$', line)
+        if heading:
+            yield heading.groups()
+
+
+def console_blocks(text, needle):
+    return [block for block in re.findall(
+        r'^ {0,3}```console\n(.*?)^ {0,3}```[ \t]*$', text, re.MULTILINE | re.DOTALL)
+        if needle in block]
+
+
 def validate(documents, baseline):
     errors = []
 
@@ -42,9 +67,26 @@ def validate(documents, baseline):
         require(STABLE_BOUNDARY in prose(documents[name]), f'{name}: missing stable baseline')
 
     release = documents['docs/releases.md']
-    for heading in re.findall(r'^## Unreleased[^\n]*', release, re.MULTILINE):
-        require(re.fullmatch(r'## Unreleased \(after v0\.4\.0-rc\.1\): \S.*', heading) is not None,
-                f'Invalid next-cycle release heading: {heading}')
+    for level, title in headings(release):
+        if re.match(r'Unreleased\b', title, re.IGNORECASE):
+            require(level == '##' and re.fullmatch(
+                r'Unreleased \(after v0\.4\.0-rc\.1\): \S.*', title) is not None,
+                f'Invalid next-cycle release heading: {level} {title}')
+    for fragment in ('For a stable release, put the version flip in the final release-preparation commit',
+                     'so its README and packaged INSTALL.md select that same stable version.',
+                     'previous published stable tag\'s README as the runnable fallback.'):
+        require(fragment in prose(release), f'Missing stable-release policy: {fragment}')
+    tag_blocks = console_blocks(release, 'RELEASE_COMMIT=')
+    require(len(tag_blocks) == 1, 'Expected one exact-commit release tagging example')
+    if len(tag_blocks) == 1:
+        for fragment in ('RELEASE_COMMIT=REPLACE_WITH_REVIEWED_MERGE_SHA',
+                         'git merge-base --is-ancestor "$RELEASE_COMMIT" origin/dev',
+                         'git tag -s "$NEXT_VERSION" "$RELEASE_COMMIT" -m'):
+            require(fragment in tag_blocks[0], f'Unsafe release target example: missing {fragment}')
+    require('The cumulative example below deliberately targets v0.4.0-rc.1' in
+            prose(documents['docs/database.md']), 'Database example must explain its RC-specific target')
+    require('docs/upgrade-v0.4.0-rc.1.md#container-upgrades' in documents['README.md'],
+            'README container upgrade warning must link directly to the upgrade path')
 
     # This baseline is independent of the current headings/aliases, so renaming
     # both together cannot silently change an already published external link.
@@ -77,6 +119,13 @@ def validate(documents, baseline):
                      'Using PostgreSQL persistence ', 'v0.3.0 upgrade prerequisites'):
         require(fragment in upgrade, f'Upgrade guide is missing: {fragment}')
     require('XBT' not in upgrade, 'Use the distinct BTCB2B chain label in the upgrade guide')
+    extraction = console_blocks(upgrade, 'extract_candidate_sql()')
+    require(len(extraction) == 1, 'Expected one stopped-container SQL extraction example')
+    if len(extraction) == 1:
+        for fragment in ('docker create --network none "$image"',
+                         'docker rm -v "$container"', '"$container:/app/migrations"',
+                         '"$container:/app/BUILD-INFO"'):
+            require(fragment in extraction[0], f'Unsafe SQL extraction example: missing {fragment}')
     container = release.split('## Use the GitHub Container Registry image\n', 1)
     require(len(container) == 2 and 'new container installation only' in container[1],
             'Container installation must warn existing operators not to overwrite state')
