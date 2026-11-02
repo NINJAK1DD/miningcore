@@ -190,6 +190,7 @@ public class StratumAdmissionConfigValidator : AbstractValidator<StratumAdmissio
         RuleFor(x => x.ConnectionsPerSecondPerAddress).InclusiveBetween(1, 100000);
         RuleFor(x => x.BurstPerAddress).InclusiveBetween(1, 100000);
         RuleFor(x => x.MaxConcurrentConnectionsPerAddress).InclusiveBetween(1, 1000000);
+        RuleFor(x => x.Ipv6PrefixLength).InclusiveBetween(0, 128);
         RuleFor(x => x.MaxTrackedAddresses).InclusiveBetween(1, 1000000);
         RuleFor(x => x.MaxTrackedAddresses)
             .Must((x, tracked) => tracked >= x.MinimumTrackedAddresses)

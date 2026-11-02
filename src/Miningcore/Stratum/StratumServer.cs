@@ -30,6 +30,7 @@ namespace Miningcore.Stratum;
 
 public abstract class StratumServer
 {
+    private protected virtual StratumInputPolicy InputPolicy => StratumInputPolicy.Standard;
     private static readonly Counter automaticBans = Metrics.CreateCounter(
         "miningcore_stratum_automatic_bans_total", "Automatic Stratum ban decisions",
         new CounterConfiguration { LabelNames = new[] { "pool", "outcome", "reason" } });
@@ -472,7 +473,7 @@ public abstract class StratumServer
             // init connection
             connection = new StratumConnection(logger, rmsm, clock,
                 CreateConnectionId(),
-                clusterConfig.Logging?.GPDRCompliant == true, failStop?.Token ?? default)
+                clusterConfig.Logging?.GPDRCompliant == true, failStop?.Token ?? default, InputPolicy)
             {
                 StartupTimeout = startupTimeout,
                 ProxyPolicy = proxyPolicy,

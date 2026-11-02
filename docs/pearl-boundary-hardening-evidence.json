@@ -1,0 +1,72 @@
+{
+  "recordedUtc": "2026-11-02T02:47:33.387962+00:00",
+  "baseCommit": "2c06040fd475ac1287b448744dc4fcfb2df69902",
+  "pullRequest": 256,
+  "scope": "Linux glibc x64; pinned Pearl/Oyster 1.5.5; isolated regtest and PostgreSQL",
+  "focusedTests": {
+    "passed": 839,
+    "failed": 0,
+    "skipped": 4,
+    "trxSha256": "9cda16f2ec15e59c11eada7a78c878c7fd1f536c8190c00683d7fbbee7bcd91d"
+  },
+  "gatewayContracts": {
+    "passed": 23,
+    "localSizeAndEncodingErrors": true,
+    "sameSessionRecovery": true,
+    "wireBoundaryAccepted": true
+  },
+  "native": {
+    "unitPassed": 3,
+    "ignoredCacheBenchmark": 1,
+    "executableContractsPassed": 40,
+    "certificateGenerated": true,
+    "mutationCasesRejected": 64,
+    "parentDeathVerified": true,
+    "sizeCheckedBeforeInputAllocation": true,
+    "poolProfileEnforcedBeforeDeserialization": true,
+    "rawBytesLimit": 810353,
+    "workerSha256": "046f44eddc4f2b16b2f1ef373bc7454d5ec61a9d5c9f084469f67869e195498e"
+  },
+  "installerContractsPassed": 5,
+  "releaseWarningAuditPassed": true,
+  "directMiner": {
+    "scheme": "SOLO",
+    "acceptedReceipts": 1,
+    "acceptedBlocks": 1,
+    "ppsCredits": 0,
+    "preMaturityBalance": "0",
+    "durationSeconds": 63,
+    "miner": "BzMiner v100.60 CPU",
+    "tlsHostnameVerification": true
+  },
+  "officialGateway": {
+    "officialRevision": "d7c517d267f10f5bcbbdc366f3e603942f9a5ab5",
+    "client": "unmodified MiningClient + MiningJob + PlainProof",
+    "transport": "private UDS to adapter, hostname-verified TLS to production Release pool",
+    "proofSource": "BzMiner v100.60 CPU, m=n=1024 k=32768 rank=128 tile=8x16",
+    "acceptedProofs": 8,
+    "rejectedProofs": 2,
+    "newBlocks": 1,
+    "durationSeconds": 65,
+    "checks": {
+      "exactIntegerTarget": true,
+      "poolTargetDiffersFromNetworkTarget": true,
+      "oversizedProofLocalErrorAndSessionSurvives": true,
+      "targetTamper": true,
+      "workerInjection": true,
+      "crossSessionRejected": true,
+      "fixedWorkerAccounting": true,
+      "duplicateOrStaleRejected": true
+    }
+  },
+  "workerFailures": 0,
+  "candidateFailures": 0,
+  "managedAssemblySha256": "42c3393ca316e1c2813c50d0d94d5a8df2828b8f22c80164298895e1b9a9e2eb",
+  "finalHeadCi": "Results recorded in PR #256 after completion",
+  "limitations": [
+    "No new mainnet block or payout certification",
+    "Native cache benchmark was not repeated; certificate generation was exercised",
+    "Synthetic maximum-size proofs test structural preflight only; captured and live proofs test cryptographic acceptance"
+  ],
+  "privacy": "Private lab identities, addresses, credentials and operational paths are omitted"
+}

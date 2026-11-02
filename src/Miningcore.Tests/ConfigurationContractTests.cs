@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.RegularExpressions;
 using FluentValidation.Results;
 using Miningcore.Blockchain.Alephium.Configuration;
@@ -152,6 +154,9 @@ public class ConfigurationContractTests
                         typeof(KaspaPaymentProcessingConfigExtra),
                     }),
                 [CoinFamily.Nexa] = BitcoinFamilyContract(),
+                [CoinFamily.Pearl] = Contract(
+                    new[] { typeof(Miningcore.Blockchain.Pearl.PearlPoolConfig) },
+                    paymentTypes: new[] { typeof(Miningcore.Blockchain.Pearl.PearlPaymentProcessingConfigExtra) }),
                 [CoinFamily.Progpow] = BitcoinFamilyContract(),
                 [CoinFamily.Satoshicash] = Contract(
                     new[] { typeof(SatoshicashPoolConfigExtra) },
@@ -354,6 +359,7 @@ public class ConfigurationContractTests
         var path = Path.Combine(AppContext.BaseDirectory, "examples", fileName);
         var document = ParseConfigurationDocument(File.ReadAllText(path));
         var config = Program.ReadConfig(path, false);
+        using var certificates = new ExampleTlsCertificate(config);
         var result = new ClusterConfigValidator().Validate(config);
 
         Assert.True(result.IsValid,
@@ -370,6 +376,28 @@ public class ConfigurationContractTests
         // merged-mining persistence and relay sender/recorder ownership rules.
         ValidateNormalStartupWithDiagnostics(config, fileName);
         AssertShippedExampleOperationalPolicy(fileName, document, config);
+    }
+
+    private sealed class ExampleTlsCertificate : IDisposable
+    {
+        private readonly string path;
+        internal ExampleTlsCertificate(ClusterConfig config)
+        {
+            var endpoints = config.Pools.SelectMany(pool => pool.Ports.Values).Where(endpoint => endpoint.Tls).ToArray();
+            if(endpoints.Length == 0) return;
+            Assert.All(endpoints, endpoint => Assert.Contains("CHANGE_ME", endpoint.TlsPfxFile));
+            path = Path.Combine(Path.GetTempPath(), "miningcore-example-" + Guid.NewGuid().ToString("N") + ".pfx");
+            using var key = RSA.Create(2048);
+            var request = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            using var certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddHours(1));
+            File.WriteAllBytes(path, certificate.Export(X509ContentType.Pfx, "synthetic-example"));
+            foreach(var endpoint in endpoints)
+            {
+                endpoint.TlsPfxFile = path;
+                endpoint.TlsPfxPassword = "synthetic-example";
+            }
+        }
+        public void Dispose() {if(path != null) File.Delete(path);}
     }
 
     private static void AssertShippedExampleOperationalPolicy(

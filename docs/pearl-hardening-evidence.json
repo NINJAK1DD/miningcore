@@ -1,0 +1,127 @@
+{
+  "recordedUtc": "2026-11-01",
+  "issue": 244,
+  "pullRequest": 256,
+  "implementationCommit": "536f03f2ab26c44f2b8c0d4da3f1991f538a0680",
+  "scope": "Linux glibc x64; proof-enabled Pearl/Oyster 1.5.5; isolated regtest and PostgreSQL",
+  "tests": {
+    "full": {
+      "passed": 5822,
+      "failed": 0,
+      "skipped": 25,
+      "trxSha256": "a3d83656a0a503a4117b5594bcb67b8ea745500a3b0a792d1e6b06681a410f13"
+    },
+    "focused": {
+      "passed": 592,
+      "failed": 0,
+      "skipped": 6,
+      "trxSha256": "d1eee6887b0dd075e6c1a61f9e9c3c5d07b434a28160a07236b344bf201624bc"
+    },
+    "realNoIndexRecovery": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "trxSha256": "ddd9b7a3dd26f3ba8cca7651cbafb980a61b5e4f99d1bd03d1d9fe7095c05d57"
+    },
+    "nativeWorkerContracts": 26,
+    "gatewayContracts": 20,
+    "installerSecurityAndUpgradeContracts": 5
+  },
+  "noIndexRecovery": {
+    "transactionIndexEnabled": false,
+    "actualNodeConfirmedLookupError": -5,
+    "walletReplyLostAfterRealBroadcast": true,
+    "confirmationBeforeHandlerRecreation": true,
+    "canonicalBlockMembershipVerified": true,
+    "sendmanyCalls": 1,
+    "payments": 1,
+    "paymentBatches": 1,
+    "remainingIntents": 0,
+    "processCrashClaimed": false
+  },
+  "admissionRecovery": {
+    "conclusiveRollbackRetry": true,
+    "saturatedQueueRetry": true,
+    "ppsArithmeticVersions": [
+      0,
+      1
+    ],
+    "originalPayloadPreserved": true,
+    "realCommitWithInjectedLostReplyReceiptLookup": true,
+    "lateReceiptReplayExactlyOnce": true,
+    "wireLevelPostgresCommitFaultClaimed": false
+  },
+  "candidateRecovery": {
+    "rawHeaderIdentityAndCanonicalComparison": true,
+    "sideChainAndRejectedOutcomeTests": true,
+    "missingSnapshotDoesNotCancelProving": true,
+    "differentTipCancelsAndReaps": true,
+    "archivalHours": 24,
+    "archivedEvidenceRetained": true,
+    "activeQueueCapacityPerPool": 16
+  },
+  "realSideChain": {
+    "knownSideChain": true,
+    "verboseLookupError": -32603,
+    "rawHeaderBytes": 108,
+    "rawHeaderHashVerified": true,
+    "canonicalHashDiffers": true
+  },
+  "transport": {
+    "defaultConnectionsPerPool": 1024,
+    "defaultLargeFramesPerPool": 4,
+    "unauthorizedSocketChurnConnections": 48,
+    "linearPartialFrameScannerTested": true
+  },
+  "proverMemory": {
+    "workerSha256": "a588d366301963dbfccb417595b44b045b88d3b28625c0c4eb554562fb62d873",
+    "limitKiB": 12582912,
+    "maximumVmPeakKiB": 10485760,
+    "runs": [
+      {
+        "vmPeakKiB": 8024956,
+        "rssPeakKiB": 7947136,
+        "seconds": 48.721
+      },
+      {
+        "vmPeakKiB": 8049516,
+        "rssPeakKiB": 7949196,
+        "seconds": 49.601
+      },
+      {
+        "vmPeakKiB": 8042468,
+        "rssPeakKiB": 7947112,
+        "seconds": 49.273
+      }
+    ]
+  },
+  "release": {
+    "warningAuditedBuildPassed": true,
+    "bundleUpgradePassed": true,
+    "archiveOperatorToolPlacementPassed": true,
+    "workerSha256": "a588d366301963dbfccb417595b44b045b88d3b28625c0c4eb554562fb62d873",
+    "managedAssemblySha256": "9b1d5b0adabeec540b92905959c4123996222e34379c2b49156c00a50333b463"
+  },
+  "liveMining": {
+    "scheme": "SOLO",
+    "acceptedReceipts": 1,
+    "acceptedBlocks": 1,
+    "ppsCredits": 0,
+    "preMaturityBalance": "0",
+    "durationSeconds": 95,
+    "miner": "BzMiner v100.60 CPU certified profile",
+    "verifiedTls": true,
+    "transientCandidateFailures": 1,
+    "durableRetryRecovered": true,
+    "rootCauseEstablished": false,
+    "privateTranscriptSha256": "6004fc23a5654846b2dbc0c31832d55d419206207385cae6c85fd93517e89bff"
+  },
+  "limitations": [
+    "No mainnet block or payment claimed.",
+    "No additional GPU/backend/platform certification claimed.",
+    "A successful retry does not establish the cause of the observed transient candidate failure.",
+    "Uncertain wallet sends remain held; RPC errors do not automatically release intents.",
+    "No-broadcast intent release and settled-reward quarantine require the documented authorized audit."
+  ],
+  "privacy": "No private host identities, addresses, credentials or operational paths are included."
+}

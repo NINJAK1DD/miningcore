@@ -1,4 +1,13 @@
 {
+    "pearl": {
+        "name": "Pearl",
+        "symbol": "PRL",
+        "family": "pearl",
+        "website": "https://pearlresearch.ai/",
+        "github": "https://github.com/pearl-research-labs/pearl",
+        "explorerBlockLink": "https://explorer.pearlresearch.ai/block/$hash$",
+        "explorerTxLink": "https://explorer.pearlresearch.ai/tx/{0}"
+    },
     "5gcash": {
         "name": "5G Cash",
         "symbol": "VGC",

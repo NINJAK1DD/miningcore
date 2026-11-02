@@ -73,13 +73,14 @@ internal sealed class StratumConnectionAdmission
         SetLimit("connectionsPerSecondPerAddress", config.ConnectionsPerSecondPerAddress);
         SetLimit("burstPerAddress", config.BurstPerAddress);
         SetLimit("maxConcurrentConnectionsPerAddress", config.MaxConcurrentConnectionsPerAddress);
+        SetLimit("ipv6PrefixLength", config.Ipv6PrefixLength);
         SetLimit("maxTrackedAddresses", config.MaxTrackedAddresses);
         SetLimit("idleExpirySeconds", config.IdleExpirySeconds);
         SetLimit("startupTimeoutSeconds", config.StartupTimeoutSeconds);
-        logger.Info("Stratum admission: {0}/s burst {1}, {2} concurrent; per address {3}/s burst {4}, {5} concurrent; {6} pending identities, {7} tracked addresses, {8}s idle retention, {9}s startup timeout",
+        logger.Info("Stratum admission: {0}/s burst {1}, {2} concurrent; per address {3}/s burst {4}, {5} concurrent; {6} pending identities, {7} tracked addresses, {8}s idle retention, {9}s startup timeout; IPv6 quota prefix /{10}",
             config.ConnectionsPerSecond, config.Burst, config.MaxConcurrentConnections,
             config.ConnectionsPerSecondPerAddress, config.BurstPerAddress, config.MaxConcurrentConnectionsPerAddress,
-            config.MaxPendingIdentities, config.MaxTrackedAddresses, config.IdleExpirySeconds, config.StartupTimeoutSeconds);
+            config.MaxPendingIdentities, config.MaxTrackedAddresses, config.IdleExpirySeconds, config.StartupTimeoutSeconds, config.Ipv6PrefixLength);
     }
 
     private void SetLimit(string name, int value)
@@ -120,14 +121,14 @@ internal sealed class StratumConnectionAdmission
             if(proxy) pendingMetric.Set(++pendingCount);
             activeMetric.Set(count);
             decisions.WithLabels(poolId, "transport-admitted").Inc();
-            lease = new Lease(this, identity);
+            lease = new Lease(this, identity, proxy ? null : Normalize(address));
             return true;
         }
     }
 
     private bool TryIdentity(IPAddress address, long now, out AddressState state)
     {
-        address = Normalize(address);
+        address = StratumAddressQuota.Key(address, config.Ipv6PrefixLength);
         if(!addresses.TryGetValue(address, out state))
         {
             if(addresses.Count >= config.MaxTrackedAddresses)
@@ -251,7 +252,7 @@ internal sealed class StratumConnectionAdmission
         {
             if(stopped || count != 0 || addresses.Count != 0 || identities.Count > config.MaxTrackedAddresses)
                 throw new InvalidOperationException("Idle identities require an empty, running admission controller and must fit its capacity");
-            var normalized = identities.Select(Normalize).ToArray();
+            var normalized = identities.Select(x => StratumAddressQuota.Key(x, config.Ipv6PrefixLength)).ToArray();
             if(normalized.Distinct().Count() != normalized.Length)
                 throw new ArgumentException("Idle identities must be distinct after normalization", nameof(identities));
 
@@ -294,12 +295,14 @@ internal sealed class StratumConnectionAdmission
     {
         private readonly StratumConnectionAdmission owner;
         private AddressState identity;
+        private IPAddress clientIdentity;
         private bool disposed;
 
-        internal Lease(StratumConnectionAdmission owner, AddressState identity)
+        internal Lease(StratumConnectionAdmission owner, AddressState identity, IPAddress clientIdentity)
         {
             this.owner = owner;
             this.identity = identity;
+            this.clientIdentity = clientIdentity;
         }
 
         internal bool TrySetIdentity(IPAddress address)
@@ -308,9 +311,10 @@ internal sealed class StratumConnectionAdmission
             {
                 if(disposed) return false;
                 if(owner.stopped) return owner.Reject(StoppedReason, owner.time.GetTimestamp());
-                if(identity != null) return identity.Address.Equals(Normalize(address));
+                if(identity != null) return clientIdentity.Equals(Normalize(address));
                 if(!owner.TryIdentity(address, owner.time.GetTimestamp(), out var admitted)) return false;
                 identity = admitted;
+                clientIdentity = Normalize(address);
                 owner.pendingMetric.Set(--owner.pendingCount);
                 return true;
             }

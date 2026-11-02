@@ -1,0 +1,389 @@
+[
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 1,
+    "denseOnly": false,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 0,
+    "network": "mainnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 1,
+    "denseOnly": false,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 1,
+    "network": "mainnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 1,
+    "denseOnly": false,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 71934,
+    "network": "mainnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 2,
+    "denseOnly": false,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 71935,
+    "network": "mainnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 2,
+    "denseOnly": false,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 71936,
+    "network": "mainnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 2,
+    "denseOnly": false,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 91629,
+    "network": "mainnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 91630,
+    "network": "mainnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 91631,
+    "network": "mainnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 96250,
+    "network": "mainnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 96251,
+    "network": "mainnet",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 96252,
+    "network": "mainnet",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 98999,
+    "network": "mainnet",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 3,
+    "denseOnly": true,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 99000,
+    "network": "mainnet",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "prl",
+    "certificateVersion": 3,
+    "denseOnly": true,
+    "genesis": "a18d3093b7ff618f0cdd073fa3d10374e2e0105fe7ef53ff48b55f41c58dadd7",
+    "height": 99001,
+    "network": "mainnet",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 1,
+    "denseOnly": false,
+    "genesis": "10f0be7be9950f74021d0f7c62989d1e2541c4d46f3c95b74e61679864b43d18",
+    "height": 0,
+    "network": "testnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": false,
+    "genesis": "10f0be7be9950f74021d0f7c62989d1e2541c4d46f3c95b74e61679864b43d18",
+    "height": 1,
+    "network": "testnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": false,
+    "genesis": "10f0be7be9950f74021d0f7c62989d1e2541c4d46f3c95b74e61679864b43d18",
+    "height": 2,
+    "network": "testnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": false,
+    "genesis": "10f0be7be9950f74021d0f7c62989d1e2541c4d46f3c95b74e61679864b43d18",
+    "height": 28261,
+    "network": "testnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "10f0be7be9950f74021d0f7c62989d1e2541c4d46f3c95b74e61679864b43d18",
+    "height": 28262,
+    "network": "testnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "10f0be7be9950f74021d0f7c62989d1e2541c4d46f3c95b74e61679864b43d18",
+    "height": 28263,
+    "network": "testnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "10f0be7be9950f74021d0f7c62989d1e2541c4d46f3c95b74e61679864b43d18",
+    "height": 36760,
+    "network": "testnet",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "10f0be7be9950f74021d0f7c62989d1e2541c4d46f3c95b74e61679864b43d18",
+    "height": 36761,
+    "network": "testnet",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "10f0be7be9950f74021d0f7c62989d1e2541c4d46f3c95b74e61679864b43d18",
+    "height": 36762,
+    "network": "testnet",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "10f0be7be9950f74021d0f7c62989d1e2541c4d46f3c95b74e61679864b43d18",
+    "height": 38647,
+    "network": "testnet",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 3,
+    "denseOnly": true,
+    "genesis": "10f0be7be9950f74021d0f7c62989d1e2541c4d46f3c95b74e61679864b43d18",
+    "height": 38648,
+    "network": "testnet",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 3,
+    "denseOnly": true,
+    "genesis": "10f0be7be9950f74021d0f7c62989d1e2541c4d46f3c95b74e61679864b43d18",
+    "height": 38649,
+    "network": "testnet",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 1,
+    "denseOnly": false,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 0,
+    "network": "testnet2",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 1,
+    "denseOnly": false,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 1,
+    "network": "testnet2",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 1,
+    "denseOnly": false,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 54868,
+    "network": "testnet2",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": false,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 54869,
+    "network": "testnet2",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": false,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 54870,
+    "network": "testnet2",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": false,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 80050,
+    "network": "testnet2",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 80051,
+    "network": "testnet2",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 80052,
+    "network": "testnet2",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 80626,
+    "network": "testnet2",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 80627,
+    "network": "testnet2",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 80628,
+    "network": "testnet2",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 2,
+    "denseOnly": true,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 83108,
+    "network": "testnet2",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 3,
+    "denseOnly": true,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 83109,
+    "network": "testnet2",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "tprl",
+    "certificateVersion": 3,
+    "denseOnly": true,
+    "genesis": "b0c86d0cd8825f4d72260d2de46f470429eece413811d5d82b5f2e2ea0336f96",
+    "height": 83110,
+    "network": "testnet2",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "rprl",
+    "certificateVersion": 1,
+    "denseOnly": false,
+    "genesis": "78d0ab27df6a51a8e9dbbdefffca1ebbbeb3818cb083ce2c2f43b047247e5832",
+    "height": 0,
+    "network": "regtest",
+    "rankPenalty": false
+  },
+  {
+    "addressPrefix": "rprl",
+    "certificateVersion": 3,
+    "denseOnly": false,
+    "genesis": "78d0ab27df6a51a8e9dbbdefffca1ebbbeb3818cb083ce2c2f43b047247e5832",
+    "height": 1,
+    "network": "regtest",
+    "rankPenalty": true
+  },
+  {
+    "addressPrefix": "rprl",
+    "certificateVersion": 3,
+    "denseOnly": false,
+    "genesis": "78d0ab27df6a51a8e9dbbdefffca1ebbbeb3818cb083ce2c2f43b047247e5832",
+    "height": 2,
+    "network": "regtest",
+    "rankPenalty": true
+  }
+]

@@ -1,0 +1,129 @@
+{
+  "recordedUtc": "2026-11-02T00:38:20.425223+00:00",
+  "issue": 244,
+  "pullRequest": 256,
+  "implementationCommit": "1a64ef5a34058dc311b4930d14750ba950a80498",
+  "scope": "Linux glibc x64; Pearl/Oyster 1.5.5; isolated proof-enabled regtest and PostgreSQL",
+  "tests": {
+    "full": {
+      "passed": 5847,
+      "failed": 0,
+      "skipped": 26,
+      "trxSha256": "278f59e1a49f4547195058261582563eea4036b449a9d8761e052e3900030c69"
+    },
+    "focused": {
+      "passed": 617,
+      "failed": 0,
+      "skipped": 7,
+      "trxSha256": "ee6e1975c8f0b4cbd984f7e1cb681b651bac3796d44d7715a5f6d1d253f437c0"
+    },
+    "realNoIndexRecovery": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "trxSha256": "5bbef00fe901fce818dc8fd63fa8319ef724c509e18d416f83ce72ba486ac5d2"
+    },
+    "privilegedWorkerOwnership": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "trxSha256": "eda3f84f09368f79500723e1daa4f3fcbc104054b3004f089025901f8ed63442"
+    }
+  },
+  "transport": {
+    "normalConcurrentRawUploads": 16,
+    "rawFramePayloadBytes": 1070000,
+    "handlersBlockedWhileOtherUploadsComplete": true,
+    "perIpUploadCapTested": true,
+    "ipv4MappedIdentitySharesBudget": true,
+    "poolByteBudgetRetainedThroughProcessing": true,
+    "backpressureCancellationAndDeadlineTested": true,
+    "unauthenticatedPipeliningCannotReserveProofMemory": true,
+    "defaultPoolBufferMiB": 256,
+    "defaultUploadSlots": 256,
+    "defaultUploadsPerIp": 4,
+    "loadTestScope": "Real loopback TCP transport with synthetic proof fields; cryptographic validation is separate"
+  },
+  "candidateRecovery": {
+    "knownHeaderAboveTipRemainsUncertain": true,
+    "productionConsumerRetainsSerializedBytesDuringLag": true,
+    "matchingCatchupCompletesOnce": true,
+    "unknownHeaderRetiresOnlyAfterStableCompetingCanonicalEvidenceAboveItsHeight": true
+  },
+  "payoutRecovery": {
+    "walletChainPreferredForClassificationAndNewPayments": true,
+    "existingIntentCanReconcileWithoutMatchingWalletTip": true,
+    "newPaymentsRemainHeld": true,
+    "deferredCanonicalHoldsAndCatchupRaceRegressionsPassed": true,
+    "realLostWalletReply": true,
+    "realConfirmationBeforeHandlerRecreation": true,
+    "transactionIndexEnabled": false,
+    "actualConfirmedLookupError": -5,
+    "sendmanyCalls": 1,
+    "ledgerPayments": 1,
+    "paymentBatches": 1,
+    "remainingIntents": 0,
+    "processCrashClaimed": false
+  },
+  "walletInventory": {
+    "feeSelection": "Pinned Oyster largest-first default-account Taproot selection, including its own reserve",
+    "fragmentedInventoryTestOutputs": 10001,
+    "responseLargerThanOrdinary2MBoundTested": true,
+    "inventoryByteBound": 33554432,
+    "inventoryOutputBound": 65536,
+    "warningOutputCount": 5000,
+    "utxoGaugeVerified": true,
+    "automaticMarkerSweeping": false
+  },
+  "auditPrivileges": {
+    "freshAndIdempotentUpgradeTested": true,
+    "separateAdministratorOwner": true,
+    "inheritedPublicAndColumnGrantsRepaired": true,
+    "applicationDenied": [
+      "INSERT",
+      "UPDATE",
+      "DELETE",
+      "TRUNCATE",
+      "ALTER"
+    ],
+    "administratorRecoveryAppendsAuditAndPreservesBalances": true
+  },
+  "workerLifetime": {
+    "beforeFixLiveDiagnostic": {
+      "phase": "Prove",
+      "class": "Exit",
+      "exitCode": 137
+    },
+    "kernelOrOomdKillEvidenceFound": false,
+    "nativeLaunchingThreadDeathReproduced": true,
+    "managedRegressionFailedBeforeFixAndPassedAfter": true,
+    "dedicatedLaunchThreadRetainedUntilReap": true,
+    "trueParentProcessDeathCleanupVerified": true,
+    "boundedNativeMutationCases": 64,
+    "historicalIncidentsIndividuallyAttributed": false,
+    "diagnosticFieldsExcludeStderrInputsAndPaths": true,
+    "rootOrServiceOwnershipRequiredForFullExecutablePath": true
+  },
+  "packagedLiveMining": {
+    "miner": "BzMiner v100.60 CPU",
+    "tlsHostnameVerification": true,
+    "scheme": "SOLO",
+    "acceptedReceipts": 1,
+    "acceptedBlocks": 1,
+    "preMaturityBalance": 0,
+    "ppsCredits": 0,
+    "workerFailuresAfterLifetimeFix": 0,
+    "durationSeconds": 56,
+    "managedAssemblySha256": "e5f1628ba722862ce19f5449015ce9a75a4ec4452f4956ec5e2f992593b6ce46",
+    "workerSha256": "a588d366301963dbfccb417595b44b045b88d3b28625c0c4eb554562fb62d873"
+  },
+  "installerContracts": 5,
+  "gatewayContracts": 20,
+  "limitations": [
+    "No mainnet block or payout certification",
+    "Automatic marker sweeps remain optional; consolidation requires audited wallet administration",
+    "Accepted archived candidates require manual idempotent block-ledger reconciliation",
+    "Prior failures were not individually traced to a spawning thread; the lifetime defect was independently reproduced and fixed"
+  ],
+  "privacy": "No private host identities, credentials, wallet addresses or operational paths are included"
+}

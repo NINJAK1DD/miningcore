@@ -461,7 +461,9 @@ public class PoolFamilyAssignmentTests : TestBase
             t.GetCustomAttribute<CoinFamilyAttribute>(inherit: false) != null &&
             t.Name is not ("BitcoinBlake2bPool" or "MergedMiningBitcoinPool"))
             .Select(t => t.Name[..^4]).OrderBy(x => x);
-        Assert.Equal(expected, Families.OrderBy(x => x));
+        // Pearl's object protocol is exercised by its dedicated concrete-pool fixture.
+        var pearl = Blockchain.Pearl.PearlPoolTests.CoveredPool.Name[..^4];
+        Assert.Equal(expected, Families.Append(pearl).OrderBy(x => x));
     }
 
     [Theory]

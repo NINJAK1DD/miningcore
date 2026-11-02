@@ -215,6 +215,14 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
   tar -xOf "$output_dir/$archive" "$package_root/docs/bitcoin-blake2b.md" |
     grep -F '../scripts/ops/resolve_blake2b_allocation_hold.sql' >/dev/null
 
+  operator=release_pearl_payout_intent.sql
+  tar -xOf "$output_dir/$archive" "$package_root/scripts/ops/$operator" |
+    cmp - "$repository_root/scripts/ops/$operator"
+  if tar -tzf "$output_dir/$archive" | grep -Fx "$package_root/migrations/$operator" >/dev/null; then
+    echo "$archive misclassified the Pearl recovery action as a schema migration" >&2
+    exit 1
+  fi
+
   cp "$output_dir/$archive" "$complete_dir/"
 
   extracted="$work_dir/extracted-$ubuntu_version"

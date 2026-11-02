@@ -108,6 +108,7 @@ public class PayoutManager : ProcessStatusBackgroundService
     // ProcessPoolsAsync serializes pool cycles; never access this cursor cache
     // from concurrent classification work without adding synchronization.
     private readonly Dictionary<string, long> blake2bOrphanCursors = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> pearlReconciliationCursors = new(StringComparer.Ordinal);
     internal int AttachedPoolCount => pools.Count;
 
 #if !DEBUG
@@ -326,6 +327,13 @@ public class PayoutManager : ProcessStatusBackgroundService
     {
         var blocksToClassify = await LoadBlocksForClassificationAsync(pool,
             ct);
+        if(handler is Miningcore.Blockchain.Pearl.PearlPayoutHandler pearl)
+        {
+            pearlReconciliationCursors.TryGetValue(poolConfig.Id, out var cursor);
+            var revisited = await pearl.ReconciliationBlocksAsync(pool.NetworkStats?.BlockHeight ?? 0, cursor, ct);
+            pearlReconciliationCursors[poolConfig.Id] = revisited.LastOrDefault()?.Id ?? 0;
+            blocksToClassify = blocksToClassify.Concat(revisited).DistinctBy(x => x.Id).ToArray();
+        }
 
         Block[] updatedBlocks;
         // Database loading may outlive local isolation. Do not begin new daemon
@@ -513,6 +521,19 @@ public class PayoutManager : ProcessStatusBackgroundService
             if(persisted == null)
                 return false;
 
+            var pearlCustodial = poolConfig.Template is PearlCoinTemplate;
+            if(pearlCustodial && !Miningcore.Blockchain.Pearl.PearlPayoutHandler.CanApplyClassification(persisted, block))
+                return false;
+            if(pearlCustodial && block.Status == BlockStatus.Confirmed &&
+               poolConfig.PaymentProcessing.PayoutScheme is PayoutScheme.PROP or PayoutScheme.PPLNS &&
+               await blockRepo.HasLaterConfirmedCustodialBlockAsync(con, tx, block.PoolId, block.Created, block.Id))
+            {
+                block.Status = BlockStatus.Quarantined;
+                block.NotifyBlockUnlockedOnUpdate = false;
+                block.NotifyBlockConfirmationProgressOnUpdate = false;
+                return await blockRepo.UpdateBlockAsync(con, tx, block);
+            }
+
             var blake2bCustodial = poolConfig.Template is BitcoinBlake2bTemplate &&
                 !BitcoinPayoutHandler.IsDirectCoinbaseSettlement(persisted);
             if(blake2bCustodial && !CanApplyBlake2bCustodialClassification(poolConfig, persisted, block))
@@ -563,7 +584,7 @@ public class PayoutManager : ProcessStatusBackgroundService
             }
 
             if(persisted.Status != BlockStatus.Pending &&
-               !CanReconcileDirectBlock(persisted, block) && !blake2bCustodial)
+               !CanReconcileDirectBlock(persisted, block) && !blake2bCustodial && !pearlCustodial)
             {
                 // A concurrent immutable-evidence change must not let one stale
                 // row monopolize the bounded reconciliation prefix forever.
@@ -767,6 +788,8 @@ public class PayoutManager : ProcessStatusBackgroundService
         }
         var poolBalancesOverMinimum = await cf.Run(con =>
             balanceRepo.GetPoolBalancesOverThresholdAsync(con, config.Id, config.PaymentProcessing.MinimumPayment));
+        if(handler is Miningcore.Blockchain.Pearl.PearlPayoutHandler pearl)
+            poolBalancesOverMinimum = await pearl.PendingRecipientsAsync(ct) ?? poolBalancesOverMinimum;
 
         if(poolBalancesOverMinimum.Length > 0)
         {

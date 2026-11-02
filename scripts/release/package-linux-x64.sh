@@ -87,6 +87,10 @@ EOF
 
 find "$package_root" -type d -exec chmod 0755 {} +
 find "$package_root" -type f -exec chmod 0644 {} +
+if [[ -f "$package_root/pearl/miningcore-pearl-worker" ]]; then
+    chmod 0755 "$package_root/pearl/miningcore-pearl-worker"
+    (cd "$package_root/pearl" && sha256sum --check --quiet SHA256SUMS)
+fi
 chmod 0755 "$package_root/Miningcore" \
     "$package_root/systemd/configure-postgresql-ordering.sh"
 find "$package_root" -maxdepth 1 -type f -name '*.so' -exec chmod 0755 {} +

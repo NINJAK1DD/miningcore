@@ -15,6 +15,24 @@ namespace Miningcore.Tests.Stratum;
 public partial class StratumAdmissionTests
 {
     [Fact]
+    public async Task Ipv6ProxyRotationSharesRateBudgetWithoutChangingReportedClientAddress()
+    {
+        var config = new StratumAdmissionConfig {BurstPerAddress = 1};
+        await using var server = new Server(config, new ManualTimeProvider(),
+            proxy: new TcpProxyProtocolConfig {Enable = true, Mandatory = true});
+        config.Ipv6PrefixLength = 128; // Running policy remains its /64 snapshot.
+        using(var client = await server.Connect())
+        {
+            await Send(client, "PROXY TCP6 2001:db8:1::1 ::1 123 3333\r\n", false);
+            Assert.Contains("2001:db8:1::1", await Exchange(client));
+        }
+        await server.Empty();
+        await server.Rejected(header: "PROXY TCP6 2001:db8:1::2 ::1 123 3333\r\n");
+        await server.Exchange(header: "PROXY TCP6 2001:db8:2::1 ::1 123 3333\r\n");
+        Assert.Equal(2, server.Requests);
+    }
+
+    [Fact]
     public void ProxyPolicy_FreezesLargeNormalizedTrustSetAndFlags()
     {
         var addresses = Enumerable.Range(0, 10000)

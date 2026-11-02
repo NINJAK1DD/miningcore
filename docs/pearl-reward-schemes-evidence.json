@@ -1,0 +1,126 @@
+{
+  "date": "2026-11-01",
+  "issue": 244,
+  "pullRequest": 256,
+  "purpose": "Verify PPS, SOLO, PPLNS and PROP for Pearl using the shared accounting/payment implementations and real proof-enabled chain payouts.",
+  "fullRegression": {
+    "passed": 5798,
+    "failed": 0,
+    "skipped": 24,
+    "trxSha256": "fce6f72359682da2469dc4a4babe3294f6115a2188635f6b90fdc981dc1fe12a"
+  },
+  "focusedRegression": {
+    "passed": 568,
+    "failed": 0,
+    "skipped": 5,
+    "trxSha256": "6a440ba6f92880bf90b608265cddb027d9427e1fc92eeb95a019829e6e5c7277"
+  },
+  "releaseBuild": {
+    "configuration": "Release",
+    "warnings": 0,
+    "errors": 0,
+    "normalPublishedRuntime": true
+  },
+  "liveVerification": {
+    "network": "isolated proof-enabled regtest",
+    "miner": "BzMiner v100.60 CPU",
+    "transport": "hostname-verified TLS",
+    "productionRelease": true,
+    "schemes": [
+      {
+        "scheme": "PPS",
+        "acceptedBlocks": 1,
+        "minimumConfirmations": 109,
+        "payments": 1,
+        "ppsCredits": 2,
+        "creditedPRL": "6458.468178799999999999999328",
+        "paidPRL": "6458.468178790000",
+        "remainingBalancePRL": "9.999E-9",
+        "precisionRemainderPRL": "9.99999999328E-13",
+        "canonicalRewardVerified": true,
+        "walletAndNodeExactOutputsVerified": true,
+        "ledgerConserved": true
+      },
+      {
+        "scheme": "SOLO",
+        "acceptedBlocks": 1,
+        "minimumConfirmations": 108,
+        "payments": 1,
+        "ppsCredits": 0,
+        "creditedPRL": "3229.224157410000",
+        "paidPRL": "3229.224157410000",
+        "remainingBalancePRL": "0E-12",
+        "precisionRemainderPRL": "0",
+        "canonicalRewardVerified": true,
+        "walletAndNodeExactOutputsVerified": true,
+        "ledgerConserved": true
+      },
+      {
+        "scheme": "PPLNS",
+        "acceptedBlocks": 1,
+        "minimumConfirmations": 107,
+        "payments": 1,
+        "ppsCredits": 0,
+        "creditedPRL": "3229.214225460000",
+        "paidPRL": "3229.214225460000",
+        "remainingBalancePRL": "0E-12",
+        "precisionRemainderPRL": "0",
+        "canonicalRewardVerified": true,
+        "walletAndNodeExactOutputsVerified": true,
+        "ledgerConserved": true
+      },
+      {
+        "scheme": "PROP",
+        "acceptedBlocks": 1,
+        "minimumConfirmations": 106,
+        "payments": 1,
+        "ppsCredits": 0,
+        "creditedPRL": "3229.204293560000",
+        "paidPRL": "3229.204293560000",
+        "remainingBalancePRL": "0E-12",
+        "precisionRemainderPRL": "0",
+        "canonicalRewardVerified": true,
+        "walletAndNodeExactOutputsVerified": true,
+        "ledgerConserved": true
+      }
+    ],
+    "candidateQueueEmpty": true,
+    "payoutIntentsEmpty": true,
+    "restartLedgerUnchanged": true
+  },
+  "preMaturity": {
+    "ppsLiabilitiesCommittedBeforeMaturity": true,
+    "ppsPaidFromSpendableReserveBeforeOwnBlockMatured": true,
+    "soloPplnsPropDidNotAllocateImmatureRewards": true
+  },
+  "automatedContracts": [
+    "Distinct finder, proportional round and PPLNS window allocations from unequal assigned work; achieved jackpot luck does not change weights.",
+    "Reward-recipient fees allocated once; future shares excluded from older blocks; consecutive rounds/windows verified.",
+    "Concurrent/replayed maturity settlement cannot credit twice; pre-maturity orphan leaves balances unchanged; settled reorg holds payments.",
+    "PPS receipt, liability, remainder, balance and candidate intent commit atomically; failed candidate insertion and queue overflow leave no credit.",
+    "Candidate retirement cannot reverse accepted PPS liabilities; recorder-compatible serialized replay does not duplicate credit.",
+    "Both PPS arithmetic versions, durable administrator cutover, sub-unit remainder conservation and tampered liability rejection.",
+    "Oyster exact-output verification, whole-grain payments, residual balances, marker reconciliation and paid-ledger restart idempotency.",
+    "PPS requires local PostgreSQL and both payment switches; unsupported families/schemes still rejected.",
+    "PPLNS rejects zero, negative, null and string factors, including a later case-insensitive property alias."
+  ],
+  "artifactsSha256": {
+    "managedAssembly": "97ae5fbf698ac479ebcf5653ff449f38b9fc8de011755eb32b746f6bcec52cec",
+    "proofWorker": "9b97d5ba28c363928a4a425960bae2af36bba46253e94f5d4110eae864eb0aa7"
+  },
+  "privateTranscriptSha256": {
+    "admission": "22deb35ccbc2023b13784d59ddb08c3a3c4a636d06e8167823fe459ccbca054b",
+    "earlyPpsPayment": "d79078de4f0cdf939729c78a8c02b3d8d52c46562a833ad75ddf366fed66e5fc",
+    "maturePayments": "edfb93a0f7cd38874479017965c83cd3a7aef2e0aff62c9f490a9762bbacb3a1",
+    "restart": "c4891e423a98e2401d0e77831718c65779c3480024b94b2918a47dd66ea7e8e3",
+    "fullRegression": "f552aff6647b1114d6eebaaadc9c0ebdad72aada69fd83b130d8d9ac82438de5",
+    "releaseBuild": "c7bd401d9afa1a516301ca45c7560f99fe151ed702ca2655a5ff421d9c80b6e2"
+  },
+  "limits": [
+    "Live four-scheme mining used the already-certified BzMiner CPU profile over verified TLS on isolated proof-enabled regtest. Earlier mainnet-template and independent GPU-miner certification remains in the other Pearl reports.",
+    "PPS requires operator-funded spendable reserves; there is no automatic solvency or reserve-admission guarantee.",
+    "The final configuration guard was tested with all four pool startups and payout/restart verification; proof admission used the same reward-accounting implementation.",
+    "No skipped test is counted as live certification."
+  ],
+  "privacy": "Public evidence omits host identities, addresses, credentials, operational paths, wallet keys and raw lab logs."
+}

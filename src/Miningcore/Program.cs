@@ -1409,6 +1409,7 @@ public class Program : ProcessStatusBackgroundService
 
         var document = JObject.Parse(generator.Generate(typeof(ClusterConfig)).ToString());
         PostgresConnectionPolicy.AddSchemaRules(document);
+        Miningcore.Blockchain.Pearl.PearlPoolConfig.AddSchemaRules(document);
         var activationSchema = document.SelectToken(
             "definitions.PoolPaymentProcessingConfig.properties.ppsBinary64Activation") as JObject ??
             throw new InvalidOperationException("Generated configuration schema is missing the PPS activation property; review schema generation before publishing.");
@@ -2351,6 +2352,8 @@ public class Program : ProcessStatusBackgroundService
 
     internal static bool RequiresShareAccountingPersistence(ClusterConfig config)
     {
+        if(config?.Pools?.Any(pool => pool.Enabled && pool.Template?.Family == CoinFamily.Pearl) == true)
+            return true;
         if(config?.Pools?.Any(pool => pool.Enabled &&
                pool.PaymentProcessing?.Enabled == true &&
                pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS) == true)
@@ -2411,10 +2414,10 @@ public class Program : ProcessStatusBackgroundService
                         pool.Id);
             }
             else if(pool.Template.Family is not (CoinFamily.Bitcoin or
-                    CoinFamily.BitcoinBlake2b))
+                    CoinFamily.BitcoinBlake2b or CoinFamily.Pearl))
                 throw new PoolStartupException(
                     $"Pool '{pool.Id}' uses PPS, which is currently supported only by the " +
-                    "audited Bitcoin-family share and reward contract",
+                    "audited Bitcoin-family and Pearl share and reward contracts",
                     pool.Id);
 
             var recipients = pool.RewardRecipients ?? Array.Empty<RewardRecipient>();
