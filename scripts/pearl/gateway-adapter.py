@@ -7,6 +7,7 @@ Miningcore alone verifies proofs, accounts shares, and submits candidates.
 import argparse
 import asyncio
 import base64
+import binascii
 from collections import OrderedDict
 import contextlib
 import json
@@ -17,7 +18,11 @@ import ssl
 import stat
 import time
 
-MAX_FRAME = 11_200_000
+# Keep in sync with PearlPlainProof.PoolMaximumBytes and PearlProofEncoding.
+MAX_PROOF_BYTES = 810_353
+MAX_WIRE_BYTES = MAX_PROOF_BYTES + 4096
+MAX_ENCODED_CHARACTERS = 4 * ((MAX_WIRE_BYTES + 2) // 3)
+MAX_FRAME = MAX_ENCODED_CHARACTERS + 4096
 MAX_SESSIONS = 4
 RPC_TIMEOUT = 60
 JOB_AGE = 90
@@ -186,8 +191,15 @@ class Session:
         assigned = self.jobs.get(key)
         if assigned is None or time.monotonic() - assigned[1] > JOB_AGE:
             raise RpcError(-32003, 'Unknown, modified or expired session job')
-        if not isinstance(proof, str) or not 1 <= len(proof) <= 11_184_812:
+        if not isinstance(proof, str) or not 1 <= len(proof) <= MAX_ENCODED_CHARACTERS:
             raise RpcError(-32602, 'Invalid proof size')
+        # ASCII base64 cannot expand through JSON escaping and exceed the pool's
+        # frame budget. Reject locally before consuming a submit or writing upstream.
+        try:
+            if len(proof) % 4 or len(base64.b64decode(proof, validate=True)) > MAX_WIRE_BYTES:
+                raise ValueError('proof encoding')
+        except (ValueError, binascii.Error):
+            raise RpcError(-32602, 'Invalid proof encoding') from None
         now = time.monotonic()
         if now - self.last_submit < 1:
             raise RpcError(-32004, 'Submit rate exceeded')

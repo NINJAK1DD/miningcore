@@ -393,7 +393,6 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
             return;
         }
         var accepted = outcome == PearlCandidateOutcome.Accepted;
-        var rejected = outcome == PearlCandidateOutcome.Rejected;
         var blockRecord = new Block
         {
             PoolId = poolConfig.Id, BlockHeight = (ulong) share.BlockHeight, Hash = candidate.BlockHash,
@@ -401,8 +400,6 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
             NetworkDifficulty = share.NetworkDifficulty, TransactionConfirmationData = share.TransactionConfirmationData,
             Status = accepted ? BlockStatus.Pending : BlockStatus.Orphaned
         };
-        if(rejected && !accepted) metrics.Count(poolConfig.Id, PearlEvent.CandidateRejected);
-        if(rejected && !accepted) logger.Warn("Pearl node rejected candidate; recorded as orphaned without reward credit");
         if(await candidates.CompleteAsync(candidate, blockRecord, blocksRepo, ct) && accepted)
         {
             metrics.Count(poolConfig.Id, PearlEvent.CandidateAccepted);

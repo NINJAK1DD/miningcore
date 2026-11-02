@@ -125,8 +125,24 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(value=value), self.assertRaises(gateway.RpcError): await self.session.dispatch(value)
 
     async def test_proof_size_bound(self):
-        for proof in ('', None, 1, 'x' * 11_184_813):
+        for proof in ('', None, 1, 'x' * (gateway.MAX_ENCODED_CHARACTERS + 1)):
             with self.assertRaises(gateway.RpcError): await self.submit(await self.job(), proof)
+        self.assertEqual(self.calls, [])
+
+    async def test_invalid_encoding_cannot_expand_upstream_frame(self):
+        for proof in ('x', 'AA==\n', '\\' * 1024, '"' * 1024, '\u00e9' * 1024, 'A==='):
+            with self.subTest(proof=proof[:8]), self.assertRaises(gateway.RpcError):
+                await self.submit(await self.job(), proof)
+        self.assertEqual(self.calls, [])
+
+    async def test_encoded_boundary_and_decoded_wire_limit(self):
+        # Both lengths fit the base64 ceiling; padding determines decoded length.
+        oversized = base64.b64encode(bytes(gateway.MAX_WIRE_BYTES + 1)).decode()
+        with self.assertRaises(gateway.RpcError): await self.submit(await self.job(), oversized)
+        maximum = base64.b64encode(bytes(gateway.MAX_WIRE_BYTES)).decode()
+        self.assertEqual(len(maximum), gateway.MAX_ENCODED_CHARACTERS)
+        self.assertTrue(await self.submit(await self.job(), maximum))
+        self.assertEqual(len(self.calls), 1)
 
 
 class TransportTests(unittest.IsolatedAsyncioTestCase):
@@ -140,9 +156,9 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                 await gateway.send(writer, {'id': auth['id'], 'result': True, 'error': None})
                 while raw := await reader.readline():
                     value = json.loads(raw); self.submits.append(value)
-                    if value['params']['plain_proof'] == 'timeout':
+                    if value['params']['plain_proof'] == 'dGltZW91dA==':
                         writer.close(); return
-                    if value['params']['plain_proof'] == 'reject':
+                    if value['params']['plain_proof'] == 'cmVqZWN0':
                         await gateway.send(writer, {'id': value['id'], 'error': {'code': 20, 'message': 'private diagnostic'}})
                     else:
                         await gateway.send(writer, {'id': value['id'], 'result': True, 'error': None})
@@ -187,20 +203,36 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
     async def test_rejection_is_error_without_upstream_private_text(self):
         reader, writer = await self.connect()
         job = (await self.exchange(reader, writer, request()))['result']
-        response = await self.exchange(reader, writer, request('submitPlainProof', {'mining_job': job, 'plain_proof': 'reject'}))
+        response = await self.exchange(reader, writer, request('submitPlainProof', {'mining_job': job, 'plain_proof': 'cmVqZWN0'}))
         self.assertIn('error', response); self.assertNotIn('result', response)
         self.assertNotIn('private diagnostic', json.dumps(response))
 
     async def test_disconnect_never_acknowledges(self):
         reader, writer = await self.connect()
         job = (await self.exchange(reader, writer, request()))['result']
-        response = await self.exchange(reader, writer, request('submitPlainProof', {'mining_job': job, 'plain_proof': 'timeout'}))
+        response = await self.exchange(reader, writer, request('submitPlainProof', {'mining_job': job, 'plain_proof': 'dGltZW91dA=='}))
         self.assertIn('error', response); self.assertNotIn('result', response)
 
     async def test_malformed_frame_closes(self):
         reader, writer = await self.connect()
         writer.write(b'{"id":1,"id":2}\n'); await writer.drain()
         self.assertEqual(await asyncio.wait_for(reader.read(), 2), b'')
+
+    async def test_oversized_proof_rejected_locally_then_same_session_submits(self):
+        reader, writer = await self.connect()
+        job = (await self.exchange(reader, writer, request()))['result']
+        response = await self.exchange(reader, writer, request('submitPlainProof', {
+            'mining_job': job, 'plain_proof': 'A' * (gateway.MAX_ENCODED_CHARACTERS + 4)}))
+        self.assertEqual(response['error'], {'code': -32602, 'message': 'Invalid proof size'})
+        self.assertEqual(self.submits, [])
+        maximum = base64.b64encode(bytes(gateway.MAX_WIRE_BYTES)).decode()
+        response = await self.exchange(reader, writer, request('submitPlainProof', {
+            'mining_job': job, 'plain_proof': maximum}))
+        self.assertTrue(response['result'])
+        self.assertEqual(len(self.auth), 1)
+        self.assertEqual(len(self.submits), 1)
+        self.assertLessEqual(len(json.dumps(self.submits[0], separators=(',', ':')).encode()) + 1,
+                             gateway.MAX_FRAME)
 
     async def test_connection_limit(self):
         connections = [await self.connect() for _ in range(gateway.MAX_SESSIONS)]

@@ -282,6 +282,23 @@ accepting any shares**. Both payment-processing switches must already be enabled
    explicit. Default maturity is at least 101 confirmations. Confirm a small payout
    before increasing exposure. Keep wallet backups current.
 
+Treat the first production deployment as a controlled rollout: regtest and CI
+evidence do not certify mainnet blocks or payouts. Start with limited capacity,
+verify canonical acceptance and a small reconciled payment, then expand only
+while the following controls remain healthy:
+
+- Alert on growing candidate queues, proof latency, worker RSS/virtual memory and
+  OS OOM events. Proof-byte budgets do not include native circuit memory.
+- For PPS, compare spendable funds with unpaid liabilities plus fee/marker needs
+  and an operator-defined buffer. Alert before the buffer is exhausted and stop
+  new work if funding cannot be maintained; immature rewards are not reserves.
+- Watch `WalletUtxos` and use the controlled consolidation procedure below. Keep
+  uncertain payout intents and archived candidate evidence until audited recovery
+  completes; never manually resend an uncertain payment.
+- Monitor upstream activation announcements. Keep unsupported proof profiles
+  disabled until their implementation, resource limits and interoperability have
+  been tested. Do not relax profile guards merely to resume work after an upgrade.
+
 ## 6. Choose and configure a reward scheme
 
 All four schemes use the same verified Pearl work, durable receipts, Oyster payment
@@ -539,6 +556,7 @@ and retry; these diagnostics do not establish the cause of earlier incidents.
 | Intent has no known transaction after a rejected send | Follow the approved no-broadcast audit above. RPC error text or an empty lookup alone cannot justify releasing it. |
 | Gateway fails to start | Check private config/directory ownership and permissions. An existing socket is not overwritten: confirm no adapter is running before removing a stale socket. |
 | Gateway TLS failure | Check DNS name, expiry, and trusted CA. Set `ca_file` for a private CA; do not disable verification. |
+| Gateway reports `Invalid proof size` or `Invalid proof encoding` | Use the certified profile and valid base64 within 1,085,932 characters (at most 814,449 decoded wire bytes, including compression framing). Rejected proof fields are not sent upstream; the session remains usable. Oversized or malformed local RPC frames close the local session. |
 | Official client sees an RPC error | It is a final rejection or service failure, not acceptance. Refresh work and inspect private pool diagnostics. Never convert an error into `submitted`/success. |
 | Reward not paid yet | Check canonical block status, confirmation/maturity threshold, wallet sync/unlock, minimum balance, both payment flags, and transaction status. Avoid blindly resending uncertain payouts. |
 
@@ -565,3 +583,7 @@ new reward credit and payments remain held until chain evidence agrees. Candidat
 submission strings such as duplicate-orphan or storage failures leave unknown
 blocks retryable; investigate node health if retries persist. The 24-hour archive
 and audited manual recovery procedure still apply.
+
+The unused `CandidateRejected` event label has been removed. Dashboards should
+monitor `CandidateUncertain`, `CandidateAccepted`, `CandidateRetired` and
+`CandidateQueue`; rejection text is not a conclusive candidate outcome.

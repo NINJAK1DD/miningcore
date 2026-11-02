@@ -22,6 +22,18 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased (after v0.3.0): IPv6 admission quotas for all pools
+
+All pool families now group IPv6 clients by /64 for connection rate and concurrent
+connection quotas. Pearl also uses this grouping for proof-upload quotas. Miners
+sharing a provider's /64 share one quota even when they are different customers.
+Review capacity for hosting providers and mining fleets before upgrading.
+
+Set `pools[].connectionAdmission.ipv6PrefixLength` to `128` to preserve the previous
+exact-address quota behavior; values from 0 through 128 are supported. This option
+changes quota grouping only: client identity, trusted proxies and bans still use
+exact addresses. IPv4 behavior is unchanged. See [connection admission configuration](stratum-connection-admission.md).
+
 ## Unreleased (after v0.3.0): Pearl mining
 
 PRL is available through the dedicated Pearl pool family, with pinned integer V3

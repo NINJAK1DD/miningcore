@@ -21,7 +21,10 @@ use zk_pow::ffi::plain_proof::PlainProof;
 // Status 1 is a rejected request/proof; status 2 is an operational failure.
 static ERROR_CLASS: AtomicU8 = AtomicU8::new(2);
 
-const MAX_PROOF: usize = 8 * 1024 * 1024;
+// Certified pool profile only. Mirrors PearlPlainProof.PoolMaximumBytes:
+// 768 row-aligned leaves and at most 352 siblings above 32-leaf row subtrees.
+const MAX_PROOF: usize = 32 + 2 * 72 + (8 + 16) * 32 * 1040
+    + (8 * (21 - 5) + 16 * (19 - 5)) * 32 + (8 + 16) * 8 + 1;
 const SOURCE: &str = "d7c517d267f10f5bcbbdc366f3e603942f9a5ab5";
 
 fn main() {
@@ -50,6 +53,74 @@ fn run_status(work: impl FnOnce() -> Result<()> + std::panic::UnwindSafe) -> u8 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Structural fixture only: zero leaves/roots do not claim cryptographic validity.
+    fn profile(m: u64, n: u64) -> (Vec<u8>, [usize; 3]) {
+        fn integer(raw: &mut Vec<u8>, value: u64) { raw.extend(value.to_le_bytes()); }
+        let mut raw = Vec::new();
+        for value in [m, n, 32768, 128] { integer(&mut raw, value); }
+        let mut positions = [0; 3];
+        for (dimension, rows) in [(m, 8u64), (n, 16)] {
+            integer(&mut raw, rows * 32);
+            for _ in 0..rows * 32 {
+                integer(&mut raw, 1024);
+                raw.extend([0; 1024]);
+            }
+            integer(&mut raw, rows * 32);
+            let indices = raw.len();
+            for index in 0..rows * 32 { integer(&mut raw, index); }
+            integer(&mut raw, dimension * 32);
+            raw.extend([0; 32]);
+            let siblings_offset = raw.len();
+            let siblings = rows * u64::from((u64::BITS - (dimension * 32 - 1).leading_zeros()).saturating_sub(5));
+            integer(&mut raw, siblings);
+            raw.resize(raw.len() + siblings as usize * 32, 0);
+            integer(&mut raw, rows);
+            let row_indices = raw.len();
+            for row in 0..rows { integer(&mut raw, row); }
+            if rows == 8 { positions = [indices, siblings_offset, row_indices]; }
+        }
+        raw.push(0);
+        (raw, positions)
+    }
+
+    #[test]
+    fn preflight_accepts_profile_bound_and_legacy_encoding() {
+        let (mut raw, _) = profile(32772, 15360);
+        assert_eq!(MAX_PROOF, 810353);
+        assert_eq!(raw.len(), MAX_PROOF);
+        assert_eq!(preflight(&raw).unwrap(), raw.len() - 1);
+        raw.pop();
+        assert_eq!(preflight(&raw).unwrap(), raw.len());
+        for (m, n) in [(8, 16), (376, 512), (32768, 15360)] {
+            let (raw, _) = profile(m, n);
+            assert!(preflight(&raw).is_ok());
+        }
+    }
+
+    #[test]
+    fn preflight_rejects_unsupported_counts_dimensions_and_row_coverage() {
+        let (raw, [indices, siblings, rows]) = profile(32772, 15360);
+        for (offset, value) in [(0, 32773), (8, 15361), (16, 65536), (24, 256),
+                                (32, 255), (32, 257), (siblings, 129), (rows - 8, 9),
+                                (indices, 1), (indices + 255 * 8, 256), (rows + 7 * 8, 8)] {
+            let mut changed = raw.clone();
+            changed[offset..offset+8].copy_from_slice(&u64::to_le_bytes(value));
+            assert!(preflight(&changed).is_err(), "offset={offset}, value={value}");
+        }
+        let (small, [_, small_siblings, _]) = profile(8, 16);
+        let mut changed = small.clone();
+        changed[small_siblings..small_siblings+8].copy_from_slice(&25u64.to_le_bytes());
+        assert!(preflight(&changed).is_err()); // Actual depth, not maximum-profile depth.
+        let mut changed = raw.clone();
+        changed.push(0);
+        assert!(preflight(&changed).is_err());
+        changed = raw.clone();
+        *changed.last_mut().unwrap() = 1;
+        assert!(preflight(&changed).is_err());
+        assert!(preflight(&raw[..raw.len()-2]).is_err());
+    }
+
     #[test]
     fn panics_are_system_failures_even_during_untrusted_input_validation() {
         ERROR_CLASS.store(1, Ordering::Relaxed);
@@ -184,32 +255,42 @@ fn preflight(raw: &[u8]) -> Result<usize> {
             }
             Ok(())
         }
-        fn matrix(&mut self, dimension: u64, k: u64) -> Result<u64> {
-            let leaves = self.number(1, (MAX_PROOF / 1032) as u64)?;
+        fn matrix(&mut self, dimension: u64, rows: u64) -> Result<()> {
+            let leaves = self.number(rows * 32, rows * 32)?;
             ensure!(leaves <= ((self.raw.len() - self.offset) / 1032) as u64, "leaf bounds");
             for _ in 0..leaves { self.number(1024, 1024)?; self.skip(1024)?; }
             self.number(leaves, leaves)?;
-            let total = (dimension*k + 1023) / 1024;
+            let total = dimension * 32;
+            let indices_start = self.offset;
             self.indices(leaves, total)?;
             self.number(total, total)?;
             self.skip(32)?;
-            let siblings = self.number(0, (leaves*30).min((MAX_PROOF/32) as u64))?;
+            let depth = u64::BITS - (total - 1).leading_zeros();
+            let siblings = self.number(0, rows * u64::from(depth.saturating_sub(5)))?;
             self.skip(siblings as usize * 32)?;
-            let rows = self.number(1, 128)?;
+            self.number(rows, rows)?;
+            let rows_start = self.offset;
             self.indices(rows, dimension)?;
-            Ok(rows)
+            for row in 0..rows as usize {
+                let start = rows_start + row * 8;
+                let row_index = u64::from_le_bytes(self.raw[start..start+8].try_into()?);
+                for leaf in 0..32 {
+                    let start = indices_start + (row * 32 + leaf) * 8;
+                    let index = u64::from_le_bytes(self.raw[start..start+8].try_into()?);
+                    ensure!(index == row_index * 32 + leaf as u64, "row openings");
+                }
+            }
+            Ok(())
         }
     }
     ensure!(raw.len() <= MAX_PROOF, "proof size");
     let mut r = Reader { raw, offset: 0 };
-    let m = r.number(1, 1<<24)?;
-    let n = r.number(1, 1<<24)?;
-    let k = r.number(1024, 1<<16)?;
-    let rank = r.number(128, 1024)?;
-    ensure!(rank.is_power_of_two() && k%64 == 0 && k>=16*rank && k<=4*rank*rank, "dimensions");
-    let rows = r.matrix(m,k)?;
-    let cols = r.matrix(n,k)?;
-    ensure!((32..=256).contains(&(rows*cols)) && (rows+cols)*(k-k%rank)<=1<<22, "tile bounds");
+    let m = r.number(1, 32772)?;
+    let n = r.number(1, 15360)?;
+    r.number(32768, 32768)?;
+    r.number(128, 128)?;
+    r.matrix(m, 8)?;
+    r.matrix(n, 16)?;
     ensure!(raw.len()==r.offset || raw.len()==r.offset+1 && raw[r.offset]==0, "dense format");
     Ok(r.offset)
 }

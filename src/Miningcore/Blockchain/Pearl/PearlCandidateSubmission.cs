@@ -5,7 +5,7 @@ using Newtonsoft.Json.Linq;
 
 namespace Miningcore.Blockchain.Pearl;
 
-internal enum PearlCandidateOutcome { Uncertain, Accepted, Orphaned, Rejected }
+internal enum PearlCandidateOutcome { Uncertain, Accepted, Orphaned }
 
 // The same state machine is used by live submission and restart recovery.
 internal static class PearlCandidateSubmission

@@ -61,6 +61,13 @@ for fixture in ("srb", "share-only"):
     run(fixture + ":truncated", request[:-17], False)
     run(fixture + ":trailing", request + b"\0", False)
     run(fixture + ":huge-nested-count", packet(proof=raw[:32] + b"\xff" * 8 + raw[40:]), False)
+    # The process boundary must enforce the profile even without the managed gate.
+    for offset, value in ((0, 32773), (8, 15361), (16, 65536), (24, 256), (32, 255), (32, 257)):
+        changed = bytearray(raw)
+        struct.pack_into('<Q', changed, offset, value)
+        run(fixture + f":profile-{offset}-{value}", packet(proof=changed), False)
+    # Oversized declared lengths fail before waiting for or allocating their body.
+    run(fixture + ":profile-size-before-read", request[:120] + struct.pack('<I', 810354), False)
     run(fixture + ":changed-leaf", packet(proof=raw[:48] + bytes([raw[48] ^ 1]) + raw[49:]), False)
     if not meta["candidate"]:
         run(fixture + ":cannot-prove-share-only", packet(operation=1), False)

@@ -33,6 +33,7 @@ public class PearlMetricsTests
         Assert.Contains("miningcore_pearl_proof_seconds_sum{pool=\"pearl\",phase=\"Prove\"} 47", text);
         Assert.DoesNotContain("999", text);
         Assert.DoesNotContain("NaN", text);
+        Assert.DoesNotContain("CandidateRejected", text);
     }
 
     private sealed class Clock : TimeProvider

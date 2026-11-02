@@ -358,10 +358,25 @@ The fixed k=32768 profile opens 32 aligned 1024-byte leaves per sampled row: 256
 for A and 512 for B. Their maximum tree depths are 21 and 19, so at most
 8*(21-5) + 16*(19-5) = 352 sibling hashes are needed above those row subtrees.
 Including bincode lengths, roots, indices, dimensions and the None tag gives
-810,353 bytes. Preflight checks these counts and exact row-to-leaf coverage;
+810,353 bytes. Managed and Rust preflight independently enforce the certified
+profile, these counts and exact row-to-leaf coverage before deserialization;
 cryptographic validity still belongs to the native verifier. Raw, legacy, gzip
 and zlib encodings remain supported within the tighter bound. See the pinned
 [upstream row mapping and multiproof construction](https://github.com/pearl-research-labs/pearl/blob/d7c517d267f10f5bcbbdc366f3e603942f9a5ab5/pearl-blake3/src/merkle.rs).
+
+The optional gateway uses the same 1,085,932-character proof and 1,090,028-byte
+frame ceilings as the pool. It validates base64 locally to prevent JSON escaping
+from expanding a proof past the upstream frame limit. Invalid proof fields return
+a local RPC error without consuming a submit or closing the upstream session;
+malformed or oversized local frames close that local session. Upgrade the adapter
+and worker bundle with the pool. Rust tests cover the exact maximum serialized
+shape, smaller admitted matrices, legacy encoding and malformed counts/indices;
+worker contract tests exercise the independent process boundary.
+
+The [boundary hardening evidence](pearl-boundary-hardening-evidence.json) records
+the rebuilt worker, focused managed tests, socket contracts and real official-client
+gateway run. The latter rejects an oversized proof locally, keeps the same session
+usable, then accepts real proofs and a node-confirmed candidate through verified TLS.
 
 Classification prefers a healthy node on Oyster's tip, then falls back to a
 validated node for reorg observation if none matches. Fallback may orphan or
