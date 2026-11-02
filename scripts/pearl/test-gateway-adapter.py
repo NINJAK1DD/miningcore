@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Bounded gateway transport and security contracts; no miner/node required."""
 import asyncio
+import ast
 import base64
 import importlib.util
 import json
 import os
+import operator
 from pathlib import Path
+import re
 import tempfile
 import time
 import unittest
@@ -22,6 +25,67 @@ def notification(seed=0, target=2**252 + 123456789):
 
 def request(method='getMiningInfo', params=None, identity=1):
     return {'jsonrpc': '2.0', 'id': identity, 'method': method, 'params': params or {}}
+
+
+def integer_expression(expression, bindings):
+    """Read source constants without executing source code; all bounds are positive integers."""
+    operations = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+                  ast.Div: operator.floordiv, ast.FloorDiv: operator.floordiv}
+    def evaluate(node):
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value
+        if isinstance(node, ast.Name) and node.id in bindings:
+            return bindings[node.id]
+        if isinstance(node, ast.BinOp) and type(node.op) in operations:
+            return operations[type(node.op)](evaluate(node.left), evaluate(node.right))
+        raise ValueError('unsupported constant expression; update the proof-limit guard')
+    expression = expression.replace('PearlPlainProof.', '').replace('PearlProofEncoding.', '')
+    return evaluate(ast.parse('(' + expression + ')', mode='eval').body)
+
+
+class ProofLimitTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parents[2]
+        cls.sources = {name: (root / path).read_text() for name, path in {
+            'plain': 'src/Miningcore/Blockchain/Pearl/PearlPlainProof.cs',
+            'wire': 'src/Miningcore/Blockchain/Pearl/PearlProofEncoding.cs',
+            'frame': 'src/Miningcore/Stratum/StratumInputPolicy.cs',
+            'native': 'src/Native/pearl-proof-worker/src/main.rs'}.items()}
+        cls.gateway_limits = (gateway.MAX_PROOF_BYTES, gateway.MAX_WIRE_BYTES,
+                              gateway.MAX_ENCODED_CHARACTERS, gateway.MAX_FRAME)
+
+    def check_limits(self, sources, gateway_limits):
+        def constant(source, pattern, bindings=None):
+            match = re.search(pattern, sources[source])
+            self.assertIsNotNone(match, 'missing proof limit in ' + source)
+            return integer_expression(match[1], bindings or {})
+        plain = constant('plain', r'const int PoolMaximumBytes\s*=([^;]+);')
+        native = constant('native', r'const MAX_PROOF: usize\s*=([^;]+);')
+        wire = constant('wire', r'const int MaximumWireBytes\s*=([^;]+);', {'PoolMaximumBytes': plain})
+        encoded = constant('wire', r'const int MaximumEncodedCharacters\s*=([^;]+);', {'MaximumWireBytes': wire})
+        frame = constant('frame', r'int MaximumLength => ProofSized\s*\?([^:]+):', {'MaximumEncodedCharacters': encoded})
+        self.assertEqual(plain, native, 'managed/native proof limit drift')
+        self.assertEqual((plain, wire, encoded, frame), gateway_limits, 'managed/gateway proof limit drift')
+
+    def test_actual_managed_native_and_gateway_limits_agree(self):
+        self.check_limits(self.sources, self.gateway_limits)
+
+    def test_drift_in_each_boundary_is_detected(self):
+        for source, before, after in [('plain', '32 * 1040', '32 * 1041'),
+                                      ('native', '32 * 1040', '32 * 1041'),
+                                      ('wire', '+ 4096', '+ 4097'),
+                                      ('wire', '+ 2) / 3', '+ 2) / 2'),
+                                      ('frame', '+ 4096', '+ 4097')]:
+            self.assertIn(before, self.sources[source])
+            changed = self.sources | {source: self.sources[source].replace(before, after, 1)}
+            with self.subTest(source=source, change=after), self.assertRaises(AssertionError):
+                self.check_limits(changed, self.gateway_limits)
+        for index in range(len(self.gateway_limits)):
+            changed = list(self.gateway_limits)
+            changed[index] += 1
+            with self.subTest(gateway_boundary=index), self.assertRaises(AssertionError):
+                self.check_limits(self.sources, tuple(changed))
 
 
 class ConfigurationTests(unittest.TestCase):

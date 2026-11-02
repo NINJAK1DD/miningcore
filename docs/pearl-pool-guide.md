@@ -285,7 +285,14 @@ accepting any shares**. Both payment-processing switches must already be enabled
 Treat the first production deployment as a controlled rollout: regtest and CI
 evidence do not certify mainnet blocks or payouts. Start with limited capacity,
 verify canonical acceptance and a small reconciled payment, then expand only
-while the following controls remain healthy:
+while the operating controls remain healthy.
+
+Keep connection limits conservative during rollout and actively monitor the
+16-candidate queue. Durable accounting can remain correct during worker or daemon
+outages while block processing is delayed; a preserved liability is not evidence
+of uninterrupted mining availability.
+
+Use these controls throughout the rollout:
 
 - Alert on growing candidate queues, proof latency, worker RSS/virtual memory and
   OS OOM events. Proof-byte budgets do not include native circuit memory.
