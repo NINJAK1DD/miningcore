@@ -76,7 +76,7 @@
           <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
         <PackageReference Include="Isopoh.Cryptography.Argon2" Version="2.0.0" />
-        <PackageReference Include="Microsoft.IO.RecyclableMemoryStream" Version="3.0.0" />
+        <PackageReference Include="Microsoft.IO.RecyclableMemoryStream" Version="4.0.1" />
         <PackageReference Include="Newtonsoft.Json.Schema" Version="4.0.1" />
         <PackageReference Include="Npgsql" Version="9.0.3" />
         <PackageReference Include="NSwag.AspNetCore" Version="14.7.1" />
@@ -92,19 +92,19 @@
         <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.1" />
         <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
         <PackageReference Include="JetBrains.Annotations" Version="2026.2.0" />
-        <PackageReference Include="MailKit" Version="4.18.1" />
+        <PackageReference Include="MailKit" Version="4.18.2" />
         <!-- Pin the patched transitive dependency until all upstream packages resolve
              Pkcs >= 10.0.13; remove only after restore/audit confirms that floor. -->
         <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
         <PackageReference Include="McMaster.Extensions.CommandLineUtils" Version="5.1.0" />
-        <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.12" />
-        <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.12" />
-        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.12" />
-        <PackageReference Include="NBitcoin" Version="7.0.42" />
+        <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14" />
+        <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.14" />
+        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.14" />
+        <PackageReference Include="NBitcoin" Version="10.0.19" />
         <PackageReference Include="NBitcoin.Altcoins" Version="3.0.28" />
         <PackageReference Include="NBitcoin.Zcash" Version="3.0.0" />
         <PackageReference Include="NBitcoin.Secp256k1" Version="3.1.6" />
-        <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+        <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
         <PackageReference Include="NLog" Version="5.4.0" />
         <PackageReference Include="NLog.Extensions.Logging" Version="5.4.0" />
         <PackageReference Include="Polly" Version="8.3.1" />
@@ -119,10 +119,10 @@
         <PackageReference Include="prometheus-net" Version="8.2.1" />
         <PackageReference Include="protobuf-net" Version="3.2.30" />
         <PackageReference Include="System.Reactive" Version="6.0.0" />
-        <PackageReference Include="Grpc.AspNetCore" Version="2.84.0" />
+        <PackageReference Include="Grpc.AspNetCore" Version="2.85.0" />
         <PackageReference Include="Google.Protobuf" Version="3.36.2" />
-        <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
-        <PackageReference Include="Grpc.Tools" Version="2.84.0">
+        <PackageReference Include="Grpc.Net.Client" Version="2.85.0" />
+        <PackageReference Include="Grpc.Tools" Version="2.85.0">
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
             <PrivateAssets>all</PrivateAssets>
         </PackageReference>
