@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).with_name('check-release-preparation-docs.py')
@@ -17,9 +18,26 @@ guard = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(guard)
 
 
+def shell_matrix_errors(environ, find_shell, platform):
+    mode = environ.get('MININGCORE_REQUIRE_SHELL_MATRIX')
+    if mode in (None, '', '0'):
+        return []
+    if mode != '1':
+        return ['MININGCORE_REQUIRE_SHELL_MATRIX must be 0 or 1']
+    if platform != 'posix':
+        return ['The required shell matrix needs a POSIX host']
+    return [f'Required shell matrix is missing {shell}'
+            for shell in ('bash', 'dash', 'zsh') if not find_shell(shell)]
+
+
 class ReleasePreparationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        errors = shell_matrix_errors(os.environ, shutil.which, os.name)
+        if errors:
+            raise RuntimeError('; '.join(errors))
+        if os.environ.get('MININGCORE_REQUIRE_SHELL_MATRIX') == '1':
+            print('Required shell matrix available: bash, dash, zsh')
         cls.original = {name: (guard.ROOT / name).read_text(encoding='utf-8')
                         for name in guard.DOCUMENTS}
         cls.baseline = guard.BASELINE.read_text(encoding='utf-8')
@@ -32,6 +50,26 @@ class ReleasePreparationTests(unittest.TestCase):
 
     def test_current_documents(self):
         self.assertEqual([], guard.validate(self.original, self.baseline))
+
+    def test_shell_matrix_preflight(self):
+        for shell in ('bash', 'dash', 'zsh'):
+            with self.subTest(missing=shell):
+                find_shell = lambda name: None if name == shell else f'/bin/{name}'
+                self.assertEqual([f'Required shell matrix is missing {shell}'],
+                                 shell_matrix_errors({'MININGCORE_REQUIRE_SHELL_MATRIX': '1'},
+                                                     find_shell, 'posix'))
+                self.assertEqual([], shell_matrix_errors({}, find_shell, 'posix'))
+                # Exercise the actual unittest setup gate, not only the pure helper.
+                with patch.dict(os.environ, {'MININGCORE_REQUIRE_SHELL_MATRIX': '1'}), \
+                        patch.object(shutil, 'which', find_shell), patch.object(os, 'name', 'posix'):
+                    with self.assertRaisesRegex(RuntimeError, f'missing {shell}'):
+                        type(self).setUpClass()
+        self.assertEqual([], shell_matrix_errors({'MININGCORE_REQUIRE_SHELL_MATRIX': '1'},
+                                                 lambda name: f'/bin/{name}', 'posix'))
+        self.assertTrue(shell_matrix_errors({'MININGCORE_REQUIRE_SHELL_MATRIX': '1'},
+                                            lambda name: f'/bin/{name}', 'nt'))
+        self.assertTrue(shell_matrix_errors({'MININGCORE_REQUIRE_SHELL_MATRIX': 'true'},
+                                            lambda name: f'/bin/{name}', 'posix'))
 
     def test_future_unreleased_entry_allowed(self):
         documents = self.original.copy()
@@ -217,12 +255,14 @@ docker() {
     @unittest.skipIf(os.name == 'nt', 'Execute shell examples in the Linux documentation suite')
     def test_sql_cleanup_statuses_under_dash(self):
         if not shutil.which('dash'):
+            self.assertNotEqual('1', os.environ.get('MININGCORE_REQUIRE_SHELL_MATRIX'), 'Required dash disappeared')
             self.skipTest('dash is not installed')
         self.check_sql_cleanup_statuses('dash')
 
     @unittest.skipIf(os.name == 'nt', 'Execute shell examples in the Linux documentation suite')
     def test_sql_cleanup_statuses_under_zsh(self):
         if not shutil.which('zsh'):
+            self.assertNotEqual('1', os.environ.get('MININGCORE_REQUIRE_SHELL_MATRIX'), 'Required zsh disappeared')
             self.skipTest('zsh is not installed')
         self.check_sql_cleanup_statuses('zsh')
 

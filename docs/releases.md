@@ -3084,6 +3084,10 @@ Keep the 33 pre-RC anchors in the independent frozen baseline under
 documentation suite runs mutation tests for these links, both SOLO migration rows
 and the separate stable/candidate version inventories. Its new preparation checks
 must remain effective with Python optimisation enabled.
+The primary Linux `.NET` CI job installs Bash, dash and zsh and sets
+`MININGCORE_REQUIRE_SHELL_MATRIX=1` for the documentation suite. Missing shells
+fail that job rather than skipping coverage. Local/minimal environments may omit
+the flag and skip unavailable optional shells; set it to `1` to require the full matrix.
 Do not add a speculative `next-version` or edit assembly constants merely to prepare
 this PR: the validated release tag supplies the packaged version and source identity.
 Publication must mark `v0.4.0-rc.1` as a prerelease; it must not advance stable GHCR aliases.
