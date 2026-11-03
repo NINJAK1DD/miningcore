@@ -3062,9 +3062,11 @@ Before tagging a new release, review every release-locked quick-start sentence a
 installation defaults on the published stable version; candidate selection stays explicit.
 For a stable release, put the version flip in the final release-preparation commit selected
 for that stable tag, so its README and packaged INSTALL.md select that same stable version.
-During its pre-publication window, explicitly warn that assets may not exist yet and link to
-the previous published stable tag's README as the runnable fallback. Do not claim that the
-new stable release is published before publication succeeds, or move a tag to repair its docs.
+Use wording that remains true before and after publication, for example: "If the v0.4.0
+release page or required assets are unavailable, use the v0.3.0 README." Link to the
+previous published stable tag's README as the runnable fallback. Do not describe a temporary
+branch or publication state as a permanent fact in the tagged files, claim publication before
+it succeeds, or move a tag to repair its docs.
 In particular, replace the README's
 named stable-version substitution boundary and its release-documentation assertion when the stable
 baseline changes.
@@ -3121,6 +3123,7 @@ if [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] &&
     git push origin "$NEXT_VERSION"
 else
   echo "STOP: select the reviewed full commit SHA reachable from origin/dev" >&2
+  false
 fi
 ```
 

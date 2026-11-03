@@ -20,11 +20,13 @@ def prose(text):
 
 
 def headings(text):
-    """Read ATX headings at every level, ignoring fenced examples."""
+    """Read ATX and setext headings, ignoring fenced and indented examples."""
     fence = None
+    paragraph = []
     for line in text.splitlines():
         marker = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', line)
         if marker:
+            paragraph = []
             delimiter, trailing = marker.groups()
             if fence is None:
                 fence = (delimiter[0], len(delimiter))
@@ -33,9 +35,20 @@ def headings(text):
             continue
         if fence is not None:
             continue
+        underline = re.fullmatch(r' {0,3}(=+|-+)[ \t]*', line)
+        if underline:
+            if paragraph:
+                yield ('setext-1' if underline[1].startswith('=') else 'setext-2', ' '.join(paragraph))
+            paragraph = []
+            continue
         heading = re.match(r'^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$', line)
         if heading:
             yield heading.groups()
+            paragraph = []
+        elif not line.strip() or line.startswith(('    ', '\t', '>')):
+            paragraph = []
+        else:
+            paragraph.append(line.strip())
 
 
 def console_blocks(text, needle):
@@ -74,14 +87,16 @@ def validate(documents, baseline):
                 f'Invalid next-cycle release heading: {level} {title}')
     for fragment in ('For a stable release, put the version flip in the final release-preparation commit',
                      'so its README and packaged INSTALL.md select that same stable version.',
-                     'previous published stable tag\'s README as the runnable fallback.'):
+                     'previous published stable tag\'s README as the runnable fallback.',
+                     'Use wording that remains true before and after publication'):
         require(fragment in prose(release), f'Missing stable-release policy: {fragment}')
     tag_blocks = console_blocks(release, 'RELEASE_COMMIT=')
     require(len(tag_blocks) == 1, 'Expected one exact-commit release tagging example')
     if len(tag_blocks) == 1:
         for fragment in ('RELEASE_COMMIT=REPLACE_WITH_REVIEWED_MERGE_SHA',
                          'git merge-base --is-ancestor "$RELEASE_COMMIT" origin/dev',
-                         'git tag -s "$NEXT_VERSION" "$RELEASE_COMMIT" -m'):
+                         'git tag -s "$NEXT_VERSION" "$RELEASE_COMMIT" -m',
+                         'echo "STOP: select the reviewed full commit SHA reachable from origin/dev" >&2\n  false'):
             require(fragment in tag_blocks[0], f'Unsafe release target example: missing {fragment}')
     require('The cumulative example below deliberately targets v0.4.0-rc.1' in
             prose(documents['docs/database.md']), 'Database example must explain its RC-specific target')
@@ -126,6 +141,10 @@ def validate(documents, baseline):
                          'docker rm -v "$container"', '"$container:/app/migrations"',
                          '"$container:/app/BUILD-INFO"'):
             require(fragment in extraction[0], f'Unsafe SQL extraction example: missing {fragment}')
+        require('Candidate extraction directory (may be incomplete):' in extraction[0],
+                'SQL extraction must identify partial-copy output')
+    require('The function calls `docker` directly:' in prose(upgrade),
+            'SQL extraction must explain Docker access requirements')
     container = release.split('## Use the GitHub Container Registry image\n', 1)
     require(len(container) == 2 and 'new container installation only' in container[1],
             'Container installation must warn existing operators not to overwrite state')

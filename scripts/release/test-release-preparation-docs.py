@@ -64,6 +64,24 @@ class ReleasePreparationTests(unittest.TestCase):
                 documents['docs/releases.md'] += f'\n{marker}markdown\n### unreleased: example\n{marker}\n'
                 self.assertEqual([], guard.validate(documents, self.baseline))
 
+    def test_setext_unreleased_entries_are_rejected(self):
+        for title in ('Unreleased', 'unreleased: fix', 'UNRELEASED',
+                      'Unreleased (after v0.4.0-rc.1): fix'):
+            for underline in ('===', '---'):
+                with self.subTest(title=title, underline=underline):
+                    documents = self.original.copy()
+                    documents['docs/releases.md'] += f'\n{title}\n{underline}\n'
+                    self.assertTrue(guard.validate(documents, self.baseline))
+
+    def test_setext_examples_in_code_are_ignored(self):
+        for example in ('```markdown\nUnreleased\n---\n```',
+                        '~~~markdown\nUnreleased\n===\n~~~',
+                        '    Unreleased\n    ---'):
+            with self.subTest(example=example):
+                documents = self.original.copy()
+                documents['docs/releases.md'] += '\n' + example + '\n'
+                self.assertEqual([], guard.validate(documents, self.baseline))
+
     def test_exact_release_commit_is_required(self):
         self.mutation('docs/releases.md', 'git tag -s "$NEXT_VERSION" "$RELEASE_COMMIT" -m',
                       'git tag -s "$NEXT_VERSION" -m')
@@ -73,6 +91,15 @@ class ReleasePreparationTests(unittest.TestCase):
 
     def test_stable_version_flip_policy_is_required(self):
         self.mutation('docs/releases.md', 'For a stable release, put the version flip', 'Leave every version unchanged')
+
+    def test_publication_wording_must_remain_true_after_release(self):
+        self.mutation('docs/releases.md', 'Use wording that remains true before and after publication',
+                      'Describe the current temporary branch state')
+
+    def test_rejected_tag_target_must_not_report_success(self):
+        self.mutation('docs/releases.md',
+                      'echo "STOP: select the reviewed full commit SHA reachable from origin/dev" >&2\n  false',
+                      'echo "STOP: select the reviewed full commit SHA reachable from origin/dev" >&2')
 
     def test_database_candidate_exception_is_required(self):
         self.mutation('docs/database.md', 'The cumulative example below deliberately targets v0.4.0-rc.1',
@@ -84,6 +111,14 @@ class ReleasePreparationTests(unittest.TestCase):
 
     def test_sql_extraction_cleanup_is_required(self):
         self.mutation('docs/upgrade-v0.4.0-rc.1.md', 'docker rm -v "$container"', 'true')
+
+    def test_sql_extraction_partial_directory_must_be_identified(self):
+        self.mutation('docs/upgrade-v0.4.0-rc.1.md', 'Candidate extraction directory (may be incomplete):',
+                      'Unspecified output directory:')
+
+    def test_sql_extraction_access_requirements_must_be_explicit(self):
+        self.mutation('docs/upgrade-v0.4.0-rc.1.md', 'The function calls `docker` directly:',
+                      'Docker is available to every account:')
 
     def run_shell_example(self, name, needle, prefix, failure='', replacements=()):
         blocks = guard.console_blocks(self.original[name], needle)
@@ -124,6 +159,7 @@ git() {
                     self.assertIn(f'tag -s v0.4.0-rc.1 {sha} -m Miningcore v0.4.0-rc.1', calls)
                     self.assertIn('push origin v0.4.0-rc.1', calls)
                 else:
+                    self.assertNotEqual(0, result.returncode, result.stderr)
                     self.assertFalse(any(call.startswith('push ') for call in calls), calls)
                     if failure != 'tag':
                         self.assertFalse(any(call.startswith('tag ') for call in calls), calls)
@@ -149,8 +185,10 @@ docker() {
                 self.assertFalse(any(call.startswith(('start ', 'run ', 'exec ')) for call in calls), calls)
                 if failure == 'create':
                     self.assertEqual(1, len(calls))
+                    self.assertNotIn('Candidate extraction directory', result.stdout)
                 else:
                     self.assertEqual('rm -v fixture-container', calls[-1])
+                    self.assertIn('Candidate extraction directory (may be incomplete): ', result.stdout)
                 if not failure:
                     self.assertEqual(0, result.returncode, result.stderr)
                     self.assertIn('Inspect candidate SQL and BUILD-INFO', result.stdout)

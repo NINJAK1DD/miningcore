@@ -265,6 +265,12 @@ retrieve all migrations from embedded application resources.
    on success or failure. It never starts Miningcore or applies SQL. Inspect the
    copied `BUILD-INFO` and migrations before using them; copied files alone do not
    prove that the image's source identity matches the selected release.
+   The function calls `docker` directly: define and run it in a shell already
+   authorized for Docker. If your setup requires `sudo docker`, use an administrative
+   shell such as `sudo -i`; `sudo extract_candidate_sql` cannot invoke a shell function.
+   The private output directory is retained even after a failed copy, and its path
+   is printed before copying. Treat it as incomplete unless both copies succeed and
+   the release identity is verified; inspect or remove that specific directory afterwards.
 
    ```console
    extract_candidate_sql() (
@@ -273,6 +279,7 @@ retrieve all migrations from embedded application resources.
      container=$(docker create --network none "$image") || return
      trap 'docker rm -v "$container" >/dev/null' EXIT
      output=$(mktemp -d "${TMPDIR:-/tmp}/miningcore-sql.XXXXXXXX") || return
+     printf 'Candidate extraction directory (may be incomplete): %s\n' "$output"
      docker cp "$container:/app/migrations" "$output/" &&
        docker cp "$container:/app/BUILD-INFO" "$output/" &&
        printf 'Inspect candidate SQL and BUILD-INFO in %s\n' "$output"
