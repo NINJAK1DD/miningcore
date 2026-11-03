@@ -3127,6 +3127,14 @@ else
 fi
 ```
 
+If tag creation succeeded and only the push failed, do not rerun the creation
+block. Confirm that `git rev-parse "${NEXT_VERSION}^{commit}"` exactly equals the
+recorded `RELEASE_COMMIT`, then retry only `git push origin "$NEXT_VERSION"`.
+If the target differs or cannot be verified, stop and reconcile it. Never
+re-create, move or force-push an existing local or remote release tag. A push
+whose acknowledgement was lost may already have succeeded; a normal retry
+must not replace a different remote tag.
+
 If signed tags are not configured, use an annotated tag (`git tag -a`) rather than a lightweight
 tag. After the first GHCR publication, confirm the package is public and inherits access from this
 repository. Do not move or reuse a published version tag; publish a new version instead.

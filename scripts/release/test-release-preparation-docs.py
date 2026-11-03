@@ -101,6 +101,15 @@ class ReleasePreparationTests(unittest.TestCase):
                       'echo "STOP: select the reviewed full commit SHA reachable from origin/dev" >&2\n  false',
                       'echo "STOP: select the reviewed full commit SHA reachable from origin/dev" >&2')
 
+    def test_tag_push_retry_requires_recorded_target_verification(self):
+        self.mutation('docs/releases.md',
+                      '`git rev-parse "${NEXT_VERSION}^{commit}"` exactly equals the',
+                      'the current branch tip matches the')
+
+    def test_tag_push_retry_must_not_recreate_or_force_push_tags(self):
+        self.mutation('docs/releases.md', 're-create, move or force-push an existing local or remote release tag.',
+                      'replace any existing tag to retry publication.')
+
     def test_database_candidate_exception_is_required(self):
         self.mutation('docs/database.md', 'The cumulative example below deliberately targets v0.4.0-rc.1',
                       'This block applies to every release')
@@ -149,7 +158,7 @@ git() {
 }
 '''
         sha = 'a' * 40
-        for failure in ('', 'placeholder', 'fetch', 'rev-parse', 'merge-base', 'show', 'tag'):
+        for failure in ('', 'placeholder', 'fetch', 'rev-parse', 'merge-base', 'show', 'tag', 'push'):
             with self.subTest(failure=failure):
                 replacements = () if failure == 'placeholder' else (('REPLACE_WITH_REVIEWED_MERGE_SHA', sha),)
                 result, calls = self.run_shell_example('docs/releases.md', 'RELEASE_COMMIT=', prefix,
@@ -160,8 +169,11 @@ git() {
                     self.assertIn('push origin v0.4.0-rc.1', calls)
                 else:
                     self.assertNotEqual(0, result.returncode, result.stderr)
-                    self.assertFalse(any(call.startswith('push ') for call in calls), calls)
-                    if failure != 'tag':
+                    if failure != 'push':
+                        self.assertFalse(any(call.startswith('push ') for call in calls), calls)
+                    else:
+                        self.assertEqual(1, sum(call.startswith('tag ') for call in calls))
+                    if failure not in ('tag', 'push'):
                         self.assertFalse(any(call.startswith('tag ') for call in calls), calls)
 
     @unittest.skipIf(os.name == 'nt', 'Execute Bash examples in the Linux documentation suite')
@@ -194,6 +206,34 @@ docker() {
                     self.assertIn('Inspect candidate SQL and BUILD-INFO', result.stdout)
                 else:
                     self.assertNotEqual(0, result.returncode)
+                    self.assertNotIn('Inspect candidate SQL and BUILD-INFO', result.stdout)
+
+    @unittest.skipIf(os.name == 'nt', 'Execute Bash examples in the Linux documentation suite')
+    def test_sql_cleanup_failure_is_reported_without_masking_copy_failure(self):
+        prefix = r'''
+docker() {
+  printf '%s\n' "$*" >> "$TRACE"
+  case "$1" in
+    create) printf '%s\n' fixture-container ;;
+    cp)
+      if [[ "$FAIL" != cleanup && "$2" == fixture-container:/app/BUILD-INFO ]]; then return 23; fi ;;
+    rm) [[ "$FAIL" == copy ]] || return 17 ;;
+    *) return 95 ;;
+  esac
+}
+'''
+        for failure, expected_status in (('cleanup', 1), ('copy', 23), ('both', 23)):
+            with self.subTest(failure=failure):
+                result, calls = self.run_shell_example('docs/upgrade-v0.4.0-rc.1.md',
+                                                       'extract_candidate_sql()', prefix, failure=failure)
+                self.assertEqual(expected_status, result.returncode, result.stderr)
+                self.assertEqual('rm -v fixture-container', calls[-1])
+                self.assertEqual(1, calls.count('rm -v fixture-container'))
+                if failure != 'copy':
+                    self.assertIn('ERROR: Failed to remove temporary container fixture-container', result.stderr)
+                else:
+                    self.assertNotIn('ERROR: Failed to remove temporary container', result.stderr)
+                if failure != 'cleanup':
                     self.assertNotIn('Inspect candidate SQL and BUILD-INFO', result.stdout)
 
     def test_each_stable_boundary_is_required(self):

@@ -98,6 +98,11 @@ def validate(documents, baseline):
                          'git tag -s "$NEXT_VERSION" "$RELEASE_COMMIT" -m',
                          'echo "STOP: select the reviewed full commit SHA reachable from origin/dev" >&2\n  false'):
             require(fragment in tag_blocks[0], f'Unsafe release target example: missing {fragment}')
+    for fragment in ('If tag creation succeeded and only the push failed',
+                     '`git rev-parse "${NEXT_VERSION}^{commit}"` exactly equals the recorded `RELEASE_COMMIT`',
+                     'retry only `git push origin "$NEXT_VERSION"`',
+                     'Never re-create, move or force-push an existing local or remote release tag.'):
+        require(fragment in prose(release), f'Missing safe tag-push recovery guidance: {fragment}')
     require('The cumulative example below deliberately targets v0.4.0-rc.1' in
             prose(documents['docs/database.md']), 'Database example must explain its RC-specific target')
     require('docs/upgrade-v0.4.0-rc.1.md#container-upgrades' in documents['README.md'],
@@ -139,7 +144,8 @@ def validate(documents, baseline):
     if len(extraction) == 1:
         for fragment in ('docker create --network none "$image"',
                          'docker rm -v "$container"', '"$container:/app/migrations"',
-                         '"$container:/app/BUILD-INFO"'):
+                         '"$container:/app/BUILD-INFO"', 'status=$?',
+                         'trap cleanup_candidate EXIT', 'exit "$status"'):
             require(fragment in extraction[0], f'Unsafe SQL extraction example: missing {fragment}')
         require('Candidate extraction directory (may be incomplete):' in extraction[0],
                 'SQL extraction must identify partial-copy output')

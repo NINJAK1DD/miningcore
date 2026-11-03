@@ -261,8 +261,10 @@ retrieve all migrations from embedded application resources.
 
    To extract from the published image, replace the digest below with the verified
    digest from step 1. This creates a stopped container with no network, copies to
-   a new private directory and removes the temporary container/anonymous volumes
-   on success or failure. It never starts Miningcore or applies SQL. Inspect the
+   a new private directory and attempts to remove the temporary container/anonymous
+   volumes on success or failure. Cleanup failures report the container ID and
+   return nonzero; any earlier failure status is preserved. It never starts
+   Miningcore or applies SQL. Inspect the
    copied `BUILD-INFO` and migrations before using them; copied files alone do not
    prove that the image's source identity matches the selected release.
    The function calls `docker` directly: define and run it in a shell already
@@ -277,7 +279,15 @@ retrieve all migrations from embedded application resources.
      umask 077
      image='ghcr.io/ninjak1dd/miningcore@sha256:REPLACE_WITH_VERIFIED_DIGEST'
      container=$(docker create --network none "$image") || return
-     trap 'docker rm -v "$container" >/dev/null' EXIT
+     cleanup_candidate() {
+       status=$?
+       if ! docker rm -v "$container" >/dev/null; then
+         printf 'ERROR: Failed to remove temporary container %s\n' "$container" >&2
+         if [ "$status" -eq 0 ]; then status=1; fi
+       fi
+       exit "$status"
+     }
+     trap cleanup_candidate EXIT
      output=$(mktemp -d "${TMPDIR:-/tmp}/miningcore-sql.XXXXXXXX") || return
      printf 'Candidate extraction directory (may be incomplete): %s\n' "$output"
      docker cp "$container:/app/migrations" "$output/" &&
