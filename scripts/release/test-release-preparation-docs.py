@@ -4,6 +4,7 @@
 import importlib.util
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -129,7 +130,7 @@ class ReleasePreparationTests(unittest.TestCase):
         self.mutation('docs/upgrade-v0.4.0-rc.1.md', 'The function calls `docker` directly:',
                       'Docker is available to every account:')
 
-    def run_shell_example(self, name, needle, prefix, failure='', replacements=()):
+    def run_shell_example(self, name, needle, prefix, failure='', replacements=(), shell='bash'):
         blocks = guard.console_blocks(self.original[name], needle)
         self.assertEqual(1, len(blocks))
         block = textwrap.dedent(blocks[0])
@@ -139,7 +140,8 @@ class ReleasePreparationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             trace = Path(directory) / 'trace'
             env = dict(os.environ, TRACE=str(trace), FAIL=failure, TMPDIR=directory)
-            result = subprocess.run(['bash', '-c', prefix + '\n' + block], env=env,
+            command = [shell, '-f', '-c'] if shell == 'zsh' else [shell, '-c']
+            result = subprocess.run(command + [prefix + '\n' + block], env=env,
                                     capture_output=True, text=True, timeout=15)
             calls = trace.read_text().splitlines() if trace.exists() else []
         return result, calls
@@ -210,31 +212,64 @@ docker() {
 
     @unittest.skipIf(os.name == 'nt', 'Execute Bash examples in the Linux documentation suite')
     def test_sql_cleanup_failure_is_reported_without_masking_copy_failure(self):
+        self.check_sql_cleanup_statuses('bash')
+
+    @unittest.skipIf(os.name == 'nt', 'Execute shell examples in the Linux documentation suite')
+    def test_sql_cleanup_statuses_under_dash(self):
+        if not shutil.which('dash'):
+            self.skipTest('dash is not installed')
+        self.check_sql_cleanup_statuses('dash')
+
+    @unittest.skipIf(os.name == 'nt', 'Execute shell examples in the Linux documentation suite')
+    def test_sql_cleanup_statuses_under_zsh(self):
+        if not shutil.which('zsh'):
+            self.skipTest('zsh is not installed')
+        self.check_sql_cleanup_statuses('zsh')
+
+    def test_sql_cleanup_does_not_use_zsh_readonly_status_variable(self):
+        self.mutation('docs/upgrade-v0.4.0-rc.1.md', 'rc=$?', 'status=$?')
+
+    def check_sql_cleanup_statuses(self, shell):
+        # Use POSIX syntax in the mock as well as the extraction example, so a
+        # shell-specific mock failure cannot conceal a portability regression.
         prefix = r'''
 docker() {
   printf '%s\n' "$*" >> "$TRACE"
   case "$1" in
-    create) printf '%s\n' fixture-container ;;
+    create)
+      if [ "$FAIL" = create ]; then return 7; fi
+      printf '%s\n' fixture-container ;;
     cp)
-      if [[ "$FAIL" != cleanup && "$2" == fixture-container:/app/BUILD-INFO ]]; then return 23; fi ;;
-    rm) [[ "$FAIL" == copy ]] || return 17 ;;
+      if [ "$FAIL" = first-copy ] && [ "$2" = fixture-container:/app/migrations ]; then return 19; fi
+      if [ "$FAIL" = copy ] || [ "$FAIL" = both ]; then
+        if [ "$2" = fixture-container:/app/BUILD-INFO ]; then return 23; fi
+      fi ;;
+    rm)
+      if [ "$FAIL" = cleanup ] || [ "$FAIL" = both ]; then return 17; fi ;;
     *) return 95 ;;
   esac
 }
 '''
-        for failure, expected_status in (('cleanup', 1), ('copy', 23), ('both', 23)):
-            with self.subTest(failure=failure):
+        for failure, expected_status in (('', 0), ('create', 7), ('first-copy', 19),
+                                         ('cleanup', 1), ('copy', 23), ('both', 23)):
+            with self.subTest(shell=shell, failure=failure):
                 result, calls = self.run_shell_example('docs/upgrade-v0.4.0-rc.1.md',
-                                                       'extract_candidate_sql()', prefix, failure=failure)
+                                                       'extract_candidate_sql()', prefix, failure=failure, shell=shell)
                 self.assertEqual(expected_status, result.returncode, result.stderr)
+                self.assertFalse(any(call.startswith(('start ', 'run ', 'exec ')) for call in calls), calls)
+                if failure == 'create':
+                    self.assertEqual(1, len(calls))
+                    continue
                 self.assertEqual('rm -v fixture-container', calls[-1])
                 self.assertEqual(1, calls.count('rm -v fixture-container'))
-                if failure != 'copy':
+                if failure in ('cleanup', 'both'):
                     self.assertIn('ERROR: Failed to remove temporary container fixture-container', result.stderr)
                 else:
                     self.assertNotIn('ERROR: Failed to remove temporary container', result.stderr)
-                if failure != 'cleanup':
+                if failure in ('first-copy', 'copy', 'both'):
                     self.assertNotIn('Inspect candidate SQL and BUILD-INFO', result.stdout)
+                else:
+                    self.assertIn('Inspect candidate SQL and BUILD-INFO', result.stdout)
 
     def test_each_stable_boundary_is_required(self):
         for name in ('README.md', 'docs/releases.md'):

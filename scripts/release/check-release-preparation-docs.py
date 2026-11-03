@@ -144,8 +144,8 @@ def validate(documents, baseline):
     if len(extraction) == 1:
         for fragment in ('docker create --network none "$image"',
                          'docker rm -v "$container"', '"$container:/app/migrations"',
-                         '"$container:/app/BUILD-INFO"', 'status=$?',
-                         'trap cleanup_candidate EXIT', 'exit "$status"'):
+                         '"$container:/app/BUILD-INFO"', 'rc=$?',
+                         'trap cleanup_candidate EXIT', 'exit "$rc"'):
             require(fragment in extraction[0], f'Unsafe SQL extraction example: missing {fragment}')
         require('Candidate extraction directory (may be incomplete):' in extraction[0],
                 'SQL extraction must identify partial-copy output')

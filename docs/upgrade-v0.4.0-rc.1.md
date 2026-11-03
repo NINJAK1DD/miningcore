@@ -280,12 +280,12 @@ retrieve all migrations from embedded application resources.
      image='ghcr.io/ninjak1dd/miningcore@sha256:REPLACE_WITH_VERIFIED_DIGEST'
      container=$(docker create --network none "$image") || return
      cleanup_candidate() {
-       status=$?
+       rc=$?
        if ! docker rm -v "$container" >/dev/null; then
          printf 'ERROR: Failed to remove temporary container %s\n' "$container" >&2
-         if [ "$status" -eq 0 ]; then status=1; fi
+         if [ "$rc" -eq 0 ]; then rc=1; fi
        fi
-       exit "$status"
+       exit "$rc"
      }
      trap cleanup_candidate EXIT
      output=$(mktemp -d "${TMPDIR:-/tmp}/miningcore-sql.XXXXXXXX") || return
