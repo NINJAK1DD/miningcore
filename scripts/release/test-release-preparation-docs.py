@@ -333,6 +333,17 @@ docker() {
                 self.mutation('docs/upgrade-v0.4.0-rc.1.md', row,
                               row.replace(guard.NO_SQL, 'Run add_share_accounting.sql.'))
 
+    def test_historical_audit_scope_cannot_hide_missing_financial_evidence(self):
+        for old in ('**The full audit is the default.**',
+                    'Never automatically fall back to the shares-only script.',
+                    'Their absence alone does not establish eligibility.',
+                    'cannot clear missing PPS evidence.'):
+            with self.subTest(boundary=old):
+                self.mutation('docs/bitcoin-minimum-difficulty.md', old, 'Assume the missing history is clean.')
+        self.mutation('docs/upgrade-v0.4.0-rc.1.md',
+                      'a failed full audit must not trigger an automatic fallback.',
+                      'ignore full-audit errors and use the legacy script.')
+
     def test_legacy_anchor_deleted(self):
         self.mutation('docs/releases.md', '<a id="unreleased-after-v030-pearl-mining"></a>\n', '')
 

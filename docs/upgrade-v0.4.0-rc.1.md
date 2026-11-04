@@ -174,6 +174,12 @@ empty dashboard or silent alert rule is not evidence of a healthy pool.
   difficulty. Run the [read-only historical audit](bitcoin-minimum-difficulty.md#pre-upgrade-settlement-audit--all-coin-families)
   before affected pooled payouts. Missing/pruned receipt evidence means incomplete
   audit coverage, not a clean ledger. Do not reprice or delete old shares automatically.
+  The full audit remains required for current, historical or uncertain PPS/pooled-merged
+  deployments. Only positively established never-PPS/never-pooled-merged history
+  permits the [legacy shares-only screening](bitcoin-minimum-difficulty.md#choose-the-audit-scope),
+  without installing otherwise unnecessary accounting schema. It cannot clear
+  historical monetary liabilities or missing PPS evidence; schema absence is not
+  proof of eligibility and a failed full audit must not trigger an automatic fallback.
   SOLO does not use these shared weighted-settlement calculations.
 - Candidate credit is now bounded by immutable qualifying chain targets.
   Automatic assignments can fall with network ceilings; explicit device/configured

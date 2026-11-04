@@ -333,9 +333,10 @@ later blocks. Invalid-share diagnostics identify the pool, miner, timestamp and
 share/settlement heights without exposing IP/agent data. Rows are never silently
 ignored, removed or repriced.
 
-Back up shares and financial receipts, and run the
-[read-only pre-upgrade audit](../scripts/release/audit-settlement-shares.sql)
-before enabling affected pooled payouts. It explicitly checks PostgreSQL NaN
+Back up shares and financial receipts, and follow the
+[pre-upgrade audit scope procedure](bitcoin-minimum-difficulty.md#choose-the-audit-scope)
+before enabling affected pooled payouts. The default
+[full read-only audit](../scripts/release/audit-settlement-shares.sql) explicitly checks PostgreSQL NaN
 and infinities as well as zero/negative values, and flags oversized finite
 credits for review, including PPS receipt-only liabilities after statistical
 share retention. It reports invalid PPS monetary inputs separately from finite
@@ -357,6 +358,11 @@ multi-scan audit on a current replica or in a quiet maintenance period on large
 databases to avoid a long snapshot delaying vacuum. Missing receipt schemas or
 unarchived pruned evidence are incomplete coverage, not a clean audit. See the
 [settlement audit procedure](bitcoin-minimum-difficulty.md#pre-upgrade-settlement-audit--all-coin-families).
+Positively established never-PPS/never-pooled-merged deployments with legacy
+schemas can use the separately documented shares-only screening without adding
+accounting tables. It does not audit monetary liabilities or clear missing PPS
+history; uncertain or financial-accounting history still requires the full path.
+Both audit scripts are packaged under `scripts/release/`, not as schema migrations.
 
 Bitcoin/merged/BLAKE2b candidates now receive credit bounded by immutable
 qualifying chain targets. Automatic difficulty is bounded by the easiest current

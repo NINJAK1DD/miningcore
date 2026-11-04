@@ -111,6 +111,8 @@
   <ItemGroup>
     <None Include="../../scripts/release/audit-settlement-shares.sql" Link="Fixtures/audit-settlement-shares.sql"
           CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../scripts/release/audit-legacy-settlement-shares.sql" Link="Fixtures/audit-legacy-settlement-shares.sql"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <Target Name="RemoveOdoCryptFromManagedOnlyTestOutput" BeforeTargets="PrepareForBuild"

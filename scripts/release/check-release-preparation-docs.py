@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = ROOT / 'scripts/release/fixtures/v0.4.0-rc.1-legacy-release-anchors.txt'
 DOCUMENTS = ('README.md', 'docs/releases.md', 'docs/database.md',
-             'docs/upgrade-v0.4.0-rc.1.md')
+             'docs/upgrade-v0.4.0-rc.1.md', 'docs/bitcoin-minimum-difficulty.md')
 STABLE_BOUNDARY = 'The latest stable baseline remains v0.3.0 until a newer stable release is published.'
 NO_SQL = 'No new SQL solely for this upgrade when the v0.3.0 prerequisites are installed.'
 
@@ -139,6 +139,16 @@ def validate(documents, baseline):
                      'Using PostgreSQL persistence ', 'v0.3.0 upgrade prerequisites'):
         require(fragment in upgrade, f'Upgrade guide is missing: {fragment}')
     require('XBT' not in upgrade, 'Use the distinct BTCB2B chain label in the upgrade guide')
+    audit_guide = prose(documents['docs/bitcoin-minimum-difficulty.md'])
+    for fragment in ('**The full audit is the default.**',
+                     'Never automatically fall back to the shares-only script.',
+                     'Their absence alone does not establish eligibility.',
+                     '**never** been enabled in this database',
+                     'cannot clear missing PPS evidence.',
+                     'audit-legacy-settlement-shares.sql'):
+        require(fragment in audit_guide, f'Missing historical-audit scope boundary: {fragment}')
+    require('a failed full audit must not trigger an automatic fallback.' in prose(upgrade),
+            'The RC guide must preserve the full financial audit boundary')
     extraction = console_blocks(upgrade, 'extract_candidate_sql()')
     require(len(extraction) == 1, 'Expected one stopped-container SQL extraction example')
     if len(extraction) == 1:

@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Threading.Tasks;
+using Miningcore.Tests.Util.Postgres;
 using Npgsql;
 using Xunit;
 
@@ -8,6 +9,188 @@ namespace Miningcore.Tests.Persistence.Postgres;
 
 public class SettlementShareAuditTests
 {
+    [PostgresIntegrationFact]
+    public async Task FullSettlementAudit_RunsOnFreshAccountingSchemaWithoutChangingReceipts()
+    {
+        await using var connection = new NpgsqlConnection(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"));
+        await connection.OpenAsync();
+        var schema = $"miningcore_audit_full_{Guid.NewGuid():N}";
+        try
+        {
+            await using(var setup = new NpgsqlCommand($"CREATE SCHEMA {schema}; SET search_path TO {schema}, pg_catalog, pg_temp", connection))
+                await setup.ExecuteNonQueryAsync();
+            var createdb = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("createdb.sql"));
+            // Match the existing isolated-schema fixtures: use the supplied test
+            // role rather than changing shared roles or the database-wide schema.
+            await using(var install = new NpgsqlCommand(createdb.Replace("SET ROLE miningcore;", ""), connection))
+                await install.ExecuteNonQueryAsync();
+            await using(var seed = new NpgsqlCommand("""
+                INSERT INTO share_accounting_groups(accountingid, projectioncount, payloadhash, created)
+                    VALUES('00000000-0000-0000-0000-000000000001', 1, repeat('A',64), now());
+                INSERT INTO pps_share_credits(poolid, accountingid, address, calculatedamount, creditedamount,
+                    difficulty, networkdifficulty, rewardbasissatoshis, created)
+                    VALUES('full-pps', '00000000-0000-0000-0000-000000000001', 'fixture-miner', 2, 1,
+                           10, 1, 1000, now());
+                """, connection))
+                await seed.ExecuteNonQueryAsync();
+            var before = await SnapshotAsync(connection);
+            var sql = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "audit-settlement-shares.sql"));
+            await using(var audit = new NpgsqlCommand(sql, connection))
+            await using(var reader = await audit.ExecuteReaderAsync())
+            {
+                for(var result = 0; result < 5; result++)
+                {
+                    Assert.False(await reader.ReadAsync());
+                    Assert.True(await reader.NextResultAsync());
+                }
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal("full-pps", reader.GetString(0));
+                Assert.Equal(1L, reader.GetInt64(1));
+                Assert.Equal(2m, reader.GetDecimal(2));
+                Assert.Equal(1m, reader.GetDecimal(3));
+                Assert.Equal(1.8m, reader.GetDecimal(4));
+                Assert.False(await reader.ReadAsync());
+                for(var result = 0; result < 4; result++)
+                {
+                    Assert.True(await reader.NextResultAsync());
+                    Assert.False(await reader.ReadAsync());
+                }
+            }
+            Assert.Equal(before, await SnapshotAsync(connection));
+        }
+        finally
+        {
+            await using var cleanup = new NpgsqlCommand($"ROLLBACK; SET search_path TO pg_catalog; DROP SCHEMA IF EXISTS {schema} CASCADE", connection);
+            await cleanup.ExecuteNonQueryAsync();
+        }
+    }
+
+    [PostgresIntegrationFact]
+    public async Task LegacySharesOnlyAudit_ScreensUnmigratedSchemaReadOnlyWithoutClearingMissingReceipts()
+    {
+        await using var connection = new NpgsqlConnection(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"));
+        await connection.OpenAsync();
+        await using(var setup = new NpgsqlCommand("""
+            SET search_path TO pg_temp;
+            CREATE TEMP TABLE shares(poolid text, miner text DEFAULT 'miner', created timestamptz DEFAULT now(),
+                blockheight bigint DEFAULT 1, difficulty double precision, networkdifficulty double precision);
+            INSERT INTO shares(poolid, difficulty, networkdifficulty) VALUES
+                ('bad', 0, 1), ('bad', -1, 1), ('bad', 'NaN', 1), ('bad', 'Infinity', 1),
+                ('bad', '-Infinity', 1), ('bad', 1, 0), ('bad', 1, 'NaN'), ('bad', 1, 'Infinity'),
+                ('bad', 1, '-Infinity'), ('bad', NULL, 1), ('bad', 1, NULL),
+                ('clean', 1, 2), ('oversized', 10, 1), ('extreme', 1e308, 1e-300), ('ergo-scale', 2, 300);
+            INSERT INTO shares(poolid, miner, difficulty, networkdifficulty)
+                SELECT 'limit', 'miner-' || i, 0, 1 FROM generate_series(1, 120) i;
+            """, connection))
+            await setup.ExecuteNonQueryAsync();
+
+        await AssertLegacyAccountingSchemaAbsentAsync(connection);
+        var before = await LegacySnapshotAsync(connection);
+        var sql = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "audit-legacy-settlement-shares.sql"));
+        // Observe the real transaction before its COMMIT without changing any
+        // audit query or granting the script write access to permanent data.
+        sql = sql.Replace("COMMIT;", """
+            SELECT current_setting('transaction_read_only'), current_setting('transaction_isolation');
+            COMMIT;
+            """);
+        await using(var audit = new NpgsqlCommand(sql, connection))
+        await using(var reader = await audit.ExecuteReaderAsync())
+        {
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("audit_scope", reader.GetName(0));
+            Assert.Equal("legacy-shares-only", reader.GetString(0));
+            Assert.Contains("no PPS receipt", reader.GetString(1));
+            Assert.Contains("Missing/pruned financial evidence is not cleared", reader.GetString(1));
+            Assert.False(await reader.ReadAsync());
+
+            Assert.True(await reader.NextResultAsync());
+            foreach(var expected in new (string Pool, long Count)[] { ("bad", 11), ("limit", 120) })
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal(expected.Pool, reader.GetString(0));
+                Assert.Equal(expected.Count, reader.GetInt64(1));
+            }
+            Assert.False(await reader.ReadAsync());
+            Assert.True(await reader.NextResultAsync());
+            var sampled = 0;
+            while(await reader.ReadAsync())
+            {
+                Assert.Contains(reader.GetString(0), new[] { "bad", "limit" });
+                sampled++;
+            }
+            Assert.Equal(100, sampled);
+            Assert.True(await reader.NextResultAsync());
+            foreach(var pool in new[] { "extreme", "oversized" })
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal("raw_oversized_rows", reader.GetName(1));
+                Assert.Equal(pool, reader.GetString(0));
+                Assert.Equal(1L, reader.GetInt64(1));
+            }
+            Assert.False(await reader.ReadAsync());
+            Assert.True(await reader.NextResultAsync());
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("on", reader.GetString(0));
+            Assert.Equal("repeatable read", reader.GetString(1));
+            Assert.False(await reader.ReadAsync());
+            Assert.False(await reader.NextResultAsync());
+        }
+        Assert.Equal(before, await LegacySnapshotAsync(connection));
+        await AssertLegacyAccountingSchemaAbsentAsync(connection);
+
+        // Scope choice must never turn a failing full financial audit into a
+        // clean result. No empty receipt table or migration is installed here.
+        var fullSql = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "audit-settlement-shares.sql"));
+        await using(var full = new NpgsqlCommand(fullSql, connection))
+        {
+            var missing = await Assert.ThrowsAsync<PostgresException>(() => full.ExecuteNonQueryAsync());
+            Assert.Equal(PostgresErrorCodes.UndefinedTable, missing.SqlState);
+        }
+        await using(var rollback = new NpgsqlCommand("ROLLBACK", connection))
+            await rollback.ExecuteNonQueryAsync();
+        Assert.Equal(before, await LegacySnapshotAsync(connection));
+        await AssertLegacyAccountingSchemaAbsentAsync(connection);
+    }
+
+    [PostgresIntegrationFact]
+    public async Task FullSettlementAudit_StillRejectsMissingShareAccountingColumns()
+    {
+        await using var connection = new NpgsqlConnection(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"));
+        await connection.OpenAsync();
+        await using(var setup = new NpgsqlCommand("""
+            SET search_path TO pg_temp;
+            CREATE TEMP TABLE shares(poolid text, miner text, created timestamptz,
+                blockheight bigint, difficulty double precision, networkdifficulty double precision);
+            CREATE TEMP TABLE pps_share_credits(poolid text, accountingid uuid, address text,
+                created timestamptz, difficulty double precision, networkdifficulty double precision,
+                calculatedamount numeric, creditedamount numeric);
+            """, connection))
+            await setup.ExecuteNonQueryAsync();
+        var sql = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "audit-settlement-shares.sql"));
+        await using var audit = new NpgsqlCommand(sql, connection);
+        var missing = await Assert.ThrowsAsync<PostgresException>(() => audit.ExecuteNonQueryAsync());
+        Assert.Equal(PostgresErrorCodes.UndefinedColumn, missing.SqlState);
+    }
+
+    private static async Task AssertLegacyAccountingSchemaAbsentAsync(NpgsqlConnection connection)
+    {
+        await using var schema = new NpgsqlCommand("""
+            SELECT to_regclass('pps_share_credits') IS NULL AND NOT EXISTS (
+                SELECT 1 FROM pg_attribute WHERE attrelid = 'shares'::regclass
+                  AND attname IN ('accountingid', 'accountingrole'))
+            """, connection);
+        Assert.True((bool) await schema.ExecuteScalarAsync());
+    }
+
+    private static async Task<string> LegacySnapshotAsync(NpgsqlConnection connection)
+    {
+        await using var snapshot = new NpgsqlCommand("""
+            SELECT jsonb_agg(to_jsonb(s) ORDER BY poolid, miner, created, blockheight, difficulty, networkdifficulty)::text
+            FROM shares s
+            """, connection);
+        return (string) await snapshot.ExecuteScalarAsync();
+    }
+
     [PostgresIntegrationFact]
     public async Task SettlementAudit_DetectsSpecialAndInvalidLegacyRowsWithoutChangingData()
     {
