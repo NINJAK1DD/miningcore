@@ -309,8 +309,9 @@ active/inactive lookup clears the episode.
 
 For an existing PostgreSQL database, stop Miningcore block writers and payout managers or schedule a
 maintenance window. Follow the canonical
-[database upgrade procedure](database.md#upgrade-an-existing-database); it applies these three
-candidate-version scripts in order before activating the new release:
+[database upgrade procedure](database.md#upgrade-an-existing-database) and the
+[RC.1 migration matrix](upgrade-v0.4.0-rc.1.md#database-migration-matrix).
+These are existing prerequisites, not three new migrations required for every upgrade:
 
 - `add_auxpow_block_idempotency.sql`
 - `add_payout_manager_ownership.sql`
@@ -320,10 +321,13 @@ Do not run release migrations through the active `/opt/miningcore` symlink, whic
 the old release at this point. The database runbook is the sole copy-paste migration procedure and
 also covers source-build paths, backup validation, activation ordering, and rollback boundaries.
 
-The accounting migration is required for any PPS, PROP or PPLNS participant. An unchanged
-SOLO/SOLO topology retains its established one-share wire/database record and does not require it.
+The accounting migration is required for any pooled merged participant, including
+PPS, PROP, PPLNS or PPLNSBF. A complete v0.3.0 accounting schema needs only the
+standalone `add_pps_arithmetic_version.sql` for RC.1, even when retaining version 0.
+An unchanged SOLO/SOLO topology retains its established one-share wire/database
+record and needs no new SQL solely for RC.1 when its v0.3.0 prerequisites are installed.
 
-The ownership migration is required for every payment-processing cluster in this release series,
+The ownership migration was already required before v0.3.0 for every payment-processing cluster,
 including clusters without merged mining. It is also required for recorder/recovery-only deployments
 that use the `-rs` importer.
 

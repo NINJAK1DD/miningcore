@@ -22,10 +22,11 @@ Upgrade every hop before opting in: old binaries do not understand the new relay
 field. Mixed-version operation after activation is unsupported.
 
 Follow the [database upgrade procedure](database.md#upgrade-an-existing-database).
-Its administrator-run `$MININGCORE_CANDIDATE_DIR/migrations/add_share_accounting.sql`
-already includes the arithmetic migration; no additional step is needed in the
-ordered upgrade sequence. New installs include it in `createdb.sql`.
-For an existing accounting schema, the standalone additive repair is:
+Use the cumulative administrator-run
+`$MININGCORE_CANDIDATE_DIR/migrations/add_share_accounting.sql` only when earlier
+accounting prerequisites are missing; it already includes the arithmetic migration.
+New installs include it in `createdb.sql`. For an otherwise complete v0.3.0
+accounting schema, use only the standalone additive migration:
 
 ```console
 sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \

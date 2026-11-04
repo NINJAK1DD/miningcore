@@ -22,6 +22,35 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Using this guide
+
+If this replaces an existing .NET 6 deployment, first follow the dedicated
+[.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). Do not treat the clean-install
+commands below as an instruction to overwrite a live configuration or database.
+
+Use this guide by task:
+
+| Task | Start here |
+| --- | --- |
+| New installation | [Choose a version](#choose-a-version) |
+| Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
+| Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
+| Install or upgrade to v0.3.0 | [v0.3.0 highlights](#v030-highlights) |
+| Upgrade v0.3.0 to v0.4.0-rc.1 | [RC.1 upgrade guide](upgrade-v0.4.0-rc.1.md) |
+| Existing v0.1.0 operator | [v0.2.0 highlights](#v020-highlights) |
+| v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |
+| Enable Bitcoin-family PPS | [PPS operator guide](pps.md) |
+| Prepare an existing database for default Bitcoin direct-coinbase SOLO | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
+| Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
+| Review or rotate credentials exposed by earlier debug logs | [PostgreSQL credential-safe diagnostics](#v040-rc1-postgresql-credential-safe-diagnostics) |
+| Review historical RPC Trace/WebSocket Debug exposure | [Credential-safe RPC diagnostics](#v040-rc1-credential-safe-rpc-transport-diagnostics) |
+| Review historical full configuration dumps and the null-output bug | [Credential-safe configuration dumps](#v040-rc1-credential-safe-configuration-dumps) |
+| Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
+| Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
+
+For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
+copying a recovery command from the maintainer section.
+
 ## v0.4.0-rc.1 highlights
 
 `v0.4.0-rc.1` is the first candidate for v0.4.0, collecting the changes after
@@ -592,33 +621,6 @@ remediation and supported baseline.
 
 TLS-enabled Stratum endpoints rely on the host security policy and accept TLS 1.2 or TLS 1.3 on
 supported, patched hosts. Legacy miners limited to TLS 1.0 or TLS 1.1 must be upgraded or replaced.
-
-If this replaces an existing .NET 6 deployment, first follow the dedicated
-[.NET 6 to .NET 10 migration guide](dotnet-6-to-10-migration.md). Do not treat the clean-install
-commands below as an instruction to overwrite a live configuration or database.
-
-Use this guide by task:
-
-| Task | Start here |
-| --- | --- |
-| New installation | [Choose a version](#choose-a-version) |
-| Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
-| Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
-| Install or upgrade to v0.3.0 | [v0.3.0 highlights](#v030-highlights) |
-| Upgrade v0.3.0 to v0.4.0-rc.1 | [RC.1 upgrade guide](upgrade-v0.4.0-rc.1.md) |
-| Existing v0.1.0 operator | [v0.2.0 highlights](#v020-highlights) |
-| v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |
-| Enable Bitcoin-family PPS | [PPS operator guide](pps.md) |
-| Prepare an existing database for default Bitcoin direct-coinbase SOLO | [Direct-SOLO database migration](bitcoin-direct-solo.md#database-migration) |
-| Runtime behavior changes | [Operational and compatibility changes](#operational-and-compatibility-changes) |
-| Review or rotate credentials exposed by earlier debug logs | [PostgreSQL credential-safe diagnostics](#v040-rc1-postgresql-credential-safe-diagnostics) |
-| Review historical RPC Trace/WebSocket Debug exposure | [Credential-safe RPC diagnostics](#v040-rc1-credential-safe-rpc-transport-diagnostics) |
-| Review historical full configuration dumps and the null-output bug | [Credential-safe configuration dumps](#v040-rc1-credential-safe-configuration-dumps) |
-| Release maintainer | [Maintainer release procedure](#maintainer-release-procedure) |
-| Interrupted publication | [Recover an interrupted publication](#recover-an-interrupted-publication) |
-
-For a failed live deployment, begin with the [troubleshooting guide](troubleshooting.md) rather than
-copying a recovery command from the maintainer section.
 
 <a id="unreleased-bitcoin-family-duplicate-subscription-policy"></a>
 
@@ -1990,10 +1992,12 @@ loss, use the guarded [payout-manager recovery runbook](database.md#recover-payo
 
 For v0.3.0-to-v0.4.0-rc.1 upgrades, select the
 [release-specific migration path](upgrade-v0.4.0-rc.1.md#database-migration-matrix)
-first. The cumulative SQL block below is for a deployment needing those accounting
-prerequisites. An already prepared, unchanged SOLO/SOLO deployment should follow
-the [RC.1 cutover checklist](upgrade-v0.4.0-rc.1.md#staging-and-cutover) without applying
-unnecessary accounting migrations.
+first. For an otherwise complete v0.3.0 accounting schema, select the standalone
+[`add_pps_arithmetic_version.sql`](pps-arithmetic-migration.md#explicit-one-way-activation)
+path, not cumulative reinstallation. The cumulative path is only for databases
+missing earlier prerequisites. An already prepared, unchanged SOLO/SOLO deployment
+selects the no-migration path. All paths also follow the
+[RC.1 cutover checklist](upgrade-v0.4.0-rc.1.md#staging-and-cutover).
 
 If this maintenance changes the PostgreSQL major version or cluster unit name, follow the
 [ordering upgrade procedure](systemd-postgresql-ordering.md#postgresql-upgrades-and-removal) before
@@ -2023,13 +2027,31 @@ share-relay senders, receivers and recorders, recovery importers and payout mana
 cannot verify or stop those external writers for you.
 
 Run this block in the same shell as the successful download-and-verification block. It consumes that
-block's readiness latch and archive path. Replace the migration list only when the target release
-notes explicitly require a different ordered set:
+block's readiness latch and archive path. Before running it, explicitly set
+`MININGCORE_MIGRATION_PLAN` in this shell to one of:
+
+- `none`: the selected release's matrix requires no new SQL and all earlier
+  prerequisites are installed (including unchanged v0.3.0 BTC SOLO or LTC/DOGE SOLO/SOLO).
+- `pps-arithmetic`: a complete v0.3.0 PPS or pooled merged accounting schema needs
+  only the standalone arithmetic migration. Retaining version 0 still requires it.
+- `cumulative`: earlier AuxPoW/ownership/accounting prerequisites are missing;
+  use the ordered cumulative installation, not this path for an already complete schema.
+
+For example, `export MININGCORE_MIGRATION_PLAN=none` selects the no-SQL path
+without editing the activation block. There is deliberately no default or automatic
+fallback. Other release-specific requirements (such as enabling Pearl) need a
+separately reviewed migration plan; do not select `none` to bypass them.
 
 ```console
 umask 077
 MININGCORE_UPGRADE_READY=
-if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
+if [ "${MININGCORE_RELEASE_READY:-}" != 1 ]; then
+  echo "STOP: no verified release archive is available to upgrade" >&2
+elif [ "${MININGCORE_MIGRATION_PLAN:-}" != none ] &&
+     [ "${MININGCORE_MIGRATION_PLAN:-}" != pps-arithmetic ] &&
+     [ "${MININGCORE_MIGRATION_PLAN:-}" != cumulative ]; then
+  echo "STOP: explicitly select the reviewed migration plan" >&2
+else
   release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
   upgrade_backup="$HOME/miningcore-before-${MININGCORE_VERSION}.dump"
 
@@ -2046,19 +2068,30 @@ if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
   }
 
   if stage_miningcore_candidate; then
+    apply_selected_migrations() {
+      case "$MININGCORE_MIGRATION_PLAN" in
+        none) return 0 ;;
+        pps-arithmetic)
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+            -f "$release_dir/migrations/add_pps_arithmetic_version.sql" ;;
+        cumulative)
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+            -f "$release_dir/migrations/add_auxpow_block_idempotency.sql" &&
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+            -f "$release_dir/migrations/add_payout_manager_ownership.sql" &&
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+            -f "$release_dir/migrations/add_share_accounting.sql" ;;
+        *) return 1 ;;
+      esac
+    }
     if sudo systemctl stop miningcore &&
        sudo -u postgres pg_dump -Fc -d miningcore > "$upgrade_backup" &&
        pg_restore --list "$upgrade_backup" > /dev/null &&
-       sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-         -f "$release_dir/migrations/add_auxpow_block_idempotency.sql" &&
-       sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-         -f "$release_dir/migrations/add_payout_manager_ownership.sql" &&
-       sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-         -f "$release_dir/migrations/add_share_accounting.sql" &&
+       apply_selected_migrations &&
        sudo ln -sfnT "$release_dir" /opt/miningcore; then
       MININGCORE_RELEASE_READY=
       export MININGCORE_UPGRADE_READY=1
-      echo "READY: migrated the database and activated $release_dir"
+      echo "READY: completed $MININGCORE_MIGRATION_PLAN plan and activated $release_dir"
     else
       echo "STOP: upgrade failed; /opt/miningcore was not changed" >&2
       echo "Keep Miningcore stopped until the database and candidate are reconciled" >&2
@@ -2066,12 +2099,10 @@ if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then
   else
     echo "STOP: candidate staging failed; /opt/miningcore was not changed" >&2
   fi
-else
-  echo "STOP: no verified release archive is available to upgrade" >&2
 fi
 ```
 
-The cumulative `add_share_accounting.sql` above includes `add_pps_arithmetic_version.sql`;
+The cumulative `add_share_accounting.sql` path includes `add_pps_arithmetic_version.sql`;
 follow the [PPS arithmetic rollout](pps-arithmetic-migration.md) before opting in to version 1.
 
 Start the service only when the block prints `READY` and exports
@@ -3090,6 +3121,15 @@ Keep the 33 pre-RC anchors in the independent frozen baseline under
 documentation suite runs mutation tests for these links, both SOLO migration rows
 and the separate stable/candidate version inventories. Its new preparation checks
 must remain effective with Python optimisation enabled.
+The RC.1 headings and upgrade guide are historical version-scoped records: keep
+their version labels and anchors at RC.1 for RC.2 and v0.4.0 stable, rather than
+renaming them globally. Add new release sections and upgrade deltas instead.
+The preparation guard is deliberately an RC.1 snapshot, not a generic SemVer
+generator. At the next release, review and update the active version-selection
+policy/tests separately while retaining the frozen historical-anchor contract.
+Prefer behavioural shell/SQL tests for safety invariants; exact prose assertions
+protect reviewed operator boundaries but may be updated with equivalent wording
+and matching mutation tests, not bypassed merely to make a copy-edit pass.
 The primary Linux `.NET` CI job installs Bash, dash and zsh and sets
 `MININGCORE_REQUIRE_SHELL_MATRIX=1` for the documentation suite. Missing shells
 fail that job rather than skipping coverage. Local/minimal environments may omit
@@ -3106,7 +3146,7 @@ The tagged build injects the validated tag and commit as assembly metadata becau
 branches intentionally retain GitVersion's prerelease calculation; the runtime check requires an
 exact match before packaging can begin.
 This additional source-container gate makes release runs longer but catches Dockerfile-only build
-failures before publication. Prefer a signed annotated tag:
+failures before publication.
 
 Record the full SHA of the release-preparation commit as it actually lands on `dev`
 (the merge commit, or the resulting squash/rebase commit). Validate and commission
@@ -3120,6 +3160,8 @@ applicable validation/commissioning gates before recording the new release targe
 > Do not use **Re-run failed jobs**. GitHub Actions artifacts are scoped to a run attempt, so the
 > collector may be rerun without a successful sibling archive from the earlier attempt and will
 > correctly reject the incomplete set.
+
+Prefer a signed annotated tag:
 
 ```console
 NEXT_VERSION=v0.4.0-rc.1  # Replace with the next unused SemVer version.

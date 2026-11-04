@@ -53,6 +53,15 @@ also rebuilds the pruning index). A failed schema preflight can also indicate
 incorrect privileges or defaults; diagnose the failure rather than rerunning SQL
 blindly or granting the application administrative privileges.
 
+For the standalone command and candidate-directory requirements, see
+[the database upgrade procedure](database.md#upgrade-an-existing-database).
+Archive operators can use the [guarded archive upgrade block](releases.md#upgrade-or-roll-back)
+unchanged: explicitly select `MININGCORE_MIGRATION_PLAN=none` for an eligible
+unchanged deployment, `pps-arithmetic` for a complete v0.3.0 accounting schema,
+or `cumulative` only when the earlier prerequisites are missing. There is no default
+plan and no schema-error fallback. Source operators follow the same matrix using
+SQL from the exact candidate checkout, then activate their complete rebuilt installation.
+
 ## Configuration checks
 
 ### Notifications and SMTP
@@ -277,7 +286,7 @@ retrieve all migrations from embedded application resources.
    authorized for Docker. If your setup requires `sudo docker`, use an administrative
    shell such as `sudo -i`; `sudo extract_candidate_sql` cannot invoke a shell function.
    The private output directory is retained even after a failed copy, and its path
-   is printed before copying. Treat it as incomplete unless both copies succeed and
+   is printed before copying. Treat it as incomplete unless all copies succeed and
    the release identity is verified; inspect or remove that specific directory afterwards.
 
    ```console
@@ -298,10 +307,17 @@ retrieve all migrations from embedded application resources.
      printf 'Candidate extraction directory (may be incomplete): %s\n' "$output"
      docker cp "$container:/app/migrations" "$output/" &&
        docker cp "$container:/app/BUILD-INFO" "$output/" &&
+       docker cp "$container:/app/scripts" "$output/" &&
        printf 'Inspect candidate SQL and BUILD-INFO in %s\n' "$output"
    )
    extract_candidate_sql
    ```
+
+   This also extracts the read-only operator audits to `scripts/release/` (image
+   path `/app/scripts/release/`), outside `migrations/`. The image need not contain
+   `psql`: use a compatible external PostgreSQL client and the
+   [audit scope procedure](bitcoin-minimum-difficulty.md#choose-the-audit-scope).
+   Never execute these reports as schema migrations.
 
 3. Preserve the existing container/Compose definition, previous image digest,
    config/environment files, custom coin mounts, certificates and persistent

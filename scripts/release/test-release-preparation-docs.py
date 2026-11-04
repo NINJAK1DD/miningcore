@@ -229,7 +229,8 @@ docker() {
   esac
 }
 '''
-        for failure in ('', 'create', 'fixture-container:/app/migrations', 'fixture-container:/app/BUILD-INFO'):
+        for failure in ('', 'create', 'fixture-container:/app/migrations',
+                        'fixture-container:/app/BUILD-INFO', 'fixture-container:/app/scripts'):
             with self.subTest(failure=failure):
                 result, calls = self.run_shell_example('docs/upgrade-v0.4.0-rc.1.md',
                                                        'extract_candidate_sql()', prefix, failure=failure)
@@ -243,6 +244,8 @@ docker() {
                     self.assertIn('Candidate extraction directory (may be incomplete): ', result.stdout)
                 if not failure:
                     self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(3, sum(call.startswith('cp ') for call in calls))
+                    self.assertTrue(any('fixture-container:/app/scripts ' in call for call in calls))
                     self.assertIn('Inspect candidate SQL and BUILD-INFO', result.stdout)
                 else:
                     self.assertNotEqual(0, result.returncode)
@@ -281,6 +284,7 @@ docker() {
       printf '%s\n' fixture-container ;;
     cp)
       if [ "$FAIL" = first-copy ] && [ "$2" = fixture-container:/app/migrations ]; then return 19; fi
+      if [ "$FAIL" = audits-copy ] && [ "$2" = fixture-container:/app/scripts ]; then return 29; fi
       if [ "$FAIL" = copy ] || [ "$FAIL" = both ]; then
         if [ "$2" = fixture-container:/app/BUILD-INFO ]; then return 23; fi
       fi ;;
@@ -291,7 +295,7 @@ docker() {
 }
 '''
         for failure, expected_status in (('', 0), ('create', 7), ('first-copy', 19),
-                                         ('cleanup', 1), ('copy', 23), ('both', 23)):
+                                         ('cleanup', 1), ('copy', 23), ('audits-copy', 29), ('both', 23)):
             with self.subTest(shell=shell, failure=failure):
                 result, calls = self.run_shell_example('docs/upgrade-v0.4.0-rc.1.md',
                                                        'extract_candidate_sql()', prefix, failure=failure, shell=shell)
@@ -306,10 +310,105 @@ docker() {
                     self.assertIn('ERROR: Failed to remove temporary container fixture-container', result.stderr)
                 else:
                     self.assertNotIn('ERROR: Failed to remove temporary container', result.stderr)
-                if failure in ('first-copy', 'copy', 'both'):
+                if failure in ('first-copy', 'copy', 'audits-copy', 'both'):
                     self.assertNotIn('Inspect candidate SQL and BUILD-INFO', result.stdout)
                 else:
                     self.assertIn('Inspect candidate SQL and BUILD-INFO', result.stdout)
+
+    def test_container_audits_must_be_extracted(self):
+        self.mutation('docs/upgrade-v0.4.0-rc.1.md',
+                      'docker cp "$container:/app/scripts" "$output/" &&', 'true &&')
+
+    @unittest.skipIf(os.name == 'nt', 'Execute Bash examples in the Linux documentation suite')
+    def test_archive_upgrade_requires_explicit_plan_and_preserves_selected_sql_scope(self):
+        prefix = r'''
+MININGCORE_RELEASE_READY=1
+MININGCORE_VERSION=fixture
+MININGCORE_UBUNTU=26.04
+archive=fixture.tar.gz
+MININGCORE_MIGRATION_PLAN=$FAIL
+sudo() {
+  printf 'sudo %s\n' "$*" >> "$TRACE"
+  case "$*" in
+    'test -e '*) return 1 ;;
+    *pg_dump*) printf 'fixture backup\n' ;;
+  esac
+}
+pg_restore() { printf 'restore %s\n' "$*" >> "$TRACE"; }
+cat() { printf 'identity %s\n' "$*" >> "$TRACE"; }
+fixture_version() { printf 'version\n' >> "$TRACE"; }
+test() { if [ "$1" = -d ]; then return 0; fi; command test "$@"; }
+'''
+        replacements = (('$HOME/miningcore-before-', '${TMPDIR}/miningcore-before-'),
+                        ('LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return',
+                         'fixture_version || return'))
+        for plan, expected in (('none', []), ('pps-arithmetic', ['add_pps_arithmetic_version.sql']),
+                               ('cumulative', ['add_auxpow_block_idempotency.sql',
+                                               'add_payout_manager_ownership.sql', 'add_share_accounting.sql']),
+                               ('', None), ('NONE', None), ('unknown', None)):
+            with self.subTest(plan=plan):
+                result, calls = self.run_shell_example('docs/releases.md', 'MININGCORE_UPGRADE_READY=',
+                                                       prefix, failure=plan, replacements=replacements)
+                self.assertEqual(0, result.returncode, result.stderr)
+                if expected is None:
+                    self.assertIn('STOP: explicitly select', result.stderr)
+                    self.assertEqual([], calls, 'invalid plans must stop before staging or database access')
+                    continue
+                self.assertIn(f'READY: completed {plan} plan', result.stdout)
+                sql = [call for call in calls if ' psql ' in call]
+                self.assertEqual(expected, [call.rsplit('/', 1)[-1] for call in sql])
+                self.assertTrue(all('psql -X -v ON_ERROR_STOP=1' in call for call in sql))
+                stop = next(i for i, call in enumerate(calls) if 'systemctl stop' in call)
+                backup = next(i for i, call in enumerate(calls) if 'pg_dump' in call)
+                restore = next(i for i, call in enumerate(calls) if call.startswith('restore '))
+                self.assertLess(stop, backup)
+                self.assertLess(backup, restore)
+                self.assertTrue(all(calls.index(call) > restore for call in sql))
+                self.assertTrue(calls[-1].startswith('sudo ln -sfnT '))
+
+    @unittest.skipIf(os.name == 'nt', 'Execute Bash examples in the Linux documentation suite')
+    def test_archive_upgrade_never_activates_after_a_selected_step_fails(self):
+        prefix = r'''
+MININGCORE_RELEASE_READY=1
+MININGCORE_VERSION=fixture
+MININGCORE_UBUNTU=26.04
+archive=fixture.tar.gz
+sudo() {
+  printf 'sudo %s\n' "$*" >> "$TRACE"
+  case "$*" in
+    'test -e '*) return 1 ;;
+    *"$FAIL"*) return 23 ;;
+    *pg_dump*) printf 'fixture backup\n' ;;
+  esac
+}
+pg_restore() { printf 'restore\n' >> "$TRACE"; [ "$FAIL" != restore ]; }
+cat() { return 0; }
+fixture_version() { return 0; }
+test() { if [ "$1" = -d ]; then return 0; fi; command test "$@"; }
+'''
+        replacements = (('$HOME/miningcore-before-', '${TMPDIR}/miningcore-before-'),
+                        ('LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return',
+                         'fixture_version || return'))
+        for plan, failures in (('none', ('systemctl stop', 'pg_dump', 'restore')),
+                               ('pps-arithmetic', ('add_pps_arithmetic_version.sql',)),
+                               ('cumulative', ('add_auxpow_block_idempotency.sql',
+                                               'add_payout_manager_ownership.sql', 'add_share_accounting.sql'))):
+            for failure in failures:
+                with self.subTest(plan=plan, failure=failure):
+                    result, calls = self.run_shell_example('docs/releases.md', 'MININGCORE_UPGRADE_READY=',
+                        prefix + f'\nMININGCORE_MIGRATION_PLAN={plan}\n',
+                        failure=failure, replacements=replacements)
+                    self.assertIn('STOP: upgrade failed', result.stderr)
+                    self.assertNotIn('READY: completed', result.stdout)
+                    self.assertFalse(any('ln -sfnT' in call for call in calls), calls)
+
+    def test_archive_plan_routes_and_migration_boundaries_are_required(self):
+        for fragment in ('none) return 0', 'pps-arithmetic)', 'cumulative)',
+                         '"$release_dir/migrations/add_pps_arithmetic_version.sql"'):
+            with self.subTest(fragment=fragment):
+                self.mutation('docs/releases.md', fragment, 'BROKEN')
+        for name in ('docs/database.md', 'docs/releases.md'):
+            self.mutation(name, 'pps-arithmetic-migration.md#explicit-one-way-activation', 'database.md')
 
     def test_each_stable_boundary_is_required(self):
         for name in ('README.md', 'docs/releases.md'):

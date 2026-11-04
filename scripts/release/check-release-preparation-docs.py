@@ -149,12 +149,25 @@ def validate(documents, baseline):
         require(fragment in audit_guide, f'Missing historical-audit scope boundary: {fragment}')
     require('a failed full audit must not trigger an automatic fallback.' in prose(upgrade),
             'The RC guide must preserve the full financial audit boundary')
+    for name in ('docs/database.md', 'docs/releases.md'):
+        require('pps-arithmetic-migration.md#explicit-one-way-activation' in documents[name],
+                f'{name}: missing standalone accounting upgrade route')
+        require('missing earlier prerequisites' in prose(documents[name]),
+                f'{name}: cumulative migration must be scoped to missing prerequisites')
+    upgrade_blocks = console_blocks(release, 'MININGCORE_UPGRADE_READY=')
+    require(len(upgrade_blocks) == 1, 'Expected one explicitly selected archive upgrade example')
+    if len(upgrade_blocks) == 1:
+        for fragment in ('${MININGCORE_MIGRATION_PLAN:-}', 'none) return 0',
+                         'pps-arithmetic)', 'cumulative)', '*) return 1',
+                         '"$release_dir/migrations/add_pps_arithmetic_version.sql"',
+                         'apply_selected_migrations &&'):
+            require(fragment in upgrade_blocks[0], f'Missing guarded upgrade route: {fragment}')
     extraction = console_blocks(upgrade, 'extract_candidate_sql()')
     require(len(extraction) == 1, 'Expected one stopped-container SQL extraction example')
     if len(extraction) == 1:
         for fragment in ('docker create --network none "$image"',
                          'docker rm -v "$container"', '"$container:/app/migrations"',
-                         '"$container:/app/BUILD-INFO"', 'rc=$?',
+                         '"$container:/app/BUILD-INFO"', '"$container:/app/scripts"', 'rc=$?',
                          'trap cleanup_candidate EXIT', 'exit "$rc"'):
             require(fragment in extraction[0], f'Unsafe SQL extraction example: missing {fragment}')
         require('Candidate extraction directory (may be incomplete):' in extraction[0],

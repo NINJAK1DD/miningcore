@@ -143,7 +143,9 @@ public class SettlementShareAuditTests
         var fullSql = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "audit-settlement-shares.sql"));
         await using(var full = new NpgsqlCommand(fullSql, connection))
         {
-            var missing = await Assert.ThrowsAsync<PostgresException>(() => full.ExecuteNonQueryAsync());
+            // Failure must occur before a reader can expose even an empty share
+            // report, not while advancing to a later financial result set.
+            var missing = await Assert.ThrowsAsync<PostgresException>(() => full.ExecuteReaderAsync());
             Assert.Equal(PostgresErrorCodes.UndefinedTable, missing.SqlState);
         }
         await using(var rollback = new NpgsqlCommand("ROLLBACK", connection))
@@ -168,7 +170,7 @@ public class SettlementShareAuditTests
             await setup.ExecuteNonQueryAsync();
         var sql = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "audit-settlement-shares.sql"));
         await using var audit = new NpgsqlCommand(sql, connection);
-        var missing = await Assert.ThrowsAsync<PostgresException>(() => audit.ExecuteNonQueryAsync());
+        var missing = await Assert.ThrowsAsync<PostgresException>(() => audit.ExecuteReaderAsync());
         Assert.Equal(PostgresErrorCodes.UndefinedColumn, missing.SqlState);
     }
 

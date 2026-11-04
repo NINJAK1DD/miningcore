@@ -138,7 +138,9 @@ Before upgrading to v0.4.0-rc.1, back up retained shares and financial receipts,
 then choose the applicable read-only audit path below. Use scripts from the exact
 verified candidate source/package, not a moving branch. The archives and packaged
 GHCR image retain these operator scripts under `scripts/release/`, separate from
-schema migrations. Run from that checkout/package root with a read-capable role;
+schema migrations (image path `/app/scripts/release/`; see
+[stopped-container extraction](upgrade-v0.4.0-rc.1.md#container-upgrades)).
+Run from that checkout/package root with a read-capable role;
 keep the DSN and reports private because they can identify miners.
 Use a fresh `psql -X` session, not an audit sourced inside an existing transaction.
 `-X` avoids startup commands from a personal psql configuration.
@@ -149,6 +151,8 @@ Use a fresh `psql -X` session, not an audit sourced inside an existing transacti
 enabled now, was ever enabled for any current/former pool ID in this database,
 or could have been enabled because deployment history is uncertain. It reads
 both `shares` and `pps_share_credits`, including accounting identities/roles.
+It resolves all required columns before emitting report results; a schema failure
+must not leave apparently clean statistical results as a substitute financial audit.
 Missing schema, missing/pruned receipts or unavailable archives mean incomplete
 coverage, not a clean financial history. Reconcile against appropriately restored
 backups/archives and the [database procedure](database.md#upgrade-an-existing-database);

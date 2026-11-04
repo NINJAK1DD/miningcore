@@ -23,7 +23,29 @@ zeromq_probe="$repository_root/scripts/release/fixtures/zeromq-runtime-probe/Pro
 capability_dir=
 fixture_dir=
 normalized_document=$(tr '\r\n\t' '   ' < "$document" | sed -E 's/[[:space:]]+/ /g')
-normalized_readme=$(sed -E 's/^> ?//' "$readme" | tr '\r\n\t' '   ' | sed -E 's/[[:space:]]+/ /g')
+normalize_readme_prose() {
+  awk '
+    function emit() { if (text != "") print text; text = "" }
+    {
+      sub(/\r$/, "")
+      quoted = ($0 ~ /^>/)
+      if (!NF) { emit(); next }
+      if (quoted != previous) emit()
+      previous = quoted
+      sub(/^> ?/, "")
+      gsub(/[ \t]+/, " ")
+      text = text (text != "" ? " " : "") $0
+    }
+    END { emit() }
+  '
+}
+normalized_readme=$(normalize_readme_prose < "$readme")
+# Assertions may span wrapped lines, never paragraphs or callout boundaries.
+if printf 'outside\n> inside\n\nafter\n' | normalize_readme_prose |
+    grep -Eq 'outside inside|inside after'; then
+  echo 'README prose normalizer crossed a block boundary' >&2
+  exit 1
+fi
 release_document=$(tr -d '\r' < "$document")
 readme_features_section=$(awk '
   { sub(/\r$/, "") }
@@ -877,7 +899,7 @@ done
 
 for required in \
   'MININGCORE_UPGRADE_READY=' \
-  'if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then' \
+  'if [ "${MININGCORE_RELEASE_READY:-}" != 1 ]; then' \
   'release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"' \
   'stage_miningcore_candidate()' \
   'sudo tar -xzf "$archive" -C /opt' \
@@ -1044,7 +1066,7 @@ release_tag_checklist_line=$(
   find_unique_line release-tag-checklist 'Before tagging a new release,' "$release_document"
 )
 release_tag_preference_line=$(
-  find_unique_line release-tag-preference 'failures before publication. Prefer a signed annotated tag:' \
+  find_unique_line release-tag-preference 'Prefer a signed annotated tag:' \
     "$release_document"
 )
 release_tag_command_line=$(
@@ -1217,6 +1239,9 @@ upgrade_accounting_line=$(
   find_unique_line upgrade-accounting-migration \
     '"$release_dir/migrations/add_share_accounting.sql"' "$upgrade_block"
 )
+upgrade_apply_line=$(
+  find_unique_line upgrade-selected-migrations '       apply_selected_migrations &&' "$upgrade_block"
+)
 upgrade_symlink_line=$(
   find_unique_line upgrade-stable-symlink \
     'sudo ln -sfnT "$release_dir" /opt/miningcore' "$upgrade_block"
@@ -1225,10 +1250,10 @@ upgrade_symlink_line=$(
 if [[ "$upgrade_stop_line" -le "$upgrade_extract_line" ||
     "$upgrade_backup_line" -le "$upgrade_stop_line" ||
     "$upgrade_restore_check_line" -le "$upgrade_backup_line" ||
-    "$upgrade_auxpow_line" -le "$upgrade_restore_check_line" ||
     "$upgrade_ownership_line" -le "$upgrade_auxpow_line" ||
     "$upgrade_accounting_line" -le "$upgrade_ownership_line" ||
-    "$upgrade_symlink_line" -le "$upgrade_accounting_line" ]]; then
+    "$upgrade_apply_line" -le "$upgrade_restore_check_line" ||
+    "$upgrade_symlink_line" -le "$upgrade_apply_line" ]]; then
   echo 'Candidate staging, backup, migrations and stable-symlink activation are not safely ordered' >&2
   exit 1
 fi
@@ -1773,7 +1798,7 @@ chmod +x "$fixture_dir/bin/sudo"
 failed_upgrade_output=$(
   env PATH="$fixture_dir/bin:$PATH" HOME="$fixture_dir/home" \
     DOC_TEST_TRACE="$trace" DOC_TEST_RELEASE_DIR="$candidate_dir" \
-    DOC_TEST_SHARE_MIGRATION_STATUS=1 MININGCORE_RELEASE_READY=1 \
+    DOC_TEST_SHARE_MIGRATION_STATUS=1 MININGCORE_RELEASE_READY=1 MININGCORE_MIGRATION_PLAN=cumulative \
     MININGCORE_VERSION=v-doc-upgrade MININGCORE_UBUNTU=26.04 \
     archive="$fixture_dir/download/candidate.tar.gz" \
     bash -c "$upgrade_fixture_block" 2>&1
@@ -1790,12 +1815,12 @@ rm -rf -- "$candidate_dir"
 successful_upgrade_output=$(
   env PATH="$fixture_dir/bin:$PATH" HOME="$fixture_dir/home" \
     DOC_TEST_TRACE="$trace" DOC_TEST_RELEASE_DIR="$candidate_dir" \
-    DOC_TEST_SHARE_MIGRATION_STATUS=0 MININGCORE_RELEASE_READY=1 \
+    DOC_TEST_SHARE_MIGRATION_STATUS=0 MININGCORE_RELEASE_READY=1 MININGCORE_MIGRATION_PLAN=cumulative \
     MININGCORE_VERSION=v-doc-upgrade MININGCORE_UBUNTU=26.04 \
     archive="$fixture_dir/download/candidate.tar.gz" \
     bash -c "$upgrade_fixture_block" 2>&1
 )
-if ! grep -Fq "READY: migrated the database and activated $candidate_dir" \
+if ! grep -Fq "READY: completed cumulative plan and activated $candidate_dir" \
     <<<"$successful_upgrade_output" ||
     ! grep -Fq "ln -sfnT $candidate_dir /opt/miningcore" "$trace"; then
   echo 'Release upgrade did not activate the verified candidate after all migrations succeeded' >&2

@@ -151,8 +151,21 @@ An unchanged canonical Bitcoin SOLO or LTC/DOGE merged SOLO/SOLO deployment need
 SQL solely for this upgrade when its v0.3.0 prerequisites are already installed.
 PPS and pooled merged accounting require the new arithmetic schema even when
 arithmetic version 0 is retained. Pearl has additional opt-in tables.
-The cumulative sequence below is for deployments needing those accounting prerequisites;
-do not run it merely because an already prepared SOLO service is being replaced.
+An otherwise complete **v0.3.0 accounting schema → standalone
+[`add_pps_arithmetic_version.sql`](pps-arithmetic-migration.md#explicit-one-way-activation)**,
+not the cumulative sequence. Set `MININGCORE_CANDIDATE_DIR` to the exact verified
+immutable candidate first; stop all writers and prove the backup as described below
+before running either path. Then run:
+
+```console
+test -f "$MININGCORE_CANDIDATE_DIR/migrations/add_pps_arithmetic_version.sql" &&
+  sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+    -f "$MININGCORE_CANDIDATE_DIR/migrations/add_pps_arithmetic_version.sql"
+```
+
+The cumulative sequence below is **only for databases missing earlier prerequisites**,
+including adding accounting to a database without it. Do not rerun it on a complete
+v0.3.0 accounting schema, or merely because an already prepared SOLO service is being replaced.
 
 The cumulative example below deliberately targets v0.4.0-rc.1, unlike the stable
 installation defaults. Use it only after the candidate's assets are published.

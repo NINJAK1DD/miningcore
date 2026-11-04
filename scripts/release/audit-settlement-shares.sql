@@ -5,6 +5,20 @@
 -- on large databases: the repeatable-read snapshot lasts for every scan.
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
 
+-- Resolve every required column before emitting any report. A missing financial
+-- schema must fail before clean-looking statistical output, not partway through.
+-- PERFORM emits no result set and LIMIT 0 reads no rows; the same snapshot and
+-- relation locks are retained for the reports below. This is not a completeness
+-- or financial reconciliation check.
+DO $audit_preflight$
+BEGIN
+    PERFORM poolid, accountingid, address, created, difficulty, networkdifficulty,
+            calculatedamount, creditedamount FROM pps_share_credits LIMIT 0;
+    PERFORM poolid, miner, created, blockheight, difficulty, networkdifficulty,
+            accountingid, accountingrole FROM shares LIMIT 0;
+END
+$audit_preflight$;
+
 -- PostgreSQL considers NaN > 0 true, so check special values explicitly.
 SELECT poolid, count(*) AS invalid_rows, min(created) AS first_created,
        max(created) AS last_created
