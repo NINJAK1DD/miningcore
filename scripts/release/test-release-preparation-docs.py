@@ -357,11 +357,15 @@ test() { if [ "$1" = -d ] || [ "$1" = -r ]; then return 0; fi; command test "$@"
                     self.assertNotEqual(0, result.returncode)
                     self.assertIn('UPGRADE_STATE=;PLAN=unset', result.stdout)
                     self.assertIn('STOP: explicitly select', result.stderr)
+                    self.assertIn('Failed step: migration-plan', result.stderr)
+                    self.assertIn('Service: no stop requested by this block', result.stderr)
+                    self.assertIn('Schema: no schema-changing SQL attempted by this block', result.stderr)
                     self.assertEqual([], calls, 'invalid plans must stop before staging or database access')
                     continue
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertIn('UPGRADE_STATE=1;PLAN=unset', result.stdout)
                 self.assertIn(f'READY: completed {plan} plan', result.stdout)
+                self.assertIn('Service remains stopped.', result.stdout)
                 sql = [call for call in calls if ' psql ' in call]
                 self.assertEqual(expected, [call.rsplit('/', 1)[-1] for call in sql])
                 self.assertTrue(all('psql -X -v ON_ERROR_STOP=1' in call for call in sql))
@@ -410,9 +414,9 @@ test() {
                             'missing-share-preflight', 'missing-arithmetic-preflight', 'identity', 'version')
         for plan, failures in (('none', staging_failures + (
                                         'systemctl stop', 'pg_dump', 'restore', 'ln -sfnT')),
-                               ('pps-arithmetic', ('check-pps-arithmetic-ownership.sql', 'add_pps_arithmetic_version.sql')),
+                               ('pps-arithmetic', ('check-pps-arithmetic-ownership.sql', 'add_pps_arithmetic_version.sql', 'ln -sfnT')),
                                ('cumulative', ('check-share-owner.sql', 'add_auxpow_block_idempotency.sql',
-                                               'add_payout_manager_ownership.sql', 'add_share_accounting.sql'))):
+                                               'add_payout_manager_ownership.sql', 'add_share_accounting.sql', 'ln -sfnT'))):
             for failure in failures:
                 with self.subTest(plan=plan, failure=failure):
                     result, calls = self.run_shell_example('docs/releases.md', 'MININGCORE_UPGRADE_READY=',
@@ -420,6 +424,28 @@ test() {
                         failure=failure, replacements=replacements, observe_state=True)
                     self.assertNotEqual(0, result.returncode)
                     self.assertIn('STOP:', result.stderr)
+                    steps = {'existing-candidate': 'candidate-directory', 'mkdir': 'staging-directory',
+                             'tar': 'archive-extraction', 'missing-migrations': 'migration-files',
+                             'missing-share-preflight': 'share-owner-file',
+                             'missing-arithmetic-preflight': 'arithmetic-owner-file',
+                             'identity': 'build-info', 'version': 'candidate-version',
+                             'systemctl stop': 'service-stop', 'pg_dump': 'database-backup',
+                             'restore': 'backup-inventory', 'check-pps-arithmetic-ownership.sql': 'arithmetic-owner-preflight',
+                             'check-share-owner.sql': 'share-owner-preflight',
+                             'add_pps_arithmetic_version.sql': 'arithmetic-migration',
+                             'add_auxpow_block_idempotency.sql': 'auxpow-migration',
+                             'add_payout_manager_ownership.sql': 'payout-ownership-migration',
+                             'add_share_accounting.sql': 'accounting-migration', 'ln -sfnT': 'activation'}
+                    self.assertIn(f'Failed step: {steps[failure]}\n', result.stderr)
+                    self.assertIn('docs/troubleshooting.md#when-an-rc1-upgrade-stops', result.stderr)
+                    service = ('no stop requested by this block' if failure in staging_failures else
+                               'stop requested; completion unconfirmed' if failure == 'systemctl stop' else
+                               'stop confirmed by systemctl')
+                    self.assertIn(f'Service: {service}\n', result.stderr)
+                    migration_attempted = (failure.startswith('add_') or failure == 'ln -sfnT') and plan != 'none'
+                    schema = ('migration SQL attempted; changes may have committed' if migration_attempted else
+                              'no schema-changing SQL attempted by this block')
+                    self.assertIn(f'Schema: {schema}\n', result.stderr)
                     self.assertIn('UPGRADE_STATE=;PLAN=unset', result.stdout)
                     self.assertNotIn('READY: completed', result.stdout)
                     if failure != 'ln -sfnT':
@@ -552,6 +578,17 @@ sudo() {{ printf '%s\\n' "$*" >> "$TRACE"; return 99; }}
                         documents[name] = documents[name].replace(blocks[0], changed + '\n', 1)
                         self.assertTrue(guard.validate(documents, self.baseline),
                                         'additional SQL commands must not escape the reviewed invocation inventory')
+
+    def test_operator_recovery_and_fresh_install_boundaries_are_required(self):
+        self.mutation('docs/troubleshooting.md', '`activation`', '`unknown-stage`')
+        for name in ('docs/releases.md', 'docs/upgrade-v0.4.0-rc.1.md', 'docs/database.md'):
+            with self.subTest(document=name):
+                documents = self.original.copy()
+                documents[name] = documents[name].replace('troubleshooting.md#when-an-rc1-upgrade-stops', 'troubleshooting.md')
+                self.assertTrue(guard.validate(documents, self.baseline))
+        for fragment in ('Do not then replay the upgrade migrations.', 'Never rerun `createdb.sql`.'):
+            self.mutation('docs/database.md', fragment, 'Always run the full schema again.')
+        self.mutation('docs/releases.md', 'Failed step: %s', 'Something failed: %s')
 
     def test_each_stable_boundary_is_required(self):
         for name in ('README.md', 'docs/releases.md'):

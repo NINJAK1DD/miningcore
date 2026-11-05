@@ -2069,37 +2069,57 @@ select it again deliberately before another attempt. Other release-specific
 requirements (such as [enabling Pearl, step 5](pearl-pool-guide.md#1-prepare-the-software-and-wallet))
 need a separately reviewed migration plan; do not select `none` to bypass them.
 
+If a check stops this procedure, use [When an RC.1 upgrade stops](troubleshooting.md#when-an-rc1-upgrade-stops).
+The output identifies the failed step and what this block has attempted. Keep the
+first underlying error private for diagnosis; do not bypass a check to continue.
+
 ```console
 umask 077
 MININGCORE_UPGRADE_READY=
 miningcore_migration_plan=${MININGCORE_MIGRATION_PLAN:-}
 unset MININGCORE_MIGRATION_PLAN
+miningcore_upgrade_step=archive-readiness
+miningcore_service_state='no stop requested by this block'
+miningcore_schema_state='no schema-changing SQL attempted by this block'
+report_upgrade_stop() {
+  printf 'STOP: %s\nFailed step: %s\nService: %s\nSchema: %s\n' \
+    "$1" "$miningcore_upgrade_step" "$miningcore_service_state" "$miningcore_schema_state" >&2
+  printf '%s\n' 'HELP: Open docs/troubleshooting.md#when-an-rc1-upgrade-stops in this release.' >&2
+  return 1
+}
 if [ "${MININGCORE_RELEASE_READY:-}" != 1 ]; then
-  echo "STOP: no verified release archive is available to upgrade" >&2
-  false
+  report_upgrade_stop 'no verified release archive is available to upgrade'
 elif [ "${MININGCORE_VERSION:-}" != v0.4.0-rc.1 ]; then
-  echo "STOP: this upgrade block is only for v0.4.0-rc.1; use the selected release's upgrade guide" >&2
-  false
+  miningcore_upgrade_step=release-version
+  report_upgrade_stop "this upgrade block is only for v0.4.0-rc.1; use the selected release's upgrade guide"
 elif [ "$miningcore_migration_plan" != none ] &&
      [ "$miningcore_migration_plan" != pps-arithmetic ] &&
      [ "$miningcore_migration_plan" != cumulative ]; then
-  echo "STOP: explicitly select the reviewed migration plan" >&2
-  false
+  miningcore_upgrade_step=migration-plan
+  report_upgrade_stop 'explicitly select the reviewed migration plan'
 else
   release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
   upgrade_backup="$HOME/miningcore-before-${MININGCORE_VERSION}.dump"
 
   stage_miningcore_candidate() {
+    miningcore_upgrade_step=candidate-directory
     if sudo test -e "$release_dir"; then
       echo "STOP: candidate directory already exists; inspect it before retrying" >&2
       return 1
     fi
+    miningcore_upgrade_step=staging-directory
     sudo mkdir -p /opt || return
+    miningcore_upgrade_step=archive-extraction
     sudo tar -xzf "$archive" -C /opt || return
+    miningcore_upgrade_step=migration-files
     test -d "$release_dir/migrations" || return
+    miningcore_upgrade_step=share-owner-file
     test -r "$release_dir/scripts/release/check-share-owner.sql" || return
+    miningcore_upgrade_step=arithmetic-owner-file
     test -r "$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" || return
+    miningcore_upgrade_step=build-info
     cat "$release_dir/BUILD-INFO" || return
+    miningcore_upgrade_step=candidate-version
     LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return
   }
 
@@ -2108,38 +2128,50 @@ else
       case "$miningcore_migration_plan" in
         none) return 0 ;;
         pps-arithmetic)
+          miningcore_upgrade_step=arithmetic-owner-preflight
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
             -f "$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" &&
+          miningcore_upgrade_step=arithmetic-migration &&
+          miningcore_schema_state='migration SQL attempted; changes may have committed' &&
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
             -f "$release_dir/migrations/add_pps_arithmetic_version.sql" ;;
         cumulative)
+          miningcore_upgrade_step=share-owner-preflight
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
             -f "$release_dir/scripts/release/check-share-owner.sql" &&
+          miningcore_upgrade_step=auxpow-migration &&
+          miningcore_schema_state='migration SQL attempted; changes may have committed' &&
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
             -f "$release_dir/migrations/add_auxpow_block_idempotency.sql" &&
+          miningcore_upgrade_step=payout-ownership-migration &&
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
             -f "$release_dir/migrations/add_payout_manager_ownership.sql" &&
+          miningcore_upgrade_step=accounting-migration &&
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
             -f "$release_dir/migrations/add_share_accounting.sql" ;;
         *) return 1 ;;
       esac
     }
-    if sudo systemctl stop miningcore &&
+    if miningcore_upgrade_step=service-stop &&
+       miningcore_service_state='stop requested; completion unconfirmed' &&
+       sudo systemctl stop miningcore &&
+       miningcore_service_state='stop confirmed by systemctl' &&
+       miningcore_upgrade_step=database-backup &&
        sudo -u postgres pg_dump -Fc -d miningcore > "$upgrade_backup" &&
+       miningcore_upgrade_step=backup-inventory &&
        pg_restore --list "$upgrade_backup" > /dev/null &&
        apply_selected_migrations &&
+       miningcore_upgrade_step=activation &&
        sudo ln -sfnT "$release_dir" /opt/miningcore; then
       MININGCORE_RELEASE_READY=
       export MININGCORE_UPGRADE_READY=1
       echo "READY: completed $miningcore_migration_plan plan and activated $release_dir"
+      echo 'Service remains stopped. Follow the documented startup and validation checks before moving miners.'
     else
-      echo "STOP: upgrade failed; candidate activation is not confirmed" >&2
-      echo "Keep Miningcore stopped until the database and candidate are reconciled" >&2
-      false
+      report_upgrade_stop 'upgrade failed; candidate activation is not confirmed. Keep Miningcore stopped until the database and candidate are reconciled'
     fi
   else
-    echo "STOP: candidate staging failed; /opt/miningcore was not changed" >&2
-    false
+    report_upgrade_stop 'candidate staging failed; /opt/miningcore was not changed'
   fi
 fi
 ```

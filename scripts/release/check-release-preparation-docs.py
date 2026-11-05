@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BASELINE = ROOT / 'scripts/release/fixtures/v0.4.0-rc.1-legacy-release-anchors.txt'
 DOCUMENTS = ('README.md', 'docs/releases.md', 'docs/database.md',
              'docs/upgrade-v0.4.0-rc.1.md', 'docs/bitcoin-minimum-difficulty.md',
-             'docs/pps-arithmetic-migration.md')
+             'docs/pps-arithmetic-migration.md', 'docs/troubleshooting.md')
 STABLE_BOUNDARY = 'The latest stable baseline remains v0.3.0 until a newer stable release is published.'
 NO_SQL = 'No new SQL solely for this upgrade when the v0.3.0 prerequisites are installed.'
 
@@ -176,11 +176,29 @@ def validate(documents, baseline):
                          'test -r "$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" || return',
                          'pps-arithmetic)', 'cumulative)', '*) return 1',
                          'unset MININGCORE_MIGRATION_PLAN',
+                         'report_upgrade_stop()', 'return 1\n}',
+                         'Failed step: %s', 'Service: %s', 'Schema: %s',
+                         'docs/troubleshooting.md#when-an-rc1-upgrade-stops',
                          '"$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" &&',
                          '"$release_dir/scripts/release/check-share-owner.sql" &&',
                          '"$release_dir/migrations/add_pps_arithmetic_version.sql"',
                          'apply_selected_migrations &&'):
             require(fragment in upgrade_blocks[0], f'Missing guarded upgrade route: {fragment}')
+    troubleshooting = documents['docs/troubleshooting.md']
+    require('## When an RC.1 upgrade stops' in troubleshooting,
+            'Missing operator upgrade-stop entry point')
+    if len(upgrade_blocks) == 1:
+        steps = set(re.findall(r'miningcore_upgrade_step=([a-z-]+)', upgrade_blocks[0]))
+        require(bool(steps) and all(f'`{step}`' in troubleshooting for step in steps),
+                'Every reported upgrade step must have troubleshooting guidance')
+    for name in ('docs/releases.md', 'docs/upgrade-v0.4.0-rc.1.md', 'docs/database.md'):
+        require('troubleshooting.md#when-an-rc1-upgrade-stops' in documents[name],
+                f'{name}: missing operator recovery reference')
+    for fragment in ('Do not then replay the upgrade migrations.',
+                     'Never rerun `createdb.sql`.',
+                     'published stable v0.3.0', 'version 0'):
+        require(fragment in prose(documents['docs/database.md']),
+                f'Missing new-install versus upgrade boundary: {fragment}')
     require('https://github.com/NINJAK1DD/miningcore/blob/dd86092d2616b5ad7023382e1bdd95b59bfa548a/docs/releases.md#upgrade-or-roll-back' in release,
             'The stable v0.3.0 upgrade route must link to its immutable release runbook')
     require('only for v0.4.0-rc.1 archives' in prose(release),

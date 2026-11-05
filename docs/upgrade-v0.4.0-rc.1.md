@@ -15,6 +15,16 @@ Operators skipping v0.3.0 must first satisfy the [v0.3.0 upgrade prerequisites](
 including applicable direct-SOLO and payout-ownership migrations. This guide does
 not replace the earlier cumulative upgrade boundaries.
 
+If a check fails, start with [When an RC.1 upgrade stops](troubleshooting.md#when-an-rc1-upgrade-stops):
+it maps the failed step to a safe next action and explains service/schema state.
+Do not bypass a check or restart the old binary without understanding that state.
+
+**New installation?** Use the selected release's complete `createdb.sql` once on
+a new, empty database; see [new database setup](database.md#new-installation).
+The RC.1 schema already includes the RC.1 structures. The matrix below is for
+existing databases, not an instruction to rerun upgrade scripts after a fresh
+schema import. Schema installation does not enable every optional coin or PPS v1.
+
 ## Database migration matrix
 
 Stop every writer and payout manager using the database and take a proven backup

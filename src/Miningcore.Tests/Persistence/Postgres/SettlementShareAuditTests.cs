@@ -195,6 +195,15 @@ public class SettlementShareAuditTests
             // role rather than changing shared roles or the database-wide schema.
             await using(var install = new NpgsqlCommand(createdb.Replace("SET ROLE miningcore;", ""), connection))
                 await install.ExecuteNonQueryAsync();
+            await using(var freshSchema = new NpgsqlCommand("""
+                SELECT bool_and(to_regclass(name) IS NOT NULL)
+                  AND NOT EXISTS (SELECT 1 FROM pps_arithmetic_transitions)
+                FROM unnest(ARRAY['shares', 'blocks', 'share_accounting_groups', 'share_accounting_prune_state',
+                  'pps_share_credits', 'pps_credit_remainders', 'share_recovery_imports', 'payment_batches',
+                  'payout_manager_ownership', 'pearl_candidates', 'pearl_payout_intents', 'pearl_payout_holds',
+                  'pearl_payout_intent_releases', 'pps_arithmetic_transitions']) AS expected(name)
+                """, connection))
+                Assert.True((bool) await freshSchema.ExecuteScalarAsync());
             await using(var seed = new NpgsqlCommand("""
                 INSERT INTO share_accounting_groups(accountingid, projectioncount, payloadhash, created)
                     VALUES('00000000-0000-0000-0000-000000000001', 1, repeat('A',64), now());
@@ -205,6 +214,8 @@ public class SettlementShareAuditTests
                 """, connection))
                 await seed.ExecuteNonQueryAsync();
             var before = await SnapshotAsync(connection);
+            await using(var version = new NpgsqlCommand("SELECT arithmeticversion=0 FROM pps_share_credits WHERE poolid='full-pps'", connection))
+                Assert.True((bool) await version.ExecuteScalarAsync());
             var sql = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "audit-settlement-shares.sql"));
             await using(var audit = new NpgsqlCommand(sql, connection))
             await using(var reader = await audit.ExecuteReaderAsync())

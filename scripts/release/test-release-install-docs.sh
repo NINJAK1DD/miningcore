@@ -909,7 +909,7 @@ for required in \
   '"$release_dir/migrations/add_share_accounting.sql"' \
   'sudo ln -sfnT "$release_dir" /opt/miningcore' \
   'export MININGCORE_UPGRADE_READY=1' \
-  'STOP: upgrade failed; candidate activation is not confirmed'; do
+  "report_upgrade_stop 'upgrade failed; candidate activation is not confirmed"; do
   if ! grep -Fq "$required" <<<"$upgrade_block"; then
     echo "Release upgrade block is missing: $required" >&2
     exit 1
@@ -1219,7 +1219,7 @@ upgrade_extract_line=$(
   find_unique_line upgrade-extraction 'sudo tar -xzf "$archive" -C /opt' "$upgrade_block"
 )
 upgrade_stop_line=$(
-  find_unique_line upgrade-stop 'if sudo systemctl stop miningcore &&' "$upgrade_block"
+  find_unique_line upgrade-stop '       sudo systemctl stop miningcore &&' "$upgrade_block"
 )
 upgrade_backup_line=$(
   find_unique_line upgrade-backup 'sudo -u postgres pg_dump -Fc -d miningcore' "$upgrade_block"

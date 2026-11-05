@@ -44,6 +44,29 @@ documented migration order.
 
 ## New installation
 
+### New database or existing database?
+
+Use the schema files from the **release you actually selected**. The install
+examples deliberately default to published stable v0.3.0; they do not silently
+install RC.1. Select RC.1 explicitly only when its verified assets are available,
+or use an immutable RC.1 source checkout.
+
+| Database state | Correct path |
+| --- | --- |
+| New, empty database for RC.1 | Import that RC.1 release's `createdb.sql` once. It already includes the shared accounting/PPS arithmetic structures, direct-SOLO/payout/recovery structures and Pearl schema present in that release. Do not then replay the upgrade migrations. |
+| Existing v0.3.0 or older database | Never rerun `createdb.sql`. Back up and follow the [release-specific migration matrix](upgrade-v0.4.0-rc.1.md#database-migration-matrix); apply only the required upgrade scripts. Unchanged, prepared BTC SOLO or LTC/DOGE SOLO/SOLO needs no new SQL solely for RC.1. |
+
+The fresh schema keeps PPS arithmetic at version 0 unless the administrator
+performs the separate activation procedure. Having tables does not enable Pearl,
+install its optional worker bundle or configure a pool. Do not run ownership
+upgrade preflights against an empty database before importing the fresh schema;
+those checks deliberately require existing relations.
+
+If setup/import stops, use [the operator troubleshooting guide](troubleshooting.md#when-an-rc1-upgrade-stops).
+Do not delete an existing database or rerun the full schema to suppress an error.
+
+### Create and initialise the database
+
 Use a currently supported PostgreSQL release. PostgreSQL 15 or newer is a sensible baseline for a
 new pool even if the schema remains technically compatible with older versions.
 The PPS arithmetic schema contract is tested on PostgreSQL 15, 16, 17 and 18.
