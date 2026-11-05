@@ -1990,6 +1990,26 @@ loss, use the guarded [payout-manager recovery runbook](database.md#recover-payo
 
 ## Upgrade or roll back
 
+Choose the target release's upgrade route **before stopping any service**.
+
+### Upgrade to published stable v0.3.0
+
+The default download selection in this guide remains v0.3.0. To upgrade an older
+installation to that stable version, use the
+[v0.3.0 archive upgrade procedure](https://github.com/NINJAK1DD/miningcore/blob/dd86092d2616b5ad7023382e1bdd95b59bfa548a/docs/releases.md#upgrade-or-roll-back)
+from its immutable release source, or the matching verified v0.3.0 archive's
+`INSTALL.md`. Follow that version's configuration, backup, ordered migration and
+activation requirements using its own files. It does not use
+`MININGCORE_MIGRATION_PLAN` or the new RC.1 ownership preflight files; those files
+are not present in v0.3.0 archives. Do not run the RC.1 block below against them.
+
+### Upgrade to v0.4.0-rc.1
+
+The executable block below is **only for v0.4.0-rc.1 archives**. Explicitly select
+that version in [Choose a version](#choose-a-version) only after its assets are
+published, then complete the download/identity verification. The stable default
+is intentionally not changed. Other releases must use their own upgrade runbooks.
+
 For v0.3.0-to-v0.4.0-rc.1 upgrades, select the
 [release-specific migration path](upgrade-v0.4.0-rc.1.md#database-migration-matrix)
 first. For an otherwise complete v0.3.0 accounting schema, select the standalone
@@ -2057,6 +2077,9 @@ unset MININGCORE_MIGRATION_PLAN
 if [ "${MININGCORE_RELEASE_READY:-}" != 1 ]; then
   echo "STOP: no verified release archive is available to upgrade" >&2
   false
+elif [ "${MININGCORE_VERSION:-}" != v0.4.0-rc.1 ]; then
+  echo "STOP: this upgrade block is only for v0.4.0-rc.1; use the selected release's upgrade guide" >&2
+  false
 elif [ "$miningcore_migration_plan" != none ] &&
      [ "$miningcore_migration_plan" != pps-arithmetic ] &&
      [ "$miningcore_migration_plan" != cumulative ]; then
@@ -2074,6 +2097,8 @@ else
     sudo mkdir -p /opt || return
     sudo tar -xzf "$archive" -C /opt || return
     test -d "$release_dir/migrations" || return
+    test -r "$release_dir/scripts/release/check-share-owner.sql" || return
+    test -r "$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" || return
     cat "$release_dir/BUILD-INFO" || return
     LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return
   }
@@ -2125,6 +2150,9 @@ Before any cumulative migration, `check-share-owner.sql` rejects superuser-owned
 `shares` without requiring accounting tables to exist. It does not align owners,
 grant privileges or replace the startup schema checks. Reconcile that owner
 explicitly before retrying; neither migration plan repairs it automatically.
+The exact-version gate runs before staging or database access. Staging also checks
+that both packaged ownership preflights are readable before stopping the service;
+a missing file is an incomplete candidate, never permission to skip a safety check.
 
 Start the service only when the block prints `READY` and exports
 `MININGCORE_UPGRADE_READY=1`. The old symlink remains intact after a staging, backup or migration

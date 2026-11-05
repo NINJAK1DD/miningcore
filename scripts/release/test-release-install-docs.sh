@@ -1778,7 +1778,9 @@ case "$*" in
     exit 1
     ;;
   tar\ -xzf*)
-    mkdir -p "${DOC_TEST_RELEASE_DIR:?}/migrations"
+    mkdir -p "${DOC_TEST_RELEASE_DIR:?}/migrations" "$DOC_TEST_RELEASE_DIR/scripts/release"
+    touch "$DOC_TEST_RELEASE_DIR/scripts/release/check-share-owner.sql" \
+      "$DOC_TEST_RELEASE_DIR/scripts/release/check-pps-arithmetic-ownership.sql"
     printf '%s\n' 'fixture build identity' > "$DOC_TEST_RELEASE_DIR/BUILD-INFO"
     printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$DOC_TEST_RELEASE_DIR/Miningcore"
     chmod +x "$DOC_TEST_RELEASE_DIR/Miningcore"
@@ -1800,7 +1802,7 @@ failed_upgrade_output=$(
   env PATH="$fixture_dir/bin:$PATH" HOME="$fixture_dir/home" \
     DOC_TEST_TRACE="$trace" DOC_TEST_RELEASE_DIR="$candidate_dir" \
     DOC_TEST_SHARE_MIGRATION_STATUS=1 MININGCORE_RELEASE_READY=1 MININGCORE_MIGRATION_PLAN=cumulative \
-    MININGCORE_VERSION=v-doc-upgrade MININGCORE_UBUNTU=26.04 \
+    MININGCORE_VERSION=v0.4.0-rc.1 MININGCORE_UBUNTU=26.04 \
     archive="$fixture_dir/download/candidate.tar.gz" \
     bash -c "$upgrade_fixture_block" 2>&1
 ) || failed_upgrade_status=$?
@@ -1817,7 +1819,7 @@ successful_upgrade_output=$(
   env PATH="$fixture_dir/bin:$PATH" HOME="$fixture_dir/home" \
     DOC_TEST_TRACE="$trace" DOC_TEST_RELEASE_DIR="$candidate_dir" \
     DOC_TEST_SHARE_MIGRATION_STATUS=0 MININGCORE_RELEASE_READY=1 MININGCORE_MIGRATION_PLAN=cumulative \
-    MININGCORE_VERSION=v-doc-upgrade MININGCORE_UBUNTU=26.04 \
+    MININGCORE_VERSION=v0.4.0-rc.1 MININGCORE_UBUNTU=26.04 \
     archive="$fixture_dir/download/candidate.tar.gz" \
     bash -c "$upgrade_fixture_block" 2>&1
 )

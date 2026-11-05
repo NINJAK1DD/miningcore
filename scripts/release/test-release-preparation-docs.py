@@ -326,7 +326,7 @@ docker() {
     def test_archive_upgrade_requires_explicit_plan_and_preserves_selected_sql_scope(self):
         prefix = r'''
 MININGCORE_RELEASE_READY=1
-MININGCORE_VERSION=fixture
+MININGCORE_VERSION=v0.4.0-rc.1
 MININGCORE_UBUNTU=26.04
 archive=fixture.tar.gz
 MININGCORE_MIGRATION_PLAN=$FAIL
@@ -341,7 +341,7 @@ sudo() {
 pg_restore() { printf 'restore %s\n' "$*" >> "$TRACE"; }
 cat() { printf 'identity %s\n' "$*" >> "$TRACE"; }
 fixture_version() { printf 'version\n' >> "$TRACE"; }
-test() { if [ "$1" = -d ]; then return 0; fi; command test "$@"; }
+test() { if [ "$1" = -d ] || [ "$1" = -r ]; then return 0; fi; command test "$@"; }
 '''
         replacements = (('$HOME/miningcore-before-', '${TMPDIR}/miningcore-before-'),
                         ('LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return',
@@ -377,7 +377,7 @@ test() { if [ "$1" = -d ]; then return 0; fi; command test "$@"; }
     def test_archive_upgrade_never_activates_after_a_selected_step_fails(self):
         prefix = r'''
 MININGCORE_RELEASE_READY=1
-MININGCORE_VERSION=fixture
+MININGCORE_VERSION=v0.4.0-rc.1
 MININGCORE_UBUNTU=26.04
 archive=fixture.tar.gz
 MININGCORE_UPGRADE_READY=stale
@@ -392,12 +392,23 @@ sudo() {
 pg_restore() { printf 'restore\n' >> "$TRACE"; [ "$FAIL" != restore ]; }
 cat() { [ "$FAIL" != identity ]; }
 fixture_version() { [ "$FAIL" != version ]; }
-test() { if [ "$1" = -d ]; then [ "$FAIL" != missing-migrations ]; return; fi; command test "$@"; }
+test() {
+  if [ "$1" = -d ]; then [ "$FAIL" != missing-migrations ]; return; fi
+  if [ "$1" = -r ]; then
+    case "$FAIL:$2" in
+      missing-share-preflight:*/check-share-owner.sql|missing-arithmetic-preflight:*/check-pps-arithmetic-ownership.sql) return 1 ;;
+    esac
+    return 0
+  fi
+  command test "$@"
+}
 '''
         replacements = (('$HOME/miningcore-before-', '${TMPDIR}/miningcore-before-'),
                         ('LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return',
                          'fixture_version || return'))
-        for plan, failures in (('none', ('existing-candidate', 'mkdir', 'tar', 'missing-migrations', 'identity', 'version',
+        staging_failures = ('existing-candidate', 'mkdir', 'tar', 'missing-migrations',
+                            'missing-share-preflight', 'missing-arithmetic-preflight', 'identity', 'version')
+        for plan, failures in (('none', staging_failures + (
                                         'systemctl stop', 'pg_dump', 'restore', 'ln -sfnT')),
                                ('pps-arithmetic', ('check-pps-arithmetic-ownership.sql', 'add_pps_arithmetic_version.sql')),
                                ('cumulative', ('check-share-owner.sql', 'add_auxpow_block_idempotency.sql',
@@ -413,6 +424,8 @@ test() { if [ "$1" = -d ]; then [ "$FAIL" != missing-migrations ]; return; fi; c
                     self.assertNotIn('READY: completed', result.stdout)
                     if failure != 'ln -sfnT':
                         self.assertFalse(any('ln -sfnT' in call for call in calls), calls)
+                    if failure in staging_failures:
+                        self.assertFalse(any('systemctl stop' in call or 'pg_dump' in call or ' psql ' in call for call in calls), calls)
                     if failure == 'check-pps-arithmetic-ownership.sql':
                         self.assertFalse(any('add_pps_arithmetic_version.sql' in call or 'add_share_accounting.sql' in call for call in calls), calls)
                     if failure == 'check-share-owner.sql':
@@ -424,7 +437,7 @@ test() { if [ "$1" = -d ]; then [ "$FAIL" != missing-migrations ]; return; fi; c
                                    ('MININGCORE_RELEASE_READY=1', 'explicitly select')):
             for errexit in ('', 'set -e\n'):
                 with self.subTest(rejection=rejection, errexit=bool(errexit)):
-                    prefix = errexit + 'unset MININGCORE_RELEASE_READY\nMININGCORE_UPGRADE_READY=stale\nMININGCORE_MIGRATION_PLAN=invalid\n' + rejection
+                    prefix = errexit + 'unset MININGCORE_RELEASE_READY\nMININGCORE_VERSION=v0.4.0-rc.1\nMININGCORE_UPGRADE_READY=stale\nMININGCORE_MIGRATION_PLAN=invalid\n' + rejection
                     result, calls = self.run_shell_example('docs/releases.md', 'MININGCORE_UPGRADE_READY=',
                                                            prefix, observe_state=True)
                     self.assertNotEqual(0, result.returncode)
@@ -432,6 +445,36 @@ test() { if [ "$1" = -d ]; then [ "$FAIL" != missing-migrations ]; return; fi; c
                     self.assertEqual([], calls)
                     if not errexit:
                         self.assertIn('UPGRADE_STATE=;PLAN=unset', result.stdout)
+
+    @unittest.skipIf(os.name == 'nt', 'Execute Bash examples in the Linux documentation suite')
+    def test_rc_archive_upgrade_rejects_stable_and_other_versions_before_any_action(self):
+        for version in ('', 'v0.3.0', 'v0.2.1', 'v0.4.0', 'v0.4.0-rc.2', 'v0.4.0-rc.1-extra'):
+            for plan in ('none', 'pps-arithmetic', 'cumulative'):
+                for errexit in ('', 'set -e\n'):
+                    with self.subTest(version=version, plan=plan, errexit=bool(errexit)):
+                        prefix = errexit + f'''
+MININGCORE_RELEASE_READY=1
+MININGCORE_VERSION='{version}'
+MININGCORE_MIGRATION_PLAN={plan}
+MININGCORE_UPGRADE_READY=stale
+sudo() {{ printf '%s\\n' "$*" >> "$TRACE"; return 99; }}
+'''
+                        result, calls = self.run_shell_example('docs/releases.md', 'MININGCORE_UPGRADE_READY=',
+                                                               prefix, observe_state=True)
+                        self.assertNotEqual(0, result.returncode)
+                        self.assertIn('only for v0.4.0-rc.1', result.stderr)
+                        self.assertEqual([], calls, 'wrong releases must not stage, stop the service or access the database')
+                        if not errexit:
+                            self.assertIn('UPGRADE_STATE=;PLAN=unset', result.stdout)
+
+    def test_stable_upgrade_route_and_rc_archive_gate_are_required(self):
+        self.mutation('docs/releases.md',
+                      'dd86092d2616b5ad7023382e1bdd95b59bfa548a/docs/releases.md#upgrade-or-roll-back',
+                      'dev/docs/releases.md#upgrade-or-roll-back')
+        self.mutation('docs/releases.md', 'only for v0.4.0-rc.1 archives', 'for every published archive')
+        self.mutation('docs/releases.md', 'elif [ "${MININGCORE_VERSION:-}" != v0.4.0-rc.1 ]; then', 'elif false; then')
+        for filename in ('check-share-owner.sql', 'check-pps-arithmetic-ownership.sql'):
+            self.mutation('docs/releases.md', f'test -r "$release_dir/scripts/release/{filename}" || return', 'true')
 
     def test_archive_plan_routes_and_migration_boundaries_are_required(self):
         for fragment in ('none) return 0', 'pps-arithmetic)', 'cumulative)',

@@ -170,6 +170,9 @@ def validate(documents, baseline):
     require(len(upgrade_blocks) == 1, 'Expected one explicitly selected archive upgrade example')
     if len(upgrade_blocks) == 1:
         for fragment in ('${MININGCORE_MIGRATION_PLAN:-}', 'none) return 0',
+                         'elif [ "${MININGCORE_VERSION:-}" != v0.4.0-rc.1 ]; then',
+                         'test -r "$release_dir/scripts/release/check-share-owner.sql" || return',
+                         'test -r "$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" || return',
                          'pps-arithmetic)', 'cumulative)', '*) return 1',
                          'unset MININGCORE_MIGRATION_PLAN',
                          '"$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" &&',
@@ -177,6 +180,10 @@ def validate(documents, baseline):
                          '"$release_dir/migrations/add_pps_arithmetic_version.sql"',
                          'apply_selected_migrations &&'):
             require(fragment in upgrade_blocks[0], f'Missing guarded upgrade route: {fragment}')
+    require('https://github.com/NINJAK1DD/miningcore/blob/dd86092d2616b5ad7023382e1bdd95b59bfa548a/docs/releases.md#upgrade-or-roll-back' in release,
+            'The stable v0.3.0 upgrade route must link to its immutable release runbook')
+    require('only for v0.4.0-rc.1 archives' in prose(release),
+            'The guarded candidate upgrade must be explicitly scoped to RC.1 archives')
     cumulative = console_blocks(documents['docs/database.md'],
                                 '"$MININGCORE_CANDIDATE_DIR/migrations/add_auxpow_block_idempotency.sql"')
     require(len(cumulative) == 1, 'Expected one manual cumulative migration command')
