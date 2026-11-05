@@ -2073,9 +2073,18 @@ If a check stops this procedure, use [When an RC.1 upgrade stops](troubleshootin
 The output identifies the failed step and what this block has attempted. Keep the
 first underlying error private for diagnosis; do not bypass a check to continue.
 
+Also set `MININGCORE_EXPECTED_SOURCE_COMMIT` to the full lowercase source SHA
+established independently from the selected release's verified tag or build
+provenance. This is the source commit identifier, not the archive's SHA256 checksum.
+If you cannot verify it, ask the release operator before running the upgrade.
+Do not obtain this expected value from the extracted BUILD-INFO or
+from the candidate binary itself. The block compares all three identities before
+shutdown; it never treats an internally consistent archive as its own trust source.
+
 ```console
 umask 077
 MININGCORE_UPGRADE_READY=
+upgrade_backup=
 miningcore_migration_plan=${MININGCORE_MIGRATION_PLAN:-}
 unset MININGCORE_MIGRATION_PLAN
 miningcore_upgrade_step=archive-readiness
@@ -2097,9 +2106,14 @@ elif [ "$miningcore_migration_plan" != none ] &&
      [ "$miningcore_migration_plan" != cumulative ]; then
   miningcore_upgrade_step=migration-plan
   report_upgrade_stop 'explicitly select the reviewed migration plan'
+elif [[ ! "${MININGCORE_EXPECTED_SOURCE_COMMIT:-}" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+  miningcore_upgrade_step=release-source
+  report_upgrade_stop 'set the independently verified full source SHA for this release'
+elif [ "${MININGCORE_UBUNTU:-}" != 22.04 ] && [ "${MININGCORE_UBUNTU:-}" != 26.04 ]; then
+  miningcore_upgrade_step=release-target
+  report_upgrade_stop 'select the verified Ubuntu 22.04 or 26.04 archive matching this host'
 else
   release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
-  upgrade_backup="$HOME/miningcore-before-${MININGCORE_VERSION}.dump"
 
   stage_miningcore_candidate() {
     miningcore_upgrade_step=candidate-directory
@@ -2117,13 +2131,38 @@ else
     test -r "$release_dir/scripts/release/check-share-owner.sql" || return
     miningcore_upgrade_step=arithmetic-owner-file
     test -r "$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" || return
+    miningcore_upgrade_step=selected-migration-files
+    case "$miningcore_migration_plan" in
+      none) ;;
+      pps-arithmetic)
+        test -r "$release_dir/migrations/add_pps_arithmetic_version.sql" || return ;;
+      cumulative)
+        test -r "$release_dir/migrations/add_auxpow_block_idempotency.sql" &&
+        test -r "$release_dir/migrations/add_payout_manager_ownership.sql" &&
+        test -r "$release_dir/migrations/add_share_accounting.sql" || return ;;
+    esac
     miningcore_upgrade_step=build-info
-    cat "$release_dir/BUILD-INFO" || return
+    build_info=$(cat "$release_dir/BUILD-INFO") || return
+    recorded_version=$(printf '%s\n' "$build_info" | sed -n 's/^Version: //p') || return
+    recorded_target=$(printf '%s\n' "$build_info" | sed -n 's/^Target: //p') || return
+    recorded_commit=$(printf '%s\n' "$build_info" | sed -n 's/^Source commit: //p') || return
+    miningcore_upgrade_step=candidate-identity
+    test "$recorded_version" = "$MININGCORE_VERSION" &&
+      test "$recorded_target" = "Ubuntu $MININGCORE_UBUNTU x64" &&
+      test "$recorded_commit" = "$MININGCORE_EXPECTED_SOURCE_COMMIT" || return
     miningcore_upgrade_step=candidate-version
-    LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return
+    candidate_version_output=$(LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version) || return
+    candidate_version_line=$(printf '%s\n' "$candidate_version_output" | tail -n 1) || return
+    test "$candidate_version_line" = "${MININGCORE_VERSION#v} [$MININGCORE_EXPECTED_SOURCE_COMMIT]" || return
   }
 
   if stage_miningcore_candidate; then
+    reserve_upgrade_backup() {
+      miningcore_upgrade_step=backup-location
+      upgrade_backup_dir=$(mktemp -d "$HOME/miningcore-before-${MININGCORE_VERSION}.XXXXXXXX") || return
+      upgrade_backup="$upgrade_backup_dir/miningcore.dump"
+      printf 'Backup destination (may be incomplete): %s\n' "$upgrade_backup"
+    }
     apply_selected_migrations() {
       case "$miningcore_migration_plan" in
         none) return 0 ;;
@@ -2152,12 +2191,13 @@ else
         *) return 1 ;;
       esac
     }
-    if miningcore_upgrade_step=service-stop &&
+    if reserve_upgrade_backup &&
+       miningcore_upgrade_step=service-stop &&
        miningcore_service_state='stop requested; completion unconfirmed' &&
        sudo systemctl stop miningcore &&
        miningcore_service_state='stop confirmed by systemctl' &&
        miningcore_upgrade_step=database-backup &&
-       sudo -u postgres pg_dump -Fc -d miningcore > "$upgrade_backup" &&
+       (set -C; sudo -u postgres pg_dump -Fc -d miningcore > "$upgrade_backup") &&
        miningcore_upgrade_step=backup-inventory &&
        pg_restore --list "$upgrade_backup" > /dev/null &&
        apply_selected_migrations &&
@@ -2185,6 +2225,17 @@ explicitly before retrying; neither migration plan repairs it automatically.
 The exact-version gate runs before staging or database access. Staging also checks
 that both packaged ownership preflights are readable before stopping the service;
 a missing file is an incomplete candidate, never permission to skip a safety check.
+The selected plan's migration SQL must also be readable before shutdown. Metadata
+version, Ubuntu target and source SHA must match the selected release and the
+independent expected SHA; the binary's final version line must match that version
+and SHA exactly. Duplicate/missing identity fields are rejected, not guessed.
+
+Each attempt reserves a new private backup directory before shutdown. The dump is
+created without overwriting an existing file, and its destination is printed
+before the dump runs. Preserve that directory on success or failure; a failed
+dump may leave an incomplete file. Neither an earlier backup nor a failed
+attempt's evidence is deleted automatically. Keep backup paths private when
+sharing diagnostics, and establish a restorable backup before migrations.
 
 Start the service only when the block prints `READY` and exports
 `MININGCORE_UPGRADE_READY=1`. The old symlink remains intact after a staging, backup or migration

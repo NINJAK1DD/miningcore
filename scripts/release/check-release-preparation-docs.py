@@ -170,6 +170,9 @@ def validate(documents, baseline):
                     f'{name}: both manual SQL commands must fail closed and ignore psql startup files')
     require(len(upgrade_blocks) == 1, 'Expected one explicitly selected archive upgrade example')
     if len(upgrade_blocks) == 1:
+        require(upgrade_blocks[0].count('pps-arithmetic)') == 2 and
+                upgrade_blocks[0].count('cumulative)') == 2,
+                'Selected-file checks and migration execution must both handle the reviewed plans')
         for fragment in ('${MININGCORE_MIGRATION_PLAN:-}', 'none) return 0',
                          'elif [ "${MININGCORE_VERSION:-}" != v0.4.0-rc.1 ]; then',
                          'test -r "$release_dir/scripts/release/check-share-owner.sql" || return',
@@ -179,11 +182,21 @@ def validate(documents, baseline):
                          'report_upgrade_stop()', 'return 1\n}',
                          'Failed step: %s', 'Service: %s', 'Schema: %s',
                          'docs/troubleshooting.md#when-an-rc1-upgrade-stops',
+                         'upgrade_backup_dir=$(mktemp -d "$HOME/miningcore-before-${MININGCORE_VERSION}.XXXXXXXX")',
+                         '(set -C; sudo -u postgres pg_dump -Fc -d miningcore > "$upgrade_backup")',
+                         'test "$recorded_version" = "$MININGCORE_VERSION"',
+                         'test "$recorded_target" = "Ubuntu $MININGCORE_UBUNTU x64"',
+                         'test "$recorded_commit" = "$MININGCORE_EXPECTED_SOURCE_COMMIT"',
+                         'test "$candidate_version_line" = "${MININGCORE_VERSION#v} [$MININGCORE_EXPECTED_SOURCE_COMMIT]"',
                          '"$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" &&',
                          '"$release_dir/scripts/release/check-share-owner.sql" &&',
                          '"$release_dir/migrations/add_pps_arithmetic_version.sql"',
                          'apply_selected_migrations &&'):
             require(fragment in upgrade_blocks[0], f'Missing guarded upgrade route: {fragment}')
+        for filename in ('add_pps_arithmetic_version.sql', 'add_auxpow_block_idempotency.sql',
+                         'add_payout_manager_ownership.sql', 'add_share_accounting.sql'):
+            require(f'test -r "$release_dir/migrations/{filename}"' in upgrade_blocks[0],
+                    f'Selected migration inventory must check {filename} before shutdown')
     troubleshooting = documents['docs/troubleshooting.md']
     require('## When an RC.1 upgrade stops' in troubleshooting,
             'Missing operator upgrade-stop entry point')

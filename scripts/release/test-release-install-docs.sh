@@ -1029,7 +1029,7 @@ find_unique_line() {
   local source=$3
   local -a matches
 
-  mapfile -t matches < <(grep -nF "$pattern" <<<"$source" | cut -d: -f1)
+  mapfile -t matches < <(grep -nF -- "$pattern" <<<"$source" | cut -d: -f1)
   if [[ "${#matches[@]}" -ne 1 ]]; then
     echo "Installation-order anchor '$label' occurred ${#matches[@]} times; expected 1" >&2
     return 1
@@ -1229,15 +1229,15 @@ upgrade_restore_check_line=$(
 )
 upgrade_auxpow_line=$(
   find_unique_line upgrade-auxpow-migration \
-    '"$release_dir/migrations/add_auxpow_block_idempotency.sql"' "$upgrade_block"
+    '-f "$release_dir/migrations/add_auxpow_block_idempotency.sql"' "$upgrade_block"
 )
 upgrade_ownership_line=$(
   find_unique_line upgrade-ownership-migration \
-    '"$release_dir/migrations/add_payout_manager_ownership.sql"' "$upgrade_block"
+    '-f "$release_dir/migrations/add_payout_manager_ownership.sql"' "$upgrade_block"
 )
 upgrade_accounting_line=$(
   find_unique_line upgrade-accounting-migration \
-    '"$release_dir/migrations/add_share_accounting.sql"' "$upgrade_block"
+    '-f "$release_dir/migrations/add_share_accounting.sql"' "$upgrade_block"
 )
 upgrade_apply_line=$(
   find_unique_line upgrade-selected-migrations '       apply_selected_migrations &&' "$upgrade_block"
@@ -1781,8 +1781,13 @@ case "$*" in
     mkdir -p "${DOC_TEST_RELEASE_DIR:?}/migrations" "$DOC_TEST_RELEASE_DIR/scripts/release"
     touch "$DOC_TEST_RELEASE_DIR/scripts/release/check-share-owner.sql" \
       "$DOC_TEST_RELEASE_DIR/scripts/release/check-pps-arithmetic-ownership.sql"
-    printf '%s\n' 'fixture build identity' > "$DOC_TEST_RELEASE_DIR/BUILD-INFO"
-    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$DOC_TEST_RELEASE_DIR/Miningcore"
+    touch "$DOC_TEST_RELEASE_DIR/migrations/add_pps_arithmetic_version.sql" \
+      "$DOC_TEST_RELEASE_DIR/migrations/add_auxpow_block_idempotency.sql" \
+      "$DOC_TEST_RELEASE_DIR/migrations/add_payout_manager_ownership.sql" \
+      "$DOC_TEST_RELEASE_DIR/migrations/add_share_accounting.sql"
+    printf '%s\n' 'Version: v0.4.0-rc.1' 'Target: Ubuntu 26.04 x64' \
+      'Source commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$DOC_TEST_RELEASE_DIR/BUILD-INFO"
+    printf '%s\n' '#!/usr/bin/env bash' "echo '0.4.0-rc.1 [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]'" 'exit 0' > "$DOC_TEST_RELEASE_DIR/Miningcore"
     chmod +x "$DOC_TEST_RELEASE_DIR/Miningcore"
     ;;
   *pg_dump*)
@@ -1803,6 +1808,7 @@ failed_upgrade_output=$(
     DOC_TEST_TRACE="$trace" DOC_TEST_RELEASE_DIR="$candidate_dir" \
     DOC_TEST_SHARE_MIGRATION_STATUS=1 MININGCORE_RELEASE_READY=1 MININGCORE_MIGRATION_PLAN=cumulative \
     MININGCORE_VERSION=v0.4.0-rc.1 MININGCORE_UBUNTU=26.04 \
+    MININGCORE_EXPECTED_SOURCE_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     archive="$fixture_dir/download/candidate.tar.gz" \
     bash -c "$upgrade_fixture_block" 2>&1
 ) || failed_upgrade_status=$?
@@ -1820,6 +1826,7 @@ successful_upgrade_output=$(
     DOC_TEST_TRACE="$trace" DOC_TEST_RELEASE_DIR="$candidate_dir" \
     DOC_TEST_SHARE_MIGRATION_STATUS=0 MININGCORE_RELEASE_READY=1 MININGCORE_MIGRATION_PLAN=cumulative \
     MININGCORE_VERSION=v0.4.0-rc.1 MININGCORE_UBUNTU=26.04 \
+    MININGCORE_EXPECTED_SOURCE_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     archive="$fixture_dir/download/candidate.tar.gz" \
     bash -c "$upgrade_fixture_block" 2>&1
 )
