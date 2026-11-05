@@ -49,18 +49,24 @@ The standalone migration grants transition-table SELECT to the owner of
 `pps_share_credits`, not to every role previously granted accounting-table DML.
 Some older migrations assigned accounting tables to the database owner while
 `shares` belonged to the application role. Those grants alone do not satisfy the
-new transition read boundary. Standard installs whose owners already match are
-unaffected.
+new transition read boundary. Standard installs whose owners already match the
+non-superuser application role are unaffected.
 
 The packaged/source `scripts/release/check-pps-arithmetic-ownership.sql` is a
 read-only check that requires `share_accounting_groups`,
 `share_accounting_prune_state`, `pps_share_credits` and `pps_credit_remainders`
-to share the `shares` owner. Missing tables or mismatched owners stop the
-standalone path before schema changes. Use the same database, administrator and
+to share the non-superuser `shares` application owner. Missing tables, mismatched
+owners or a superuser owning `shares` stop the standalone path before schema
+changes. Use the same database, administrator and
 `search_path` for preflight and migration, with all writers stopped.
 
 On failure, inspect the relation owners and configured runtime/writer roles on a
-restored database first. A separate administrator may explicitly align **only
+restored database first. If `shares` itself is superuser-owned, a separate
+administrator must first reconcile its ownership to the established non-superuser
+application role while retaining the data and required grants. The cumulative
+accounting migration alone does not repair a superuser-owned `shares` table.
+Never make the runtime a superuser to match its table owner.
+A separate administrator may then explicitly align **only
 those four accounting tables** to the established `shares` application owner, or
 select the cumulative accounting migration as an intentional ownership repair.
 The latter also rebuilds indexes and includes the arithmetic migration; do not

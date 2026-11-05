@@ -35,6 +35,30 @@ public class SettlementShareAuditTests
             await using(var install = new NpgsqlCommand(createdb[..createdb.IndexOf(marker, StringComparison.Ordinal)]
                 .Replace("SET ROLE miningcore;", ""), connection))
                 await install.ExecuteNonQueryAsync();
+            var preflight = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "check-pps-arithmetic-ownership.sql"));
+            // All five table owners match here, but belong to the fixture's
+            // superuser. Old grant-only layouts must not pass on equality alone.
+            await using(var grantShares = new NpgsqlCommand($"GRANT ALL ON shares TO {app}", connection))
+                await grantShares.ExecuteNonQueryAsync();
+            foreach(var table in tables)
+            {
+                await using var grant = new NpgsqlCommand($"GRANT ALL ON {table} TO {app}", connection);
+                await grant.ExecuteNonQueryAsync();
+            }
+            await using(var check = new NpgsqlCommand(preflight, connection))
+            {
+                var error = await Assert.ThrowsAsync<PostgresException>(() => check.ExecuteReaderAsync());
+                Assert.Equal("55000", error.SqlState);
+                Assert.Contains("superuser", error.MessageText);
+            }
+            await using(var rollback = new NpgsqlCommand("ROLLBACK", connection))
+                await rollback.ExecuteNonQueryAsync();
+            await using(var untouched = new NpgsqlCommand("""
+                SELECT to_regclass('pps_arithmetic_transitions') IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid='pps_share_credits'::regclass AND attname='arithmeticversion')
+                  AND (SELECT rolsuper FROM pg_roles WHERE oid=(SELECT relowner FROM pg_class WHERE oid='shares'::regclass))
+                """, connection))
+                Assert.True((bool) await untouched.ExecuteScalarAsync());
             await using(var sharesOwner = new NpgsqlCommand($"ALTER TABLE shares OWNER TO {app}", connection))
                 await sharesOwner.ExecuteNonQueryAsync();
             foreach(var table in tables)
@@ -42,7 +66,6 @@ public class SettlementShareAuditTests
                 await using var align = new NpgsqlCommand($"ALTER TABLE {table} OWNER TO {app}", connection);
                 await align.ExecuteNonQueryAsync();
             }
-            var preflight = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "check-pps-arithmetic-ownership.sql"));
             foreach(var table in tables)
             {
                 // Reproduce the old database-owner + application-DML-grants shape.

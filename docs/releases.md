@@ -2035,8 +2035,8 @@ block's readiness latch and archive path. Before running it, explicitly set
   prerequisites are installed (including unchanged v0.3.0 BTC SOLO or LTC/DOGE SOLO/SOLO).
 - `pps-arithmetic`: a complete v0.3.0 PPS or pooled merged accounting schema needs
   only the standalone arithmetic migration. The four accounting tables must have
-  the same owner as `shares`; the read-only preflight below enforces this before
-  the migration. Retaining version 0 still requires it.
+  the same non-superuser application owner as `shares`; the read-only preflight
+  below enforces this before the migration. Retaining version 0 still requires it.
 - `cumulative`: earlier AuxPoW/ownership/accounting prerequisites are missing,
   or an administrator has explicitly selected the accounting-ownership repair
   described in the [ownership procedure](pps-arithmetic-migration.md#standalone-ownership-precondition).

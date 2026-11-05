@@ -156,7 +156,7 @@ An otherwise complete **v0.3.0 accounting schema → standalone
 not the cumulative sequence. Set `MININGCORE_CANDIDATE_DIR` to the exact verified
 immutable candidate first; stop all writers and prove the backup as described below
 before running either path. The standalone path additionally requires matching
-accounting ownership; follow the [ownership precondition and recovery choices](pps-arithmetic-migration.md#standalone-ownership-precondition).
+non-superuser application ownership; follow the [ownership precondition and recovery choices](pps-arithmetic-migration.md#standalone-ownership-precondition).
 Run the packaged read-only preflight before the migration; a failed check must
 stop the sequence, not select a fallback automatically:
 

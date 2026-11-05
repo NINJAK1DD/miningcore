@@ -10,7 +10,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = ROOT / 'scripts/release/fixtures/v0.4.0-rc.1-legacy-release-anchors.txt'
 DOCUMENTS = ('README.md', 'docs/releases.md', 'docs/database.md',
-             'docs/upgrade-v0.4.0-rc.1.md', 'docs/bitcoin-minimum-difficulty.md')
+             'docs/upgrade-v0.4.0-rc.1.md', 'docs/bitcoin-minimum-difficulty.md',
+             'docs/pps-arithmetic-migration.md')
 STABLE_BOUNDARY = 'The latest stable baseline remains v0.3.0 until a newer stable release is published.'
 NO_SQL = 'No new SQL solely for this upgrade when the v0.3.0 prerequisites are installed.'
 
@@ -155,6 +156,17 @@ def validate(documents, baseline):
         require('missing earlier prerequisites' in prose(documents[name]),
                 f'{name}: cumulative migration must be scoped to missing prerequisites')
     upgrade_blocks = console_blocks(release, 'MININGCORE_UPGRADE_READY=')
+    for name in ('docs/database.md', 'docs/pps-arithmetic-migration.md'):
+        migration = '"$MININGCORE_CANDIDATE_DIR/migrations/add_pps_arithmetic_version.sql"'
+        preflight = '-f "$MININGCORE_CANDIDATE_DIR/scripts/release/check-pps-arithmetic-ownership.sql" &&'
+        blocks = console_blocks(documents[name], migration)
+        require(len(blocks) == 1, f'{name}: expected one manual standalone migration command')
+        if len(blocks) == 1:
+            block = blocks[0]
+            require(block.count(preflight) == 1 and block.index(preflight) < block.index(migration),
+                    f'{name}: ownership preflight must gate the standalone migration')
+            require(block.count('psql -X -v ON_ERROR_STOP=1') == 2,
+                    f'{name}: both manual SQL commands must fail closed and ignore psql startup files')
     require(len(upgrade_blocks) == 1, 'Expected one explicitly selected archive upgrade example')
     if len(upgrade_blocks) == 1:
         for fragment in ('${MININGCORE_MIGRATION_PLAN:-}', 'none) return 0',

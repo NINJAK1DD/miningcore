@@ -441,6 +441,22 @@ test() { if [ "$1" = -d ]; then [ "$FAIL" != missing-migrations ]; return; fi; c
         for name in ('docs/database.md', 'docs/releases.md'):
             self.mutation(name, 'pps-arithmetic-migration.md#explicit-one-way-activation', 'database.md')
 
+    def test_manual_standalone_commands_require_fail_closed_ownership_preflight(self):
+        preflight = '-f "$MININGCORE_CANDIDATE_DIR/scripts/release/check-pps-arithmetic-ownership.sql" &&'
+        for name in ('docs/database.md', 'docs/pps-arithmetic-migration.md'):
+            for replacement in ('', preflight.replace(' &&', ''), 'true &&'):
+                with self.subTest(document=name, replacement=replacement):
+                    self.mutation(name, preflight, replacement)
+            self.mutation(name, 'psql -X -v ON_ERROR_STOP=1', 'psql')
+            documents = self.original.copy()
+            blocks = guard.console_blocks(documents[name], '"$MININGCORE_CANDIDATE_DIR/migrations/add_pps_arithmetic_version.sql"')
+            self.assertEqual(1, len(blocks))
+            # Both filenames remaining somewhere in the page must not satisfy
+            # the guard when the preflight no longer gates the migration.
+            reordered = '\n'.join(reversed(blocks[0].splitlines()))
+            documents[name] = documents[name].replace(blocks[0], reordered, 1)
+            self.assertTrue(guard.validate(documents, self.baseline))
+
     def test_each_stable_boundary_is_required(self):
         for name in ('README.md', 'docs/releases.md'):
             # Keep original line wrapping so this mutation tests both documents.

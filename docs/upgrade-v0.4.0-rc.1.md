@@ -53,8 +53,8 @@ also rebuilds the pruning index). A failed schema preflight can also indicate
 incorrect privileges or defaults; diagnose the failure rather than rerunning SQL
 blindly or granting the application administrative privileges.
 
-For the standalone path, the four accounting tables must have the same owner as
-`shares`; run the packaged read-only ownership preflight before the migration.
+For the standalone path, the four accounting tables must have the same non-superuser
+application owner as `shares`; run the packaged read-only ownership preflight before the migration.
 Older databases that used grants instead of matching owners need an explicit
 [ownership reconciliation](pps-arithmetic-migration.md#standalone-ownership-precondition)
 first, not an automatic fallback. Check every configured writer's transition-table
