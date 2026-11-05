@@ -532,6 +532,27 @@ sudo() {{ printf '%s\\n' "$*" >> "$TRACE"; return 99; }}
                     self.assertTrue(guard.validate(documents, self.baseline),
                                     'each individual SQL command must retain its safety flags')
 
+    def test_manual_migration_blocks_reject_extra_psql_invocations(self):
+        cases = (('docs/database.md', 'add_pps_arithmetic_version.sql'),
+                 ('docs/pps-arithmetic-migration.md', 'add_pps_arithmetic_version.sql'),
+                 ('docs/database.md', 'add_auxpow_block_idempotency.sql'))
+        extras = ("psql -d miningcore -c 'SELECT 1;'",
+                  "psql\t-d miningcore -c 'SELECT 1;'",
+                  'psql',
+                  "sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore -c 'SELECT 1;'")
+        for name, filename in cases:
+            blocks = guard.console_blocks(self.original[name],
+                f'"$MININGCORE_CANDIDATE_DIR/migrations/{filename}"')
+            self.assertEqual(1, len(blocks))
+            for extra in extras:
+                for position in ('before', 'after'):
+                    with self.subTest(document=name, block=filename, extra=extra, position=position):
+                        changed = extra + '\n' + blocks[0] if position == 'before' else blocks[0] + extra
+                        documents = self.original.copy()
+                        documents[name] = documents[name].replace(blocks[0], changed + '\n', 1)
+                        self.assertTrue(guard.validate(documents, self.baseline),
+                                        'additional SQL commands must not escape the reviewed invocation inventory')
+
     def test_each_stable_boundary_is_required(self):
         for name in ('README.md', 'docs/releases.md'):
             # Keep original line wrapping so this mutation tests both documents.

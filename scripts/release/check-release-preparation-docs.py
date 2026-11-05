@@ -165,7 +165,8 @@ def validate(documents, baseline):
             block = blocks[0]
             require(block.count(preflight) == 1 and block.index(preflight) < block.index(migration),
                     f'{name}: ownership preflight must gate the standalone migration')
-            require(block.count('psql -X -v ON_ERROR_STOP=1') == 2,
+            require(len(re.findall(r'\bpsql(?=\s|$)', block)) ==
+                    block.count('psql -X -v ON_ERROR_STOP=1') == 2,
                     f'{name}: both manual SQL commands must fail closed and ignore psql startup files')
     require(len(upgrade_blocks) == 1, 'Expected one explicitly selected archive upgrade example')
     if len(upgrade_blocks) == 1:
@@ -188,7 +189,8 @@ def validate(documents, baseline):
                                 '"$MININGCORE_CANDIDATE_DIR/migrations/add_auxpow_block_idempotency.sql"')
     require(len(cumulative) == 1, 'Expected one manual cumulative migration command')
     if len(cumulative) == 1:
-        require(cumulative[0].count('psql -X -v ON_ERROR_STOP=1') == 4,
+        require(len(re.findall(r'\bpsql(?=\s|$)', cumulative[0])) ==
+                cumulative[0].count('psql -X -v ON_ERROR_STOP=1') == 4,
                 'All four manual cumulative SQL commands must fail closed and ignore psql startup files')
         for filename in ('scripts/release/check-share-owner.sql',
                          'migrations/add_auxpow_block_idempotency.sql',
