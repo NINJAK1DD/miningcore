@@ -513,6 +513,25 @@ sudo() {{ printf '%s\\n' "$*" >> "$TRACE"; return 99; }}
         self.mutation('docs/database.md',
                       '-f "$MININGCORE_CANDIDATE_DIR/scripts/release/check-share-owner.sql" &&', 'true &&')
 
+    def test_each_manual_cumulative_psql_call_requires_startup_isolation_and_error_stop(self):
+        name = 'docs/database.md'
+        blocks = guard.console_blocks(self.original[name],
+            '"$MININGCORE_CANDIDATE_DIR/migrations/add_auxpow_block_idempotency.sql"')
+        self.assertEqual(1, len(blocks))
+        lines = blocks[0].splitlines()
+        calls = [index for index, line in enumerate(lines) if line.startswith('sudo -u postgres psql ')]
+        self.assertEqual(4, len(calls))
+        for index in calls:
+            for flag in (' -X', ' -v ON_ERROR_STOP=1'):
+                with self.subTest(command=index, missing_flag=flag):
+                    changed = lines.copy()
+                    self.assertIn(flag, changed[index])
+                    changed[index] = changed[index].replace(flag, '', 1)
+                    documents = self.original.copy()
+                    documents[name] = documents[name].replace(blocks[0], '\n'.join(changed) + '\n', 1)
+                    self.assertTrue(guard.validate(documents, self.baseline),
+                                    'each individual SQL command must retain its safety flags')
+
     def test_each_stable_boundary_is_required(self):
         for name in ('README.md', 'docs/releases.md'):
             # Keep original line wrapping so this mutation tests both documents.
