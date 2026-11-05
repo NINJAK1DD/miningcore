@@ -10,6 +10,96 @@ namespace Miningcore.Tests.Persistence.Postgres;
 public class SettlementShareAuditTests
 {
     [PostgresIntegrationFact]
+    public async Task ArithmeticOwnershipPreflight_RejectsLegacyGrantOnlyOwnersBeforeMigration_AndAllowsReconciledWriter()
+    {
+        await using var connection = new NpgsqlConnection(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"));
+        await connection.OpenAsync();
+        var suffix = Guid.NewGuid().ToString("N");
+        var schema = $"miningcore_owner_{suffix}";
+        var app = $"audit_writer_{suffix}";
+        var tables = new[] { "share_accounting_groups", "share_accounting_prune_state", "pps_share_credits", "pps_credit_remainders" };
+        try
+        {
+            await using(var setup = new NpgsqlCommand($"""
+                CREATE ROLE {app} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+                CREATE SCHEMA {schema};
+                GRANT USAGE ON SCHEMA {schema} TO {app};
+                SET search_path TO {schema}, pg_catalog, pg_temp;
+                """, connection))
+                await setup.ExecuteNonQueryAsync();
+            var createdb = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("createdb.sql"));
+            // Use the real accounting definitions before their generated arithmetic
+            // append. No frozen production schema or shared application role is altered.
+            const string marker = "-- BEGIN GENERATED PPS ARITHMETIC MIGRATION";
+            Assert.Contains(marker, createdb);
+            await using(var install = new NpgsqlCommand(createdb[..createdb.IndexOf(marker, StringComparison.Ordinal)]
+                .Replace("SET ROLE miningcore;", ""), connection))
+                await install.ExecuteNonQueryAsync();
+            await using(var sharesOwner = new NpgsqlCommand($"ALTER TABLE shares OWNER TO {app}", connection))
+                await sharesOwner.ExecuteNonQueryAsync();
+            foreach(var table in tables)
+            {
+                await using var align = new NpgsqlCommand($"ALTER TABLE {table} OWNER TO {app}", connection);
+                await align.ExecuteNonQueryAsync();
+            }
+            var preflight = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "check-pps-arithmetic-ownership.sql"));
+            foreach(var table in tables)
+            {
+                // Reproduce the old database-owner + application-DML-grants shape.
+                await using(var mismatch = new NpgsqlCommand($"ALTER TABLE {table} OWNER TO CURRENT_USER; GRANT ALL ON {table} TO {app}", connection))
+                    await mismatch.ExecuteNonQueryAsync();
+                await using(var check = new NpgsqlCommand(preflight, connection))
+                {
+                    var error = await Assert.ThrowsAsync<PostgresException>(() => check.ExecuteReaderAsync());
+                    Assert.Equal("55000", error.SqlState);
+                }
+                await using(var rollback = new NpgsqlCommand("ROLLBACK", connection))
+                    await rollback.ExecuteNonQueryAsync();
+                await using(var untouched = new NpgsqlCommand($"""
+                    SELECT to_regclass('pps_arithmetic_transitions') IS NULL
+                      AND NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid='pps_share_credits'::regclass AND attname='arithmeticversion')
+                      AND (SELECT relowner FROM pg_class WHERE oid='{table}'::regclass)
+                          = (SELECT oid FROM pg_roles WHERE rolname=current_user)
+                    """, connection))
+                    Assert.True((bool) await untouched.ExecuteScalarAsync());
+                await using var repair = new NpgsqlCommand($"ALTER TABLE {table} OWNER TO {app}", connection);
+                await repair.ExecuteNonQueryAsync();
+            }
+            await using(var hide = new NpgsqlCommand("ALTER TABLE share_accounting_prune_state RENAME TO hidden_prune_state", connection))
+                await hide.ExecuteNonQueryAsync();
+            await using(var check = new NpgsqlCommand(preflight, connection))
+            {
+                var error = await Assert.ThrowsAsync<PostgresException>(() => check.ExecuteReaderAsync());
+                Assert.Equal(PostgresErrorCodes.UndefinedTable, error.SqlState);
+            }
+            await using(var restore = new NpgsqlCommand("ROLLBACK; ALTER TABLE hidden_prune_state RENAME TO share_accounting_prune_state", connection))
+                await restore.ExecuteNonQueryAsync();
+            await using(var check = new NpgsqlCommand(preflight, connection))
+                await check.ExecuteNonQueryAsync();
+            var migration = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_pps_arithmetic_version.sql"));
+            await using(var migrate = new NpgsqlCommand(migration.Replace("\\set ON_ERROR_STOP on", ""), connection))
+                await migrate.ExecuteNonQueryAsync();
+            await using(var writer = new NpgsqlCommand($"""
+                SET ROLE {app};
+                INSERT INTO share_accounting_groups(accountingid, projectioncount, payloadhash, created)
+                  VALUES('00000000-0000-0000-0000-000000000001', 1, repeat('A',64), now());
+                INSERT INTO pps_share_credits(poolid, accountingid, address, calculatedamount, creditedamount,
+                  difficulty, networkdifficulty, rewardbasissatoshis, created)
+                  VALUES('owner-fixture', '00000000-0000-0000-0000-000000000001', 'fixture-miner', 2, 1, 10, 1, 1000, now());
+                SELECT arithmeticversion=0 AND has_table_privilege(current_user, 'pps_arithmetic_transitions', 'SELECT')
+                  AND NOT has_table_privilege(current_user, 'pps_arithmetic_transitions', 'INSERT,UPDATE,DELETE,TRUNCATE')
+                FROM pps_share_credits WHERE poolid='owner-fixture';
+                """, connection))
+                Assert.True((bool) await writer.ExecuteScalarAsync());
+        }
+        finally
+        {
+            await using var cleanup = new NpgsqlCommand($"ROLLBACK; RESET ROLE; SET search_path TO pg_catalog; DROP SCHEMA IF EXISTS {schema} CASCADE; DROP ROLE IF EXISTS {app}", connection);
+            await cleanup.ExecuteNonQueryAsync();
+        }
+    }
+
+    [PostgresIntegrationFact]
     public async Task FullSettlementAudit_RunsOnFreshAccountingSchemaWithoutChangingReceipts()
     {
         await using var connection = new NpgsqlConnection(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"));

@@ -205,7 +205,8 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
 
   # Operator actions must be available at the documented path and excluded from
   # the migration directory, where unattended schema runners may look for SQL.
-  for audit in audit-settlement-shares.sql audit-legacy-settlement-shares.sql; do
+  for audit in audit-settlement-shares.sql audit-legacy-settlement-shares.sql \
+      check-pps-arithmetic-ownership.sql; do
     tar -xOf "$output_dir/$archive" "$package_root/scripts/release/$audit" |
       cmp - "$repository_root/scripts/release/$audit"
     if tar -tzf "$output_dir/$archive" | grep -Fx "$package_root/migrations/$audit" >/dev/null; then

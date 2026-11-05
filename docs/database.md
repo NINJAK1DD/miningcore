@@ -155,15 +155,20 @@ An otherwise complete **v0.3.0 accounting schema → standalone
 [`add_pps_arithmetic_version.sql`](pps-arithmetic-migration.md#explicit-one-way-activation)**,
 not the cumulative sequence. Set `MININGCORE_CANDIDATE_DIR` to the exact verified
 immutable candidate first; stop all writers and prove the backup as described below
-before running either path. Then run:
+before running either path. The standalone path additionally requires matching
+accounting ownership; follow the [ownership precondition and recovery choices](pps-arithmetic-migration.md#standalone-ownership-precondition).
+Run the packaged read-only preflight before the migration; a failed check must
+stop the sequence, not select a fallback automatically:
 
 ```console
-test -f "$MININGCORE_CANDIDATE_DIR/migrations/add_pps_arithmetic_version.sql" &&
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+  -f "$MININGCORE_CANDIDATE_DIR/scripts/release/check-pps-arithmetic-ownership.sql" &&
   sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
     -f "$MININGCORE_CANDIDATE_DIR/migrations/add_pps_arithmetic_version.sql"
 ```
 
-The cumulative sequence below is **only for databases missing earlier prerequisites**,
+The cumulative sequence below is **only for databases missing earlier prerequisites**
+or an explicitly reviewed accounting-ownership repair,
 including adding accounting to a database without it. Do not rerun it on a complete
 v0.3.0 accounting schema, or merely because an already prepared SOLO service is being replaced.
 

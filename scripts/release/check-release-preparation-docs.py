@@ -159,6 +159,8 @@ def validate(documents, baseline):
     if len(upgrade_blocks) == 1:
         for fragment in ('${MININGCORE_MIGRATION_PLAN:-}', 'none) return 0',
                          'pps-arithmetic)', 'cumulative)', '*) return 1',
+                         'unset MININGCORE_MIGRATION_PLAN',
+                         '"$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" &&',
                          '"$release_dir/migrations/add_pps_arithmetic_version.sql"',
                          'apply_selected_migrations &&'):
             require(fragment in upgrade_blocks[0], f'Missing guarded upgrade route: {fragment}')
@@ -167,7 +169,7 @@ def validate(documents, baseline):
     if len(extraction) == 1:
         for fragment in ('docker create --network none "$image"',
                          'docker rm -v "$container"', '"$container:/app/migrations"',
-                         '"$container:/app/BUILD-INFO"', '"$container:/app/scripts"', 'rc=$?',
+                         '"$container:/app/BUILD-INFO"', '"$container:/app/scripts/release"', 'rc=$?',
                          'trap cleanup_candidate EXIT', 'exit "$rc"'):
             require(fragment in extraction[0], f'Unsafe SQL extraction example: missing {fragment}')
         require('Candidate extraction directory (may be incomplete):' in extraction[0],

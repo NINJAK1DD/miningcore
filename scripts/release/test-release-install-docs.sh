@@ -909,7 +909,7 @@ for required in \
   '"$release_dir/migrations/add_share_accounting.sql"' \
   'sudo ln -sfnT "$release_dir" /opt/miningcore' \
   'export MININGCORE_UPGRADE_READY=1' \
-  'STOP: upgrade failed; /opt/miningcore was not changed'; do
+  'STOP: upgrade failed; candidate activation is not confirmed'; do
   if ! grep -Fq "$required" <<<"$upgrade_block"; then
     echo "Release upgrade block is missing: $required" >&2
     exit 1
@@ -1795,6 +1795,7 @@ EOF
 chmod +x "$fixture_dir/bin/sudo"
 
 : > "$trace"
+failed_upgrade_status=0
 failed_upgrade_output=$(
   env PATH="$fixture_dir/bin:$PATH" HOME="$fixture_dir/home" \
     DOC_TEST_TRACE="$trace" DOC_TEST_RELEASE_DIR="$candidate_dir" \
@@ -1802,8 +1803,8 @@ failed_upgrade_output=$(
     MININGCORE_VERSION=v-doc-upgrade MININGCORE_UBUNTU=26.04 \
     archive="$fixture_dir/download/candidate.tar.gz" \
     bash -c "$upgrade_fixture_block" 2>&1
-)
-if ! grep -Fq 'upgrade failed; /opt/miningcore was not changed' \
+) || failed_upgrade_status=$?
+if [[ "$failed_upgrade_status" -eq 0 ]] || ! grep -Fq 'upgrade failed; candidate activation is not confirmed' \
     <<<"$failed_upgrade_output" || grep -Fq 'ln -sfnT' "$trace" ||
     [[ $(grep -Fc "$candidate_dir/migrations/" "$trace") -ne 3 ]]; then
   echo 'Release upgrade can activate a candidate after a migration failure or use stale SQL' >&2

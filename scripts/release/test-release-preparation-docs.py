@@ -168,7 +168,7 @@ class ReleasePreparationTests(unittest.TestCase):
         self.mutation('docs/upgrade-v0.4.0-rc.1.md', 'The function calls `docker` directly:',
                       'Docker is available to every account:')
 
-    def run_shell_example(self, name, needle, prefix, failure='', replacements=(), shell='bash'):
+    def run_shell_example(self, name, needle, prefix, failure='', replacements=(), shell='bash', observe_state=False):
         blocks = guard.console_blocks(self.original[name], needle)
         self.assertEqual(1, len(blocks))
         block = textwrap.dedent(blocks[0])
@@ -179,6 +179,8 @@ class ReleasePreparationTests(unittest.TestCase):
             trace = Path(directory) / 'trace'
             env = dict(os.environ, TRACE=str(trace), FAIL=failure, TMPDIR=directory)
             command = [shell, '-f', '-c'] if shell == 'zsh' else [shell, '-c']
+            if observe_state:
+                block += '\nrc=$?\nprintf "UPGRADE_STATE=%s;PLAN=%s\\n" "${MININGCORE_UPGRADE_READY:-}" "${MININGCORE_MIGRATION_PLAN-unset}"\nexit "$rc"\n'
             result = subprocess.run(command + [prefix + '\n' + block], env=env,
                                     capture_output=True, text=True, timeout=15)
             calls = trace.read_text().splitlines() if trace.exists() else []
@@ -230,7 +232,7 @@ docker() {
 }
 '''
         for failure in ('', 'create', 'fixture-container:/app/migrations',
-                        'fixture-container:/app/BUILD-INFO', 'fixture-container:/app/scripts'):
+                        'fixture-container:/app/BUILD-INFO', 'fixture-container:/app/scripts/release'):
             with self.subTest(failure=failure):
                 result, calls = self.run_shell_example('docs/upgrade-v0.4.0-rc.1.md',
                                                        'extract_candidate_sql()', prefix, failure=failure)
@@ -245,7 +247,8 @@ docker() {
                 if not failure:
                     self.assertEqual(0, result.returncode, result.stderr)
                     self.assertEqual(3, sum(call.startswith('cp ') for call in calls))
-                    self.assertTrue(any('fixture-container:/app/scripts ' in call for call in calls))
+                    self.assertTrue(any('fixture-container:/app/scripts/release ' in call for call in calls))
+                    self.assertFalse(any('fixture-container:/app/scripts ' in call or '/app/scripts/ops' in call for call in calls))
                     self.assertIn('Inspect candidate SQL and BUILD-INFO', result.stdout)
                 else:
                     self.assertNotEqual(0, result.returncode)
@@ -284,7 +287,7 @@ docker() {
       printf '%s\n' fixture-container ;;
     cp)
       if [ "$FAIL" = first-copy ] && [ "$2" = fixture-container:/app/migrations ]; then return 19; fi
-      if [ "$FAIL" = audits-copy ] && [ "$2" = fixture-container:/app/scripts ]; then return 29; fi
+      if [ "$FAIL" = audits-copy ] && [ "$2" = fixture-container:/app/scripts/release ]; then return 29; fi
       if [ "$FAIL" = copy ] || [ "$FAIL" = both ]; then
         if [ "$2" = fixture-container:/app/BUILD-INFO ]; then return 23; fi
       fi ;;
@@ -317,7 +320,7 @@ docker() {
 
     def test_container_audits_must_be_extracted(self):
         self.mutation('docs/upgrade-v0.4.0-rc.1.md',
-                      'docker cp "$container:/app/scripts" "$output/" &&', 'true &&')
+                      'docker cp "$container:/app/scripts/release" "$output/scripts/" &&', 'true &&')
 
     @unittest.skipIf(os.name == 'nt', 'Execute Bash examples in the Linux documentation suite')
     def test_archive_upgrade_requires_explicit_plan_and_preserves_selected_sql_scope(self):
@@ -327,6 +330,7 @@ MININGCORE_VERSION=fixture
 MININGCORE_UBUNTU=26.04
 archive=fixture.tar.gz
 MININGCORE_MIGRATION_PLAN=$FAIL
+MININGCORE_UPGRADE_READY=stale
 sudo() {
   printf 'sudo %s\n' "$*" >> "$TRACE"
   case "$*" in
@@ -342,18 +346,21 @@ test() { if [ "$1" = -d ]; then return 0; fi; command test "$@"; }
         replacements = (('$HOME/miningcore-before-', '${TMPDIR}/miningcore-before-'),
                         ('LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return',
                          'fixture_version || return'))
-        for plan, expected in (('none', []), ('pps-arithmetic', ['add_pps_arithmetic_version.sql']),
+        for plan, expected in (('none', []), ('pps-arithmetic', ['check-pps-arithmetic-ownership.sql', 'add_pps_arithmetic_version.sql']),
                                ('cumulative', ['add_auxpow_block_idempotency.sql',
                                                'add_payout_manager_ownership.sql', 'add_share_accounting.sql']),
                                ('', None), ('NONE', None), ('unknown', None)):
             with self.subTest(plan=plan):
                 result, calls = self.run_shell_example('docs/releases.md', 'MININGCORE_UPGRADE_READY=',
-                                                       prefix, failure=plan, replacements=replacements)
-                self.assertEqual(0, result.returncode, result.stderr)
+                                                       prefix, failure=plan, replacements=replacements, observe_state=True)
                 if expected is None:
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn('UPGRADE_STATE=;PLAN=unset', result.stdout)
                     self.assertIn('STOP: explicitly select', result.stderr)
                     self.assertEqual([], calls, 'invalid plans must stop before staging or database access')
                     continue
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn('UPGRADE_STATE=1;PLAN=unset', result.stdout)
                 self.assertIn(f'READY: completed {plan} plan', result.stdout)
                 sql = [call for call in calls if ' psql ' in call]
                 self.assertEqual(expected, [call.rsplit('/', 1)[-1] for call in sql])
@@ -373,37 +380,61 @@ MININGCORE_RELEASE_READY=1
 MININGCORE_VERSION=fixture
 MININGCORE_UBUNTU=26.04
 archive=fixture.tar.gz
+MININGCORE_UPGRADE_READY=stale
 sudo() {
   printf 'sudo %s\n' "$*" >> "$TRACE"
   case "$*" in
-    'test -e '*) return 1 ;;
+    'test -e '*) [ "$FAIL" = existing-candidate ]; return ;;
     *"$FAIL"*) return 23 ;;
     *pg_dump*) printf 'fixture backup\n' ;;
   esac
 }
 pg_restore() { printf 'restore\n' >> "$TRACE"; [ "$FAIL" != restore ]; }
-cat() { return 0; }
-fixture_version() { return 0; }
-test() { if [ "$1" = -d ]; then return 0; fi; command test "$@"; }
+cat() { [ "$FAIL" != identity ]; }
+fixture_version() { [ "$FAIL" != version ]; }
+test() { if [ "$1" = -d ]; then [ "$FAIL" != missing-migrations ]; return; fi; command test "$@"; }
 '''
         replacements = (('$HOME/miningcore-before-', '${TMPDIR}/miningcore-before-'),
                         ('LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return',
                          'fixture_version || return'))
-        for plan, failures in (('none', ('systemctl stop', 'pg_dump', 'restore')),
-                               ('pps-arithmetic', ('add_pps_arithmetic_version.sql',)),
+        for plan, failures in (('none', ('existing-candidate', 'mkdir', 'tar', 'missing-migrations', 'identity', 'version',
+                                        'systemctl stop', 'pg_dump', 'restore', 'ln -sfnT')),
+                               ('pps-arithmetic', ('check-pps-arithmetic-ownership.sql', 'add_pps_arithmetic_version.sql')),
                                ('cumulative', ('add_auxpow_block_idempotency.sql',
                                                'add_payout_manager_ownership.sql', 'add_share_accounting.sql'))):
             for failure in failures:
                 with self.subTest(plan=plan, failure=failure):
                     result, calls = self.run_shell_example('docs/releases.md', 'MININGCORE_UPGRADE_READY=',
                         prefix + f'\nMININGCORE_MIGRATION_PLAN={plan}\n',
-                        failure=failure, replacements=replacements)
-                    self.assertIn('STOP: upgrade failed', result.stderr)
+                        failure=failure, replacements=replacements, observe_state=True)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn('STOP:', result.stderr)
+                    self.assertIn('UPGRADE_STATE=;PLAN=unset', result.stdout)
                     self.assertNotIn('READY: completed', result.stdout)
-                    self.assertFalse(any('ln -sfnT' in call for call in calls), calls)
+                    if failure != 'ln -sfnT':
+                        self.assertFalse(any('ln -sfnT' in call for call in calls), calls)
+                    if failure == 'check-pps-arithmetic-ownership.sql':
+                        self.assertFalse(any('add_pps_arithmetic_version.sql' in call or 'add_share_accounting.sql' in call for call in calls), calls)
+
+    @unittest.skipIf(os.name == 'nt', 'Execute Bash examples in the Linux documentation suite')
+    def test_archive_rejection_is_nonzero_in_scripts_and_errexit_without_stale_state(self):
+        for rejection, message in (('', 'no verified release archive'),
+                                   ('MININGCORE_RELEASE_READY=1', 'explicitly select')):
+            for errexit in ('', 'set -e\n'):
+                with self.subTest(rejection=rejection, errexit=bool(errexit)):
+                    prefix = errexit + 'unset MININGCORE_RELEASE_READY\nMININGCORE_UPGRADE_READY=stale\nMININGCORE_MIGRATION_PLAN=invalid\n' + rejection
+                    result, calls = self.run_shell_example('docs/releases.md', 'MININGCORE_UPGRADE_READY=',
+                                                           prefix, observe_state=True)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual([], calls)
+                    if not errexit:
+                        self.assertIn('UPGRADE_STATE=;PLAN=unset', result.stdout)
 
     def test_archive_plan_routes_and_migration_boundaries_are_required(self):
         for fragment in ('none) return 0', 'pps-arithmetic)', 'cumulative)',
+                         'unset MININGCORE_MIGRATION_PLAN',
+                         '"$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" &&',
                          '"$release_dir/migrations/add_pps_arithmetic_version.sql"'):
             with self.subTest(fragment=fragment):
                 self.mutation('docs/releases.md', fragment, 'BROKEN')

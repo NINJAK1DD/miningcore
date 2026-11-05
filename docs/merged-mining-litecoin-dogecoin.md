@@ -324,6 +324,8 @@ also covers source-build paths, backup validation, activation ordering, and roll
 The accounting migration is required for any pooled merged participant, including
 PPS, PROP, PPLNS or PPLNSBF. A complete v0.3.0 accounting schema needs only the
 standalone `add_pps_arithmetic_version.sql` for RC.1, even when retaining version 0.
+First satisfy the [standalone ownership precondition](pps-arithmetic-migration.md#standalone-ownership-precondition);
+older grant-only deployments need explicit ownership reconciliation.
 An unchanged SOLO/SOLO topology retains its established one-share wire/database
 record and needs no new SQL solely for RC.1 when its v0.3.0 prerequisites are installed.
 

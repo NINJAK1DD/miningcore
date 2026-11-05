@@ -53,12 +53,20 @@ also rebuilds the pruning index). A failed schema preflight can also indicate
 incorrect privileges or defaults; diagnose the failure rather than rerunning SQL
 blindly or granting the application administrative privileges.
 
+For the standalone path, the four accounting tables must have the same owner as
+`shares`; run the packaged read-only ownership preflight before the migration.
+Older databases that used grants instead of matching owners need an explicit
+[ownership reconciliation](pps-arithmetic-migration.md#standalone-ownership-precondition)
+first, not an automatic fallback. Check every configured writer's transition-table
+SELECT privilege afterwards, while preserving administrator-only activation.
+
 For the standalone command and candidate-directory requirements, see
 [the database upgrade procedure](database.md#upgrade-an-existing-database).
 Archive operators can use the [guarded archive upgrade block](releases.md#upgrade-or-roll-back)
 unchanged: explicitly select `MININGCORE_MIGRATION_PLAN=none` for an eligible
 unchanged deployment, `pps-arithmetic` for a complete v0.3.0 accounting schema,
-or `cumulative` only when the earlier prerequisites are missing. There is no default
+or `cumulative` when the earlier prerequisites are missing or an administrator
+explicitly selects the documented ownership repair. There is no default
 plan and no schema-error fallback. Source operators follow the same matrix using
 SQL from the exact candidate checkout, then activate their complete rebuilt installation.
 
@@ -307,7 +315,8 @@ retrieve all migrations from embedded application resources.
      printf 'Candidate extraction directory (may be incomplete): %s\n' "$output"
      docker cp "$container:/app/migrations" "$output/" &&
        docker cp "$container:/app/BUILD-INFO" "$output/" &&
-       docker cp "$container:/app/scripts" "$output/" &&
+       mkdir "$output/scripts" &&
+       docker cp "$container:/app/scripts/release" "$output/scripts/" &&
        printf 'Inspect candidate SQL and BUILD-INFO in %s\n' "$output"
    )
    extract_candidate_sql
@@ -318,6 +327,8 @@ retrieve all migrations from embedded application resources.
    `psql`: use a compatible external PostgreSQL client and the
    [audit scope procedure](bitcoin-minimum-difficulty.md#choose-the-audit-scope).
    Never execute these reports as schema migrations.
+   Only `scripts/release/` is copied; the separate mutating `scripts/ops/`
+   administrative actions are not extracted by this function.
 
 3. Preserve the existing container/Compose definition, previous image digest,
    config/environment files, custom coin mounts, certificates and persistent

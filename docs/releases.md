@@ -1994,8 +1994,9 @@ For v0.3.0-to-v0.4.0-rc.1 upgrades, select the
 [release-specific migration path](upgrade-v0.4.0-rc.1.md#database-migration-matrix)
 first. For an otherwise complete v0.3.0 accounting schema, select the standalone
 [`add_pps_arithmetic_version.sql`](pps-arithmetic-migration.md#explicit-one-way-activation)
-path, not cumulative reinstallation. The cumulative path is only for databases
-missing earlier prerequisites. An already prepared, unchanged SOLO/SOLO deployment
+path, not cumulative reinstallation. The cumulative path is for databases
+missing earlier prerequisites or an explicitly reviewed accounting-ownership repair.
+An already prepared, unchanged SOLO/SOLO deployment
 selects the no-migration path. All paths also follow the
 [RC.1 cutover checklist](upgrade-v0.4.0-rc.1.md#staging-and-cutover).
 
@@ -2033,24 +2034,34 @@ block's readiness latch and archive path. Before running it, explicitly set
 - `none`: the selected release's matrix requires no new SQL and all earlier
   prerequisites are installed (including unchanged v0.3.0 BTC SOLO or LTC/DOGE SOLO/SOLO).
 - `pps-arithmetic`: a complete v0.3.0 PPS or pooled merged accounting schema needs
-  only the standalone arithmetic migration. Retaining version 0 still requires it.
-- `cumulative`: earlier AuxPoW/ownership/accounting prerequisites are missing;
-  use the ordered cumulative installation, not this path for an already complete schema.
+  only the standalone arithmetic migration. The four accounting tables must have
+  the same owner as `shares`; the read-only preflight below enforces this before
+  the migration. Retaining version 0 still requires it.
+- `cumulative`: earlier AuxPoW/ownership/accounting prerequisites are missing,
+  or an administrator has explicitly selected the accounting-ownership repair
+  described in the [ownership procedure](pps-arithmetic-migration.md#standalone-ownership-precondition).
+  Do not use this path merely to replace an already prepared, owner-aligned schema.
 
-For example, `export MININGCORE_MIGRATION_PLAN=none` selects the no-SQL path
+For example, `MININGCORE_MIGRATION_PLAN=none` selects the no-SQL path
 without editing the activation block. There is deliberately no default or automatic
-fallback. Other release-specific requirements (such as enabling Pearl) need a
-separately reviewed migration plan; do not select `none` to bypass them.
+fallback. Each attempt consumes and unsets this selection, including on failure;
+select it again deliberately before another attempt. Other release-specific
+requirements (such as [enabling Pearl, step 5](pearl-pool-guide.md#1-prepare-the-software-and-wallet))
+need a separately reviewed migration plan; do not select `none` to bypass them.
 
 ```console
 umask 077
 MININGCORE_UPGRADE_READY=
+miningcore_migration_plan=${MININGCORE_MIGRATION_PLAN:-}
+unset MININGCORE_MIGRATION_PLAN
 if [ "${MININGCORE_RELEASE_READY:-}" != 1 ]; then
   echo "STOP: no verified release archive is available to upgrade" >&2
-elif [ "${MININGCORE_MIGRATION_PLAN:-}" != none ] &&
-     [ "${MININGCORE_MIGRATION_PLAN:-}" != pps-arithmetic ] &&
-     [ "${MININGCORE_MIGRATION_PLAN:-}" != cumulative ]; then
+  false
+elif [ "$miningcore_migration_plan" != none ] &&
+     [ "$miningcore_migration_plan" != pps-arithmetic ] &&
+     [ "$miningcore_migration_plan" != cumulative ]; then
   echo "STOP: explicitly select the reviewed migration plan" >&2
+  false
 else
   release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
   upgrade_backup="$HOME/miningcore-before-${MININGCORE_VERSION}.dump"
@@ -2069,9 +2080,11 @@ else
 
   if stage_miningcore_candidate; then
     apply_selected_migrations() {
-      case "$MININGCORE_MIGRATION_PLAN" in
+      case "$miningcore_migration_plan" in
         none) return 0 ;;
         pps-arithmetic)
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+            -f "$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" &&
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
             -f "$release_dir/migrations/add_pps_arithmetic_version.sql" ;;
         cumulative)
@@ -2091,13 +2104,15 @@ else
        sudo ln -sfnT "$release_dir" /opt/miningcore; then
       MININGCORE_RELEASE_READY=
       export MININGCORE_UPGRADE_READY=1
-      echo "READY: completed $MININGCORE_MIGRATION_PLAN plan and activated $release_dir"
+      echo "READY: completed $miningcore_migration_plan plan and activated $release_dir"
     else
-      echo "STOP: upgrade failed; /opt/miningcore was not changed" >&2
+      echo "STOP: upgrade failed; candidate activation is not confirmed" >&2
       echo "Keep Miningcore stopped until the database and candidate are reconciled" >&2
+      false
     fi
   else
     echo "STOP: candidate staging failed; /opt/miningcore was not changed" >&2
+    false
   fi
 fi
 ```
@@ -2109,6 +2124,10 @@ Start the service only when the block prints `READY` and exports
 `MININGCORE_UPGRADE_READY=1`. The old symlink remains intact after a staging, backup or migration
 failure. If a migration committed before a later step failed, do not restart the old binary merely
 because its symlink remains; follow the rollback boundary below or complete the reviewed upgrade.
+Every failed branch returns nonzero without exiting an interactive shell. Automation
+must require both success status and the readiness latch; a failure is never permission
+to restart the old binary against a possibly changed database. A failed symlink command
+does not establish successful activation: inspect the actual link before recovery.
 
 If application rollback is necessary, stop the service and repoint the symlink to the previous
 directory. Database migrations may not be reversible; restore the matching backup when the release
