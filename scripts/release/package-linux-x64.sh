@@ -73,6 +73,7 @@ cp "$repository_root"/scripts/ops/*.sql "$package_root/scripts/ops/"
 cp "$repository_root/scripts/release/audit-settlement-shares.sql" \
     "$repository_root/scripts/release/audit-legacy-settlement-shares.sql" \
     "$repository_root/scripts/release/check-pps-arithmetic-ownership.sql" \
+    "$repository_root/scripts/release/check-share-owner.sql" \
     "$package_root/scripts/release/"
 cp "$repository_root/packaging/systemd/miningcore.service" \
     "$repository_root/packaging/systemd/configure-postgresql-ordering.sh" \

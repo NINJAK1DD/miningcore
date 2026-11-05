@@ -193,21 +193,24 @@ candidate and apply the migrations with `ON_ERROR_STOP`:
 export MININGCORE_VERSION=v0.4.0-rc.1
 export MININGCORE_UBUNTU=26.04 # use 22.04 with the compatibility archive
 export MININGCORE_CANDIDATE_DIR="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
-test -d "$MININGCORE_CANDIDATE_DIR/migrations"
-
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_auxpow_block_idempotency.sql"
-
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_payout_manager_ownership.sql"
-
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+test -d "$MININGCORE_CANDIDATE_DIR/migrations" &&
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+  -f "$MININGCORE_CANDIDATE_DIR/scripts/release/check-share-owner.sql" &&
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_auxpow_block_idempotency.sql" &&
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_payout_manager_ownership.sql" &&
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
   -f "$MININGCORE_CANDIDATE_DIR/migrations/add_share_accounting.sql"
 ```
 
 Choose the candidate directory that exactly matches the verified version and host target. Never run
 upgrade migrations through the stable `/opt/miningcore` symlink: it must continue pointing to the
 old release until every required candidate migration succeeds.
+The initial read-only share-owner check requires no accounting tables and stops
+this chain if `shares` is superuser-owned. It performs no ownership repair.
+Use the [explicit ownership procedure](pps-arithmetic-migration.md#standalone-ownership-precondition)
+before retrying rather than making the runtime a superuser.
 
 The payout ownership migration assigns its tables to the database owner. The share-accounting
 migration uses the existing `shares` table owner as the application role. Its cumulative

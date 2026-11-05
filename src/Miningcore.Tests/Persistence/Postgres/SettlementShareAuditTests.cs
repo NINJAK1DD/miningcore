@@ -10,6 +10,64 @@ namespace Miningcore.Tests.Persistence.Postgres;
 public class SettlementShareAuditTests
 {
     [PostgresIntegrationFact]
+    public async Task CumulativeShareOwnerPreflight_RejectsSuperuserButRequiresNoAccountingTables()
+    {
+        await using var connection = new NpgsqlConnection(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"));
+        await connection.OpenAsync();
+        var suffix = Guid.NewGuid().ToString("N");
+        var schema = $"miningcore_base_owner_{suffix}";
+        var app = $"audit_base_writer_{suffix}";
+        try
+        {
+            await using(var setup = new NpgsqlCommand($"""
+                CREATE ROLE {app} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+                CREATE SCHEMA {schema};
+                SET search_path TO {schema}, pg_catalog, pg_temp;
+                CREATE TABLE shares(value bigint);
+                INSERT INTO shares VALUES(7);
+                GRANT USAGE ON SCHEMA {schema} TO {app};
+                GRANT ALL ON shares TO {app};
+                """, connection))
+                await setup.ExecuteNonQueryAsync();
+            var sql = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "check-share-owner.sql"));
+            await using(var check = new NpgsqlCommand(sql, connection))
+            {
+                var error = await Assert.ThrowsAsync<PostgresException>(() => check.ExecuteReaderAsync());
+                Assert.Equal("55000", error.SqlState);
+                Assert.Contains("superuser", error.MessageText);
+            }
+            await using(var repair = new NpgsqlCommand($"ROLLBACK; ALTER TABLE shares OWNER TO {app}", connection))
+                await repair.ExecuteNonQueryAsync();
+            // Observe the successful check's transaction without giving it write
+            // access. No accounting schema is present or installed by this check.
+            await using(var check = new NpgsqlCommand(sql.Replace("COMMIT;", """
+                SELECT current_setting('transaction_read_only'), current_setting('transaction_isolation');
+                COMMIT;
+                """), connection))
+            await using(var reader = await check.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal("on", reader.GetString(0));
+                Assert.Equal("repeatable read", reader.GetString(1));
+                Assert.False(await reader.ReadAsync());
+            }
+            await using(var unchanged = new NpgsqlCommand($"""
+                SELECT (SELECT count(*)=1 AND min(value)=7 FROM shares)
+                  AND (SELECT pg_get_userbyid(relowner)='{app}' FROM pg_class WHERE oid='shares'::regclass)
+                  AND to_regclass('pps_share_credits') IS NULL
+                  AND to_regclass('pps_arithmetic_transitions') IS NULL
+                  AND (SELECT count(*)=1 FROM pg_class WHERE relnamespace='{schema}'::regnamespace)
+                """, connection))
+                Assert.True((bool) await unchanged.ExecuteScalarAsync());
+        }
+        finally
+        {
+            await using var cleanup = new NpgsqlCommand($"ROLLBACK; RESET ROLE; SET search_path TO pg_catalog; DROP SCHEMA IF EXISTS {schema} CASCADE; DROP ROLE IF EXISTS {app}", connection);
+            await cleanup.ExecuteNonQueryAsync();
+        }
+    }
+
+    [PostgresIntegrationFact]
     public async Task ArithmeticOwnershipPreflight_RejectsLegacyGrantOnlyOwnersBeforeMigration_AndAllowsReconciledWriter()
     {
         await using var connection = new NpgsqlConnection(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"));

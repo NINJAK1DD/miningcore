@@ -2089,6 +2089,8 @@ else
             -f "$release_dir/migrations/add_pps_arithmetic_version.sql" ;;
         cumulative)
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+            -f "$release_dir/scripts/release/check-share-owner.sql" &&
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
             -f "$release_dir/migrations/add_auxpow_block_idempotency.sql" &&
           sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
             -f "$release_dir/migrations/add_payout_manager_ownership.sql" &&
@@ -2119,6 +2121,10 @@ fi
 
 The cumulative `add_share_accounting.sql` path includes `add_pps_arithmetic_version.sql`;
 follow the [PPS arithmetic rollout](pps-arithmetic-migration.md) before opting in to version 1.
+Before any cumulative migration, `check-share-owner.sql` rejects superuser-owned
+`shares` without requiring accounting tables to exist. It does not align owners,
+grant privileges or replace the startup schema checks. Reconcile that owner
+explicitly before retrying; neither migration plan repairs it automatically.
 
 Start the service only when the block prints `READY` and exports
 `MININGCORE_UPGRADE_READY=1`. The old symlink remains intact after a staging, backup or migration

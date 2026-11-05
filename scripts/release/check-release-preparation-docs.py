@@ -173,9 +173,22 @@ def validate(documents, baseline):
                          'pps-arithmetic)', 'cumulative)', '*) return 1',
                          'unset MININGCORE_MIGRATION_PLAN',
                          '"$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" &&',
+                         '"$release_dir/scripts/release/check-share-owner.sql" &&',
                          '"$release_dir/migrations/add_pps_arithmetic_version.sql"',
                          'apply_selected_migrations &&'):
             require(fragment in upgrade_blocks[0], f'Missing guarded upgrade route: {fragment}')
+    cumulative = console_blocks(documents['docs/database.md'],
+                                '"$MININGCORE_CANDIDATE_DIR/migrations/add_auxpow_block_idempotency.sql"')
+    require(len(cumulative) == 1, 'Expected one manual cumulative migration command')
+    if len(cumulative) == 1:
+        for filename in ('scripts/release/check-share-owner.sql',
+                         'migrations/add_auxpow_block_idempotency.sql',
+                         'migrations/add_payout_manager_ownership.sql'):
+            require(f'-f "$MININGCORE_CANDIDATE_DIR/{filename}" &&' in cumulative[0],
+                    f'Manual cumulative migration must fail closed after {filename}')
+        require('check-share-owner.sql' in cumulative[0] and
+                cumulative[0].index('check-share-owner.sql') < cumulative[0].index('add_auxpow_block_idempotency.sql'),
+                'Manual cumulative ownership preflight must precede migrations')
     extraction = console_blocks(upgrade, 'extract_candidate_sql()')
     require(len(extraction) == 1, 'Expected one stopped-container SQL extraction example')
     if len(extraction) == 1:

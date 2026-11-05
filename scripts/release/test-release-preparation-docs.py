@@ -347,7 +347,7 @@ test() { if [ "$1" = -d ]; then return 0; fi; command test "$@"; }
                         ('LD_LIBRARY_PATH="$release_dir" "$release_dir/Miningcore" --version || return',
                          'fixture_version || return'))
         for plan, expected in (('none', []), ('pps-arithmetic', ['check-pps-arithmetic-ownership.sql', 'add_pps_arithmetic_version.sql']),
-                               ('cumulative', ['add_auxpow_block_idempotency.sql',
+                               ('cumulative', ['check-share-owner.sql', 'add_auxpow_block_idempotency.sql',
                                                'add_payout_manager_ownership.sql', 'add_share_accounting.sql']),
                                ('', None), ('NONE', None), ('unknown', None)):
             with self.subTest(plan=plan):
@@ -400,7 +400,7 @@ test() { if [ "$1" = -d ]; then [ "$FAIL" != missing-migrations ]; return; fi; c
         for plan, failures in (('none', ('existing-candidate', 'mkdir', 'tar', 'missing-migrations', 'identity', 'version',
                                         'systemctl stop', 'pg_dump', 'restore', 'ln -sfnT')),
                                ('pps-arithmetic', ('check-pps-arithmetic-ownership.sql', 'add_pps_arithmetic_version.sql')),
-                               ('cumulative', ('add_auxpow_block_idempotency.sql',
+                               ('cumulative', ('check-share-owner.sql', 'add_auxpow_block_idempotency.sql',
                                                'add_payout_manager_ownership.sql', 'add_share_accounting.sql'))):
             for failure in failures:
                 with self.subTest(plan=plan, failure=failure):
@@ -415,6 +415,8 @@ test() { if [ "$1" = -d ]; then [ "$FAIL" != missing-migrations ]; return; fi; c
                         self.assertFalse(any('ln -sfnT' in call for call in calls), calls)
                     if failure == 'check-pps-arithmetic-ownership.sql':
                         self.assertFalse(any('add_pps_arithmetic_version.sql' in call or 'add_share_accounting.sql' in call for call in calls), calls)
+                    if failure == 'check-share-owner.sql':
+                        self.assertFalse(any('/migrations/' in call for call in calls), calls)
 
     @unittest.skipIf(os.name == 'nt', 'Execute Bash examples in the Linux documentation suite')
     def test_archive_rejection_is_nonzero_in_scripts_and_errexit_without_stale_state(self):
@@ -435,6 +437,7 @@ test() { if [ "$1" = -d ]; then [ "$FAIL" != missing-migrations ]; return; fi; c
         for fragment in ('none) return 0', 'pps-arithmetic)', 'cumulative)',
                          'unset MININGCORE_MIGRATION_PLAN',
                          '"$release_dir/scripts/release/check-pps-arithmetic-ownership.sql" &&',
+                         '"$release_dir/scripts/release/check-share-owner.sql" &&',
                          '"$release_dir/migrations/add_pps_arithmetic_version.sql"'):
             with self.subTest(fragment=fragment):
                 self.mutation('docs/releases.md', fragment, 'BROKEN')
@@ -456,6 +459,16 @@ test() { if [ "$1" = -d ]; then [ "$FAIL" != missing-migrations ]; return; fi; c
             reordered = '\n'.join(reversed(blocks[0].splitlines()))
             documents[name] = documents[name].replace(blocks[0], reordered, 1)
             self.assertTrue(guard.validate(documents, self.baseline))
+
+    def test_manual_cumulative_preflight_and_failure_chain_are_required(self):
+        for filename in ('scripts/release/check-share-owner.sql',
+                         'migrations/add_auxpow_block_idempotency.sql',
+                         'migrations/add_payout_manager_ownership.sql'):
+            line = f'-f "$MININGCORE_CANDIDATE_DIR/{filename}" &&'
+            with self.subTest(filename=filename):
+                self.mutation('docs/database.md', line, line.replace(' &&', ''))
+        self.mutation('docs/database.md',
+                      '-f "$MININGCORE_CANDIDATE_DIR/scripts/release/check-share-owner.sql" &&', 'true &&')
 
     def test_each_stable_boundary_is_required(self):
         for name in ('README.md', 'docs/releases.md'):
