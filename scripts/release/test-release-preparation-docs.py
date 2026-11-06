@@ -379,7 +379,7 @@ MININGCORE_UPGRADE_READY=stale
 sudo() {
   printf 'sudo %s\n' "$*" >> "$TRACE"
   if [ "$1" = test ]; then [ "$FAIL" = existing-candidate ]; return; fi
-  if [ -n "$FAIL" ] && [[ "$*" == *"$FAIL"* ]]; then return 23; fi
+  if [ -n "$FAIL" ]; then case "$*" in *"$FAIL"*) return 23 ;; esac; fi
   case "$*" in
     'tar -xzf '*)
       mkdir -p "$release_dir/migrations" "$release_dir/scripts/release"
@@ -604,6 +604,112 @@ fi
             result, _ = self.run_shell_example('docs/releases.md', 'MININGCORE_UPGRADE_READY=',
                 self.upgrade_fixture() + setup, replacements=self.upgrade_replacements())
             self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_source_lookup_and_portable_validation_are_guarded(self):
+        for old, new in (('git ls-remote --exit-code --tags', 'git ls-remote --tags'),
+                         ('"refs/tags/${MININGCORE_VERSION}^{}"', '"refs/tags/${MININGCORE_VERSION}"'),
+                         ('MININGCORE_EXPECTED_SOURCE_COMMIT=\n', ''),
+                         ('This lookup trusts GitHub over TLS; it is not signature verification.', ''),
+                         ('elif ! printf \'%s\\n\' "${MININGCORE_EXPECTED_SOURCE_COMMIT:-}" | grep -Eqx \'[0-9a-f]{40}([0-9a-f]{24})?\'; then',
+                          'elif [[ ! "${MININGCORE_EXPECTED_SOURCE_COMMIT:-}" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then')):
+            with self.subTest(fragment=old):
+                self.mutation('docs/releases.md', old, new)
+
+    @unittest.skipIf(os.name == 'nt', 'Execute shell examples in the Linux documentation suite')
+    def test_release_source_lookup_fails_closed_across_shells(self):
+        prefix = r'''
+MININGCORE_VERSION=v0.4.0-rc.1
+MININGCORE_EXPECTED_SOURCE_COMMIT=stale
+git() {
+  printf '%s\n' "$*" >> "$TRACE"
+  ref="refs/tags/${MININGCORE_VERSION}^{}"
+  sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  case "$FAIL" in
+    network) printf '%s\t%s\n' "$sha" "$ref"; return 23 ;;
+    missing|lightweight) return 2 ;;
+    empty) return 0 ;;
+    wrong-ref) printf '%s\t%s\n' "$sha" "refs/tags/$MININGCORE_VERSION" ;;
+    duplicate) printf '%s\t%s\n%s\t%s\n' "$sha" "$ref" "$sha" "$ref" ;;
+    malformed) printf 'short\t%s\n' "$ref" ;;
+    sha256) printf '%s%s\t%s\n' "$sha" aaaaaaaaaaaaaaaaaaaaaaaa "$ref" ;;
+    *) printf '%s\t%s\n' "$sha" "$ref" ;;
+  esac
+}
+'''
+        for shell in ('bash', 'dash', 'zsh'):
+            if not shutil.which(shell):
+                self.assertNotEqual('1', os.environ.get('MININGCORE_REQUIRE_SHELL_MATRIX'))
+                continue
+            for failure in ('', 'sha256', 'network', 'missing', 'lightweight', 'empty', 'wrong-ref', 'duplicate', 'malformed'):
+                for errexit in (False, True):
+                    with self.subTest(shell=shell, failure=failure, errexit=errexit):
+                        setup = ('set -e\n' if errexit else '') + prefix
+                        result, calls = self.run_shell_example('docs/releases.md', 'release_source_ref=$(git ls-remote',
+                            setup, failure=failure, shell=shell, observe_state=True)
+                        self.assertEqual(['ls-remote --exit-code --tags https://github.com/NINJAK1DD/miningcore.git refs/tags/v0.4.0-rc.1^{}'], calls)
+                        if failure in ('', 'sha256'):
+                            self.assertEqual(0, result.returncode, result.stderr)
+                            sha = 'a' * (64 if failure == 'sha256' else 40)
+                            self.assertIn(f'Expected release source commit: {sha}\n', result.stdout)
+                        else:
+                            self.assertNotEqual(0, result.returncode)
+                            self.assertIn('STOP: could not resolve', result.stderr)
+                            self.assertNotIn('Expected release source commit:', result.stdout)
+            # Inspect state after a failed lookup, without masking its status.
+            result, _ = self.run_shell_example('docs/releases.md', 'release_source_ref=$(git ls-remote', prefix,
+                failure='network', shell=shell,
+                replacements=(("  false\nfi", "  test -z \"$MININGCORE_EXPECTED_SOURCE_COMMIT\" || exit 97\n  false\nfi"),))
+            self.assertEqual(1, result.returncode, result.stderr)
+
+    @unittest.skipIf(os.name == 'nt', 'Execute real Git fixtures in the Linux documentation suite')
+    def test_source_lookup_resolves_real_annotated_tags_not_tag_objects(self):
+        prefix = r'''
+MININGCORE_VERSION=v0.4.0-rc.1
+command git init -q --object-format="$FAIL" "$TMPDIR/repo" || exit
+command git -C "$TMPDIR/repo" -c user.name=Fixture -c user.email=fixture@example.invalid \
+  -c commit.gpgsign=false commit -q --allow-empty -m fixture || exit
+command git -C "$TMPDIR/repo" -c user.name=Fixture -c user.email=fixture@example.invalid \
+  -c tag.gpgsign=false tag -a "$MININGCORE_VERSION" -m fixture || exit
+expected=$(command git -C "$TMPDIR/repo" rev-parse HEAD) || exit
+tag_object=$(command git -C "$TMPDIR/repo" rev-parse "refs/tags/$MININGCORE_VERSION") || exit
+test "$expected" != "$tag_object" || exit 98
+printf 'Real fixture commit: %s\n' "$expected"
+git() {
+  printf '%s\n' "$*" >> "$TRACE"
+  shift 4
+  command git -C "$TMPDIR/repo" ls-remote --exit-code --tags "$TMPDIR/repo" "$@"
+}
+'''
+        for object_format in ('sha1', 'sha256'):
+            with self.subTest(object_format=object_format):
+                result, calls = self.run_shell_example('docs/releases.md', 'release_source_ref=$(git ls-remote',
+                    prefix, failure=object_format)
+                self.assertEqual(0, result.returncode, result.stderr)
+                expected = next(line.removeprefix('Real fixture commit: ') for line in result.stdout.splitlines()
+                                if line.startswith('Real fixture commit: '))
+                self.assertIn(f'Expected release source commit: {expected}\n', result.stdout)
+                self.assertEqual(1, len(calls))
+
+    @unittest.skipIf(os.name == 'nt', 'Execute shell examples in the Linux documentation suite')
+    def test_archive_upgrade_source_validation_is_portable(self):
+        for shell in ('bash', 'dash', 'zsh'):
+            if not shutil.which(shell):
+                self.assertNotEqual('1', os.environ.get('MININGCORE_REQUIRE_SHELL_MATRIX'))
+                continue
+            for sha in ('a' * 40, 'a' * 64, '', 'short', 'A' * 40):
+                with self.subTest(shell=shell, sha=sha):
+                    prefix = self.upgrade_fixture() + '\nMININGCORE_MIGRATION_PLAN=none\n'
+                    prefix += f'MININGCORE_EXPECTED_SOURCE_COMMIT={shlex.quote(sha)}\n'
+                    prefix += f'FIXTURE_BUILD_SOURCE={shlex.quote(sha)}\nFIXTURE_RUNTIME_SOURCE={shlex.quote(sha)}\n'
+                    result, calls = self.run_shell_example('docs/releases.md', 'MININGCORE_UPGRADE_READY=', prefix,
+                        shell=shell, replacements=self.upgrade_replacements())
+                    if len(sha) in (40, 64) and sha.islower():
+                        self.assertEqual(0, result.returncode, result.stderr)
+                        self.assertTrue(any('ln -sfnT' in call for call in calls))
+                    else:
+                        self.assertNotEqual(0, result.returncode)
+                        self.assertIn('Failed step: release-source', result.stderr)
+                        self.assertEqual([], calls)
 
     def test_archive_plan_routes_and_migration_boundaries_are_required(self):
         for fragment in ('none) return 0', 'pps-arithmetic)', 'cumulative)',

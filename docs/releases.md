@@ -2073,6 +2073,8 @@ If a check stops this procedure, use [When an RC.1 upgrade stops](troubleshootin
 The output identifies the failed step and what this block has attempted. Keep the
 first underlying error private for diagnosis; do not bypass a check to continue.
 
+### Resolve the release source commit
+
 Also set `MININGCORE_EXPECTED_SOURCE_COMMIT` to the full lowercase source SHA
 established independently from the selected release's verified tag or build
 provenance. This is the source commit identifier, not the archive's SHA256 checksum.
@@ -2080,6 +2082,40 @@ If you cannot verify it, ask the release operator before running the upgrade.
 Do not obtain this expected value from the extracted BUILD-INFO or
 from the candidate binary itself. The block compares all three identities before
 shutdown; it never treats an internally consistent archive as its own trust source.
+
+After selecting and verifying the release archive, run this lookup in the same
+shell. It requires Git (`sudo apt-get install git` on supported Ubuntu hosts), but
+does not require a repository checkout. It requests only the annotated tag's **peeled commit**, not the tag object's
+SHA. An unpeeled `refs/tags/<version>` lookup returns a different object for an
+annotated tag and must not supply the expected commit.
+
+```console
+MININGCORE_EXPECTED_SOURCE_COMMIT=
+if test -n "${MININGCORE_VERSION:-}" &&
+   release_source_ref=$(git ls-remote --exit-code --tags https://github.com/NINJAK1DD/miningcore.git \
+     "refs/tags/${MININGCORE_VERSION}^{}") &&
+   test "$(printf '%s\n' "$release_source_ref" | cut -f2)" = "refs/tags/${MININGCORE_VERSION}^{}" &&
+   release_source_sha=$(printf '%s\n' "$release_source_ref" | cut -f1) &&
+   printf '%s\n' "$release_source_sha" | grep -Eqx '[0-9a-f]{40}([0-9a-f]{24})?'; then
+  MININGCORE_EXPECTED_SOURCE_COMMIT=$release_source_sha
+  printf 'Expected release source commit: %s\n' "$MININGCORE_EXPECTED_SOURCE_COMMIT"
+else
+  printf '%s\n' 'STOP: could not resolve the selected annotated release tag; check release availability and network access. Do not substitute BUILD-INFO.' >&2
+  false
+fi
+```
+
+This lookup trusts GitHub over TLS; it is not signature verification. A missing or
+lightweight tag has no peeled reference and fails closed, as do lookup errors or
+ambiguous output. For stronger verification, fetch the selected tag into a trusted
+checkout, run `git verify-tag "$MININGCORE_VERSION"` using an independently trusted
+maintainer key, then compare `git rev-parse "${MININGCORE_VERSION}^{commit}"` with
+the resolved SHA. Alternatively, cross-check it against the source commit in the
+verified `gh attestation verify` output from the archive-verification step. Never
+weaken verification or copy the candidate's metadata to resolve a disagreement.
+See [Git's reference-output documentation](https://git-scm.com/docs/git-ls-remote#_output).
+
+After successful resolution, run the following upgrade block in that same shell:
 
 ```console
 umask 077
@@ -2106,7 +2142,7 @@ elif [ "$miningcore_migration_plan" != none ] &&
      [ "$miningcore_migration_plan" != cumulative ]; then
   miningcore_upgrade_step=migration-plan
   report_upgrade_stop 'explicitly select the reviewed migration plan'
-elif [[ ! "${MININGCORE_EXPECTED_SOURCE_COMMIT:-}" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+elif ! printf '%s\n' "${MININGCORE_EXPECTED_SOURCE_COMMIT:-}" | grep -Eqx '[0-9a-f]{40}([0-9a-f]{24})?'; then
   miningcore_upgrade_step=release-source
   report_upgrade_stop 'set the independently verified full source SHA for this release'
 elif [ "${MININGCORE_UBUNTU:-}" != 22.04 ] && [ "${MININGCORE_UBUNTU:-}" != 26.04 ]; then

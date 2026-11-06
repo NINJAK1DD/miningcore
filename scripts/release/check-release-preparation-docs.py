@@ -168,8 +168,23 @@ def validate(documents, baseline):
             require(len(re.findall(r'\bpsql(?=\s|$)', block)) ==
                     block.count('psql -X -v ON_ERROR_STOP=1') == 2,
                     f'{name}: both manual SQL commands must fail closed and ignore psql startup files')
+    source_blocks = console_blocks(release, 'release_source_ref=$(git ls-remote')
+    require(len(source_blocks) == 1, 'Expected one independent release-source lookup example')
+    if len(source_blocks) == 1:
+        for fragment in ('MININGCORE_EXPECTED_SOURCE_COMMIT=\n',
+                         'git ls-remote --exit-code --tags https://github.com/NINJAK1DD/miningcore.git',
+                         '"refs/tags/${MININGCORE_VERSION}^{}") &&',
+                         'test "$(printf \'%s\\n\' "$release_source_ref" | cut -f2)" = "refs/tags/${MININGCORE_VERSION}^{}" &&',
+                         'MININGCORE_EXPECTED_SOURCE_COMMIT=$release_source_sha',
+                         'Do not substitute BUILD-INFO.', '  false\nfi'):
+            require(fragment in source_blocks[0], f'Missing fail-closed source lookup: {fragment}')
+    require('This lookup trusts GitHub over TLS; it is not signature verification.' in prose(release),
+            'The release-source lookup must explain its trust boundary')
     require(len(upgrade_blocks) == 1, 'Expected one explicitly selected archive upgrade example')
     if len(upgrade_blocks) == 1:
+        require('[[' not in upgrade_blocks[0] and
+                "grep -Eqx '[0-9a-f]{40}([0-9a-f]{24})?'" in upgrade_blocks[0],
+                'The archive source-SHA check must not require Bash syntax')
         require(upgrade_blocks[0].count('pps-arithmetic)') == 2 and
                 upgrade_blocks[0].count('cumulative)') == 2,
                 'Selected-file checks and migration execution must both handle the reviewed plans')

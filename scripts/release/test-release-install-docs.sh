@@ -168,9 +168,12 @@ source_placeholder_block=$(awk '
 upgrade_block=$(awk '
   { sub(/\r$/, "") }
   /^## Upgrade or roll back$/ { section = 1; next }
-  section && /^```console$/ { capture = 1; next }
-  capture && /^```$/ { exit }
-  capture { print }
+  section && /^```console$/ { capture = 1; block = ""; next }
+  capture && /^```$/ {
+    if (index(block, "MININGCORE_UPGRADE_READY=")) { printf "%s", block; exit }
+    capture = 0; next
+  }
+  capture { block = block $0 "\n" }
 ' "$document")
 
 assert_contains() {
