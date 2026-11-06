@@ -175,6 +175,7 @@ def validate(documents, baseline):
                          'git ls-remote --exit-code --tags https://github.com/NINJAK1DD/miningcore.git',
                          '"refs/tags/${MININGCORE_VERSION}^{}") &&',
                          'test "$(printf \'%s\\n\' "$release_source_ref" | cut -f2)" = "refs/tags/${MININGCORE_VERSION}^{}" &&',
+                         'printf \'%s\\n\' "$release_source_sha" | grep -Eqx \'[0-9a-f]{40}([0-9a-f]{24})?\'; then',
                          'MININGCORE_EXPECTED_SOURCE_COMMIT=$release_source_sha',
                          'Do not substitute BUILD-INFO.', '  false\nfi'):
             require(fragment in source_blocks[0], f'Missing fail-closed source lookup: {fragment}')

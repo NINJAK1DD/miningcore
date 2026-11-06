@@ -615,6 +615,13 @@ fi
             with self.subTest(fragment=old):
                 self.mutation('docs/releases.md', old, new)
 
+    def test_source_lookup_sha_format_check_cannot_be_removed_or_weakened(self):
+        check = 'printf \'%s\\n\' "$release_source_sha" | grep -Eqx \'[0-9a-f]{40}([0-9a-f]{24})?\'; then'
+        for replacement in ('true; then', check.replace('grep -Eqx', 'grep -Eq'),
+                            check.replace('[0-9a-f]{40}([0-9a-f]{24})?', '.+')):
+            with self.subTest(replacement=replacement):
+                self.mutation('docs/releases.md', check, replacement)
+
     @unittest.skipIf(os.name == 'nt', 'Execute shell examples in the Linux documentation suite')
     def test_release_source_lookup_fails_closed_across_shells(self):
         prefix = r'''
