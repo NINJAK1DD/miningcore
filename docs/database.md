@@ -44,6 +44,29 @@ documented migration order.
 
 ## New installation
 
+### New database or existing database?
+
+Use the schema files from the **release you actually selected**. The install
+examples deliberately default to published stable v0.3.0; they do not silently
+install RC.1. Select RC.1 explicitly only when its verified assets are available,
+or use an immutable RC.1 source checkout.
+
+| Database state | Correct path |
+| --- | --- |
+| New, empty database for RC.1 | Import that RC.1 release's `createdb.sql` once. It already includes the shared accounting/PPS arithmetic structures, direct-SOLO/payout/recovery structures and Pearl schema present in that release. Do not then replay the upgrade migrations. |
+| Existing v0.3.0 or older database | Never rerun `createdb.sql`. Back up and follow the [release-specific migration matrix](upgrade-v0.4.0-rc.1.md#database-migration-matrix); apply only the required upgrade scripts. Unchanged, prepared BTC SOLO or LTC/DOGE SOLO/SOLO needs no new SQL solely for RC.1. |
+
+The fresh schema keeps PPS arithmetic at version 0 unless the administrator
+performs the separate activation procedure. Having tables does not enable Pearl,
+install its optional worker bundle or configure a pool. Do not run ownership
+upgrade preflights against an empty database before importing the fresh schema;
+those checks deliberately require existing relations.
+
+If setup/import stops, use [the operator troubleshooting guide](troubleshooting.md#when-an-rc1-upgrade-stops).
+Do not delete an existing database or rerun the full schema to suppress an error.
+
+### Create and initialise the database
+
 Use a currently supported PostgreSQL release. PostgreSQL 15 or newer is a sensible baseline for a
 new pool even if the schema remains technically compatible with older versions.
 The PPS arithmetic schema contract is tested on PostgreSQL 15, 16, 17 and 18.
@@ -145,10 +168,43 @@ A backup is not proven until it has been restored and checked.
 
 ## Upgrade an existing database
 
+For the v0.3.0-to-v0.4.0-rc.1 transition, first use the
+[release-specific migration matrix](upgrade-v0.4.0-rc.1.md#database-migration-matrix).
+An unchanged canonical Bitcoin SOLO or LTC/DOGE merged SOLO/SOLO deployment needs no new
+SQL solely for this upgrade when its v0.3.0 prerequisites are already installed.
+PPS and pooled merged accounting require the new arithmetic schema even when
+arithmetic version 0 is retained. Pearl has additional opt-in tables.
+An otherwise complete **v0.3.0 accounting schema → standalone
+[`add_pps_arithmetic_version.sql`](pps-arithmetic-migration.md#explicit-one-way-activation)**,
+not the cumulative sequence. Set `MININGCORE_CANDIDATE_DIR` to the exact verified
+immutable candidate first; stop all writers and prove the backup as described below
+before running either path. The standalone path additionally requires matching
+non-superuser application ownership; follow the [ownership precondition and recovery choices](pps-arithmetic-migration.md#standalone-ownership-precondition).
+Run the packaged read-only preflight before the migration; a failed check must
+stop the sequence, not select a fallback automatically:
+
+```console
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+  -f "$MININGCORE_CANDIDATE_DIR/scripts/release/check-pps-arithmetic-ownership.sql" &&
+  sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+    -f "$MININGCORE_CANDIDATE_DIR/migrations/add_pps_arithmetic_version.sql"
+```
+
+The cumulative sequence below is **only for databases missing earlier prerequisites**
+or an explicitly reviewed accounting-ownership repair,
+including adding accounting to a database without it. Do not rerun it on a complete
+v0.3.0 accounting schema, or merely because an already prepared SOLO service is being replaced.
+
+The cumulative example below deliberately targets v0.4.0-rc.1, unlike the stable
+installation defaults. Use it only after the candidate's assets are published.
+For a v0.2.x-to-v0.3.0 stable upgrade, follow the [v0.3.0 prerequisites](releases.md#v030-highlights)
+and use SQL from the verified v0.3.0 archive, not this RC directory. The RC
+accounting migration contains newer schema changes absent from v0.3.0.
+
 > [!IMPORTANT]
-> The current release series changes the payout safety contract for every coin family. The payout-manager
-> ownership migration is mandatory before starting any node with payment processing enabled, not
-> only an LTC/DOGE node. Treat this as a breaking upgrade and schedule a maintenance window.
+> Payout-manager ownership was already required before v0.3.0; it is not a new RC.1 migration.
+> A deployment missing that prerequisite must install it before starting any node with payment
+> processing enabled, not only an LTC/DOGE node. Schedule a maintenance window for schema changes.
 
 First extract and verify the selected candidate release without changing `/opt/miningcore`, following
 the [release upgrade procedure](releases.md#upgrade-or-roll-back). Stop Miningcore block writers,
@@ -157,24 +213,27 @@ that uses the database, take a verified backup, then point this shell at that ex
 candidate and apply the migrations with `ON_ERROR_STOP`:
 
 ```console
-export MININGCORE_VERSION=v0.3.0
+export MININGCORE_VERSION=v0.4.0-rc.1
 export MININGCORE_UBUNTU=26.04 # use 22.04 with the compatibility archive
 export MININGCORE_CANDIDATE_DIR="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"
-test -d "$MININGCORE_CANDIDATE_DIR/migrations"
-
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_auxpow_block_idempotency.sql"
-
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
-  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_payout_manager_ownership.sql"
-
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+test -d "$MININGCORE_CANDIDATE_DIR/migrations" &&
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+  -f "$MININGCORE_CANDIDATE_DIR/scripts/release/check-share-owner.sql" &&
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_auxpow_block_idempotency.sql" &&
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
+  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_payout_manager_ownership.sql" &&
+sudo -u postgres psql -X -v ON_ERROR_STOP=1 -d miningcore \
   -f "$MININGCORE_CANDIDATE_DIR/migrations/add_share_accounting.sql"
 ```
 
 Choose the candidate directory that exactly matches the verified version and host target. Never run
 upgrade migrations through the stable `/opt/miningcore` symlink: it must continue pointing to the
 old release until every required candidate migration succeeds.
+The initial read-only share-owner check requires no accounting tables and stops
+this chain if `shares` is superuser-owned. It performs no ownership repair.
+Use the [explicit ownership procedure](pps-arithmetic-migration.md#standalone-ownership-precondition)
+before retrying rather than making the runtime a superuser.
 
 The payout ownership migration assigns its tables to the database owner. The share-accounting
 migration uses the existing `shares` table owner as the application role. Its cumulative

@@ -1,5 +1,10 @@
 # Mainnet validation
 
+This is dated production evidence, not certification of v0.4.0-rc.1. The candidate
+adds mining, accounting and transport changes after the observations below. Follow
+the [RC.1 commissioning checklist](upgrade-v0.4.0-rc.1.md#staging-and-cutover) and record
+the actual deployed commit, daemon versions and configuration when adding new evidence.
+
 This record preserves production evidence for release decisions. It is not an installation
 procedure or a guarantee for other deployments. Append new, dated evidence instead of rewriting
 historical observations. The chain data for a named public block is inherently discoverable; the

@@ -11,7 +11,8 @@ later hard fork is implemented by the pinned Knots sources listed below.
 
 ## Compatibility boundary
 
-- A Miningcore build containing this feature is required; v0.3.0 does not contain it.
+- v0.4.0-rc.1 is the first release candidate containing this feature; v0.3.0 does not contain it.
+  Use a build containing the feature, or the candidate after its assets are published.
 - **Upgrade both Knots and Miningcore before mainnet height 979919.** Old 29.4.2
   validation can diverge from 980019 and its mining policy can produce incompatible
   spends from 986399. If the upgrade height has already been reached, keep mining and

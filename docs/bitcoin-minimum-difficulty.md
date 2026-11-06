@@ -134,27 +134,67 @@ cycle; later blocks stay unpaid until the cause is reconciled. Previously
 unvalidated zero/negative legacy share rows now fail closed. No row is silently
 skipped or deleted, and this policy also applies to non-Bitcoin pools.
 
-Before upgrading to v0.3.0, back up retained shares and financial receipts, then
-run the [read-only audit](../scripts/release/audit-settlement-shares.sql) against
-each deployment database with a role allowed to read both `shares` and
-`pps_share_credits`. Both tables and their accounting identity/role columns must
-exist; a missing schema makes the audit
-incomplete and the script fails rather than reporting a clean empty ledger.
-Use the [versioned database upgrade procedure](database.md#upgrade-an-existing-database)
-or an appropriately restored backup, not a newly created empty receipt table.
+Before upgrading to v0.4.0-rc.1, back up retained shares and financial receipts,
+then choose the applicable read-only audit path below. Use scripts from the exact
+verified candidate source/package, not a moving branch. The archives and packaged
+GHCR image retain these operator scripts under `scripts/release/`, separate from
+schema migrations (image path `/app/scripts/release/`; see
+[stopped-container extraction](upgrade-v0.4.0-rc.1.md#container-upgrades)).
+Run from that checkout/package root with a read-capable role;
+keep the DSN and reports private because they can identify miners.
+Use a fresh `psql -X` session, not an audit sourced inside an existing transaction.
+`-X` avoids startup commands from a personal psql configuration.
+
+### Choose the audit scope
+
+**The full audit is the default.** Use it if PPS or pooled merged accounting is
+enabled now, was ever enabled for any current/former pool ID in this database,
+or could have been enabled because deployment history is uncertain. It reads
+both `shares` and `pps_share_credits`, including accounting identities/roles.
+It resolves all required columns before emitting report results; a schema failure
+must not leave apparently clean statistical results as a substitute financial audit.
+Missing schema, missing/pruned receipts or unavailable archives mean incomplete
+coverage, not a clean financial history. Reconcile against appropriately restored
+backups/archives and the [database procedure](database.md#upgrade-an-existing-database);
+do not create empty receipt tables or install a migration merely to suppress an
+audit error. Never automatically fall back to the shares-only script.
 
 ```sh
-psql "$MININGCORE_AUDIT_DSN" --set=ON_ERROR_STOP=1 --file=scripts/release/audit-settlement-shares.sql
+psql -X "$MININGCORE_AUDIT_DSN" --set=ON_ERROR_STOP=1 --file=scripts/release/audit-settlement-shares.sql
 ```
 
-The script uses a repeatable-read, read-only transaction. On large deployments,
+**Legacy shares-only screening is a separate, narrower option.** Use it only when
+configuration history, backups and operator records positively establish that
+PPS and pooled merged accounting have **never** been enabled in this database,
+including former/renamed pools and imported data. A valid ordinary non-merged
+PROP/PPLNS/PPLNSBF database may lack accounting tables/columns and need no new
+accounting migration for RC.1. Their absence alone does not establish eligibility.
+If history cannot be established, stop and obtain the missing evidence; do not
+select this path just because the full audit failed.
+
+```sh
+psql -X "$MININGCORE_AUDIT_DSN" --set=ON_ERROR_STOP=1 --file=scripts/release/audit-legacy-settlement-shares.sql
+```
+
+This script reads only legacy `shares` columns and requires no accounting-schema
+installation. Its first result explicitly says `legacy-shares-only` and identifies
+its coverage limit. It reports invalid retained share difficulty, a bounded sample
+and raw oversized-share flags; it does **not** audit PPS receipts, merged-event
+pairing, historical monetary credits, balances or payments. Record the evidence
+justifying the scope choice, pool IDs, retention interval and exclusions. An empty
+report is not proof that historical liabilities or payouts were correct, and
+cannot clear missing PPS evidence. Use separate payout/ledger records for financial
+reconciliation even for an eligible legacy pool. A SQL error is an incomplete run,
+not permission to ignore a result or modify historical rows.
+
+Both scripts use a repeatable-read, read-only transaction. On large deployments,
 run it on a suitably current replica or during a quiet maintenance period: its
 sequential scans hold a snapshot until completion and can delay vacuum cleanup.
 Record the replica's replay position/lag when interpreting its coverage; a lagging
 replica cannot clear newer primary receipts. See PostgreSQL's
 [vacuum guidance](https://www.postgresql.org/docs/current/routine-vacuuming.html).
-Its invalid-share summary
-uses this predicate, with explicit special-value checks:
+Both invalid-share summaries
+use this predicate, with explicit special-value checks:
 
 ```sql
 SELECT poolid, count(*) AS invalid_rows
@@ -168,7 +208,7 @@ GROUP BY poolid;
 
 PostgreSQL treats `NaN > 0` as true and considers NaNs equal, so positivity alone
 cannot validate these rows; see its [floating-point special-value rules](https://www.postgresql.org/docs/current/datatype-numeric.html#DATATYPE-FLOAT).
-The script also returns bounded identifying samples, checks invalid PPS receipt
+The full script also returns bounded identifying samples, checks invalid PPS receipt
 difficulties and monetary amounts, and reports positive finite raw difficulty
 above recorded network difficulty without dividing potentially overflowing
 values. PPS receipt counts and the `oversized_calculated_amount` and
@@ -183,7 +223,7 @@ summary does not establish that historical credits or payouts were legitimate.
 The stored-value audit cannot detect an adjustment override rounding otherwise
 valid work to zero; review each deployed handler's adjustment policy as well.
 
-The direct PPS report also provides `estimated_oversized_excess`: for each flagged
+The full audit's direct PPS report also provides `estimated_oversized_excess`: for each flagged
 receipt, `calculatedamount * (difficulty - networkdifficulty) / difficulty`,
 summed using numeric arithmetic and rounded to the receipt's 24-decimal precision.
 Under a linear PPS contract this estimates the
@@ -294,6 +334,11 @@ receipt-only liabilities, a nonidentity Ergo scale, linked parent/auxiliary
 events, duplicate-peer protection, invalid/unrelated/same-pool/role-mismatched
 exclusions, and numeric excess estimates including extreme ratios. Complete row
 snapshots remain unchanged.
+The legacy shares-only fixture runs without a PPS table or share accounting
+columns, checks the explicit limited-coverage notice and 100-row sample cap,
+observes repeatable-read/read-only transaction settings and verifies unchanged
+rows and schema. The full audit still fails on missing receipt tables or identity
+columns; the existing migrated-schema fixture retains PPS and paired-event coverage.
 `BitcoinBlake2bMinimumDifficultyTests` pins single publication and retained targets.
 Existing VarDiff/static-authorization contention, publication closure and
 accepted-credit tests exercise the shared gate and failure boundaries.

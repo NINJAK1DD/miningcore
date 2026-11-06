@@ -11,6 +11,7 @@ config_example="$repository_root/config.example.json"
 pps_document="$repository_root/docs/pps.md"
 pps_arithmetic_document="$repository_root/docs/pps-arithmetic-migration.md"
 database_document="$repository_root/docs/database.md"
+rc_upgrade_document="$repository_root/docs/upgrade-v0.4.0-rc.1.md"
 merged_mining_document="$repository_root/docs/merged-mining-litecoin-dogecoin.md"
 bitcoin_direct_document="$repository_root/docs/bitcoin-direct-solo.md"
 licence_document="$repository_root/docs/lucky-penny-licence.md"
@@ -22,7 +23,29 @@ zeromq_probe="$repository_root/scripts/release/fixtures/zeromq-runtime-probe/Pro
 capability_dir=
 fixture_dir=
 normalized_document=$(tr '\r\n\t' '   ' < "$document" | sed -E 's/[[:space:]]+/ /g')
-normalized_readme=$(tr '\r\n\t' '   ' < "$readme" | sed -E 's/[[:space:]]+/ /g')
+normalize_readme_prose() {
+  awk '
+    function emit() { if (text != "") print text; text = "" }
+    {
+      sub(/\r$/, "")
+      quoted = ($0 ~ /^>/)
+      if (!NF) { emit(); next }
+      if (quoted != previous) emit()
+      previous = quoted
+      sub(/^> ?/, "")
+      gsub(/[ \t]+/, " ")
+      text = text (text != "" ? " " : "") $0
+    }
+    END { emit() }
+  '
+}
+normalized_readme=$(normalize_readme_prose < "$readme")
+# Assertions may span wrapped lines, never paragraphs or callout boundaries.
+if printf 'outside\n> inside\n\nafter\n' | normalize_readme_prose |
+    grep -Eq 'outside inside|inside after'; then
+  echo 'README prose normalizer crossed a block boundary' >&2
+  exit 1
+fi
 release_document=$(tr -d '\r' < "$document")
 readme_features_section=$(awk '
   { sub(/\r$/, "") }
@@ -145,9 +168,12 @@ source_placeholder_block=$(awk '
 upgrade_block=$(awk '
   { sub(/\r$/, "") }
   /^## Upgrade or roll back$/ { section = 1; next }
-  section && /^```console$/ { capture = 1; next }
-  capture && /^```$/ { exit }
-  capture { print }
+  section && /^```console$/ { capture = 1; block = ""; next }
+  capture && /^```$/ {
+    if (index(block, "MININGCORE_UPGRADE_READY=")) { printf "%s", block; exit }
+    capture = 0; next
+  }
+  capture { block = block $0 "\n" }
 ' "$document")
 
 assert_contains() {
@@ -195,12 +221,42 @@ assert_contains 'the Ubuntu 26.04 choose-one label' \
   '(choose this on Ubuntu 26.04)'
 assert_contains 'the Ubuntu 22.04 choose-one label' \
   '(choose this on Ubuntu 22.04)'
-assert_file_contains 'the v0.3.0 release example' \
+assert_file_contains 'the published stable release example' \
   'export MININGCORE_VERSION=v0.3.0' "$document"
-assert_file_contains 'the v0.3.0 container example' \
+assert_file_contains 'the published stable container example' \
   'MININGCORE_VERSION=v0.3.0' "$readme"
-assert_file_contains 'the v0.3.0 database migration example' \
-  'export MININGCORE_VERSION=v0.3.0' "$database_document"
+assert_file_contains 'the v0.4.0-rc.1 database migration example' \
+  'export MININGCORE_VERSION=v0.4.0-rc.1' "$database_document"
+assert_file_contains 'the published stable quick-start boundary' \
+  'This quick start pins the published `v0.3.0` stable release.' "$readme"
+assert_readme_prose_contains 'the unpublished-artifact boundary' \
+  'Select `v0.4.0-rc.1` only if its release page and required assets are available;'
+assert_readme_prose_contains 'the retained latest stable baseline' \
+  'The latest stable baseline remains v0.3.0 until a newer stable release is published.'
+assert_file_contains 'the RC release heading' \
+  '## v0.4.0-rc.1 highlights' "$document"
+assert_file_contains 'the RC upgrade boundary' \
+  '### Upgrade boundary from v0.3.0' "$document"
+assert_file_contains 'the RC guide index route' \
+  '(upgrade-v0.4.0-rc.1.md)' "$repository_root/docs/README.md"
+assert_file_contains 'the legacy PPS schema upgrade boundary' \
+  'even when retaining version 0.' "$rc_upgrade_document"
+assert_file_contains 'the authenticated port-587 SMTP migration' \
+  'For an existing authenticated port-587 configuration, add `"tlsMode": "startTls"`' \
+  "$rc_upgrade_document"
+assert_file_contains 'the empty SMTP password rejection' \
+  'A nonempty `user` with `password: ""` is' "$rc_upgrade_document"
+assert_file_contains 'the isolated staging wallet boundary' \
+  'Never connect a staging payout manager to production wallets.' "$rc_upgrade_document"
+assert_file_contains 'the PROXY/TLS ordering boundary' \
+  'before its handshake is unsupported.' "$rc_upgrade_document"
+assert_file_contains 'the RC evidence boundary' \
+  'This is dated production evidence, not certification of v0.4.0-rc.1.' \
+  "$repository_root/docs/mainnet-validation.md"
+# These guards use unconditional checks (also under PYTHONOPTIMIZE=1), a frozen
+# historical-anchor baseline and separate mutations of each migration row.
+python3 -B "$repository_root/scripts/release/check-release-preparation-docs.py"
+python3 -B "$repository_root/scripts/release/test-release-preparation-docs.py"
 assert_file_contains 'the v0.2.1 hotfix task route' \
   '| v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |' "$document"
 assert_file_contains 'the v0.2.1 troubleshooting route' \
@@ -389,10 +445,10 @@ assert_file_contains 'the terminal-logger opt-out contract' \
   'The standard `MSBUILDTERMINALLOGGER=off` environment setting remains available' "$readme"
 assert_prose_contains 'the private source-build audit-log contract' \
   'Warning enforcement uses a separate private normal-verbosity MSBuild log'
-assert_contains 'the v0.3.0 recovery example' \
-  'export TAG=v0.3.0'
-assert_contains 'the v0.3.0 tagging example' \
-  'NEXT_VERSION=v0.3.0'
+assert_contains 'the v0.4.0-rc.1 recovery example' \
+  'export TAG=v0.4.0-rc.1'
+assert_contains 'the v0.4.0-rc.1 tagging example' \
+  'NEXT_VERSION=v0.4.0-rc.1'
 assert_file_contains 'the direct PPS Bitcoin-family boundary' \
   'Direct audited `Bitcoin`-family pool' "$pps_document"
 assert_file_contains 'the PPS reserve warning' \
@@ -795,23 +851,8 @@ if grep -Eq \
   exit 1
 fi
 
-if grep -Eh \
-    '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v[0-9]+\.[0-9]+\.[0-9]+' \
-    "$readme" "$document" "$database_document" |
-    grep -Ev \
-      '^(export )?(MININGCORE_VERSION|TAG|NEXT_VERSION)=v0\.3\.0([[:space:]]|$)'; then
-  echo 'README, release guide or database guide contains a stale copy-paste release assignment' >&2
-  exit 1
-fi
-
-if [[ $(grep -Ec '^(export )?MININGCORE_VERSION=v0\.3\.0([[:space:]]|$)' "$readme") -ne 3 ]] ||
-    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0([[:space:]]|$)' "$document") -ne 2 ]] ||
-    [[ $(grep -Ec '^export MININGCORE_VERSION=v0\.3\.0([[:space:]]|$)' "$database_document") -ne 1 ]] ||
-    [[ $(grep -Ec '^NEXT_VERSION=v0\.3\.0([[:space:]]|$)' "$document") -ne 1 ]] ||
-    [[ $(grep -Ec '^export TAG=v0\.3\.0([[:space:]]|$)' "$document") -ne 1 ]]; then
-  echo 'The v0.3.0 copy-paste assignment inventory is incomplete or duplicated' >&2
-  exit 1
-fi
+# Per-document stable-installation / candidate-maintenance assignment inventories
+# are checked by check-release-preparation-docs.py above.
 
 recovery_section=$(awk '
   /^### Recover an interrupted publication$/ { capture = 1 }
@@ -861,7 +902,7 @@ done
 
 for required in \
   'MININGCORE_UPGRADE_READY=' \
-  'if [ "${MININGCORE_RELEASE_READY:-}" = 1 ]; then' \
+  'if [ "${MININGCORE_RELEASE_READY:-}" != 1 ]; then' \
   'release_dir="/opt/miningcore-${MININGCORE_VERSION}-linux-x64-ubuntu-${MININGCORE_UBUNTU}"' \
   'stage_miningcore_candidate()' \
   'sudo tar -xzf "$archive" -C /opt' \
@@ -871,7 +912,7 @@ for required in \
   '"$release_dir/migrations/add_share_accounting.sql"' \
   'sudo ln -sfnT "$release_dir" /opt/miningcore' \
   'export MININGCORE_UPGRADE_READY=1' \
-  'STOP: upgrade failed; /opt/miningcore was not changed'; do
+  "report_upgrade_stop 'upgrade failed; candidate activation is not confirmed"; do
   if ! grep -Fq "$required" <<<"$upgrade_block"; then
     echo "Release upgrade block is missing: $required" >&2
     exit 1
@@ -991,7 +1032,7 @@ find_unique_line() {
   local source=$3
   local -a matches
 
-  mapfile -t matches < <(grep -nF "$pattern" <<<"$source" | cut -d: -f1)
+  mapfile -t matches < <(grep -nF -- "$pattern" <<<"$source" | cut -d: -f1)
   if [[ "${#matches[@]}" -ne 1 ]]; then
     echo "Installation-order anchor '$label' occurred ${#matches[@]} times; expected 1" >&2
     return 1
@@ -1000,6 +1041,12 @@ find_unique_line() {
   printf '%s\n' "${matches[0]}"
 }
 
+release_candidate_heading_line=$(
+  find_unique_line release-candidate-heading '## v0.4.0-rc.1 highlights' "$release_document"
+)
+release_candidate_upgrade_line=$(
+  find_unique_line release-candidate-upgrade '### Upgrade boundary from v0.3.0' "$release_document"
+)
 release_stable_heading_line=$(
   find_unique_line release-stable-heading '## v0.3.0 highlights' "$release_document"
 )
@@ -1022,14 +1069,16 @@ release_tag_checklist_line=$(
   find_unique_line release-tag-checklist 'Before tagging a new release,' "$release_document"
 )
 release_tag_preference_line=$(
-  find_unique_line release-tag-preference 'failures before publication. Prefer a signed annotated tag:' \
+  find_unique_line release-tag-preference 'Prefer a signed annotated tag:' \
     "$release_document"
 )
 release_tag_command_line=$(
-  find_unique_line release-tag-command 'git switch dev' "$release_document"
+  find_unique_line release-tag-command 'RELEASE_COMMIT=REPLACE_WITH_REVIEWED_MERGE_SHA' "$release_document"
 )
 
-if [[ "$release_rc_heading_line" -le "$release_stable_heading_line" ||
+if [[ "$release_candidate_upgrade_line" -le "$release_candidate_heading_line" ||
+    "$release_stable_heading_line" -le "$release_candidate_upgrade_line" ||
+    "$release_rc_heading_line" -le "$release_stable_heading_line" ||
     "$release_previous_rc_heading_line" -le "$release_rc_heading_line" ||
     "$release_upgrade_heading_line" -le "$release_previous_rc_heading_line" ||
     "$release_feature_heading_line" -le "$release_upgrade_heading_line" ||
@@ -1173,7 +1222,7 @@ upgrade_extract_line=$(
   find_unique_line upgrade-extraction 'sudo tar -xzf "$archive" -C /opt' "$upgrade_block"
 )
 upgrade_stop_line=$(
-  find_unique_line upgrade-stop 'if sudo systemctl stop miningcore &&' "$upgrade_block"
+  find_unique_line upgrade-stop '       sudo systemctl stop miningcore &&' "$upgrade_block"
 )
 upgrade_backup_line=$(
   find_unique_line upgrade-backup 'sudo -u postgres pg_dump -Fc -d miningcore' "$upgrade_block"
@@ -1183,15 +1232,18 @@ upgrade_restore_check_line=$(
 )
 upgrade_auxpow_line=$(
   find_unique_line upgrade-auxpow-migration \
-    '"$release_dir/migrations/add_auxpow_block_idempotency.sql"' "$upgrade_block"
+    '-f "$release_dir/migrations/add_auxpow_block_idempotency.sql"' "$upgrade_block"
 )
 upgrade_ownership_line=$(
   find_unique_line upgrade-ownership-migration \
-    '"$release_dir/migrations/add_payout_manager_ownership.sql"' "$upgrade_block"
+    '-f "$release_dir/migrations/add_payout_manager_ownership.sql"' "$upgrade_block"
 )
 upgrade_accounting_line=$(
   find_unique_line upgrade-accounting-migration \
-    '"$release_dir/migrations/add_share_accounting.sql"' "$upgrade_block"
+    '-f "$release_dir/migrations/add_share_accounting.sql"' "$upgrade_block"
+)
+upgrade_apply_line=$(
+  find_unique_line upgrade-selected-migrations '       apply_selected_migrations &&' "$upgrade_block"
 )
 upgrade_symlink_line=$(
   find_unique_line upgrade-stable-symlink \
@@ -1201,10 +1253,10 @@ upgrade_symlink_line=$(
 if [[ "$upgrade_stop_line" -le "$upgrade_extract_line" ||
     "$upgrade_backup_line" -le "$upgrade_stop_line" ||
     "$upgrade_restore_check_line" -le "$upgrade_backup_line" ||
-    "$upgrade_auxpow_line" -le "$upgrade_restore_check_line" ||
     "$upgrade_ownership_line" -le "$upgrade_auxpow_line" ||
     "$upgrade_accounting_line" -le "$upgrade_ownership_line" ||
-    "$upgrade_symlink_line" -le "$upgrade_accounting_line" ]]; then
+    "$upgrade_apply_line" -le "$upgrade_restore_check_line" ||
+    "$upgrade_symlink_line" -le "$upgrade_apply_line" ]]; then
   echo 'Candidate staging, backup, migrations and stable-symlink activation are not safely ordered' >&2
   exit 1
 fi
@@ -1729,9 +1781,16 @@ case "$*" in
     exit 1
     ;;
   tar\ -xzf*)
-    mkdir -p "${DOC_TEST_RELEASE_DIR:?}/migrations"
-    printf '%s\n' 'fixture build identity' > "$DOC_TEST_RELEASE_DIR/BUILD-INFO"
-    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$DOC_TEST_RELEASE_DIR/Miningcore"
+    mkdir -p "${DOC_TEST_RELEASE_DIR:?}/migrations" "$DOC_TEST_RELEASE_DIR/scripts/release"
+    touch "$DOC_TEST_RELEASE_DIR/scripts/release/check-share-owner.sql" \
+      "$DOC_TEST_RELEASE_DIR/scripts/release/check-pps-arithmetic-ownership.sql"
+    touch "$DOC_TEST_RELEASE_DIR/migrations/add_pps_arithmetic_version.sql" \
+      "$DOC_TEST_RELEASE_DIR/migrations/add_auxpow_block_idempotency.sql" \
+      "$DOC_TEST_RELEASE_DIR/migrations/add_payout_manager_ownership.sql" \
+      "$DOC_TEST_RELEASE_DIR/migrations/add_share_accounting.sql"
+    printf '%s\n' 'Version: v0.4.0-rc.1' 'Target: Ubuntu 26.04 x64' \
+      'Source commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$DOC_TEST_RELEASE_DIR/BUILD-INFO"
+    printf '%s\n' '#!/usr/bin/env bash' "echo '0.4.0-rc.1 [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]'" 'exit 0' > "$DOC_TEST_RELEASE_DIR/Miningcore"
     chmod +x "$DOC_TEST_RELEASE_DIR/Miningcore"
     ;;
   *pg_dump*)
@@ -1746,15 +1805,17 @@ EOF
 chmod +x "$fixture_dir/bin/sudo"
 
 : > "$trace"
+failed_upgrade_status=0
 failed_upgrade_output=$(
   env PATH="$fixture_dir/bin:$PATH" HOME="$fixture_dir/home" \
     DOC_TEST_TRACE="$trace" DOC_TEST_RELEASE_DIR="$candidate_dir" \
-    DOC_TEST_SHARE_MIGRATION_STATUS=1 MININGCORE_RELEASE_READY=1 \
-    MININGCORE_VERSION=v-doc-upgrade MININGCORE_UBUNTU=26.04 \
+    DOC_TEST_SHARE_MIGRATION_STATUS=1 MININGCORE_RELEASE_READY=1 MININGCORE_MIGRATION_PLAN=cumulative \
+    MININGCORE_VERSION=v0.4.0-rc.1 MININGCORE_UBUNTU=26.04 \
+    MININGCORE_EXPECTED_SOURCE_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     archive="$fixture_dir/download/candidate.tar.gz" \
     bash -c "$upgrade_fixture_block" 2>&1
-)
-if ! grep -Fq 'upgrade failed; /opt/miningcore was not changed' \
+) || failed_upgrade_status=$?
+if [[ "$failed_upgrade_status" -eq 0 ]] || ! grep -Fq 'upgrade failed; candidate activation is not confirmed' \
     <<<"$failed_upgrade_output" || grep -Fq 'ln -sfnT' "$trace" ||
     [[ $(grep -Fc "$candidate_dir/migrations/" "$trace") -ne 3 ]]; then
   echo 'Release upgrade can activate a candidate after a migration failure or use stale SQL' >&2
@@ -1766,12 +1827,13 @@ rm -rf -- "$candidate_dir"
 successful_upgrade_output=$(
   env PATH="$fixture_dir/bin:$PATH" HOME="$fixture_dir/home" \
     DOC_TEST_TRACE="$trace" DOC_TEST_RELEASE_DIR="$candidate_dir" \
-    DOC_TEST_SHARE_MIGRATION_STATUS=0 MININGCORE_RELEASE_READY=1 \
-    MININGCORE_VERSION=v-doc-upgrade MININGCORE_UBUNTU=26.04 \
+    DOC_TEST_SHARE_MIGRATION_STATUS=0 MININGCORE_RELEASE_READY=1 MININGCORE_MIGRATION_PLAN=cumulative \
+    MININGCORE_VERSION=v0.4.0-rc.1 MININGCORE_UBUNTU=26.04 \
+    MININGCORE_EXPECTED_SOURCE_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     archive="$fixture_dir/download/candidate.tar.gz" \
     bash -c "$upgrade_fixture_block" 2>&1
 )
-if ! grep -Fq "READY: migrated the database and activated $candidate_dir" \
+if ! grep -Fq "READY: completed cumulative plan and activated $candidate_dir" \
     <<<"$successful_upgrade_output" ||
     ! grep -Fq "ln -sfnT $candidate_dir /opt/miningcore" "$trace"; then
   echo 'Release upgrade did not activate the verified candidate after all migrations succeeded' >&2

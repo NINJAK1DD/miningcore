@@ -163,7 +163,7 @@ Prometheus exports:
 | `miningcore_stratum_admission_addresses` | `pool`: active and idle identities retained in the finite table. |
 | `miningcore_stratum_admission_pending_identities` | `pool`: dispatches awaiting a trusted-proxy identity. |
 | `miningcore_stratum_admission_max_address_active` | `pool`: largest current concurrent dispatch count for any one identity; no address label. |
-| `miningcore_stratum_admission_limit` | `pool`, `limit`: the ten JSON control names above; configured values, zero after shutdown. |
+| `miningcore_stratum_admission_limit` | `pool`, `limit`: the documented JSON control names above; configured values, zero after shutdown. |
 
 Alert before refusals by dividing active dispatches by the `maxConcurrentConnections`
 limit, pending identities by `maxPendingIdentities`, retained addresses by

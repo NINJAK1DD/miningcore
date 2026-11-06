@@ -45,6 +45,117 @@ These commands answer five initial questions:
 
 An active process alone does not prove mining or payouts are healthy.
 
+## When an RC.1 upgrade stops
+
+Start here if the [RC.1 archive upgrade block](releases.md#upgrade-to-v040-rc1)
+prints `STOP`. A stop is a request to investigate, not an instruction to disable
+a check. Most automated tests run in CI; operators do not need to run the test
+suite to follow this procedure.
+
+### First, read the state lines
+
+The command prints `Failed step`, `Service` and `Schema`, followed by a reference
+to this section. Keep the first underlying error as well as these lines. They
+describe **what this command attempted**, not everything that may have happened
+on other nodes or in the database. Here, **schema** means the database structure
+(tables, indexes and functions), not the balances or other records stored in it.
+
+- **`no stop requested by this block`:** the command did not stop the local
+  service. It does not claim the service is running; you may already have stopped
+  it manually. No restart is required just because this check failed.
+- **`stop requested; completion unconfirmed`:** check the actual service status.
+  Do not assume a failed stop means the process kept running or safely exited.
+- **`stop confirmed by systemctl`:** the local service stopped successfully.
+  Other services, relays and remote writers still require separate checks.
+- **`no schema-changing SQL attempted by this block`:** this command has not run
+  a migration. It does not mean no application, wallet or external writer changed
+  any data. Ownership preflights and backup checks do not modify the schema.
+- **`migration SQL attempted; changes may have committed`:** keep Miningcore
+  stopped and ask the database administrator to establish which scripts committed.
+  Do not rerun migrations, restore an old backup or start the old binary blindly.
+
+The block does not restart the service automatically, including after `READY`.
+Complete the [startup and cutover checks](upgrade-v0.4.0-rc.1.md#staging-and-cutover)
+before reconnecting miners. This section does not replace financial recovery or
+the [rollback boundary](upgrade-v0.4.0-rc.1.md#rollback-and-release-evidence).
+
+### Find the failed step
+
+| Failed step shown | What to check next |
+| --- | --- |
+| `archive-readiness` | Complete the [download and verification](releases.md#choose-a-version) in this shell. A download alone is not verification. Do not set the readiness variable manually. |
+| `release-version` | This block accepts only RC.1. Use the [stable v0.3.0 route](releases.md#upgrade-to-published-stable-v030) for that release. Select RC.1 explicitly only when its verified assets are available. |
+| `migration-plan` | Choose the plan from the [migration matrix](upgrade-v0.4.0-rc.1.md#database-migration-matrix). Do not guess from the existence of a table. Each retry needs a fresh selection. |
+| `release-source` | Follow [Resolve the release source commit](releases.md#resolve-the-release-source-commit) in the same shell. Set `MININGCORE_EXPECTED_SOURCE_COMMIT` from independently verified release provenance or the tag's peeled `refs/tags/<version>^{}` reference, never the annotated tag object's SHA. It is the full lowercase source commit identifier, not the archive checksum, a branch name or a short hash. If unsure, ask the release operator. Never copy it from the candidate itself just to make it pass. |
+| `release-target` | Select the verified 22.04 or 26.04 archive matching this host. Other hosts require their documented source-build route, not a relabelled archive. |
+| `candidate-directory` | An immutable candidate directory already exists. Inspect its version, source identity and whether extraction was partial. Do not extract over it or delete the active installation. Ask an administrator if its ownership or purpose is unclear. |
+| `staging-directory` or `archive-extraction` | Read the preceding filesystem/archive error. Check available space, the verified archive and administrator access to the intended installation directory. Do not broaden permissions or use a different host's archive. |
+| `migration-files` | The extracted candidate lacks its expected `migrations/` directory. Verify the archive, versioned directory and host target; do not copy SQL from a moving branch. |
+| `share-owner-file` or `arithmetic-owner-file` | `check-share-owner.sql` or `check-pps-arithmetic-ownership.sql` is missing or unreadable under `scripts/release/`. Recheck the complete verified RC.1 package. A stable v0.3.0 archive intentionally lacks these files; use its own runbook. Never skip the check. |
+| `selected-migration-files` | A SQL file required by the chosen plan is absent or unreadable. `pps-arithmetic` requires `add_pps_arithmetic_version.sql`; `cumulative` requires `add_auxpow_block_idempotency.sql`, `add_payout_manager_ownership.sql` and `add_share_accounting.sql`. Verify the complete candidate and access permissions; do not skip a migration or fetch it from a moving branch. `none` requires no migration SQL. |
+| `build-info` or `candidate-version` | Verify the complete candidate, BUILD-INFO, .NET runtime, host release and native dependencies. Keep the first launch/read error; do not replace only a managed DLL. |
+| `candidate-identity` | BUILD-INFO does not match the selected version, Ubuntu target or independently verified source SHA. Check that you used the tag's peeled commit, not the annotated tag object's SHA; use [the source-resolution procedure](releases.md#resolve-the-release-source-commit). Stop and reconcile the release identity; never edit the metadata or expected SHA to match an unverified archive. A runtime version/SHA mismatch is reported as `candidate-version`. Both occur before shutdown. |
+| `backup-location` | A new private backup directory could not be created. Check free space and access to the backup destination. The service has not been stopped by this block. Do not reuse or truncate an old backup to get past the check. |
+| `service-stop` | Use the read-only service checks below and confirm all processes using this database. Ask the host administrator to resolve service permissions or a stuck shutdown before continuing. |
+| `database-backup` | Check the preceding backup/redirection error, disk space and the documented PostgreSQL backup identity. Each attempt prints a new private destination before dumping. Existing backups are never overwritten, and a pre-existing file at the new destination is rejected. Keep that directory and any partial file private; do not treat the file as a usable backup or proceed without a verified backup. |
+| `backup-inventory` | The archive inventory could not be read. Do not migrate. Preserve the error and have the database administrator establish a usable, restorable backup. An inventory check is not a full restore rehearsal. |
+| `share-owner-preflight` or `arithmetic-owner-preflight` | Follow the [ownership precondition](pps-arithmetic-migration.md#standalone-ownership-precondition). Missing tables, superuser owners and mismatched owners need diagnosis, not automatic grants or fallback. A database administrator must review ownership repairs. |
+| `auxpow-migration`, `payout-ownership-migration`, `accounting-migration` or `arithmetic-migration` | Preserve the exact first SQL error privately. Earlier migrations may have committed. Keep writers stopped and use the [database runbook](database.md#upgrade-an-existing-database) with a database administrator; do not rerun the whole sequence or restore over newer wallet/payment evidence. |
+| `activation` | Candidate activation was not confirmed. Inspect the actual `/opt/miningcore` link and recorded release identity. Even if the old link remains, do not restart an old binary against a potentially changed database. Follow the rollback boundary with the administrator. |
+
+Read-only local checks (substitute your real service name; these commands do not
+start, stop, repair or migrate anything):
+
+```console
+sudo systemctl status miningcore --no-pager -l
+sudo journalctl -u miningcore --since '30 minutes ago' --no-pager
+readlink -f /opt/miningcore
+df -h
+df -i
+```
+
+For containers or source installations, use the corresponding
+[deployment procedure](upgrade-v0.4.0-rc.1.md); do not paste archive/systemd
+activation commands into a different layout. Container extraction failures retain
+the printed output directory, which may be incomplete. A cleanup error names the
+temporary container; never remove a live pool container or production volume to
+clear it.
+
+### Startup fails after activation
+
+Use the **first** startup error, not a later connection failure. For common cases:
+
+- SMTP errors naming `notifications.email` need the
+  [SMTP configuration checks](upgrade-v0.4.0-rc.1.md#notifications-and-smtp).
+  Port 587 with authentication needs `startTls` and both credentials; never post
+  the actual credentials or disable certificate validation to make it start.
+- A missing/malformed share-accounting schema message may name
+  `add_share_accounting.sql` generically. An otherwise complete v0.3.0 accounting
+  schema may need only the standalone arithmetic migration, or a privilege/default
+  correction. Use the [RC.1 matrix](upgrade-v0.4.0-rc.1.md#database-migration-matrix)
+  before applying SQL. Startup refusal is not permission to create lookalike tables.
+- TLS, PostgreSQL timeout and VarDiff errors need the named setting checked against
+  the [configuration guide](upgrade-v0.4.0-rc.1.md#configuration-checks), not a copied
+  configuration that replaces your working pool identities or payout choices.
+
+For a **new** database import, an error such as `relation already exists` is not
+an instruction to delete that relation or rerun `createdb.sql`. Confirm the target
+database and whether it is truly empty with the database administrator. See
+[new database versus upgrade](database.md#new-installation).
+
+### When to ask for help
+
+Ask the host/database administrator if service state is uncertain, a backup cannot
+be proved, ownership/privileges need changing, migration SQL was attempted, or
+activation/financial state is unclear. Do not repair balances, delete receipts,
+clear payout ownership or discard recovery journals just to get a green startup.
+
+For support, provide the release/commit, OS, installation method, payout modes,
+fixed failed-step name and relevant state lines, plus the first **redacted** error.
+Do not post whole configs, DSNs, passwords, tokens, wallet contents or database
+dumps. Review command output for private paths, endpoints and miner/transaction
+identifiers before sharing; retain the original privately.
+
 ## Symptom index
 
 - **Configuration error at startup.** Read the first error and validate the named path without
@@ -100,13 +211,14 @@ An active process alone does not prove mining or payouts are healthy.
   [Bitcoin-family payout reconciliation](database.md#reconcile-a-bitcoin-family-payout).
 - **`Auxiliary template update failed`.** Confirm whether recovery followed; inspect DOGE sync, RPC
   pressure and auxiliary metrics before changing the timeout. See [template refresh](merged-mining-litecoin-dogecoin.md#template-refresh).
-- **Startup says the share-accounting schema is missing or malformed.** Keep listeners offline,
-  verify the intended database/search path and apply `add_share_accounting.sql` during a maintenance
-  window. The preflight includes the required `share_accounting_prune_state` singleton and exact
-  ascending B-tree pruning index; rerunning the migration safely restores either one but rebuilds
-  the index, which can take significant maintenance time on a large accounting table. Do not create
-  lookalike tables or disable preflight. See
-  [database upgrades](database.md#upgrade-an-existing-database).
+- **Startup says the share-accounting schema is missing or malformed.** Keep listeners offline
+  and verify the intended database/search path and privileges. The runtime message names the
+  cumulative migration generically; use the [release-specific matrix](upgrade-v0.4.0-rc.1.md#database-migration-matrix)
+  before choosing SQL. A complete v0.3.0 accounting schema may need only the standalone arithmetic
+  migration. A missing pruning singleton/index can require a different repair with significant
+  maintenance time. Do not create lookalike tables or disable preflight. See
+  [startup recovery guidance](#startup-fails-after-activation) and the
+  [database procedure](database.md#upgrade-an-existing-database).
 - **Startup says the direct-settlement block schema is missing or malformed.** Keep Bitcoin direct
   SOLO offline and apply `add_bitcoin_direct_solo.sql` from the verified candidate directory while
   every database writer is stopped. Do not create same-named columns or constraints manually; the

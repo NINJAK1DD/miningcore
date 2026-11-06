@@ -111,6 +111,12 @@
   <ItemGroup>
     <None Include="../../scripts/release/audit-settlement-shares.sql" Link="Fixtures/audit-settlement-shares.sql"
           CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../scripts/release/audit-legacy-settlement-shares.sql" Link="Fixtures/audit-legacy-settlement-shares.sql"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../scripts/release/check-pps-arithmetic-ownership.sql" Link="Fixtures/check-pps-arithmetic-ownership.sql"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../scripts/release/check-share-owner.sql" Link="Fixtures/check-share-owner.sql"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <Target Name="RemoveOdoCryptFromManagedOnlyTestOutput" BeforeTargets="PrepareForBuild"

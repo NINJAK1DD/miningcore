@@ -1,0 +1,35 @@
+# Frozen pre-RC.1 release anchors from dev at 16b64bff8.
+# Do not regenerate from the edited headings: that would bless accidental renames.
+unreleased-after-v030-ipv6-admission-quotas-for-all-pools
+unreleased-after-v030-pearl-mining
+unreleased-after-v030-xelis-difficulty-targets
+unreleased-after-v030-smtp-notification-tls-migration
+unreleased-administrative-notification-activation
+unreleased-after-v030-verify-daemon-rpc-tls-certificates
+unreleased-after-v030-daemon-rest-tls-and-redirects
+unreleased-after-v030-warthog-wallet-private-key-secrecy
+unreleased-after-v030-native-floating-point-state-on-cryptonote-load
+unreleased-after-v030-ergo-exact-proof-and-network-difficulty
+unreleased-after-v030-settlement-inputs-and-candidate-credit
+unreleased-in-flight-difficulty-assignments
+unreleased-handshake-difficulty-notification-and-cryptonote-family-targets
+unreleased-stratum-ban-attribution-and-address-normalization
+unreleased-portable-native-builds-and-inherited-overrides
+unreleased-bitcoin-family-duplicate-subscription-policy
+unreleased-bounded-stratum-connection-admission
+unreleased-blake2b-difficulty-request-budget
+unreleased-bitcoin-family-response-publication-failures
+unreleased-blake2b-assignment-ordering
+unreleased-shared-vardiff-timing-and-arithmetic
+unreleased-bitcoin-family-verified-job-gate
+unreleased-independent-bitcoin-family-job-notifications
+unreleased-bounded-postgresql-command-timeout
+unreleased-credential-safe-stratum-diagnostics
+unreleased-credential-safe-configuration-dumps
+unreleased-credential-safe-rpc-consumer-diagnostics
+unreleased-credential-safe-rpc-transport-diagnostics
+unreleased-bitcoin-blake2b-header-v2
+unreleased-bitcoin-family-initial-work-refresh
+unreleased-optional-notification-startup
+unreleased-postgresql-certificate-validation-issue-146
+unreleased-postgresql-credential-safe-diagnostics

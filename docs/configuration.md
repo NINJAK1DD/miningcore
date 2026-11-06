@@ -38,6 +38,9 @@ fields carried through `JsonExtensionData`; use the reviewed examples and the
 | Produce a credential-safe diagnostic summary | [Safe configuration dumps](#safe-configuration-dumps) |
 
 For symptom-first diagnostics, use [Troubleshooting](troubleshooting.md).
+Existing v0.3.0 operators should also follow the
+[v0.4.0-rc.1 upgrade checklist](upgrade-v0.4.0-rc.1.md) for notification, database,
+daemon TLS and connection-admission changes before normal startup.
 
 ## Safe configuration dumps
 
@@ -127,7 +130,7 @@ option's value or after `--`. Space, `:` and `=` separators share the parser's e
 
 For source/version boundaries, the upstream full-dump behavior, the fork's inherited `null`-output
 bug, and credential-rotation guidance, see the
-[release notes](releases.md#unreleased-credential-safe-configuration-dumps).
+[release notes](releases.md#v040-rc1-credential-safe-configuration-dumps).
 
 Do not round-trip the diagnostic JSON into Miningcore, use it as a backup, or use it to check
 spelling in omitted extension fields. Keep the original configuration under service-account-only

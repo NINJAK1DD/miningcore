@@ -13,6 +13,7 @@ wallet balances or recovery files.
 | Task | Guide |
 | --- | --- |
 | Install, upgrade or roll back a release | [Release installation](releases.md) |
+| Prepare v0.4.0-rc.1 or upgrade an existing v0.3.0 pool | [RC.1 upgrade and commissioning](upgrade-v0.4.0-rc.1.md) |
 | Check Linux CPU requirements or investigate native SIGILL | [Native CPU portability](native-cpu-portability.md) |
 | Order a local PostgreSQL service safely with Miningcore under systemd | [systemd PostgreSQL ordering](systemd-postgresql-ordering.md) |
 | Choose a ready-to-edit pool or relay topology | [Example configurations](../examples/README.md) |
@@ -85,5 +86,4 @@ wallet balances or recovery files.
 The machine-readable configuration reference is
 [`src/Miningcore/config.schema.json`](../src/Miningcore/config.schema.json), and the maintained
 starting configuration is [`config.example.json`](../config.example.json). Release-specific changes
-that affect operators are recorded after the installation and upgrade procedures in the
-[release guide](releases.md).
+that affect operators are recorded at the beginning of the [release guide](releases.md).
