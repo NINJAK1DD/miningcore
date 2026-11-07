@@ -34,7 +34,8 @@ public partial class BitcoinPayoutHandlerTests
             return;
         }
         var fixture = await CreateFixtureAsync();
-        fixture.Config.Template = new BitcoinTemplate { Symbol = "BTC", CoinbaseMinConfimations = threshold };
+        fixture.Config.Template = new BitcoinTemplate { Symbol = "BTC", Family = CoinFamily.Bitcoin,
+            CoinbaseMinConfimations = threshold };
         await Assert.ThrowsAsync<PoolStartupException>(() => fixture.Handler.ConfigureAsync(
             new ClusterConfig(), fixture.Config, CancellationToken.None));
     }
@@ -160,9 +161,9 @@ public partial class BitcoinPayoutHandlerTests
         await recovered.Handler.ClassifyBlocksAsync(recovered.Pool, new[] { block }, CancellationToken.None);
         // If the missing-hash episode leaked, it would already be old enough to alert.
         Assert.False(tracker.TryAcquireNotification(block.PoolId, block.Id, null,
-            $"{block.Type}:custodial-evidence", start.AddMinutes(31), TimeSpan.FromMinutes(30)));
+            "custodial-evidence", start.AddMinutes(31), TimeSpan.FromMinutes(30)));
         Assert.True(tracker.TryAcquireNotification(block.PoolId, block.Id, null,
-            $"{block.Type}:custodial-evidence:warning", start.AddMinutes(31), TimeSpan.Zero));
+            "custodial-evidence:warning", start.AddMinutes(31), TimeSpan.Zero));
     }
 
     [Fact]

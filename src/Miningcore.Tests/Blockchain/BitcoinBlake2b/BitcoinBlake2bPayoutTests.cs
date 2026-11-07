@@ -261,7 +261,7 @@ public class BitcoinBlake2bPayoutTests : TestBase
 
     private async Task<(Handler Handler, IMiningPool Pool, IMessageBus Messages)> Fixture(
         IMasterClock clock = null, IActiveBlockGracePeriodTracker grace = null, BitcoinBlake2bPayoutContractTracker contracts = null,
-        IMessageBus messages = null)
+        IMessageBus messages = null, int minimumConfirmations = 1)
     {
         clock ??= Substitute.For<IMasterClock>();
         messages ??= Substitute.For<IMessageBus>();
@@ -269,8 +269,28 @@ public class BitcoinBlake2bPayoutTests : TestBase
             contracts ?? new BitcoinBlake2bPayoutContractTracker());
         var pool = Substitute.For<IMiningPool>();
         pool.Config.Returns(Config());
+        pool.Config.Extra["minimumConfirmations"] = minimumConfirmations;
         await handler.ConfigureAsync(new ClusterConfig(), pool.Config, CancellationToken.None);
         return (handler, pool, messages);
+    }
+
+    [Theory]
+    [InlineData(0, 100, false)]
+    [InlineData(0, 101, true)]
+    [InlineData(-1, 100, false)]
+    [InlineData(-1, 101, true)]
+    [InlineData(102, 101, false)]
+    [InlineData(102, 102, true)]
+    public async Task OperatorDelay_PreservesBlake2bMaturityPolicy(int minimum, int depth, bool confirmed)
+    {
+        var fixture = await Fixture(minimumConfirmations: minimum);
+        fixture.Handler.Header["confirmations"] = depth;
+        fixture.Handler.Parent["confirmations"] = depth + 1;
+        fixture.Handler.Wallet["confirmations"] = depth;
+        var block = Reward();
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { block }, CancellationToken.None);
+        Assert.Equal(confirmed ? BlockStatus.Confirmed : BlockStatus.Pending, block.Status);
+        Assert.True(block.BitcoinBlake2bCustodialEvidenceVerified);
     }
 
     [Theory]

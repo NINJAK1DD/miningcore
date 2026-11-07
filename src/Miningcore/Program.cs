@@ -2476,9 +2476,11 @@ public class Program : ProcessStatusBackgroundService
 
     internal static void ValidateBitcoinConfirmationDeployment(ClusterConfig config)
     {
+        if(config.PaymentProcessing?.Enabled != true)
+            return;
         // Templates are assigned before this production startup boundary, and no
         // Stratum listener has been reserved. Payout-cycle validation is too late.
-        foreach(var pool in config.Pools.Where(x => x.Enabled &&
+        foreach(var pool in config.Pools.Where(x => x.Enabled && x.PaymentProcessing?.Enabled == true &&
                     BitcoinConfirmationPolicy.UsesSharedClassification(x.Template)))
             _ = BitcoinConfirmationPolicy.Resolve(pool);
     }

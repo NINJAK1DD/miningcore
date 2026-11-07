@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.JsonRpc;
 using Miningcore.Notifications.Messages;
 using Miningcore.Persistence.Model;
@@ -182,6 +183,9 @@ public partial class BitcoinPayoutHandlerTests
         await Observe(11, chain: true);
         Assert.Equal(2, target.Logs.Count);
         Assert.Contains("chain-coinbase-mismatch", target.Logs[1]);
+        for(var minute = 12; minute < 20; minute++)
+            await Observe(minute, chain: minute % 2 == 0);
+        Assert.Equal(2, target.Logs.Count); // Alternating already-seen reasons do not flood logs.
         var firstAlert = await Observe(30, chain: true);
         firstAlert.MessageBus.Received(1).SendMessage(Arg.Any<AdminNotification>(), Arg.Any<string>());
         var early = await Observe(1469, chain: true);
@@ -197,5 +201,62 @@ public partial class BitcoinPayoutHandlerTests
         var newEpisode = await Observe(1501);
         newEpisode.MessageBus.DidNotReceive().SendMessage(Arg.Any<AdminNotification>(), Arg.Any<string>());
         Assert.Contains("wallet-generated-invalid", target.Logs[^1]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CustodialEpisode_SurvivesMarkerTypeChangeAndClearsOnRecovery(bool parent)
+    {
+        var tracker = new ActiveBlockGracePeriodTracker();
+        var start = DateTime.UtcNow;
+        var block = PendingBlock(parent ? AuxPowBlockConfirmation.CreateParentUncertain("doge-block")
+            : AuxPowBlockConfirmation.CreateClaim("doge-block", "parent-header"));
+        block.Type = parent ? "parent-uncertain" : "auxpow-claim";
+        var first = await CreateFixtureAsync(tracker, start);
+        first.Handler.BlockLookupOverride = _ => Task.FromException<RpcResponse<Miningcore.Blockchain.Bitcoin.DaemonResponses.Block>>(new IOException());
+        await first.Handler.ClassifyBlocksAsync(first.Pool, new[] { block }, CancellationToken.None);
+        var resolved = await CreateFixtureAsync(tracker, start.AddMinutes(10));
+        resolved.Handler.BlockResponse.Response.AuxPow = new AuxPow { ParentBlock = "parent-header" };
+        await resolved.Handler.ClassifyBlocksAsync(resolved.Pool, new[] { block }, CancellationToken.None);
+        Assert.Equal(parent ? "merged-parent" : "auxpow", block.Type);
+        Assert.Equal("coinbase-txid", block.TransactionConfirmationData);
+        Assert.Equal(0, resolved.Handler.TransactionCalls);
+
+        var stalled = await CreateFixtureAsync(tracker, start.AddMinutes(31));
+        stalled.Handler.WalletLookupOverride = _ => Task.FromException<RpcResponse<JToken>[]>(new HttpRequestException());
+        await stalled.Handler.ClassifyBlocksAsync(stalled.Pool, new[] { block }, CancellationToken.None);
+        stalled.MessageBus.Received(1).SendMessage(Arg.Any<AdminNotification>(), Arg.Any<string>());
+
+        var recovered = await CreateFixtureAsync(tracker, start.AddMinutes(32));
+        recovered.Handler.TransactionResponse = SuccessTransaction("generate", 50m, 251);
+        await recovered.Handler.ClassifyBlocksAsync(recovered.Pool, new[] { block }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Confirmed, block.Status);
+        // Returning to the original type must not find an abandoned pre-normalization episode.
+        block.Type = parent ? "parent-uncertain" : "auxpow-claim";
+        block.Status = BlockStatus.Pending;
+        var next = await CreateFixtureAsync(tracker, start.AddMinutes(33));
+        next.Handler.WalletLookupOverride = _ => Task.FromException<RpcResponse<JToken>[]>(new HttpRequestException());
+        await next.Handler.ClassifyBlocksAsync(next.Pool, new[] { block }, CancellationToken.None);
+        next.MessageBus.DidNotReceive().SendMessage(Arg.Any<AdminNotification>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task CustodialClassification_LogsEligibilityWithoutClaimingCommittedUnlock()
+    {
+        var fixture = await CreateFixtureAsync();
+        var target = new MemoryTarget { Layout = "${message}" };
+        using var logs = new LogFactory();
+        var config = new LoggingConfiguration();
+        config.AddRule(LogLevel.Info, LogLevel.Fatal, target);
+        logs.Configuration = config;
+        fixture.Handler.SetLogger(logs.GetLogger("custodial"));
+        fixture.Handler.TransactionResponse = SuccessTransaction("generate", 50m, 251);
+        var block = PendingBlock("coinbase-txid");
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { block }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Confirmed, block.Status);
+        Assert.Contains(target.Logs, x => x.Contains("eligible for custodial settlement; awaiting database commit"));
+        Assert.DoesNotContain(target.Logs, x => x.Contains("Unlocked") || x.Contains("Committed"));
+        fixture.MessageBus.DidNotReceive().SendMessage(Arg.Any<BlockUnlockedNotification>(), Arg.Any<string>());
     }
 }

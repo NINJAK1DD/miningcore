@@ -23,13 +23,19 @@ The existing threshold precedence is retained: pool `minimumConfirmations`, then
 coin-template `coinbaseMinConfimations` (existing spelling), then family default 102.
 The shared classification path requires positive integer JSON confirmation evidence;
 numeric strings, fractional values, nulls, missing values and overflow cannot unlock.
-Nonpositive effective thresholds throw `PoolStartupException` during main pool
-startup, after templates are assigned and before Stratum listeners are reserved.
+For shared-family pools that process payments, nonpositive effective thresholds
+throw `PoolStartupException` during main pool startup, after templates are assigned
+and before Stratum listeners are reserved. Both cluster and pool payment processing
+must be enabled: Stratum-only/share-relay nodes do not use this payout policy.
 The startup error includes the pool and a fixed configuration explanation. The same
 resolver is also used in payout-handler `ConfigureAsync` as a second safety net;
 payout-cycle configuration alone would detect this too late and its generic error
 logger would omit the explanation. Template defaults and pool overrides are both
 checked. The settlement guard retains its defensive positive-threshold check.
+Bitcoin BLAKE2b has a separate classifier and retains its existing rule:
+`max(network maturity + 1, operator confirmations)`. Zero or negative operator
+delay therefore cannot bypass network maturity and is not rejected by the shared
+handler's configuration path. A positive override can still increase the wait.
 
 The wallet reward must identify the persisted block and coinbase, have coinbase
 index zero, a numeric amount, the generated flag and consistent categories,
@@ -66,7 +72,8 @@ All custodial stalls use a separate `{Type}:custodial-evidence` episode keyed by
 and persisted row ID, including legacy rows whose hash is populated later. Invalid
 wallet JSON/fields, unsupported categories, wallet/chain disagreement, missing wallet
 transactions/details, wallet RPC errors and failed mature chain verification emit
-one warning per episode and another when the fixed failure reason changes. The
+one warning per distinct fixed reason in an episode. Alternating previously seen
+reasons do not produce a warning every cycle. The
 warning contains a fixed reason code, not raw daemon
 messages or response payloads. After 30 minutes of continuously unverifiable evidence,
 a `FinancialOrSecurity` admin notification is sent, followed by a reminder no sooner
@@ -74,6 +81,8 @@ than 24 hours after the previous successful notification while the stall persist
 Failed initial or reminder publication can retry without resetting the grace period.
 Actual valid immature progress or successful settlement clears the episode; merely
 finding an active chain block while the wallet reward is still missing does not.
+Custodial keys use pool and row ID only; claim-to-auxpow and uncertain-parent type
+changes keep the same episode and cannot leave an old type-specific episode behind.
 The tracker survives handler recreation within a process, but is in memory: a process
 restart starts a new grace period. Notification delivery follows the configured
 [administrative notification channels](notifications.md).
@@ -139,6 +148,9 @@ row/pool IDs, block hash and height, coinbase or submission marker, block type,
 miner, creation timestamp, source, network difficulty and settlement mode. A mismatch
 discards the stale update, allocation and post-commit notifications for retry. A
 confirmed classification must also have a positive reward at this boundary.
+The handler logs eligibility pending commit, not an unlock. The payout manager logs
+committed custodial confirmation only after a successful transaction; rejected stale
+classifications and rolled-back allocations do not produce that success log.
 
 The identity snapshot is internal runtime state, not database/API input. Capturing
 it before classification allows legitimate auxiliary-marker normalization without
@@ -213,7 +225,8 @@ artifact checksum, source revision, configuration revision and test results.
 1. Record the staging financial baseline: pending/confirmed blocks, rewards,
    balances, payments, payment batches and wallet submissions. Confirm the
    exclusive payout lease prevents a second financial writer.
-2. Upgrade using the reviewed release procedure. Exercise immature, mature below
+2. Upgrade using the reviewed release procedure. Record each pool's effective
+   confirmation threshold and payment-processing enablement. Exercise immature, mature below
    policy, exact-threshold and above-threshold blocks through actual payout cycles.
    Immature or unverifiable rewards must remain pending without new liabilities.
 3. Interrupt RPC, restore it, and replay/restart the payout processor. Verify one
@@ -241,6 +254,15 @@ After the final auxiliary-transport, terminal-episode cleanup and concurrent-rem
 additions, the rebuilt focused suite passed **1,855 tests, zero failures and 19
 optional skips (1,874 cases)**. This reran all live coinbase boundaries and the eight
 PostgreSQL cases, including the additional zero-reward check at the locked boundary.
+
+The subsequent compatibility review added BLAKE2b zero/negative operator-delay
+boundaries, payment-disabled startup coverage, alternating-reason suppression,
+type-normalization episode recovery and eligibility-log checks. Its focused lab run
+passed 1,863 cases with 19 optional skips and identified two older test fixtures
+that omitted the Bitcoin template family. After specifying the real family and
+rebuilding, all **384 affected handler/configuration tests passed with zero failures
+or skips**. The live BTC/LTC/DOGE/Nexa and eight PostgreSQL cases passed in that
+focused run. Both builds were warning/error-free; documentation guards also passed.
 
 The existing PPS migration fixture requires database administrator privileges.
 The final run used a disposable loopback-only PostgreSQL cluster for that fixture;

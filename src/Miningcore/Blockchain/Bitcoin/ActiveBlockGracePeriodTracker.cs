@@ -33,8 +33,8 @@ public class ActiveBlockGracePeriodTracker : IActiveBlockGracePeriodTracker
             if(episode.NotificationInProgress)
                 return false;
 
-            var reasonChanged = reason != null && !string.Equals(reason, episode.LastReason, StringComparison.Ordinal);
-            if(episode.NotificationSent && !reasonChanged &&
+            var unseenReason = reason != null && !episode.SentReasons.Contains(reason);
+            if(episode.NotificationSent && !unseenReason &&
                (!repeatAfter.HasValue || now - episode.LastSentAt < repeatAfter.Value))
                 return false;
 
@@ -56,7 +56,8 @@ public class ActiveBlockGracePeriodTracker : IActiveBlockGracePeriodTracker
             episode.NotificationInProgress = false;
             episode.NotificationSent = true;
             episode.LastSentAt = episode.PendingAt;
-            episode.LastReason = episode.PendingReason;
+            if(episode.PendingReason != null)
+                episode.SentReasons.Add(episode.PendingReason);
         }
     }
 
@@ -95,7 +96,7 @@ public class ActiveBlockGracePeriodTracker : IActiveBlockGracePeriodTracker
         public bool NotificationInProgress { get; set; }
         public DateTime LastSentAt { get; set; }
         public DateTime PendingAt { get; set; }
-        public string LastReason { get; set; }
+        public HashSet<string> SentReasons { get; } = new(StringComparer.Ordinal);
         public string PendingReason { get; set; }
     }
 }

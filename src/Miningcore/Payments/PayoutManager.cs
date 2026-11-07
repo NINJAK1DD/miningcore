@@ -634,8 +634,14 @@ public class PayoutManager : ProcessStatusBackgroundService
                     poolConfig.Template));
 
         if(updated && block.NotifyBlockUnlockedOnUpdate)
+        {
+            if(block.Status == BlockStatus.Confirmed &&
+               BitcoinConfirmationPolicy.UsesSharedClassification(poolConfig.Template) &&
+               !BitcoinPayoutHandler.IsDirectCoinbaseSettlement(block))
+                logger.Info(() => $"[{poolConfig.Id}] Committed custodial confirmation for block {block.BlockHeight} worth {block.Reward}");
             TryNotifyPostCommit(poolConfig.Id, block, "block-unlocked",
                 () => messageBus.NotifyBlockUnlocked(poolConfig.Id, block, poolConfig.Template));
+        }
     }
 
     internal static bool CanApplyBlake2bCustodialClassification(PoolConfig pool,

@@ -20,8 +20,10 @@ public partial class ProgramPoolTemplateTests
     public void CustodialThreshold_IsRejectedAtAssignedTemplateStartup(CoinFamily family, int minimum)
     {
         var pool = new PoolConfig { Id = "invalid-policy", Coin = "custom", Enabled = true,
+            PaymentProcessing = new PoolPaymentProcessingConfig { Enabled = true },
             Extra = new Dictionary<string, object> { ["minimumConfirmations"] = minimum } };
-        var config = new ClusterConfig { Pools = new[] { pool } };
+        var config = new ClusterConfig { Pools = new[] { pool },
+            PaymentProcessing = new ClusterPaymentProcessingConfig { Enabled = true } };
         Program.AssignPoolTemplates(config.Pools, new Dictionary<string, CoinTemplate>
         {
             ["custom"] = family == CoinFamily.Equihash
@@ -39,8 +41,10 @@ public partial class ProgramPoolTemplateTests
     public void CustodialThreshold_ValidatesEffectiveTemplateDefaultAndOverride()
     {
         var pool = new PoolConfig { Id = "custom", Enabled = true,
+            PaymentProcessing = new PoolPaymentProcessingConfig { Enabled = true },
             Template = new BitcoinTemplate { Family = CoinFamily.Bitcoin, CoinbaseMinConfimations = 0 } };
-        var config = new ClusterConfig { Pools = new[] { pool } };
+        var config = new ClusterConfig { Pools = new[] { pool },
+            PaymentProcessing = new ClusterPaymentProcessingConfig { Enabled = true } };
         Assert.Throws<PoolStartupException>(() => Program.ValidateBitcoinConfirmationDeployment(config));
         pool.Extra = new Dictionary<string, object> { ["minimumConfirmations"] = 42 };
         Program.ValidateBitcoinConfirmationDeployment(config);
@@ -54,6 +58,29 @@ public partial class ProgramPoolTemplateTests
         pool.Enabled = true;
         pool.Template = new EthereumCoinTemplate { Family = CoinFamily.Ethereum };
         Program.ValidateBitcoinConfirmationDeployment(config);
+    }
+
+    [Fact]
+    public void CustodialThreshold_OnlyAppliesWhenClusterAndPoolProcessPayments()
+    {
+        foreach(var clusterEnabled in new bool?[] { null, false, true })
+        foreach(var poolEnabled in new bool?[] { null, false, true })
+        {
+            var pool = new PoolConfig { Id = "relay", Enabled = true,
+                Template = ModuleInitializer.CoinTemplates["bitcoin"],
+                Extra = new Dictionary<string, object> { ["minimumConfirmations"] = 0 },
+                PaymentProcessing = poolEnabled.HasValue
+                    ? new PoolPaymentProcessingConfig { Enabled = poolEnabled.Value } : null };
+            var config = new ClusterConfig { Pools = new[] { pool },
+                PaymentProcessing = clusterEnabled.HasValue
+                    ? new ClusterPaymentProcessingConfig { Enabled = clusterEnabled.Value } : null };
+            if(clusterEnabled == true && poolEnabled == true)
+                Assert.Throws<PoolStartupException>(() => Program.ValidateBitcoinConfirmationDeployment(config));
+            else
+                Program.ValidateBitcoinConfirmationDeployment(config);
+            pool.Template = ModuleInitializer.CoinTemplates["bitcoin-blake2b"];
+            Program.ValidateBitcoinConfirmationDeployment(config);
+        }
     }
 
     [Fact]

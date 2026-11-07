@@ -38,11 +38,15 @@ reward. BTC direct-coinbase SOLO settlement is unchanged.
 
 Effective confirmation thresholds of zero or below now reject pool startup with a
 clear configuration error after template assignment and before Stratum listener
-reservation. Payout-handler configuration retains a second defensive check.
+reservation when both cluster and pool payment processing are enabled. Stratum-only
+or share-relay nodes do not reject an unused payout threshold. Bitcoin BLAKE2b's
+separate maturity policy still permits zero operator delay and always enforces
+network maturity plus one confirmation. Shared payout-handler configuration retains
+a second defensive check.
 Invalid or unavailable observations preserve the last
 trustworthy pending progress; unchanged observations no longer publish progress
-events. All unverifiable custodial reward paths warn on first failure and when its
-fixed reason changes, and send a financial/security admin alert after 30 minutes,
+events. All unverifiable custodial reward paths warn once per distinct fixed reason
+in each episode, and send a financial/security admin alert after 30 minutes,
 with daily reminders until recovery, including an active block whose
 coinbase never appears in the pool wallet. The grace tracker is in memory and resets
 on process restart. Alert subjects now use `[pool] block reconciliation delayed`
@@ -56,6 +60,10 @@ it with the wallet's zero top-level credit. Mature zero-value rewards remain pen
 Before allocating a custodial reward, the payout transaction also compares the
 locked row's original identity with the classification input; changed hash, coinbase,
 miner or other immutable evidence requires reclassification instead of stale credit.
+Classification logs describe eligibility; successful custodial confirmation is logged
+only after database commit. Alert episodes use stable pool/row identities so claim
+and merged-parent type normalization neither restarts the grace period nor leaks an
+old episode.
 
 Blocks unknown to the configured node are no longer automatically orphaned. A node
 resync, replacement or pruned stale block can therefore leave an ordinary reward

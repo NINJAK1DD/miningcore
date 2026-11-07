@@ -136,7 +136,12 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         extraPoolPaymentProcessingConfig = pc.PaymentProcessing.Extra.SafeExtensionDataAs<BitcoinPoolPaymentProcessingConfigExtra>();
 
         coin = poolConfig.Template.As<CoinTemplate>();
-        minConfirmations = BitcoinConfirmationPolicy.Resolve(pc);
+        // Derived families such as BLAKE2b have their own maturity policy, where
+        // zero means no additional operator delay. Validate only shared classifiers.
+        minConfirmations = BitcoinConfirmationPolicy.UsesSharedClassification(coin)
+            ? BitcoinConfirmationPolicy.Resolve(pc)
+            : extraPoolConfig?.MinimumConfirmations ??
+                (coin as BitcoinTemplate)?.CoinbaseMinConfimations ?? BitcoinConstants.CoinbaseMinConfimations;
         if(coin is BitcoinTemplate bitcoinTemplate)
         {
             payoutDecimalPlaces = bitcoinTemplate.PayoutDecimalPlaces ?? 4;
@@ -201,7 +206,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             if(page.Length == 0)
                 continue;
 
-            var resolvedAuxiliaryBlocks = new HashSet<Block>();
+            // These records were handled by marker reconciliation this cycle,
+            // including unavailable lookups. Wallet classification waits for a retry.
+            var deferredWalletBlocks = new HashSet<Block>();
 
             foreach(var block in page)
             {
@@ -228,7 +235,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     ResetCustodialNotificationFlags(block);
                     DeferCustodialEvidence(block, "chain-activity-unverified");
                     result.Add(block);
-                    resolvedAuxiliaryBlocks.Add(block);
+                    deferredWalletBlocks.Add(block);
                     continue;
                 }
                 var blockIsKnown = IsExpectedBlock(response, blockHash);
@@ -378,13 +385,13 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 }
 
                 block.TransactionConfirmationData = coinbaseTransaction;
-                resolvedAuxiliaryBlocks.Add(block);
+                deferredWalletBlocks.Add(block);
                 result.Add(block);
                 logger.Info(() => $"[{LogCategory}] Reconciled accepted auxiliary block {block.BlockHeight} [{blockHash}] to coinbase transaction {coinbaseTransaction}");
             }
 
             var classifiablePage = page
-                .Where(block => !resolvedAuxiliaryBlocks.Contains(block) &&
+                .Where(block => !deferredWalletBlocks.Contains(block) &&
                     !AuxPowBlockConfirmation.TryGetPendingBlockHash(
                         block.TransactionConfirmationData, out _) &&
                     !AuxPowBlockConfirmation.TryGetClaim(
@@ -613,7 +620,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         block.ConfirmationProgress = 1;
         block.NotifyBlockConfirmationProgressOnUpdate = false;
         block.NotifyBlockUnlockedOnUpdate = true;
-        logger.Info(() => $"[{LogCategory}] Unlocked block {block.BlockHeight} worth {FormatAmount(block.Reward)}");
+        logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} worth {FormatAmount(block.Reward)} is eligible for custodial settlement; awaiting database commit");
     }
 
     private string CustodialEvidenceFailure(Block block, Transaction transaction,
@@ -1221,10 +1228,10 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     private void DeferCustodialEvidence(Block block, string reason)
     {
         block.Status = BlockStatus.Pending;
-        var episodeType = $"{block.Type}:custodial-evidence";
+        const string episodeType = "custodial-evidence";
         var warningType = $"{episodeType}:warning";
-        // Custodial episodes belong to the persisted row, including legacy rows
-        // whose hash is populated later. Recovery must clear the original key.
+        // Custodial episodes belong to the persisted row. Hash and type can both
+        // change during marker normalization; neither belongs in this key.
         if(activeBlockGracePeriodTracker.TryAcquireNotification(block.PoolId, block.Id,
             null, warningType, clock.Now, TimeSpan.Zero, reason: reason))
         {
@@ -1263,11 +1270,11 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
     private void ClearUnavailableActiveBlockGrace(Block block)
     {
-        // Clear legacy/missing-hash rows too; the tracker keys them by pool and row ID.
+        // The stable row key survives missing-hash and claim/parent type changes.
         activeBlockGracePeriodTracker.Clear(block.PoolId, block.Id, null,
-            $"{block.Type}:custodial-evidence");
+            "custodial-evidence");
         activeBlockGracePeriodTracker.Clear(block.PoolId, block.Id, null,
-            $"{block.Type}:custodial-evidence:warning");
+            "custodial-evidence:warning");
     }
 
     private static bool IsExpectedBlock(RpcResponse<DaemonBlock> response, string blockHash)
