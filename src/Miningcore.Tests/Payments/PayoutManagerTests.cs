@@ -32,6 +32,24 @@ public class PayoutManagerTests
     private static readonly TimeSpan HostTestTimeout = TimeSpan.FromSeconds(10);
 
     [Fact]
+    public async Task PausedManager_RejectsAccidentalStartupWithoutTouchingOwnershipOrWallets()
+    {
+        var lease = Substitute.For<IPayoutManagerLease>();
+        var context = Substitute.For<ILifetimeScope>();
+        var connections = Substitute.For<IConnectionFactory>();
+        using var manager = new PayoutManager(context, connections,
+            Substitute.For<IBlockRepository>(), Substitute.For<IShareRepository>(),
+            Substitute.For<IBalanceRepository>(),
+            new ClusterConfig { PaymentProcessing = new ClusterPaymentProcessingConfig { Enabled = true, Paused = true } },
+            Substitute.For<IMessageBus>(), lease, new ProcessStatus());
+
+        await Assert.ThrowsAsync<TrustedPoolStartupException>(() => manager.StartAsync(CancellationToken.None));
+        Assert.Empty(lease.ReceivedCalls());
+        Assert.Empty(connections.ReceivedCalls());
+        Assert.Empty(context.ReceivedCalls());
+    }
+
+    [Fact]
     public async Task PayoutCycles_ResolveDisposableHandlersInChildScopes()
     {
         var probe = new PayoutScopeProbe();

@@ -256,6 +256,9 @@
         "interval": {
           "type": "integer"
         },
+        "paused": {
+          "type": "boolean"
+        },
         "shareAccountingPruneBatchSize": {
           "type": "integer",
           "default": 50000

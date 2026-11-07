@@ -1028,49 +1028,63 @@ sudo systemctl status miningcore --no-pager
 sudo journalctl -u miningcore --since '10 minutes ago' --no-pager
 ```
 
-If mining and share recording must resume before wallet reconciliation is complete, pause the
-payout-manager pipeline without violating the deployment's startup validation:
+### Restart-only payout pause
 
-- On a node without enabled LTC-DOGE merged mining, or on a share-relay sender with the top-level
-  `shareRelay` configured, set the top-level `paymentProcessing.enabled` value to `false`.
-- On a direct pool or share-relay receiver/recorder with LTC-DOGE merged mining enabled (no
-  top-level `shareRelay`), keep the top-level `paymentProcessing.enabled` value `true` and
-  temporarily set `paymentProcessing.enabled` to `false` inside **every enabled pool**. Direct and
-  receiver nodes require the cluster-level switch for merged-block reconciliation validation, while
-  disabling all pool-level switches prevents `PayoutManager` from being registered.
+This option requires a binary containing the payout-pause fix (target: v0.4.0-rc.2).
+The v0.4.0-rc.1 binary does not implement it. Verify the selected binary's generated schema
+(`--generate-config-schema`) includes `ClusterPaymentProcessingConfig.properties.paused`
+before relying on it. Never roll back to an older binary with a paused configuration: an unknown
+flag may be ignored. On an older binary, keep mining stopped during full payout recovery.
 
-For the merged-mining case, preserve every other payment setting and change only each pool's
-`enabled` value:
+Before restarting mining during wallet recovery, stop **every** payout-capable process using the
+database and wallets, including relay senders. Confirm they are stopped; editing a file does not
+pause a running process or cancel a transaction already sent. Retain the durable ownership marker
+until the preceding reconciliation procedure is complete.
+
+On each node that could run payouts, keep cluster `paymentProcessing.enabled: true` and set
+`paymentProcessing.paused: true`. Keep both LTC and DOGE pool payment configurations enabled,
+including their original payout schemes, recipients and arithmetic settings. Disabling these pool
+switches is rejected before Stratum startup. The same pause works for direct, relay sender and
+relay receiver/recorder nodes. A dedicated sender may retain its existing cluster-disabled
+configuration instead; that is not permission to disable pool accounting, and PPS still requires
+cluster processing enabled.
+
+Apply this **fragment** to the existing complete configuration (do not replace it):
 
 ```json
 {
   "paymentProcessing": {
-    "enabled": true
-  },
-  "pools": [
-    {
-      "id": "ltc",
-      "paymentProcessing": {
-        "enabled": false
-      }
-    },
-    {
-      "id": "doge",
-      "paymentProcessing": {
-        "enabled": false
-      }
-    }
-  ]
+    "enabled": true,
+    "paused": true
+  }
 }
 ```
 
-Validate the complete JSON before starting Miningcore. This emergency configuration pauses the
-entire payout-manager pipeline: pending-block classification, uncertain merged-block reconciliation,
-maturity processing, balance credit and wallet payouts. Newly persisted block candidates remain in
-PostgreSQL and are processed after the original configuration is restored. It does not clear or
-supersede the durable marker. Keep this mode temporary, inspect the pending block backlog before
-re-enabling the pipeline, and restore the original configuration only after ownership recovery is
-complete and exactly one designated node is ready to acquire it.
+Restart and verify the startup warning that payment processing is paused, both expected pools are
+online, and accepted work is reaching PostgreSQL. No payout manager is registered, acquires a lease,
+clears an owner, or initiates a wallet payout in this process. An unrelated enabled pool cannot
+override the pause. This is a process configuration, not a distributed database switch: a different
+unpaused node can still pay. Keep all such nodes stopped or paused.
+
+The entire payout-manager pipeline is suspended: pending-block classification, uncertain-candidate
+reconciliation, maturity processing, block-reward balance allocation, wallet payouts and retention.
+Mining-side operations continue: ordinary shares, paired PROP/PPLNS effort, synchronous PPS
+liability/balance credits, accepted/uncertain candidate persistence, SOLO beneficiary attribution
+and recovery journals. Database/schema, local recovery ownership and fail-stop checks still apply.
+Relay transport guarantees are unchanged; pausing does not add replay to ordinary PUB/SUB shares.
+Monitor storage, pending blocks, PPS liabilities and reserves. Stop mining if durable accounting is
+unavailable or reserves/storage cannot cover the pause. Keep the pause shorter than the configured
+share-accounting replay horizon: stopping retention does not extend replay acceptance limits.
+
+To resume, stop the paused process, inspect/import outstanding journals under the normal recovery
+procedure, reconcile uncertain wallet transactions against durable balances/payment evidence, and
+complete the explicit stale-owner procedure above if needed. Never automatically clear or overwrite
+ownership. Set `paused: false` (or remove it) on **exactly one** designated payout node and restart.
+Other nodes remain paused or use their valid sender-only configuration. Normal advisory-lock and
+durable-marker acquisition still gate startup; pending candidates/balances use the existing
+idempotent processing paths. Verify the new ownership generation and a complete payout cycle
+before declaring recovery complete. If reconciliation cannot be completed safely, remain paused or
+keep mining stopped.
 
 ## Routine inspection
 

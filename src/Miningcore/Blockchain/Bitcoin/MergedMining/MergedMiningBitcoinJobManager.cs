@@ -116,56 +116,13 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         if(!MergedMiningEnabled)
             return;
 
-        if(!string.Equals(parentCoin.Symbol, "LTC", StringComparison.OrdinalIgnoreCase))
-            throw new TrustedPoolStartupException("Merged mining currently requires Litecoin as the parent chain", pc.Id);
-
-        EnsureSupportedMergedMiningPayout(pc, "parent");
-
-        if(string.IsNullOrWhiteSpace(mergedMiningConfig.AuxPoolId))
-            throw new TrustedPoolStartupException("mergedMining.auxPoolId is required", pc.Id);
-
-        auxiliaryPoolConfig = cc.Pools.FirstOrDefault(x =>
-            string.Equals(x.Id, mergedMiningConfig.AuxPoolId, StringComparison.OrdinalIgnoreCase));
-
-        if(auxiliaryPoolConfig == null)
-            throw new TrustedPoolStartupException("Configured mergedMining.auxPoolId was not found; check the auxiliary pool id", pc.Id);
-
-        if(string.Equals(auxiliaryPoolConfig.Id, pc.Id, StringComparison.OrdinalIgnoreCase))
-            throw new TrustedPoolStartupException("Parent and auxiliary pool ids must be different", pc.Id);
-
-        if(auxiliaryPoolConfig.Enabled != true)
-            throw new TrustedPoolStartupException("The configured auxiliary pool must be enabled", pc.Id);
-
-        auxiliaryCoin = auxiliaryPoolConfig.Template as BitcoinTemplate;
-        if(auxiliaryCoin == null)
-            throw new TrustedPoolStartupException("The configured auxiliary pool must use the Bitcoin coin family", pc.Id);
-
-        if(!string.Equals(auxiliaryCoin.Symbol, "DOGE", StringComparison.OrdinalIgnoreCase))
-            throw new TrustedPoolStartupException("Merged mining currently requires Dogecoin as the auxiliary chain", pc.Id);
-
-        EnsureSupportedMergedMiningPayout(auxiliaryPoolConfig, "auxiliary");
+        auxiliaryPoolConfig = MergedMiningPayoutPolicy.Validate(pc, cc, requireAssignedTemplates: true);
+        auxiliaryCoin = (BitcoinTemplate) auxiliaryPoolConfig.Template;
         usesPairedAccounting = pc.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO ||
             auxiliaryPoolConfig.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO;
 
-        if(string.IsNullOrWhiteSpace(auxiliaryPoolConfig.Address))
-            throw new PoolStartupException($"Auxiliary pool '{auxiliaryPoolConfig.Id}' requires a pool wallet address", pc.Id);
-
-        if(auxiliaryPoolConfig.Daemons == null || auxiliaryPoolConfig.Daemons.Length == 0)
-            throw new PoolStartupException($"Auxiliary pool '{auxiliaryPoolConfig.Id}' requires a daemon endpoint", pc.Id);
-
         if(auxiliaryPoolConfig.Daemons.Length > 1)
             logger.Warn(() => $"Auxiliary pool '{auxiliaryPoolConfig.Id}' has {auxiliaryPoolConfig.Daemons.Length} daemon endpoints; merged mining uses only the first endpoint");
-
-        if(!MergedMiningPasswordParser.IsValidAddressParameter(mergedMiningConfig.AddressParameter))
-            throw new PoolStartupException(
-                "mergedMining.addressParameter must not be 'd' or contain ';' or '='",
-                pc.Id);
-
-        if(auxiliaryPoolConfig.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO &&
-           !mergedMiningConfig.RequireAuxAddress)
-            throw new PoolStartupException(
-                $"Auxiliary pool '{auxiliaryPoolConfig.Id}' uses {auxiliaryPoolConfig.PaymentProcessing.PayoutScheme}; mergedMining.requireAuxAddress must be true so every accepted proof has a payout beneficiary",
-                pc.Id);
 
         if(!mergedMiningConfig.RequireAuxAddress)
             logger.Warn(() => "Merged mining allows workers without a DOGE address; their auxiliary candidates will not be submitted because no SOLO beneficiary can be attributed");
@@ -178,21 +135,6 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         var serializerSettings = ctx.Resolve<JsonSerializerSettings>();
         auxiliaryRpc = new RpcClient(auxiliaryPoolConfig.Daemons.First(), serializerSettings,
             messageBus, auxiliaryPoolConfig.Id);
-    }
-
-    private static void EnsureSupportedMergedMiningPayout(PoolConfig pool,
-        string role)
-    {
-        if(pool.PaymentProcessing?.Enabled != true)
-            throw new PoolStartupException(
-                $"Merged-mining {role} pool '{pool.Id}' requires enabled payment processing",
-                pool.Id);
-
-        if(pool.PaymentProcessing.PayoutScheme is not (PayoutScheme.SOLO or
-               PayoutScheme.PPS or PayoutScheme.PROP or PayoutScheme.PPLNS))
-            throw new PoolStartupException(
-                $"Merged-mining {role} pool '{pool.Id}' must use SOLO, PPS, PROP or PPLNS payment processing",
-                pool.Id);
     }
 
     protected override async Task EnsureDaemonsSynchedAsync(CancellationToken ct)

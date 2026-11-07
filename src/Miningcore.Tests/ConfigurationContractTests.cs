@@ -36,6 +36,34 @@ namespace Miningcore.Tests;
 
 public class ConfigurationContractTests
 {
+    [Theory]
+    [InlineData(true, true, true)]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, false)]
+    public void ClusterPause_UsesExplicitLiveStateContract(bool enabled, bool paused, bool valid)
+    {
+        var config = Program.ReadConfig(Path.Combine(AppContext.BaseDirectory, "config.example.json"));
+        config.PaymentProcessing.Enabled = enabled;
+        config.PaymentProcessing.Paused = paused;
+        var result = new ClusterConfigValidator().Validate(config);
+        Assert.Equal(valid, result.IsValid);
+        if(!valid)
+            Assert.Contains(result.Errors, error => error.ErrorMessage.Contains("paused requires enabled=true"));
+    }
+
+    [Theory]
+    [InlineData("\"true\"")]
+    [InlineData("null")]
+    [InlineData("1")]
+    public void PauseSchema_RejectsCoercedOrNullValues(string value)
+    {
+        var document = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.example.json")));
+        document["paymentProcessing"]["paused"] = JToken.Parse(value);
+        var path = WriteTemporaryConfig(document);
+        try { Assert.Throws<PoolStartupException>(() => Program.ReadConfig(path)); }
+        finally { File.Delete(path); }
+    }
+
     private const string MissingExamplesDirectoryMarker =
         "<missing-examples-directory>";
 

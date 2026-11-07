@@ -194,6 +194,11 @@ empty dashboard or silent alert rule is not evidence of a healthy pool.
 
 ## Family and payout boundaries
 
+- The original RC.1 recovery advice to disable LTC/DOGE pool payment switches is contradictory
+  and must not be used. RC.1 has no supported continued-mining full payout pause; keep it stopped
+  during recovery. Builds containing the issue #261 fix (target RC.2) add cluster
+  `paymentProcessing.paused`. Follow the [version-checked pause procedure](database.md#restart-only-payout-pause),
+  retain both pool accounting switches, and never roll back to RC.1 while relying on that flag.
 - BTC, LTC and DOGE retain their existing chain identities and SOLO modes.
   Keep pool IDs, wallet addresses, coin keys and direct/custodial choices unchanged.
   The new BTCB2B maturity rules do not apply to ordinary SHA256d BTC, LTC or DOGE.
