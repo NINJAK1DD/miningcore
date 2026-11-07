@@ -657,6 +657,22 @@ source build. For local toolchain-compatibility testing, an installed alternativ
 with `MININGCORE_WINDOWS_PLATFORM_TOOLSET`; setting it forces a native rebuild so the selected
 toolset is actually exercised. Release CI remains pinned to v143.
 
+The required Windows CI job also runs the complete test suite and retains its TRX results.
+Run the same suite locally with:
+
+```powershell
+dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --configuration Release --logger "trx;LogFileName=windows-full.trx" --results-directory build/ci-tests
+```
+
+TLS fixtures generate their own certificates and require the exact server identity or their
+private test root. Run them in a clean Windows VM or a test environment whose loopback traffic
+is not intercepted by antivirus HTTPS/mail scanning. A substituted certificate must fail these
+checks even if the scanning product's root is trusted by Windows. The PFX identity test and SMTP
+fixture diagnostics report the presented issuer to distinguish interception from an application
+failure. Do not trust the scanning root in the fixture, relax certificate checks, or skip these
+tests to obtain a passing result. CI supplies a clean Windows validation environment; optional
+daemon, database and native-capability fixtures still require their documented dependencies.
+
 ### Docker Engine
 
 Install [Docker Engine for your Linux distribution](https://docs.docker.com/engine/install/) and

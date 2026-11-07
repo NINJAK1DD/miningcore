@@ -65,7 +65,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Fixtures/Beam/gpu-beamhash3.json" />
-    <EmbeddedResource Include="Fixtures/Pearl/*" />
+    <!-- Binary fixture names contain .bin, which Windows recognizes as a culture. -->
+    <EmbeddedResource Include="Fixtures/Pearl/*" WithCulture="false" />
     <None Include="../../README.md" Link="README.md">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

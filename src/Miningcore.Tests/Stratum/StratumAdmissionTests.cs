@@ -415,7 +415,8 @@ public partial class StratumAdmissionTests
         internal Server(StratumAdmissionConfig config, TimeProvider time = null,
             TcpProxyProtocolConfig proxy = null, int ports = 1, bool tlsAuto = false, ILogger log = null,
             string tlsCertificate = null, IBanManager bans = null, IPAddress listenAddress = null,
-            ClusterConfig cluster = null, PoolEndpoint endpointConfig = null) : base(
+            ClusterConfig cluster = null, PoolEndpoint endpointConfig = null,
+            IPAddress secondaryListenAddress = null) : base(
             new ContainerBuilder().Build(), Substitute.For<IMessageBus>(), new RecyclableMemoryStreamManager(),
             Substitute.For<IMasterClock>())
         {
@@ -425,9 +426,11 @@ public partial class StratumAdmissionTests
             // Isolate static Prometheus children across concurrently running tests.
             poolConfig = new PoolConfig { Id = Guid.NewGuid().ToString("N"), ConnectionAdmission = config };
             AdmissionTimeProvider = time ?? TimeProvider.System;
-            var reservations = Enumerable.Range(0, ports).Select(_ =>
+            var addresses = Enumerable.Repeat(listenAddress ?? IPAddress.Loopback, ports);
+            if(secondaryListenAddress != null) addresses = addresses.Append(secondaryListenAddress);
+            var reservations = addresses.Select(address =>
             {
-                var socket = CreateBoundSocket(new IPEndPoint(listenAddress ?? IPAddress.Loopback, 0));
+                var socket = CreateBoundSocket(new IPEndPoint(address, 0));
                 var endpoint = new StratumEndpoint((IPEndPoint) socket.LocalEndPoint,
                     endpointConfig ?? new PoolEndpoint { TcpProxyProtocol = proxy, TlsAuto = tlsAuto,
                         Tls = tlsCertificate != null, TlsPfxFile = tlsCertificate });

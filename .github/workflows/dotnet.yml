@@ -775,7 +775,7 @@ jobs:
         --no-restore
         --configuration Release
         --framework net10.0
-        --filter "(FullyQualifiedName~Miningcore.Tests.Stratum.StratumConnectionTests|FullyQualifiedName~Miningcore.Tests.Stratum.StratumListenerReservationCoordinatorTests|FullyQualifiedName~Miningcore.Tests.StratumListenerConfigurationTests|FullyQualifiedName~Miningcore.Tests.Stratum.StratumServerTests|FullyQualifiedName~Miningcore.Tests.Stratum.StratumListenerPortabilityTests)&FullyQualifiedName!~RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake"
+        --filter "FullyQualifiedName~Miningcore.Tests.Stratum.StratumConnectionTests|FullyQualifiedName~Miningcore.Tests.Stratum.StratumListenerReservationCoordinatorTests|FullyQualifiedName~Miningcore.Tests.StratumListenerConfigurationTests|FullyQualifiedName~Miningcore.Tests.Stratum.StratumServerTests|FullyQualifiedName~Miningcore.Tests.Stratum.StratumListenerPortabilityTests"
 
     - name: Smoke-test Windows SCCPow runtime
       run: >-
@@ -784,3 +784,24 @@ jobs:
         --configuration Release
         --framework net10.0
         --filter "FullyQualifiedName~Miningcore.Tests.Native.SccPowTests"
+
+    # Required broad coverage: resource discovery, lifecycle mocks and socket
+    # fixtures can fail on Windows even when the selected native smoke tests pass.
+    - name: Test complete Windows suite
+      id: windows_full_suite
+      timeout-minutes: 15
+      run: >-
+        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
+        --no-build --no-restore
+        --configuration Release --framework net10.0
+        --logger "trx;LogFileName=windows-full.trx"
+        --results-directory build/ci-tests
+
+    - name: Preserve Windows test results
+      if: ${{ always() && steps.windows_full_suite.outcome != 'skipped' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: windows-test-results
+        path: build/ci-tests/windows-full.trx
+        if-no-files-found: error
+        retention-days: 7
