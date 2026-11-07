@@ -501,9 +501,9 @@
                 }
             ]
         },
-        "explorerBlockLink": "https://bitcoinii.ddns.net/explorer/block-height/$height$",
-        "explorerTxLink": "https://bitcoinii.ddns.net/explorer/tx/{0}",
-        "explorerAccountLink": "https://bitcoinii.ddns.net/explorer/address/{0}"
+        "explorerBlockLink": "https://bc2mempool.com/block-height/$height$",
+        "explorerTxLink": "https://bc2mempool.com/tx/{0}",
+        "explorerAccountLink": "https://bc2mempool.com/address/{0}"
     },
     "bitcoin-sv": {
         "name": "BitcoinSV",
