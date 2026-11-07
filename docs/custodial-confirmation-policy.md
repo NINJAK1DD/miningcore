@@ -11,6 +11,9 @@ Reviewed on 7 November 2026 against Miningcore `dev` at `8456642` and:
 - [Bitcoin Core gettransaction contract](https://bitcoincore.org/en/doc/30.0.0/rpc/wallet/gettransaction/).
 - [Litecoin Core v0.21.5.8 wallet RPC source](https://github.com/litecoin-project/litecoin/blob/v0.21.5.8/src/wallet/rpcwallet.cpp).
 - [Dogecoin Core v1.14.9 wallet RPC source](https://github.com/dogecoin/dogecoin/blob/v1.14.9/src/wallet/rpcwallet.cpp).
+- [Nexa block RPC source](https://gitlab.com/nexa/nexa/-/blob/dev/src/rpc/blockchain.cpp),
+  `blockheaderToJSON` and `blockToJSON`: the non-verbose transaction-ID list is
+  `txid`; `txidem` is a separate identity and must not be substituted for it.
 
 The wallet category derives from network coinbase maturity. It is independent of
 Miningcore's confirmation policy. `generate` is necessary but does not establish
@@ -30,6 +33,11 @@ need not report identical depths because a new tip can arrive between RPC calls;
 both must satisfy the policy. This does not make observation and database commit
 atomic with blockchain consensus, nor eliminate future reorganisation risk.
 
+The shared handler also serves Nexa. Its block lookup decodes the family-specific
+`txid` list and maps hash, height, depth and transactions into the verification model.
+Bitcoin-family lookups retain their `tx` contract; neither family accepts the other's
+field as a fallback. RPC errors survive normalization and cannot authorize settlement.
+
 Invalid observations preserve existing reward and coinbase evidence for retry.
 Valid pending observations refresh the reward and progress. Progress is the depth
 divided by the effective threshold, capped at 99.9% while wallet maturity or chain
@@ -44,7 +52,7 @@ inactive-block evidence; active or unavailable observations stay pending.
   defaults, malformed evidence, repeated observations and recovered chain evidence.
 - `BitcoinCustodialSettlementIntegrationTests` uses isolated PostgreSQL, production
   repositories, the real handler, SOLO scheme and both payout-manager stages. Controlled
-  wallet RPC responses cover BTC, LTC `merged-parent` and DOGE `auxpow` independently.
+  wallet RPC responses cover BTC, LTC `merged-parent`, DOGE `auxpow` and Nexa independently.
   It checks zero premature balances, payments, batches and wallet submissions; forces
   credit failure after the block update; verifies rollback; restarts; and replays a stale
   observation under the row lock. Successful settlement creates one credit, one payment
@@ -59,6 +67,12 @@ inactive-block evidence; active or unavailable observations stay pending.
 - `BitcoinPayoutHandlerRegtestTests.CustodialCoinbase_WalletMaturityWaitsForConfiguredDepth`
   verifies Bitcoin Core's real `generate` reward at 101 stays pending until the
   family-default 102 confirmations, without submitting a wallet payment.
+- `BitcoinPayoutHandlerTests.CustodialRpc_*` exercises the real HTTP RPC decoder and
+  handler with Nexa-shaped `gettransaction`/`getblock` responses, including threshold
+  boundaries, identity mismatches, inactive/short chains, absent/malformed transaction
+  lists, RPC failures and cross-family field rejection. The PostgreSQL financial
+  regression also includes Nexa. These are controlled RPC fixtures, not a live Nexa
+  daemon certification.
 
 Custodial confirmed rows retain the existing terminal accounting contract: a later
 reorg does not automatically debit miners or replay the reward. The PostgreSQL test
@@ -70,18 +84,17 @@ No production wallet, candidate record or payout reconciliation is modified.
 Validated on 7 November 2026 in the documented Ubuntu 26.04 WSL lab with .NET
 10.0.114, Bitcoin Core 31.1.0, Litecoin Core 0.21.5.8, Dogecoin Core 1.14.9 and
 PostgreSQL 18.6. The full native/managed build and subsequent managed rebuild both
-reported zero warnings and errors. All **51 new cases passed**, including the three
-PostgreSQL settlement cases and real-daemon boundaries. All 13 cases in the selected
-direct-coinbase test class passed.
+reported zero warnings and errors. The final run, including the Nexa review fix,
+passed **556 tests with zero failures and one optional skip**. All **69 new cases
+passed**, including four PostgreSQL settlement cases, 17 HTTP RPC decoding cases
+and the real BTC/LTC/DOGE daemon boundaries. All 13 cases in the selected
+direct-coinbase test class passed. The documentation link/index check also passed.
 
-The relevant suite finished with **538 passing tests and one optional skip**, after
-rerunning one existing PPS migration test with the administrator privileges its
-fixture requires. The first run had 537 passes, one role-policy failure and one skip;
-the failed test then passed in a disposable loopback-only PostgreSQL cluster. No
-persistent lab role was elevated. The skipped test requires the separate Bitcoin
+The existing PPS migration fixture requires database administrator privileges.
+The final run used a disposable loopback-only PostgreSQL cluster for that fixture;
+no persistent lab role was elevated. The skipped test requires the separate Bitcoin
 BLAKE2b Knots daemon, outside this shared-handler change. Logs and TRX results are
-retained in the isolated lab checkout under `build/custodial`; there are no unresolved
-test failures in the selected scope.
+retained in the isolated lab checkout under `build/custodial`.
 
 Use the documented persistent test lab with isolated daemon datadirs and PostgreSQL
 schemas. Set `MININGCORE_TEST_BITCOIND`, `MININGCORE_TEST_LITECOIND`,

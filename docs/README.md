@@ -47,6 +47,7 @@ wallet balances or recovery files.
 | Enforce client bans without automatically banning shared proxies | [Stratum ban attribution](stratum-ban-attribution.md) |
 | Deploy distributed Stratum/recorder roles | [Share relays](share-relays.md) |
 | Pay canonical Bitcoin SOLO miners directly in the coinbase | [Bitcoin direct-coinbase SOLO](bitcoin-direct-solo.md) |
+| Verify custodial coinbase confirmation thresholds and settlement evidence | [Custodial confirmation policy](custodial-confirmation-policy.md) |
 | Configure and operate Bitcoin-family PPS | [PPS](pps.md) |
 | Activate exact PPS arithmetic while preserving legacy liabilities | [PPS arithmetic migration](pps-arithmetic-migration.md) |
 | Configure Litecoin–Dogecoin merged mining | [Merged mining](merged-mining-litecoin-dogecoin.md) |

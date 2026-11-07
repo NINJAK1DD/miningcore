@@ -1015,10 +1015,27 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         return result;
     }
 
-    protected virtual Task<RpcResponse<DaemonBlock>> GetBlockAsync(string blockHash,
+    protected virtual async Task<RpcResponse<DaemonBlock>> GetBlockAsync(string blockHash,
         CancellationToken ct)
     {
-        return rpcClient.ExecuteAsync<DaemonBlock>(logger, BitcoinCommands.GetBlock, ct,
+        if(coin.Family == CoinFamily.Nexa)
+        {
+            // Nexa's non-verbose block response lists full transaction IDs in
+            // txid, separately from txidem. Preserve that distinction rather
+            // than accepting arbitrary aliases in the Bitcoin response model.
+            var response = await rpcClient.ExecuteAsync<Nexa.DaemonResponses.Block>(
+                logger, BitcoinCommands.GetBlock, ct, new object[] { blockHash });
+            var block = response.Response;
+            return new RpcResponse<DaemonBlock>(block == null ? null : new DaemonBlock
+            {
+                Hash = block.Hash,
+                Height = block.Height,
+                Confirmations = block.Confirmations,
+                Transactions = block.Transactions,
+            }, response.Error);
+        }
+
+        return await rpcClient.ExecuteAsync<DaemonBlock>(logger, BitcoinCommands.GetBlock, ct,
             new object[] { blockHash });
     }
 

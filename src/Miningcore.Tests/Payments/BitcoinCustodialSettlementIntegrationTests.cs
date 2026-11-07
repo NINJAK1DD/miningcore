@@ -35,6 +35,7 @@ public class BitcoinCustodialSettlementIntegrationTests(IsolatedPostgresServer s
     [InlineData("litecoin", "merged-parent", 102, 101)]
     [InlineData("dogecoin", "auxpow", 251, 61)]
     [InlineData("bitcoin", "block", 102, 101)]
+    [InlineData("nexa", "block", 102, 101)]
     public async Task RealManager_ThresholdRollbackRestartAndReplay_CreateExactlyOneSettlement(
         string coin, string type, int threshold, int walletMaturity)
     {

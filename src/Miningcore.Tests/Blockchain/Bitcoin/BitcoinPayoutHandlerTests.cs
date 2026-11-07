@@ -2842,6 +2842,7 @@ public partial class BitcoinPayoutHandlerTests : TestBase
         }
 
         public RpcResponse<DaemonBlock> BlockResponse { get; set; }
+        public bool UseDaemonRpc { get; set; }
         public RpcResponse<JToken>[] TransactionResponse { get; set; }
         public PersistedBlock FinalizedAuxPowBlock { get; set; }
         public RpcResponse<string> PayoutResponse { get; set; }
@@ -2888,6 +2889,8 @@ public partial class BitcoinPayoutHandlerTests : TestBase
             CancellationToken ct)
         {
             BlockCalls++;
+            if(UseDaemonRpc)
+                return base.GetBlockAsync(blockHash, ct);
             return Task.FromResult(BlockResponse);
         }
 
@@ -2895,6 +2898,8 @@ public partial class BitcoinPayoutHandlerTests : TestBase
             CancellationToken ct)
         {
             TransactionCalls++;
+            if(UseDaemonRpc)
+                return base.GetTransactionsAsync(blocks, ct);
             return Task.FromResult(TransactionResponse);
         }
 
