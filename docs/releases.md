@@ -22,6 +22,69 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Upcoming v0.4.0-rc.2: custodial coinbase confirmations
+
+Bitcoin-family custodial rewards now require both wallet maturity (`generate`) and
+the effective `minimumConfirmations` before confirmation, balance allocation and
+subsequent payout eligibility. Pool overrides take precedence over the coin template;
+the family fallback remains 102. Operators using a higher override will now wait for
+that full threshold even if their wallet reports the reward spendable earlier.
+
+Malformed or contradictory wallet evidence stays pending. Settlement also verifies
+the active block's hash, height, confirmation depth and first transaction through
+`getblock`; RPC proxies must allow that lookup. Pending progress is capped at 99.9%
+until every settlement condition passes. Wallet-index lag does not orphan an active
+reward. BTC direct-coinbase SOLO settlement is unchanged.
+Newly orphaned custodial rows reset confirmation progress to zero, so API consumers
+do not display historical pending progress for an orphan. Existing terminal rows
+are not migrated, and post-commit orphan notification behavior is preserved.
+
+Effective confirmation thresholds of zero or below now reject pool startup with a
+clear configuration error after template assignment and before Stratum listener
+reservation when both cluster and pool payment processing are enabled. Stratum-only
+or share-relay nodes do not reject an unused payout threshold. Bitcoin BLAKE2b's
+separate maturity policy still permits zero operator delay and always enforces
+network maturity plus one confirmation. Shared payout-handler configuration retains
+a second defensive check.
+The startup gate also skips a share-relay sender without PostgreSQL even when
+payment flags are enabled, matching whether the payment processor actually starts.
+Invalid or unavailable observations preserve the last
+trustworthy pending progress; unchanged observations no longer publish progress
+events. All unverifiable custodial reward paths warn once per distinct fixed reason
+in each episode, and send a financial/security admin alert after 30 minutes,
+with daily reminders until recovery, including an active block whose
+coinbase never appears in the pool wallet. The grace tracker is in memory and resets
+on process restart. Alert subjects now use `[pool] block reconciliation delayed`
+instead of `[pool] merged-mining block reconciliation delayed`.
+
+Thrown RPC transport/decoding failures participate in this tracking; shutdown
+cancellation and unexpected programming errors still propagate. An ordinary short
+wallet-index delay can produce one warning and then recover without an admin alert.
+Immature observations preserve the recorded candidate reward instead of replacing
+it with the wallet's zero top-level credit. Mature zero-value rewards remain pending.
+Before allocating a custodial reward, the payout transaction also compares the
+locked row's original identity with the classification input; changed hash, coinbase,
+miner or other immutable evidence requires reclassification instead of stale credit.
+Classification logs describe eligibility; successful custodial confirmation is logged
+only after database commit. Alert episodes use stable pool/row identities so claim
+and merged-parent type normalization neither restarts the grace period nor leaks an
+old episode.
+Committed amounts use the same precision and coin symbol as classification logs.
+Debug payout-manager logs report classification record count and elapsed time for
+commissioning backlog monitoring; they do not imply a successful settlement.
+
+Blocks unknown to the configured node are no longer automatically orphaned. A node
+resync, replacement or pruned stale block can therefore leave an ordinary reward
+pending indefinitely, with an alert and continued RPC retries. Only affirmative
+inactive-chain evidence permits orphaning in these wallet-missing/disagreement paths.
+The [compatibility inventory](custodial-source-compatibility.md) records routed
+families, recovered upstream links and unresolved historical sources; it does not
+claim live certification of every template.
+
+This change does not reconcile previously credited rewards or reverse completed
+payments after a reorganisation. No database migration or manual block-row rewrite
+is required. See the [policy and validation record](custodial-confirmation-policy.md).
+
 ## Using this guide
 
 If this replaces an existing .NET 6 deployment, first follow the dedicated

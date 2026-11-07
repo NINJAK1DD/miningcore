@@ -22,6 +22,7 @@ using NSubstitute;
 using NLog;
 using Xunit;
 using Miningcore.Tests.Util;
+using GetBlockResponse = Miningcore.Blockchain.Bitcoin.DaemonResponses.Block;
 
 namespace Miningcore.Tests.Blockchain.Bitcoin;
 
@@ -109,25 +110,41 @@ public class BitcoinDirectSettlementTests : TestBase
             candidate.DirectSubmissionState);
     }
 
-    [Fact]
-    public async Task HistoricalPpsCandidateType_UsesLegacyWalletClassification()
+    [Theory]
+    [InlineData(101, BlockStatus.Pending)]
+    [InlineData(102, BlockStatus.Confirmed)]
+    [InlineData(103, BlockStatus.Confirmed)]
+    public async Task HistoricalPpsCandidateType_UsesCustodialConfirmationPolicy(
+        int confirmations, BlockStatus expectedStatus)
     {
         var ppsCandidate = new Block
         {
             BlockHeight = 100,
             Type = "bitcoin-direct",
             Status = BlockStatus.Pending,
+            Hash = new string('a', 64),
             TransactionConfirmationData = "coinbase-txid",
         };
         var legacyResponse = JObject.FromObject(new
         {
             amount = 6.25m,
-            confirmations = 101,
+            confirmations,
+            generated = true,
+            blockindex = 0,
+            blockhash = ppsCandidate.Hash,
+            txid = ppsCandidate.TransactionConfirmationData,
+            walletconflicts = Array.Empty<string>(),
             details = new[] { new { category = "generate" } },
         });
         var handler = new DirectResponsePayoutHandler(container,
             CreateResponse(CreateBlock(), 49m, 1m), legacyResponse:
-            legacyResponse);
+            legacyResponse, custodialResponse: new GetBlockResponse
+            {
+                Hash = ppsCandidate.Hash,
+                Height = checked((uint) ppsCandidate.BlockHeight),
+                Confirmations = confirmations,
+                Transactions = new[] { ppsCandidate.TransactionConfirmationData },
+            });
         await handler.ConfigureAsync(new ClusterConfig(), new PoolConfig
         {
             Id = "btc-pps",
@@ -141,8 +158,11 @@ public class BitcoinDirectSettlementTests : TestBase
             CancellationToken.None);
 
         Assert.Same(ppsCandidate, Assert.Single(result));
-        Assert.Equal(BlockStatus.Confirmed, ppsCandidate.Status);
+        Assert.Equal(expectedStatus, ppsCandidate.Status);
         Assert.Equal(6.25m, ppsCandidate.Reward);
+        Assert.Equal(expectedStatus == BlockStatus.Confirmed,
+            ppsCandidate.NotifyBlockUnlockedOnUpdate);
+        Assert.Null(ppsCandidate.SettlementMode);
     }
 
     [Fact]
@@ -701,6 +721,7 @@ public class BitcoinDirectSettlementTests : TestBase
         private readonly JToken legacyResponse;
         private readonly RpcResponse<JToken> directRpcResponse;
         private readonly RpcResponse<JToken> submitResponse;
+        private readonly GetBlockResponse custodialResponse;
 
         public DirectResponsePayoutHandler(IComponentContext context,
             JToken response, IMasterClock clock = null,
@@ -708,7 +729,8 @@ public class BitcoinDirectSettlementTests : TestBase
             RpcResponse<JToken> directRpcResponse = null,
             RpcResponse<JToken> submitResponse = null,
             IMessageBus messageBus = null,
-            IActiveBlockGracePeriodTracker gracePeriodTracker = null) : base(context,
+            IActiveBlockGracePeriodTracker gracePeriodTracker = null,
+            GetBlockResponse custodialResponse = null) : base(context,
             Substitute.For<IConnectionFactory>(),
             context.Resolve<AutoMapper.IMapper>(),
             Substitute.For<IShareRepository>(),
@@ -723,6 +745,7 @@ public class BitcoinDirectSettlementTests : TestBase
             this.legacyResponse = legacyResponse;
             this.directRpcResponse = directRpcResponse;
             this.submitResponse = submitResponse;
+            this.custodialResponse = custodialResponse;
             logger = LogManager.GetCurrentClassLogger();
         }
 
@@ -731,6 +754,12 @@ public class BitcoinDirectSettlementTests : TestBase
             CancellationToken ct) =>
             Task.FromResult(directRpcResponse ??
                 new RpcResponse<JToken>(response));
+
+        protected override Task<RpcResponse<GetBlockResponse>> GetBlockAsync(
+            string blockHash, CancellationToken ct) =>
+            custodialResponse == null
+                ? base.GetBlockAsync(blockHash, ct)
+                : Task.FromResult(new RpcResponse<GetBlockResponse>(custodialResponse));
 
         protected override Task<RpcResponse<JToken>>
             SubmitDirectSettlementBlockAsync(string blockHex,

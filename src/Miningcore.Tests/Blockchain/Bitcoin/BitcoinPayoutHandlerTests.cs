@@ -34,7 +34,7 @@ using PersistedBlock = Miningcore.Persistence.Model.Block;
 
 namespace Miningcore.Tests.Blockchain.Bitcoin;
 
-public class BitcoinPayoutHandlerTests : TestBase
+public partial class BitcoinPayoutHandlerTests : TestBase
 {
     [Theory]
     [InlineData(-500, true)]
@@ -2231,18 +2231,19 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
-    public async Task Classification_SubsequentImmatureResponse_UpdatesRewardAndProgress()
+    public async Task Classification_SubsequentImmatureResponse_PreservesRewardAndUpdatesProgress()
     {
         var fixture = await CreateFixtureAsync();
         var block = PendingBlock("coinbase-txid");
         fixture.Handler.TransactionResponse = SuccessTransaction("immature", 50m, 10);
+        block.Reward = 25m;
 
         var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
             new[] { block }, CancellationToken.None);
 
         Assert.Equal(new[] { block }, result);
         Assert.Equal(BlockStatus.Pending, block.Status);
-        Assert.Equal(50m, block.Reward);
+        Assert.Equal(25m, block.Reward);
         Assert.InRange(block.ConfirmationProgress, double.Epsilon, 0.999999d);
         Assert.True(block.NotifyBlockConfirmationProgressOnUpdate);
         fixture.MessageBus.DidNotReceive().SendMessage(
@@ -2279,7 +2280,7 @@ public class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
-    public async Task Classification_OrdinaryBlockWithMissingTransaction_IsOrphaned()
+    public async Task Classification_OrdinaryBlockWithMissingTransaction_RemainsPendingWithoutInactiveEvidence()
     {
         var fixture = await CreateFixtureAsync();
         var block = PendingBlock("ordinary-coinbase-txid");
@@ -2292,7 +2293,7 @@ public class BitcoinPayoutHandlerTests : TestBase
             new[] { block }, CancellationToken.None);
 
         Assert.Equal(new[] { block }, result);
-        Assert.Equal(BlockStatus.Orphaned, block.Status);
+        Assert.Equal(BlockStatus.Pending, block.Status);
         Assert.Equal(0, block.Reward);
     }
 
@@ -2435,11 +2436,8 @@ public class BitcoinPayoutHandlerTests : TestBase
             new[] { block }, CancellationToken.None);
 
         var recovered = await CreateFixtureAsync(tracker, start + TimeSpan.FromMinutes(10));
-        recovered.Handler.TransactionResponse = new[]
-        {
-            new RpcResponse<JToken>(null,
-                new JsonRpcError(-5, "Invalid or non-wallet transaction id", null)),
-        };
+        recovered.Handler.TransactionResponse = SuccessTransaction("immature", 50m, 1);
+        recovered.Handler.TransactionResponse[0].Response["blockhash"] = blockHash;
         recovered.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
         {
             Hash = blockHash,
@@ -2694,7 +2692,9 @@ public class BitcoinPayoutHandlerTests : TestBase
         bool hasBrokenSendMany = false,
         string coinTemplate = "dogecoin",
         bool minersPayTxFees = false,
-        string walletPassword = null)
+        string walletPassword = null,
+        int? minimumConfirmations = null,
+        bool useFamilyFallback = false)
     {
         var connectionFactory = Substitute.For<IConnectionFactory>();
         var mapper = container.Resolve<IMapper>();
@@ -2749,6 +2749,18 @@ public class BitcoinPayoutHandlerTests : TestBase
         {
             PaymentProcessing = new ClusterPaymentProcessingConfig(),
         };
+        if(minimumConfirmations.HasValue)
+        {
+            config.Extra ??= new Dictionary<string, object>();
+            config.Extra["minimumConfirmations"] = minimumConfirmations.Value;
+        }
+        if(useFamilyFallback)
+            config.Template = new BitcoinTemplate { Symbol = "BTC", Family = CoinFamily.Bitcoin };
+        handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
+        {
+            Hash = "doge-block", Height = 100, Confirmations = 1000,
+            Transactions = new[] { "coinbase-txid" },
+        });
         await handler.ConfigureAsync(clusterConfig, config, CancellationToken.None);
 
         var pool = Substitute.For<IMiningPool>();
@@ -2797,11 +2809,15 @@ public class BitcoinPayoutHandlerTests : TestBase
     {
         return new[]
         {
-            new RpcResponse<JToken>(JToken.FromObject(new Transaction
+            new RpcResponse<JToken>(JObject.FromObject(new
             {
-                Amount = amount,
-                Confirmations = confirmations,
-                Details = new[] { new TransactionDetails { Category = category } },
+                amount = category == "immature" ? 0m : amount,
+                confirmations,
+                generated = true,
+                blockindex = 0,
+                blockhash = "doge-block",
+                txid = "coinbase-txid",
+                details = new[] { new { category, amount } },
             })),
         };
     }
@@ -2824,6 +2840,10 @@ public class BitcoinPayoutHandlerTests : TestBase
         }
 
         public RpcResponse<DaemonBlock> BlockResponse { get; set; }
+        public bool UseDaemonRpc { get; set; }
+        public Func<CancellationToken, Task<RpcResponse<DaemonBlock>>> BlockLookupOverride { get; set; }
+        public Func<CancellationToken, Task<RpcResponse<JToken>[]>> WalletLookupOverride { get; set; }
+        public void SetLogger(NLog.Logger value) => logger = value;
         public RpcResponse<JToken>[] TransactionResponse { get; set; }
         public PersistedBlock FinalizedAuxPowBlock { get; set; }
         public RpcResponse<string> PayoutResponse { get; set; }
@@ -2870,6 +2890,10 @@ public class BitcoinPayoutHandlerTests : TestBase
             CancellationToken ct)
         {
             BlockCalls++;
+            if(BlockLookupOverride != null)
+                return BlockLookupOverride(ct);
+            if(UseDaemonRpc)
+                return base.GetBlockAsync(blockHash, ct);
             return Task.FromResult(BlockResponse);
         }
 
@@ -2877,6 +2901,10 @@ public class BitcoinPayoutHandlerTests : TestBase
             CancellationToken ct)
         {
             TransactionCalls++;
+            if(WalletLookupOverride != null)
+                return WalletLookupOverride(ct);
+            if(UseDaemonRpc)
+                return base.GetTransactionsAsync(blocks, ct);
             return Task.FromResult(TransactionResponse);
         }
 

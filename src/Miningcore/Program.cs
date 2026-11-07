@@ -586,6 +586,7 @@ public class Program : ProcessStatusBackgroundService
             // templates but before any Stratum listener is reserved or pool is started.
             // PpsTemplateFamily_IsCheckedAfterProductionAssignment pins this ordering.
             ValidatePpsDeployment(clusterConfig, requireAssignedTemplates: true);
+            ValidateBitcoinConfirmationDeployment(clusterConfig);
             // This check intentionally has no earlier ValidateConfig pass: its only
             // additional contract is the resolved runtime-template identity, which
             // is unavailable until AssignPoolTemplates completes.
@@ -2472,6 +2473,17 @@ public class Program : ProcessStatusBackgroundService
             return BitcoinPoolConfigPolicy.ResolveSoloCoinbasePayout(pool,
                 extra, bindingError);
         }) == true;
+
+    internal static void ValidateBitcoinConfirmationDeployment(ClusterConfig config)
+    {
+        if(!ShouldRunPaymentProcessor(config))
+            return;
+        // Templates are assigned before this production startup boundary, and no
+        // Stratum listener has been reserved. Payout-cycle validation is too late.
+        foreach(var pool in config.Pools.Where(x => x.Enabled && x.PaymentProcessing?.Enabled == true &&
+                    BitcoinConfirmationPolicy.UsesSharedClassification(x.Template)))
+            _ = BitcoinConfirmationPolicy.Resolve(pool);
+    }
 
     internal static void ValidateBitcoinDirectSoloDeployment(
         ClusterConfig config, bool requireAssignedTemplates = false)

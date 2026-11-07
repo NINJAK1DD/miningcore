@@ -1,6 +1,7 @@
 using Miningcore.Rpc;
 using System.Collections.Concurrent;
 using System.Data;
+using System.Diagnostics;
 using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
@@ -342,7 +343,16 @@ public class PayoutManager : ProcessStatusBackgroundService
         {
             if(pool is IIsolatedMiningPool && classificationOperation == null)
                 return;
-            updatedBlocks = await handler.ClassifyBlocksAsync(pool, blocksToClassify, ct);
+            var classificationStarted = Stopwatch.GetTimestamp();
+            try
+            {
+                updatedBlocks = await handler.ClassifyBlocksAsync(pool, blocksToClassify, ct);
+            }
+            finally
+            {
+                if(BitcoinConfirmationPolicy.UsesSharedClassification(poolConfig.Template))
+                    logger.Debug(() => $"[{poolConfig.Id}] Custodial classification attempt for {blocksToClassify.Length} records took {Stopwatch.GetElapsedTime(classificationStarted).TotalMilliseconds:0.###} ms");
+            }
         }
 
         // Classification is observational, unlike an already-broadcast payment.
@@ -521,6 +531,20 @@ public class PayoutManager : ProcessStatusBackgroundService
             if(persisted == null)
                 return false;
 
+            if(BitcoinConfirmationPolicy.UsesSharedClassification(poolConfig.Template) &&
+               !(BitcoinPayoutHandler.IsDirectCoinbaseSettlement(persisted) &&
+                 BitcoinPayoutHandler.IsDirectCoinbaseSettlement(block)))
+            {
+                var observed = block.CustodialClassificationIdentity ?? CustodialBlockIdentity.Capture(block);
+                if(!string.Equals(poolConfig.Id, persisted.PoolId, StringComparison.Ordinal) ||
+                   observed != CustodialBlockIdentity.Capture(persisted) ||
+                   (block.Status == BlockStatus.Confirmed && block.Reward <= 0))
+                {
+                    logger.Warn(() => $"Custodial block {block.Id}: stale identity or invalid reward; retry classification before settlement");
+                    return false;
+                }
+            }
+
             var pearlCustodial = poolConfig.Template is PearlCoinTemplate;
             if(pearlCustodial && !Miningcore.Blockchain.Pearl.PearlPayoutHandler.CanApplyClassification(persisted, block))
                 return false;
@@ -620,8 +644,14 @@ public class PayoutManager : ProcessStatusBackgroundService
                     poolConfig.Template));
 
         if(updated && block.NotifyBlockUnlockedOnUpdate)
+        {
+            if(block.Status == BlockStatus.Confirmed &&
+               BitcoinConfirmationPolicy.UsesSharedClassification(poolConfig.Template) &&
+               !BitcoinPayoutHandler.IsDirectCoinbaseSettlement(block))
+                logger.Info(() => $"[{poolConfig.Id}] Committed custodial confirmation for block {block.BlockHeight} worth {block.Reward:0.#####} {poolConfig.Template.Symbol}");
             TryNotifyPostCommit(poolConfig.Id, block, "block-unlocked",
                 () => messageBus.NotifyBlockUnlocked(poolConfig.Id, block, poolConfig.Template));
+        }
     }
 
     internal static bool CanApplyBlake2bCustodialClassification(PoolConfig pool,

@@ -136,16 +136,16 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         extraPoolPaymentProcessingConfig = pc.PaymentProcessing.Extra.SafeExtensionDataAs<BitcoinPoolPaymentProcessingConfigExtra>();
 
         coin = poolConfig.Template.As<CoinTemplate>();
+        // Derived families such as BLAKE2b have their own maturity policy, where
+        // zero means no additional operator delay. Validate only shared classifiers.
+        minConfirmations = BitcoinConfirmationPolicy.UsesSharedClassification(coin)
+            ? BitcoinConfirmationPolicy.Resolve(pc)
+            : extraPoolConfig?.MinimumConfirmations ??
+                (coin as BitcoinTemplate)?.CoinbaseMinConfimations ?? BitcoinConstants.CoinbaseMinConfimations;
         if(coin is BitcoinTemplate bitcoinTemplate)
         {
-            minConfirmations = extraPoolConfig?.MinimumConfirmations ??
-                bitcoinTemplate.CoinbaseMinConfimations ??
-                BitcoinConstants.CoinbaseMinConfimations;
             payoutDecimalPlaces = bitcoinTemplate.PayoutDecimalPlaces ?? 4;
         }
-        else
-            minConfirmations = extraPoolConfig?.MinimumConfirmations ??
-                BitcoinConstants.CoinbaseMinConfimations;
 
         logger = LogUtil.GetPoolScopedLogger(typeof(BitcoinPayoutHandler), pc);
 
@@ -206,10 +206,13 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             if(page.Length == 0)
                 continue;
 
-            var resolvedAuxiliaryBlocks = new HashSet<Block>();
+            // These records were handled by marker reconciliation this cycle,
+            // including unavailable lookups. Wallet classification waits for a retry.
+            var deferredWalletBlocks = new HashSet<Block>();
 
             foreach(var block in page)
             {
+                block.CustodialClassificationIdentity = CustodialBlockIdentity.Capture(block);
                 string blockHash;
                 string claimedParentBlock = null;
                 var definitiveMisses = 0;
@@ -226,7 +229,15 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 if(!isAcceptedMarker && !isAuxPowClaim && !isParentUncertain)
                     continue;
 
-                var response = await GetBlockAsync(blockHash, ct);
+                var response = await GetCustodialBlockAsync(blockHash, ct);
+                if(response == null)
+                {
+                    ResetCustodialNotificationFlags(block);
+                    DeferCustodialEvidence(block, "chain-activity-unverified");
+                    result.Add(block);
+                    deferredWalletBlocks.Add(block);
+                    continue;
+                }
                 var blockIsKnown = IsExpectedBlock(response, blockHash);
                 var blockIsActive = IsActiveBlock(response, blockHash);
 
@@ -374,13 +385,13 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 }
 
                 block.TransactionConfirmationData = coinbaseTransaction;
-                resolvedAuxiliaryBlocks.Add(block);
+                deferredWalletBlocks.Add(block);
                 result.Add(block);
                 logger.Info(() => $"[{LogCategory}] Reconciled accepted auxiliary block {block.BlockHeight} [{blockHash}] to coinbase transaction {coinbaseTransaction}");
             }
 
             var classifiablePage = page
-                .Where(block => !resolvedAuxiliaryBlocks.Contains(block) &&
+                .Where(block => !deferredWalletBlocks.Contains(block) &&
                     !AuxPowBlockConfirmation.TryGetPendingBlockHash(
                         block.TransactionConfirmationData, out _) &&
                     !AuxPowBlockConfirmation.TryGetClaim(
@@ -393,38 +404,72 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                 continue;
 
             // build command batch (block.TransactionConfirmationData is the hash of the blocks coinbase transaction)
-            var results = await GetTransactionsAsync(classifiablePage, ct);
+            RpcResponse<JToken>[] results;
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                results = await GetTransactionsAsync(classifiablePage, ct);
+                ct.ThrowIfCancellationRequested();
+                if(results == null || results.Length != classifiablePage.Length || results.Any(x => x == null))
+                    throw new JsonSerializationException("Custodial wallet batch is incomplete");
+                foreach(var response in results)
+                    RethrowUnexpectedRpcFailure(response.Error, ct);
+            }
+            catch(Exception ex) when(IsRecoverableCustodialRpcFailure(ex, ct))
+            {
+                foreach(var block in classifiablePage)
+                {
+                    ResetCustodialNotificationFlags(block);
+                    DeferCustodialEvidence(block, "wallet-rpc-unavailable");
+                    result.Add(block);
+                }
+                continue;
+            }
 
             for(var j = 0; j < results.Length; j++)
             {
                 var cmdResult = results[j];
 
-                var transactionInfo = cmdResult.Response?.ToObject<Transaction>();
                 var block = classifiablePage[j];
+                ResetCustodialNotificationFlags(block);
+
+                Transaction transactionInfo = null;
+                try
+                {
+                    if(cmdResult.Error == null)
+                        transactionInfo = cmdResult.Response?.ToObject<Transaction>();
+                }
+                catch(Exception ex) when(ex is JsonException or FormatException or OverflowException or ArgumentException)
+                {
+                    // A malformed wallet observation is not proof of an orphan.
+                    // Keep previously persisted reward/coinbase evidence for retry.
+                    result.Add(block);
+                    DeferCustodialEvidence(block, "wallet-response-malformed");
+                    continue;
+                }
 
                 // check error
                 if(cmdResult.Error != null)
                 {
-                    // Code -5 interpreted as "orphaned"
+                    // A wallet miss only proves an orphan when the chain also
+                    // reports the exact block as inactive.
                     if(cmdResult.Error.Code == -5)
                     {
                         var activity = SupportsActiveBlockGrace(block)
                             ? await GetBlockActivityAsync(block.Hash, ct)
-                            : BlockActivity.Inactive;
+                            : BlockActivity.Unavailable;
 
                         if(activity == BlockActivity.Active)
                         {
                             result.Add(block);
-                            logger.Warn(() => $"[{LogCategory}] Wallet has not indexed coinbase {block.TransactionConfirmationData}; block {block.Hash} remains active");
-                            ClearUnavailableActiveBlockGrace(block);
+                            DeferCustodialEvidence(block, "active-block-wallet-transaction-missing");
                             continue;
                         }
 
                         if(activity == BlockActivity.Unavailable)
                         {
                             result.Add(block);
-                            logger.Warn(() => $"[{LogCategory}] Unable to verify whether block {block.Hash} remains active after wallet lookup failed; keeping block {block.BlockHeight} pending");
-                            NotifyUnavailableActiveBlockGrace(block, "wallet lookup failed");
+                            DeferCustodialEvidence(block, "wallet-missing-chain-unavailable");
                             continue;
                         }
 
@@ -439,29 +484,30 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                     }
 
                     else
-                        RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinPayoutHandler.ClassifyBlocksAsync", code: cmdResult.Error?.Code);
+                    {
+                        DeferCustodialEvidence(block, "wallet-rpc-error");
+                        result.Add(block);
+                    }
                 }
 
-                // missing transaction details are interpreted as "orphaned"
+                // Missing wallet details require the same independent chain check.
                 else if(transactionInfo?.Details == null || transactionInfo.Details.Length == 0)
                 {
                     var activity = SupportsActiveBlockGrace(block)
                         ? await GetBlockActivityAsync(block.Hash, ct)
-                        : BlockActivity.Inactive;
+                        : BlockActivity.Unavailable;
 
                     if(activity == BlockActivity.Active)
                     {
                         result.Add(block);
-                        logger.Warn(() => $"[{LogCategory}] Wallet returned no details for coinbase {block.TransactionConfirmationData}; block {block.Hash} remains active");
-                        ClearUnavailableActiveBlockGrace(block);
+                        DeferCustodialEvidence(block, "active-block-wallet-details-missing");
                         continue;
                     }
 
                     if(activity == BlockActivity.Unavailable)
                     {
                         result.Add(block);
-                        logger.Warn(() => $"[{LogCategory}] Unable to verify whether block {block.Hash} remains active after wallet returned no transaction details; keeping block {block.BlockHeight} pending");
-                        NotifyUnavailableActiveBlockGrace(block, "wallet returned no transaction details");
+                        DeferCustodialEvidence(block, "wallet-details-missing-chain-unavailable");
                         continue;
                     }
 
@@ -477,34 +523,24 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 else
                 {
-                    switch(transactionInfo.Details[0].Category)
+                    var category = transactionInfo.Details[0]?.Category;
+                    switch(category)
                     {
                         case "immature":
-                            ClearUnavailableActiveBlockGrace(block);
-
-                            // update progress
-                            block.ConfirmationProgress = Math.Min(1.0d, (double) transactionInfo.Confirmations / minConfirmations);
-                            block.Reward = transactionInfo.Amount;  // update actual block-reward from coinbase-tx
-                            block.NotifyBlockConfirmationProgressOnUpdate = true;
-                            result.Add(block);
-
-                            break;
-
                         case "generate":
-                            ClearUnavailableActiveBlockGrace(block);
-
-                            // matured and spendable coinbase transaction
-                            block.Status = BlockStatus.Confirmed;
-                            block.ConfirmationProgress = 1;
-                            block.Reward = transactionInfo.Amount;  // update actual block-reward from coinbase-tx
-                            block.NotifyBlockUnlockedOnUpdate = true;
+                            await ClassifyCustodialRewardAsync(block, transactionInfo,
+                                cmdResult.Response, category, ct);
                             result.Add(block);
-
-                            logger.Info(() => $"[{LogCategory}] Unlocked block {block.BlockHeight} worth {FormatAmount(block.Reward)}");
-
                             break;
 
-                        default:
+                        case "orphan":
+                            if(!SupportsActiveBlockGrace(block) ||
+                                await GetBlockActivityAsync(block.Hash, ct) != BlockActivity.Inactive)
+                            {
+                                DeferCustodialEvidence(block, "wallet-orphan-chain-unverified");
+                                result.Add(block);
+                                break;
+                            }
                             ClearUnavailableActiveBlockGrace(block);
 
                             logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} classified as orphaned. Category: {transactionInfo.Details[0].Category}");
@@ -515,12 +551,111 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                             block.NotifyBlockUnlockedOnUpdate = true;
                             break;
+
+                        default:
+                            // Unknown or contradictory wallet categories are not
+                            // authoritative evidence that the reward was orphaned.
+                            DeferCustodialEvidence(block, "wallet-category-unsupported");
+                            result.Add(block);
+                            break;
                     }
                 }
             }
         }
 
+        // Marker reconciliation can terminate before wallet classification. Its
+        // earlier transport-failure episode must not survive a terminal outcome.
+        foreach(var block in result.Where(x => x.Status != BlockStatus.Pending && !IsDirectCoinbaseSettlement(x)))
+        {
+            // Orphans have no remaining settlement progress. Normalize every
+            // terminal path, including markers that bypass wallet classification.
+            if(block.Status == BlockStatus.Orphaned)
+            {
+                block.ConfirmationProgress = 0;
+                block.NotifyBlockConfirmationProgressOnUpdate = false;
+            }
+            ClearUnavailableActiveBlockGrace(block);
+        }
         return result.ToArray();
+    }
+
+    private async Task ClassifyCustodialRewardAsync(Block block, Transaction transaction,
+        JToken evidence, string category, CancellationToken ct)
+    {
+        // JSON.NET accepts numeric strings and rounds fractional values for int
+        // properties. Neither is valid confirmation evidence for settlement.
+        block.Status = BlockStatus.Pending;
+        var failure = CustodialEvidenceFailure(block, transaction, evidence, category);
+        if(failure != null)
+        {
+            DeferCustodialEvidence(block, failure);
+            return;
+        }
+
+        // Wallet top-level credit is zero until coinbase maturity. Preserve the
+        // recorded candidate reward rather than erase it or infer output ownership.
+        if(category == "generate")
+            block.Reward = transaction.Amount;
+        // Reserve 100% for actual settlement eligibility, including wallet maturity.
+        var progress = Math.Min(0.999d,
+            (double) transaction.Confirmations / minConfirmations);
+        block.NotifyBlockConfirmationProgressOnUpdate = progress != block.ConfirmationProgress;
+        block.ConfirmationProgress = progress;
+
+        if(category != "generate" || transaction.Confirmations < minConfirmations)
+        {
+            ClearUnavailableActiveBlockGrace(block);
+            return;
+        }
+
+        // Independently bind the wallet reward to the active block's coinbase.
+        // Unavailable or contradictory observations remain retryable, never payable.
+        var response = await GetCustodialBlockAsync(block.Hash, ct);
+        failure = ClassifyBlockActivity(response, block.Hash) != BlockActivity.Active
+            ? "chain-activity-unverified"
+            : response.Response.Confirmations < minConfirmations ? "chain-depth-below-policy"
+            : response.Response.Height != block.BlockHeight ? "chain-height-mismatch"
+            : !string.Equals(response.Response.Transactions?.FirstOrDefault(),
+                block.TransactionConfirmationData, StringComparison.OrdinalIgnoreCase)
+                ? "chain-coinbase-mismatch" : null;
+        if(failure != null)
+        {
+            DeferCustodialEvidence(block, failure);
+            return;
+        }
+
+        ClearUnavailableActiveBlockGrace(block);
+        block.Status = BlockStatus.Confirmed;
+        block.ConfirmationProgress = 1;
+        block.NotifyBlockConfirmationProgressOnUpdate = false;
+        block.NotifyBlockUnlockedOnUpdate = true;
+        logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} worth {FormatAmount(block.Reward)} is eligible for custodial settlement; awaiting database commit");
+    }
+
+    private string CustodialEvidenceFailure(Block block, Transaction transaction,
+        JToken evidence, string category)
+    {
+        // Return only fixed reason codes: daemon text and payloads may contain secrets.
+        if(evidence?["confirmations"]?.Type != JTokenType.Integer || transaction.Confirmations <= 0)
+            return "wallet-confirmations-invalid";
+        if(minConfirmations <= 0) return "confirmation-policy-invalid";
+        if(evidence?["generated"]?.Type != JTokenType.Boolean || !transaction.Generated)
+            return "wallet-generated-invalid";
+        if(evidence?["blockindex"]?.Type != JTokenType.Integer || transaction.BlockIndex != 0)
+            return "wallet-coinbase-index-invalid";
+        if(evidence?["amount"]?.Type is not (JTokenType.Integer or JTokenType.Float) ||
+           transaction.Amount < 0 || (category == "generate" && transaction.Amount == 0))
+            return "wallet-amount-invalid";
+        if(transaction.WalletConflicts is { Length: > 0 }) return "wallet-conflicts";
+        if(string.IsNullOrEmpty(block.TransactionConfirmationData) ||
+            !string.Equals(transaction.TxId, block.TransactionConfirmationData, StringComparison.OrdinalIgnoreCase))
+            return "wallet-transaction-identity-mismatch";
+        if(string.IsNullOrEmpty(block.Hash) ||
+            !string.Equals(transaction.BlockHash, block.Hash, StringComparison.OrdinalIgnoreCase))
+            return "wallet-block-identity-mismatch";
+        if(transaction.Details.Any(detail => detail == null || detail.Category != category))
+            return "wallet-categories-inconsistent";
+        return null;
     }
 
     internal static bool IsDirectCoinbaseSettlement(Block block) =>
@@ -948,10 +1083,27 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         return result;
     }
 
-    protected virtual Task<RpcResponse<DaemonBlock>> GetBlockAsync(string blockHash,
+    protected virtual async Task<RpcResponse<DaemonBlock>> GetBlockAsync(string blockHash,
         CancellationToken ct)
     {
-        return rpcClient.ExecuteAsync<DaemonBlock>(logger, BitcoinCommands.GetBlock, ct,
+        if(coin.Family == CoinFamily.Nexa)
+        {
+            // Nexa's non-verbose block response lists full transaction IDs in
+            // txid, separately from txidem. Preserve that distinction rather
+            // than accepting arbitrary aliases in the Bitcoin response model.
+            var response = await rpcClient.ExecuteAsync<Nexa.DaemonResponses.Block>(
+                logger, BitcoinCommands.GetBlock, ct, new object[] { blockHash });
+            var block = response.Response;
+            return new RpcResponse<DaemonBlock>(block == null ? null : new DaemonBlock
+            {
+                Hash = block.Hash,
+                Height = block.Height,
+                Confirmations = block.Confirmations,
+                Transactions = block.Transactions,
+            }, response.Error);
+        }
+
+        return await rpcClient.ExecuteAsync<DaemonBlock>(logger, BitcoinCommands.GetBlock, ct,
             new object[] { blockHash });
     }
 
@@ -964,6 +1116,47 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         return rpcClient.ExecuteBatchAsync(logger, ct, batch);
     }
 
+    private static void ResetCustodialNotificationFlags(Block block)
+    {
+        block.NotifyBlockUnlockedOnUpdate = false;
+        block.NotifyBlockConfirmationProgressOnUpdate = false;
+        block.ConfirmationProgress = double.IsFinite(block.ConfirmationProgress)
+            ? Math.Clamp(block.ConfirmationProgress, 0, 0.999d) : 0;
+    }
+
+    private static bool IsRecoverableCustodialRpcFailure(Exception ex, CancellationToken ct) =>
+        !ct.IsCancellationRequested && ex is (System.Net.Http.HttpRequestException or
+            System.IO.IOException or System.Net.Sockets.SocketException or
+            System.Security.Authentication.AuthenticationException or JsonException or
+            FormatException or OverflowException or TimeoutException or OperationCanceledException);
+
+    private static void RethrowUnexpectedRpcFailure(JsonRpcError error, CancellationToken ct)
+    {
+        // RpcClient can return transport/cancellation failures inside an error envelope.
+        ct.ThrowIfCancellationRequested();
+        if(error?.InnerException is { } failure && !IsRecoverableCustodialRpcFailure(failure, ct))
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    private async Task<RpcResponse<DaemonBlock>> GetCustodialBlockAsync(string hash, CancellationToken ct)
+    {
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            var response = await GetBlockAsync(hash, ct);
+            RethrowUnexpectedRpcFailure(response?.Error, ct);
+            if(response?.Error?.InnerException != null)
+                return null; // Same unavailable outcome as a thrown transport failure.
+            return response;
+        }
+        catch(Exception ex) when(IsRecoverableCustodialRpcFailure(ex, ct))
+        {
+            // Only this RPC await is guarded. Programming errors and shutdown
+            // cancellation propagate; unavailable chain evidence cannot settle.
+            return null;
+        }
+    }
+
     protected virtual Task<Block> GetFinalizedAuxPowBlockAsync(string poolId, string blockHash,
         CancellationToken ct)
     {
@@ -973,14 +1166,14 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
     private async Task<BlockActivity> GetBlockActivityAsync(string blockHash, CancellationToken ct)
     {
-        var response = await GetBlockAsync(blockHash, ct);
+        var response = await GetCustodialBlockAsync(blockHash, ct);
         return ClassifyBlockActivity(response, blockHash);
     }
 
     internal static BlockActivity ClassifyBlockActivity(RpcResponse<DaemonBlock> response,
         string blockHash)
     {
-        if(response?.Error != null || response.Response == null ||
+        if(response == null || response.Error != null || response.Response == null ||
             !string.Equals(response.Response.Hash, blockHash, StringComparison.OrdinalIgnoreCase))
             return BlockActivity.Unavailable;
 
@@ -994,7 +1187,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
     private static bool SupportsActiveBlockGrace(Block block)
     {
-        return block.Type is "auxpow" or "merged-parent";
+        return !string.IsNullOrEmpty(block.Hash);
     }
 
     private void NotifyDirectSettlementMismatchGrace(Block block,
@@ -1041,39 +1234,56 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     private static string GetDirectSettlementMismatchEpisodeType(Block block) =>
         $"{block.Type}:direct-settlement-mismatch";
 
-    private void NotifyUnavailableActiveBlockGrace(Block block, string reason)
+    private void DeferCustodialEvidence(Block block, string reason)
     {
+        block.Status = BlockStatus.Pending;
+        const string episodeType = "custodial-evidence";
+        var warningType = $"{episodeType}:warning";
+        // Custodial episodes belong to the persisted row. Hash and type can both
+        // change during marker normalization; neither belongs in this key.
+        if(activeBlockGracePeriodTracker.TryAcquireNotification(block.PoolId, block.Id,
+            null, warningType, clock.Now, TimeSpan.Zero, reason: reason))
+        {
+            logger.Warn(() => $"[{LogCategory}] Custodial block {block.Id} at height {block.BlockHeight} remains pending: {reason}. Check daemon compatibility, wallet ownership/indexing and RPC proxy access.");
+            activeBlockGracePeriodTracker.MarkNotificationSent(block.PoolId, block.Id,
+                null, warningType);
+        }
+
         if(!activeBlockGracePeriodTracker.TryAcquireNotification(block.PoolId, block.Id,
-            block.Hash, block.Type, clock.Now, UncertainBlockLifetime))
+            null, episodeType, clock.Now, UncertainBlockLifetime, repeatAfter: TimeSpan.FromDays(1)))
             return;
 
-        var subject = $"[{poolConfig.Id}] merged-mining block reconciliation delayed";
+        var subject = $"[{poolConfig.Id}] block reconciliation delayed";
         var message = $"Pool {poolConfig.Id} block {block.BlockHeight} [{block.Hash}] " +
-            $"({block.Type}) has had unavailable active-chain verification for at least " +
-            $"{(int) UncertainBlockLifetime.TotalMinutes} minutes because " +
-            "the daemon could not verify whether the block is still active. Sensitive verification detail is withheld. " +
-            "Check getblock/gettransaction RPC behaviour, wallet indexing, and any RPC proxy before manually intervening.";
+            $"({block.Type}) has had unverifiable custodial reward evidence for at least " +
+            $"{(int) UncertainBlockLifetime.TotalMinutes} minutes. Check: {reason}. " +
+            "Sensitive verification detail is withheld. No credit or payment has been authorized for this block. " +
+            "Check getblock/gettransaction RPC behaviour, wallet ownership and indexing, node synchronization, " +
+            "and any RPC proxy before manually intervening. A node missing the block is not proof of an orphan.";
 
         try
         {
             messageBus.SendMessage(new AdminNotification(subject, message,
                 AdminNotificationImportance.FinancialOrSecurity, poolConfig.Id));
             activeBlockGracePeriodTracker.MarkNotificationSent(block.PoolId, block.Id,
-                block.Hash, block.Type);
+                null, episodeType);
         }
 
         catch(Exception ex)
         {
             activeBlockGracePeriodTracker.ReleaseNotification(block.PoolId, block.Id,
-                block.Hash, block.Type);
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPayoutHandler.NotifyUnavailableActiveBlockGrace", failure: ex);
+                null, episodeType);
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "BitcoinPayoutHandler.DeferCustodialEvidence", failure: ex);
         }
     }
 
     private void ClearUnavailableActiveBlockGrace(Block block)
     {
-        if(SupportsActiveBlockGrace(block))
-            activeBlockGracePeriodTracker.Clear(block.PoolId, block.Id, block.Hash, block.Type);
+        // The stable row key survives missing-hash and claim/parent type changes.
+        activeBlockGracePeriodTracker.Clear(block.PoolId, block.Id, null,
+            "custodial-evidence");
+        activeBlockGracePeriodTracker.Clear(block.PoolId, block.Id, null,
+            "custodial-evidence:warning");
     }
 
     private static bool IsExpectedBlock(RpcResponse<DaemonBlock> response, string blockHash)

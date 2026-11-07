@@ -36,7 +36,7 @@ using Miningcore.Tests.Blockchain.Bitcoin;
 namespace Miningcore.Tests.Payments;
 
 [Collection(BitcoinCorePayoutIntegrationCollection.Name)]
-public class MergedMiningPayoutRegtestTests
+public partial class MergedMiningPayoutRegtestTests
 {
     [MergedMiningDaemonIntegrationFact]
     public async Task PinnedDaemons_MatureRealRewardsAcrossEverySupportedScheme()
@@ -295,6 +295,7 @@ public class MergedMiningPayoutRegtestTests
     {
         Litecoin,
         Dogecoin,
+        Nexa,
     }
 
     private sealed record MatureReward(ulong Height, int Confirmations,
@@ -311,6 +312,13 @@ public class MergedMiningPayoutRegtestTests
         private readonly string dataDirectory;
         private readonly Uri rootUri;
         private Uri walletUri;
+
+        public DaemonEndpointConfig WalletEndpoint => new()
+        {
+            Host = "127.0.0.1", Port = rootUri.Port,
+            User = RpcUser, Password = RpcPassword,
+            HttpPath = walletUri.AbsolutePath,
+        };
 
         private RegtestNode(RegtestChain chain, Process process,
             string dataDirectory, int rpcPort)
@@ -332,11 +340,12 @@ public class MergedMiningPayoutRegtestTests
 
         public static async Task<RegtestNode> StartAsync(RegtestChain chain)
         {
-            var variable = chain == RegtestChain.Litecoin
-                ? MergedMiningDaemonIntegrationFactAttribute
-                    .LitecoinBinaryEnvironmentVariable
-                : MergedMiningDaemonIntegrationFactAttribute
-                    .DogecoinBinaryEnvironmentVariable;
+            var variable = chain switch
+            {
+                RegtestChain.Litecoin => MergedMiningDaemonIntegrationFactAttribute.LitecoinBinaryEnvironmentVariable,
+                RegtestChain.Dogecoin => MergedMiningDaemonIntegrationFactAttribute.DogecoinBinaryEnvironmentVariable,
+                _ => NexaDaemonIntegrationFactAttribute.BinaryEnvironmentVariable,
+            };
             var binary = Environment.GetEnvironmentVariable(variable);
             var directory = Path.Combine(Path.GetTempPath(),
                 $"miningcore-{chain.ToString().ToLowerInvariant()}-{Guid.NewGuid():N}");
@@ -353,6 +362,7 @@ public class MergedMiningPayoutRegtestTests
             foreach(var argument in new[]
             {
                 "-regtest=1", "-server=1", "-listen=0", "-txindex=1",
+                "-connect=0", "-dnsseed=0", "-upnp=0", "-par=1",
                 "-printtoconsole=1", $"-datadir={directory}",
                 $"-rpcport={rpcPort}", $"-port={peerPort}",
                 "-rpcbind=127.0.0.1", "-rpcallowip=127.0.0.1",
@@ -433,7 +443,7 @@ public class MergedMiningPayoutRegtestTests
             throw new TimeoutException($"{chain} daemon did not become ready", last);
         }
 
-        private async Task<JToken> RpcAsync(string method, bool wallet,
+        public async Task<JToken> RpcAsync(string method, bool wallet,
             params object[] parameters)
         {
             var request = new JObject
