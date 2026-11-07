@@ -22,6 +22,24 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Upcoming v0.4.0-rc.2: custodial coinbase confirmations
+
+Bitcoin-family custodial rewards now require both wallet maturity (`generate`) and
+the effective `minimumConfirmations` before confirmation, balance allocation and
+subsequent payout eligibility. Pool overrides take precedence over the coin template;
+the family fallback remains 102. Operators using a higher override will now wait for
+that full threshold even if their wallet reports the reward spendable earlier.
+
+Malformed or contradictory wallet evidence stays pending. Settlement also verifies
+the active block's hash, height, confirmation depth and first transaction through
+`getblock`; RPC proxies must allow that lookup. Pending progress is capped at 99.9%
+until every settlement condition passes. Wallet-index lag does not orphan an active
+reward. BTC direct-coinbase SOLO settlement is unchanged.
+
+This change does not reconcile previously credited rewards or reverse completed
+payments after a reorganisation. No database migration or manual block-row rewrite
+is required. See the [policy and validation record](custodial-confirmation-policy.md).
+
 ## Using this guide
 
 If this replaces an existing .NET 6 deployment, first follow the dedicated

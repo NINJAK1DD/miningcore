@@ -39,6 +39,34 @@ namespace Miningcore.Tests.Blockchain.Bitcoin;
 public class BitcoinPayoutHandlerRegtestTests : TestBase
 {
     [BitcoinCoreIntegrationFact]
+    public async Task CustodialCoinbase_WalletMaturityWaitsForConfiguredDepth()
+    {
+        await using var node = await BitcoinCoreRegtestNode.StartAsync(walletBroadcast: true,
+            initialBlocks: 101);
+        var fixture = await CreateFixtureAsync(node);
+        var hash = (await node.RootRpcAsync("getblockhash", 1)).Value<string>();
+        var chainBlock = await node.RootRpcAsync("getblock", hash);
+        var txid = chainBlock["tx"].First.Value<string>();
+        var block = new Miningcore.Persistence.Model.Block
+        {
+            PoolId = fixture.Config.Id, Hash = hash, BlockHeight = 1,
+            Status = BlockStatus.Pending, TransactionConfirmationData = txid,
+        };
+        var wallet = await node.WalletRpcAsync("gettransaction", txid);
+        Assert.Equal("generate", wallet["details"][0]["category"].Value<string>());
+        Assert.Equal(101, wallet["confirmations"].Value<int>());
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { block }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Pending, block.Status);
+        Assert.False(block.NotifyBlockUnlockedOnUpdate);
+        await node.GenerateAsync(1, CancellationToken.None);
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { block }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Confirmed, block.Status);
+        Assert.True(block.NotifyBlockUnlockedOnUpdate);
+        Assert.Equal(wallet["amount"].Value<decimal>(), block.Reward);
+        Assert.Empty(fixture.Handler.SubmittedTransactionIds);
+    }
+
+    [BitcoinCoreIntegrationFact]
     public async Task WalletBroadcastEnabled_AcceptsInitiallyUnbroadcastMempoolTransaction()
     {
         await using var node = await BitcoinCoreRegtestNode.StartAsync(walletBroadcast: true);

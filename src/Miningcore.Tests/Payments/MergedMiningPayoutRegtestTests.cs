@@ -36,7 +36,7 @@ using Miningcore.Tests.Blockchain.Bitcoin;
 namespace Miningcore.Tests.Payments;
 
 [Collection(BitcoinCorePayoutIntegrationCollection.Name)]
-public class MergedMiningPayoutRegtestTests
+public partial class MergedMiningPayoutRegtestTests
 {
     [MergedMiningDaemonIntegrationFact]
     public async Task PinnedDaemons_MatureRealRewardsAcrossEverySupportedScheme()
@@ -312,6 +312,13 @@ public class MergedMiningPayoutRegtestTests
         private readonly Uri rootUri;
         private Uri walletUri;
 
+        public DaemonEndpointConfig WalletEndpoint => new()
+        {
+            Host = "127.0.0.1", Port = rootUri.Port,
+            User = RpcUser, Password = RpcPassword,
+            HttpPath = walletUri.AbsolutePath,
+        };
+
         private RegtestNode(RegtestChain chain, Process process,
             string dataDirectory, int rpcPort)
         {
@@ -433,7 +440,7 @@ public class MergedMiningPayoutRegtestTests
             throw new TimeoutException($"{chain} daemon did not become ready", last);
         }
 
-        private async Task<JToken> RpcAsync(string method, bool wallet,
+        public async Task<JToken> RpcAsync(string method, bool wallet,
             params object[] parameters)
         {
             var request = new JObject

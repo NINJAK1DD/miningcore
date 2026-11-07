@@ -399,18 +399,38 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             {
                 var cmdResult = results[j];
 
-                var transactionInfo = cmdResult.Response?.ToObject<Transaction>();
                 var block = classifiablePage[j];
+                block.NotifyBlockUnlockedOnUpdate = false;
+                block.NotifyBlockConfirmationProgressOnUpdate = false;
+                block.ConfirmationProgress = 0;
+
+                Transaction transactionInfo = null;
+                try
+                {
+                    if(cmdResult.Error == null)
+                        transactionInfo = cmdResult.Response?.ToObject<Transaction>();
+                }
+                catch(Exception ex) when(ex is JsonException or FormatException or OverflowException or ArgumentException)
+                {
+                    // A malformed wallet observation is not proof of an orphan.
+                    // Keep previously persisted reward/coinbase evidence for retry.
+                    block.ConfirmationProgress = 0;
+                    result.Add(block);
+                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn,
+                        "BitcoinPayoutHandler.ClassifyBlocksAsync", failure: ex);
+                    continue;
+                }
 
                 // check error
                 if(cmdResult.Error != null)
                 {
-                    // Code -5 interpreted as "orphaned"
+                    // A wallet miss only proves an orphan when the chain also
+                    // reports the exact block as inactive.
                     if(cmdResult.Error.Code == -5)
                     {
                         var activity = SupportsActiveBlockGrace(block)
                             ? await GetBlockActivityAsync(block.Hash, ct)
-                            : BlockActivity.Inactive;
+                            : BlockActivity.Unavailable;
 
                         if(activity == BlockActivity.Active)
                         {
@@ -442,12 +462,12 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
                         RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "BitcoinPayoutHandler.ClassifyBlocksAsync", code: cmdResult.Error?.Code);
                 }
 
-                // missing transaction details are interpreted as "orphaned"
+                // Missing wallet details require the same independent chain check.
                 else if(transactionInfo?.Details == null || transactionInfo.Details.Length == 0)
                 {
                     var activity = SupportsActiveBlockGrace(block)
                         ? await GetBlockActivityAsync(block.Hash, ct)
-                        : BlockActivity.Inactive;
+                        : BlockActivity.Unavailable;
 
                     if(activity == BlockActivity.Active)
                     {
@@ -477,34 +497,23 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                 else
                 {
-                    switch(transactionInfo.Details[0].Category)
+                    switch(transactionInfo.Details[0]?.Category)
                     {
                         case "immature":
-                            ClearUnavailableActiveBlockGrace(block);
-
-                            // update progress
-                            block.ConfirmationProgress = Math.Min(1.0d, (double) transactionInfo.Confirmations / minConfirmations);
-                            block.Reward = transactionInfo.Amount;  // update actual block-reward from coinbase-tx
-                            block.NotifyBlockConfirmationProgressOnUpdate = true;
-                            result.Add(block);
-
-                            break;
-
                         case "generate":
                             ClearUnavailableActiveBlockGrace(block);
-
-                            // matured and spendable coinbase transaction
-                            block.Status = BlockStatus.Confirmed;
-                            block.ConfirmationProgress = 1;
-                            block.Reward = transactionInfo.Amount;  // update actual block-reward from coinbase-tx
-                            block.NotifyBlockUnlockedOnUpdate = true;
+                            await ClassifyCustodialRewardAsync(block, transactionInfo,
+                                cmdResult.Response, ct);
                             result.Add(block);
-
-                            logger.Info(() => $"[{LogCategory}] Unlocked block {block.BlockHeight} worth {FormatAmount(block.Reward)}");
-
                             break;
 
-                        default:
+                        case "orphan":
+                            if(!SupportsActiveBlockGrace(block) ||
+                                await GetBlockActivityAsync(block.Hash, ct) != BlockActivity.Inactive)
+                            {
+                                result.Add(block);
+                                break;
+                            }
                             ClearUnavailableActiveBlockGrace(block);
 
                             logger.Info(() => $"[{LogCategory}] Block {block.BlockHeight} classified as orphaned. Category: {transactionInfo.Details[0].Category}");
@@ -515,12 +524,70 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
                             block.NotifyBlockUnlockedOnUpdate = true;
                             break;
+
+                        default:
+                            // Unknown or contradictory wallet categories are not
+                            // authoritative evidence that the reward was orphaned.
+                            result.Add(block);
+                            break;
                     }
                 }
             }
         }
 
         return result.ToArray();
+    }
+
+    private async Task ClassifyCustodialRewardAsync(Block block, Transaction transaction,
+        JToken evidence, CancellationToken ct)
+    {
+        // JSON.NET accepts numeric strings and rounds fractional values for int
+        // properties. Neither is valid confirmation evidence for settlement.
+        var confirmations = evidence?["confirmations"];
+        var category = transaction.Details[0].Category;
+        var valid = confirmations?.Type == JTokenType.Integer &&
+            transaction.Confirmations > 0 && minConfirmations > 0 &&
+            evidence?["generated"]?.Type == JTokenType.Boolean && transaction.Generated &&
+            evidence?["blockindex"]?.Type == JTokenType.Integer &&
+            transaction.BlockIndex == 0 &&
+            evidence?["amount"]?.Type is (JTokenType.Integer or JTokenType.Float) &&
+            transaction.Amount >= 0 &&
+            (transaction.WalletConflicts == null || transaction.WalletConflicts.Length == 0) &&
+            !string.IsNullOrEmpty(block.TransactionConfirmationData) &&
+            string.Equals(transaction.TxId, block.TransactionConfirmationData, StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrEmpty(block.Hash) &&
+            string.Equals(transaction.BlockHash, block.Hash, StringComparison.OrdinalIgnoreCase) &&
+            transaction.Details.All(detail => detail != null && detail.Category == category);
+
+        block.Status = BlockStatus.Pending;
+        block.ConfirmationProgress = 0;
+        block.NotifyBlockConfirmationProgressOnUpdate = true;
+        if(!valid)
+            return;
+
+        block.Reward = transaction.Amount;
+        // Reserve 100% for actual settlement eligibility, including wallet maturity.
+        block.ConfirmationProgress = Math.Min(0.999d,
+            (double) transaction.Confirmations / minConfirmations);
+
+        if(category != "generate" || transaction.Confirmations < minConfirmations)
+            return;
+
+        // Independently bind the wallet reward to the active block's coinbase.
+        // Unavailable or contradictory observations remain retryable, never payable.
+        var response = await GetBlockAsync(block.Hash, ct);
+        if(ClassifyBlockActivity(response, block.Hash) != BlockActivity.Active ||
+            response.Response.Confirmations < minConfirmations ||
+            response.Response.Height != block.BlockHeight ||
+            !string.Equals(response.Response.Transactions?.FirstOrDefault(),
+                block.TransactionConfirmationData, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        block.Status = BlockStatus.Confirmed;
+        block.ConfirmationProgress = 1;
+        block.NotifyBlockConfirmationProgressOnUpdate = false;
+        block.NotifyBlockUnlockedOnUpdate = true;
+        logger.Info(() => $"[{LogCategory}] Unlocked block {block.BlockHeight} worth {FormatAmount(block.Reward)}");
     }
 
     internal static bool IsDirectCoinbaseSettlement(Block block) =>
@@ -980,7 +1047,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
     internal static BlockActivity ClassifyBlockActivity(RpcResponse<DaemonBlock> response,
         string blockHash)
     {
-        if(response?.Error != null || response.Response == null ||
+        if(response == null || response.Error != null || response.Response == null ||
             !string.Equals(response.Response.Hash, blockHash, StringComparison.OrdinalIgnoreCase))
             return BlockActivity.Unavailable;
 
@@ -994,7 +1061,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
     private static bool SupportsActiveBlockGrace(Block block)
     {
-        return block.Type is "auxpow" or "merged-parent";
+        return !string.IsNullOrEmpty(block.Hash);
     }
 
     private void NotifyDirectSettlementMismatchGrace(Block block,
@@ -1047,7 +1114,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
             block.Hash, block.Type, clock.Now, UncertainBlockLifetime))
             return;
 
-        var subject = $"[{poolConfig.Id}] merged-mining block reconciliation delayed";
+        var subject = $"[{poolConfig.Id}] block reconciliation delayed";
         var message = $"Pool {poolConfig.Id} block {block.BlockHeight} [{block.Hash}] " +
             $"({block.Type}) has had unavailable active-chain verification for at least " +
             $"{(int) UncertainBlockLifetime.TotalMinutes} minutes because " +
