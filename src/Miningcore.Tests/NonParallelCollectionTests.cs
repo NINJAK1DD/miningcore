@@ -127,7 +127,8 @@ public class NonParallelCollectionTests
         yield return new object[] { typeof(PostgresPolicyCollection),
             new[] { typeof(PostgresConnectionPolicyTests), typeof(PostgresTlsIntegrationTests),
                 typeof(PostgresCommandTimeoutTests), typeof(PostgresCommandTimeoutIntegrationTests),
-                typeof(PayoutHandlerPersistenceIntegrationTests) } };
+                typeof(PayoutHandlerPersistenceIntegrationTests),
+                typeof(BitcoinCustodialSettlementIntegrationTests) } };
     }
 
     [Theory]
