@@ -67,7 +67,7 @@ public partial class ProgramPoolTemplateTests
         foreach(var poolEnabled in new bool?[] { null, false, true })
         {
             var pool = new PoolConfig { Id = "relay", Enabled = true,
-                Template = ModuleInitializer.CoinTemplates["bitcoin"],
+                Template = new BitcoinTemplate { Family = CoinFamily.Bitcoin },
                 Extra = new Dictionary<string, object> { ["minimumConfirmations"] = 0 },
                 PaymentProcessing = poolEnabled.HasValue
                     ? new PoolPaymentProcessingConfig { Enabled = poolEnabled.Value } : null };
@@ -78,7 +78,7 @@ public partial class ProgramPoolTemplateTests
                 Assert.Throws<PoolStartupException>(() => Program.ValidateBitcoinConfirmationDeployment(config));
             else
                 Program.ValidateBitcoinConfirmationDeployment(config);
-            pool.Template = ModuleInitializer.CoinTemplates["bitcoin-blake2b"];
+            pool.Template = new BitcoinBlake2bTemplate { Family = CoinFamily.BitcoinBlake2b };
             Program.ValidateBitcoinConfirmationDeployment(config);
         }
     }
