@@ -35,6 +35,9 @@ the active block's hash, height, confirmation depth and first transaction throug
 `getblock`; RPC proxies must allow that lookup. Pending progress is capped at 99.9%
 until every settlement condition passes. Wallet-index lag does not orphan an active
 reward. BTC direct-coinbase SOLO settlement is unchanged.
+Newly orphaned custodial rows reset confirmation progress to zero, so API consumers
+do not display historical pending progress for an orphan. Existing terminal rows
+are not migrated, and post-commit orphan notification behavior is preserved.
 
 Effective confirmation thresholds of zero or below now reject pool startup with a
 clear configuration error after template assignment and before Stratum listener

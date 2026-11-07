@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Miningcore.Blockchain.Bitcoin;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Mining;
@@ -134,6 +135,8 @@ public partial class BitcoinPayoutHandlerTests
         var fixture = await CreateFixtureAsync();
         var block = PendingBlock("coinbase-txid");
         block.Reward = 25m;
+        block.ConfirmationProgress = 0.999;
+        block.NotifyBlockConfirmationProgressOnUpdate = true;
         fixture.Handler.TransactionResponse = fault == "wallet-missing"
             ? new[] { new RpcResponse<JToken>(null, new JsonRpcError(-5, "missing", null)) }
             : SuccessTransaction("orphan", 50m, -1);
@@ -143,6 +146,33 @@ public partial class BitcoinPayoutHandlerTests
         Assert.Equal(BlockStatus.Orphaned, block.Status);
         Assert.Equal(0, block.Reward);
         Assert.True(block.NotifyBlockUnlockedOnUpdate);
+        Assert.Equal(0, block.ConfirmationProgress);
+        Assert.False(block.NotifyBlockConfirmationProgressOnUpdate);
+    }
+
+    [Theory]
+    [InlineData("accepted")]
+    [InlineData("claim")]
+    [InlineData("parent")]
+    public async Task CustodialMarker_InactiveEvidenceClearsHistoricalProgress(string marker)
+    {
+        var fixture = await CreateFixtureAsync();
+        var block = PendingBlock(marker switch
+        {
+            "accepted" => AuxPowBlockConfirmation.CreatePending("doge-block"),
+            "claim" => AuxPowBlockConfirmation.CreateClaim("doge-block", "parent-header"),
+            _ => AuxPowBlockConfirmation.CreateParentUncertain("doge-block"),
+        });
+        block.ConfirmationProgress = 0.999;
+        block.NotifyBlockConfirmationProgressOnUpdate = true;
+        fixture.Handler.BlockResponse.Response.Confirmations = -1;
+        await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { block }, CancellationToken.None);
+        Assert.Equal(BlockStatus.Orphaned, block.Status);
+        Assert.Equal(0, block.Reward);
+        Assert.Equal(0, block.ConfirmationProgress);
+        Assert.False(block.NotifyBlockConfirmationProgressOnUpdate);
+        Assert.Equal(marker == "accepted", block.NotifyBlockUnlockedOnUpdate);
+        Assert.Equal(0, fixture.Handler.TransactionCalls);
     }
 
     [Fact]

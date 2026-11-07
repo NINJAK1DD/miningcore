@@ -566,7 +566,16 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         // Marker reconciliation can terminate before wallet classification. Its
         // earlier transport-failure episode must not survive a terminal outcome.
         foreach(var block in result.Where(x => x.Status != BlockStatus.Pending && !IsDirectCoinbaseSettlement(x)))
+        {
+            // Orphans have no remaining settlement progress. Normalize every
+            // terminal path, including markers that bypass wallet classification.
+            if(block.Status == BlockStatus.Orphaned)
+            {
+                block.ConfirmationProgress = 0;
+                block.NotifyBlockConfirmationProgressOnUpdate = false;
+            }
             ClearUnavailableActiveBlockGrace(block);
+        }
         return result.ToArray();
     }
 

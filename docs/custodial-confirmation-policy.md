@@ -64,6 +64,11 @@ positive**. A zero-value mature observation remains pending and alerts rather th
 creating an irreversible zero-reward terminal row. Detail amounts are not summed
 without independently establishing output ownership. Progress notifications are
 published only when valid progress changes.
+An orphaned custodial row has zero confirmation progress, including ordinary wallet
+and merged-mining marker paths. Terminal orphaning clears any stale progress-event
+flag; the existing post-commit orphan/unlock notification remains authoritative.
+This is presentation normalization, not a reversal of previously credited rewards.
+Historical terminal rows are not rewritten by this change.
 Progress is the depth
 divided by the effective threshold, capped at 99.9% while wallet maturity or chain
 verification still prevents settlement. Missing wallet evidence and unknown categories
@@ -324,6 +329,11 @@ failures and one optional BLAKE2b daemon skip**, including the startup gate matr
 payout-manager/diagnostic tests and all eight PostgreSQL settlement cases. Its build
 reported zero warnings/errors; all 57 documentation link/index checks, the
 wallet-backup guard and 60 release-documentation tests passed.
+
+The orphan-progress follow-up passed **343 targeted tests, zero failures and one
+optional BLAKE2b daemon skip**, covering ordinary wallet and marker orphan paths,
+PostgreSQL settlement, payout-manager and direct-coinbase regressions. Build and
+documentation checks remained warning/error-free and successful respectively.
 
 The existing PPS migration fixture requires database administrator privileges.
 The final run used a disposable loopback-only PostgreSQL cluster for that fixture;
