@@ -2435,11 +2435,8 @@ public partial class BitcoinPayoutHandlerTests : TestBase
             new[] { block }, CancellationToken.None);
 
         var recovered = await CreateFixtureAsync(tracker, start + TimeSpan.FromMinutes(10));
-        recovered.Handler.TransactionResponse = new[]
-        {
-            new RpcResponse<JToken>(null,
-                new JsonRpcError(-5, "Invalid or non-wallet transaction id", null)),
-        };
+        recovered.Handler.TransactionResponse = SuccessTransaction("immature", 50m, 1);
+        recovered.Handler.TransactionResponse[0].Response["blockhash"] = blockHash;
         recovered.Handler.BlockResponse = new RpcResponse<DaemonBlock>(new DaemonBlock
         {
             Hash = blockHash,
@@ -2843,6 +2840,7 @@ public partial class BitcoinPayoutHandlerTests : TestBase
 
         public RpcResponse<DaemonBlock> BlockResponse { get; set; }
         public bool UseDaemonRpc { get; set; }
+        public void SetLogger(NLog.Logger value) => logger = value;
         public RpcResponse<JToken>[] TransactionResponse { get; set; }
         public PersistedBlock FinalizedAuxPowBlock { get; set; }
         public RpcResponse<string> PayoutResponse { get; set; }

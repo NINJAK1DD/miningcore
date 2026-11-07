@@ -295,6 +295,7 @@ public partial class MergedMiningPayoutRegtestTests
     {
         Litecoin,
         Dogecoin,
+        Nexa,
     }
 
     private sealed record MatureReward(ulong Height, int Confirmations,
@@ -339,11 +340,12 @@ public partial class MergedMiningPayoutRegtestTests
 
         public static async Task<RegtestNode> StartAsync(RegtestChain chain)
         {
-            var variable = chain == RegtestChain.Litecoin
-                ? MergedMiningDaemonIntegrationFactAttribute
-                    .LitecoinBinaryEnvironmentVariable
-                : MergedMiningDaemonIntegrationFactAttribute
-                    .DogecoinBinaryEnvironmentVariable;
+            var variable = chain switch
+            {
+                RegtestChain.Litecoin => MergedMiningDaemonIntegrationFactAttribute.LitecoinBinaryEnvironmentVariable,
+                RegtestChain.Dogecoin => MergedMiningDaemonIntegrationFactAttribute.DogecoinBinaryEnvironmentVariable,
+                _ => NexaDaemonIntegrationFactAttribute.BinaryEnvironmentVariable,
+            };
             var binary = Environment.GetEnvironmentVariable(variable);
             var directory = Path.Combine(Path.GetTempPath(),
                 $"miningcore-{chain.ToString().ToLowerInvariant()}-{Guid.NewGuid():N}");
@@ -360,6 +362,7 @@ public partial class MergedMiningPayoutRegtestTests
             foreach(var argument in new[]
             {
                 "-regtest=1", "-server=1", "-listen=0", "-txindex=1",
+                "-connect=0", "-dnsseed=0", "-upnp=0", "-par=1",
                 "-printtoconsole=1", $"-datadir={directory}",
                 $"-rpcport={rpcPort}", $"-port={peerPort}",
                 "-rpcbind=127.0.0.1", "-rpcallowip=127.0.0.1",

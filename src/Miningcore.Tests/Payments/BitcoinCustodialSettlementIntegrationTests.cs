@@ -36,6 +36,10 @@ public class BitcoinCustodialSettlementIntegrationTests(IsolatedPostgresServer s
     [InlineData("dogecoin", "auxpow", 251, 61)]
     [InlineData("bitcoin", "block", 102, 101)]
     [InlineData("nexa", "block", 102, 101)]
+    [InlineData("ravencoin", "block", 102, 101)]
+    [InlineData("satoshicash", "block", 102, 101)]
+    [InlineData("bitcoin-gold", "block", 102, 101)]
+    [InlineData("zcash", "block", 102, 101)]
     public async Task RealManager_ThresholdRollbackRestartAndReplay_CreateExactlyOneSettlement(
         string coin, string type, int threshold, int walletMaturity)
     {
@@ -102,6 +106,7 @@ public class BitcoinCustodialSettlementIntegrationTests(IsolatedPostgresServer s
         handler = await Handler();
         await Cycle();
         await AssertUnsettled();
+        bus.Received(1).SendMessage(Arg.Any<BlockConfirmationProgressNotification>(), Arg.Any<string>());
         Assert.Equal(50m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT reward FROM blocks"));
         Assert.Equal("coinbase", await db.Observer.ExecuteScalarAsync<string>("SELECT transactionconfirmationdata FROM blocks"));
 
@@ -114,8 +119,12 @@ public class BitcoinCustodialSettlementIntegrationTests(IsolatedPostgresServer s
         await AssertUnsettled();
         state.Category = "generate";
         state.MissingConfirmations = true;
-        await Cycle();
+        var progress = await db.Observer.ExecuteScalarAsync<double>("SELECT confirmationprogress FROM blocks");
+        bus.ClearReceivedCalls();
+        for(var retry = 0; retry < 3; retry++) await Cycle();
         await AssertUnsettled();
+        Assert.Equal(progress, await db.Observer.ExecuteScalarAsync<double>("SELECT confirmationprogress FROM blocks"));
+        bus.DidNotReceive().SendMessage(Arg.Any<BlockConfirmationProgressNotification>(), Arg.Any<string>());
         state.MissingConfirmations = false;
         state.WalletError = -5; // independently active block, temporary wallet-index lag
         await Cycle();

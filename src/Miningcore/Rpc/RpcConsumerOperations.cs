@@ -76,7 +76,7 @@ internal static class RpcConsumerOperations
         "BitcoinPayoutHandler.ClassifyBlocksAsync",
         "BitcoinPayoutHandler.ClassifyDirectCoinbaseBlockAsync",
         "BitcoinPayoutHandler.NotifyDirectSettlementMismatchGrace",
-        "BitcoinPayoutHandler.NotifyUnavailableActiveBlockGrace",
+        "BitcoinPayoutHandler.DeferCustodialEvidence",
         "BitcoinPayoutHandler.PayoutAsync",
         "BitcoinPayoutHandler.TryNotifyPayout",
         "BitcoinPool.HandleJobPipelineFailure",

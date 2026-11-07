@@ -36,6 +36,23 @@ the active block's hash, height, confirmation depth and first transaction throug
 until every settlement condition passes. Wallet-index lag does not orphan an active
 reward. BTC direct-coinbase SOLO settlement is unchanged.
 
+Effective confirmation thresholds of zero or below now reject pool startup with a
+clear configuration error. Invalid or unavailable observations preserve the last
+trustworthy pending progress; unchanged observations no longer publish progress
+events. All unverifiable custodial reward paths warn once per episode and send a
+financial/security admin alert after 30 minutes, including an active block whose
+coinbase never appears in the pool wallet. The grace tracker is in memory and resets
+on process restart. Alert subjects now use `[pool] block reconciliation delayed`
+instead of `[pool] merged-mining block reconciliation delayed`.
+
+Blocks unknown to the configured node are no longer automatically orphaned. A node
+resync, replacement or pruned stale block can therefore leave an ordinary reward
+pending indefinitely, with an alert and continued RPC retries. Only affirmative
+inactive-chain evidence permits orphaning in these wallet-missing/disagreement paths.
+The [compatibility inventory](custodial-source-compatibility.md) records routed
+families, recovered upstream links and unresolved historical sources; it does not
+claim live certification of every template.
+
 This change does not reconcile previously credited rewards or reverse completed
 payments after a reorganisation. No database migration or manual block-row rewrite
 is required. See the [policy and validation record](custodial-confirmation-policy.md).

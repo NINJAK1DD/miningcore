@@ -25,8 +25,6 @@ public partial class BitcoinPayoutHandlerTests
     [InlineData("dogecoin", 500, "generate", 499, false)]
     [InlineData("dogecoin", 500, "generate", 500, true)]
     [InlineData("dogecoin", 10, "immature", 1000, false)]
-    [InlineData("dogecoin", 0, "generate", 1000, false)]
-    [InlineData("dogecoin", -1, "generate", 1000, false)]
     public async Task CustodialConfirmation_RequiresWalletMaturityAndOperatorThreshold(
         string coin, int threshold, string category, int confirmations, bool confirmed)
     {
@@ -98,14 +96,15 @@ public partial class BitcoinPayoutHandlerTests
         var block = PendingBlock("coinbase-txid");
         block.Reward = 25m;
         block.NotifyBlockUnlockedOnUpdate = true; // stale transient flags must be cleared
-        block.ConfirmationProgress = 1;
+        block.ConfirmationProgress = 0.75;
         for(var cycle = 0; cycle < 2; cycle++)
         {
             await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { block }, CancellationToken.None);
             Assert.Equal(BlockStatus.Pending, block.Status);
             Assert.Equal(25m, block.Reward);
             Assert.Equal("coinbase-txid", block.TransactionConfirmationData);
-            Assert.Equal(0, block.ConfirmationProgress);
+            Assert.Equal(0.75, block.ConfirmationProgress);
+            Assert.False(block.NotifyBlockConfirmationProgressOnUpdate);
             Assert.False(block.NotifyBlockUnlockedOnUpdate);
         }
     }

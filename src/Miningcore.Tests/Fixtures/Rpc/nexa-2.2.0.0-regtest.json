@@ -1,0 +1,286 @@
+{
+  "daemon": "Nexa 2.2.0.0",
+  "network": "isolated regtest",
+  "archiveSha256": "83df20afc40f0e33c35b0212684f19bc699b655524c4d40fd03fb19d12b49de5",
+  "observations": [
+    {
+      "depth": 1,
+      "wallet": {
+        "satoshi": 0,
+        "amount": 0.0,
+        "confirmations": 1,
+        "generated": true,
+        "blockhash": "9b20ab47475ba2ad5bc091c7f923652f08e4534dd8be60dab83d9028b26dfc94",
+        "blockindex": 0,
+        "blocktime": 1794052896,
+        "txid": "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223",
+        "txidem": "87d2f898d210e22423c886872c82e6b814c3014fe7d8bab68fbba5078c39acfd",
+        "walletconflicts": [],
+        "time": 1794052896,
+        "timereceived": 1794052896,
+        "details": [
+          {
+            "account": "",
+            "address": "nexareg:nqtsq5g5ze6av2g588tvepxk7lp002k9fmkmhmn9g4pgkrjc",
+            "category": "immature",
+            "satoshi": 1000000000,
+            "amount": 10000000.0,
+            "vout": 0
+          }
+        ],
+        "hex": "0000020100ca9a3b00000000170051141675d6291439d6cc84d6f7c2f7aac54eedbbee650000000000000000000f6a51000b000000000000000000000000000000"
+      },
+      "block": {
+        "hash": "9b20ab47475ba2ad5bc091c7f923652f08e4534dd8be60dab83d9028b26dfc94",
+        "confirmations": 1,
+        "height": 1,
+        "size": 247,
+        "txcount": 1,
+        "feePoolAmt": 0,
+        "merkleroot": "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223",
+        "time": 1794052896,
+        "mediantime": 1794052896,
+        "nonce": "00000000",
+        "bits": "207fffff",
+        "difficulty": 4.656542373906925E-10,
+        "chainwork": "0000000000000000000000000000000000000000000000000000000000000004",
+        "utxoCommitment": "",
+        "minerData": "",
+        "status": "valid header, tree, transactions, chain, and scripts; has data, has undo; processed, linked",
+        "onMainChain": true,
+        "previousblockhash": "d71ee431e307d12dfef31a6b21e071f1d5652c0eb6155c04e3222612c9d0b371",
+        "ancestorhash": "d71ee431e307d12dfef31a6b21e071f1d5652c0eb6155c04e3222612c9d0b371",
+        "txid": [
+          "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223"
+        ],
+        "txidem": [
+          "87d2f898d210e22423c886872c82e6b814c3014fe7d8bab68fbba5078c39acfd"
+        ]
+      }
+    },
+    {
+      "depth": 100,
+      "wallet": {
+        "satoshi": 0,
+        "amount": 0.0,
+        "confirmations": 100,
+        "generated": true,
+        "blockhash": "9b20ab47475ba2ad5bc091c7f923652f08e4534dd8be60dab83d9028b26dfc94",
+        "blockindex": 0,
+        "blocktime": 1794052896,
+        "txid": "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223",
+        "txidem": "87d2f898d210e22423c886872c82e6b814c3014fe7d8bab68fbba5078c39acfd",
+        "walletconflicts": [],
+        "time": 1794052896,
+        "timereceived": 1794052896,
+        "details": [
+          {
+            "account": "",
+            "address": "nexareg:nqtsq5g5ze6av2g588tvepxk7lp002k9fmkmhmn9g4pgkrjc",
+            "category": "immature",
+            "satoshi": 1000000000,
+            "amount": 10000000.0,
+            "vout": 0
+          }
+        ],
+        "hex": "0000020100ca9a3b00000000170051141675d6291439d6cc84d6f7c2f7aac54eedbbee650000000000000000000f6a51000b000000000000000000000000000000"
+      },
+      "block": {
+        "hash": "9b20ab47475ba2ad5bc091c7f923652f08e4534dd8be60dab83d9028b26dfc94",
+        "confirmations": 100,
+        "height": 1,
+        "size": 247,
+        "txcount": 1,
+        "feePoolAmt": 0,
+        "merkleroot": "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223",
+        "time": 1794052896,
+        "mediantime": 1794052896,
+        "nonce": "00000000",
+        "bits": "207fffff",
+        "difficulty": 4.656542373906925E-10,
+        "chainwork": "0000000000000000000000000000000000000000000000000000000000000004",
+        "utxoCommitment": "",
+        "minerData": "",
+        "status": "valid header, tree, transactions, chain, and scripts; has data, has undo; processed, linked",
+        "onMainChain": true,
+        "previousblockhash": "d71ee431e307d12dfef31a6b21e071f1d5652c0eb6155c04e3222612c9d0b371",
+        "ancestorhash": "d71ee431e307d12dfef31a6b21e071f1d5652c0eb6155c04e3222612c9d0b371",
+        "nextblockhash": "85b42a12e5ce5cac01d262846a9fc6b4e80afd056dc5b94d9c1928c360e62745",
+        "txid": [
+          "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223"
+        ],
+        "txidem": [
+          "87d2f898d210e22423c886872c82e6b814c3014fe7d8bab68fbba5078c39acfd"
+        ]
+      }
+    },
+    {
+      "depth": 101,
+      "wallet": {
+        "satoshi": 1000000000,
+        "amount": 10000000.0,
+        "confirmations": 101,
+        "generated": true,
+        "blockhash": "9b20ab47475ba2ad5bc091c7f923652f08e4534dd8be60dab83d9028b26dfc94",
+        "blockindex": 0,
+        "blocktime": 1794052896,
+        "txid": "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223",
+        "txidem": "87d2f898d210e22423c886872c82e6b814c3014fe7d8bab68fbba5078c39acfd",
+        "walletconflicts": [],
+        "time": 1794052896,
+        "timereceived": 1794052896,
+        "details": [
+          {
+            "account": "",
+            "address": "nexareg:nqtsq5g5ze6av2g588tvepxk7lp002k9fmkmhmn9g4pgkrjc",
+            "category": "generate",
+            "satoshi": 1000000000,
+            "amount": 10000000.0,
+            "vout": 0
+          }
+        ],
+        "hex": "0000020100ca9a3b00000000170051141675d6291439d6cc84d6f7c2f7aac54eedbbee650000000000000000000f6a51000b000000000000000000000000000000"
+      },
+      "block": {
+        "hash": "9b20ab47475ba2ad5bc091c7f923652f08e4534dd8be60dab83d9028b26dfc94",
+        "confirmations": 101,
+        "height": 1,
+        "size": 247,
+        "txcount": 1,
+        "feePoolAmt": 0,
+        "merkleroot": "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223",
+        "time": 1794052896,
+        "mediantime": 1794052896,
+        "nonce": "00000000",
+        "bits": "207fffff",
+        "difficulty": 4.656542373906925E-10,
+        "chainwork": "0000000000000000000000000000000000000000000000000000000000000004",
+        "utxoCommitment": "",
+        "minerData": "",
+        "status": "valid header, tree, transactions, chain, and scripts; has data, has undo; processed, linked",
+        "onMainChain": true,
+        "previousblockhash": "d71ee431e307d12dfef31a6b21e071f1d5652c0eb6155c04e3222612c9d0b371",
+        "ancestorhash": "d71ee431e307d12dfef31a6b21e071f1d5652c0eb6155c04e3222612c9d0b371",
+        "nextblockhash": "85b42a12e5ce5cac01d262846a9fc6b4e80afd056dc5b94d9c1928c360e62745",
+        "txid": [
+          "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223"
+        ],
+        "txidem": [
+          "87d2f898d210e22423c886872c82e6b814c3014fe7d8bab68fbba5078c39acfd"
+        ]
+      }
+    },
+    {
+      "depth": 102,
+      "wallet": {
+        "satoshi": 1000000000,
+        "amount": 10000000.0,
+        "confirmations": 102,
+        "generated": true,
+        "blockhash": "9b20ab47475ba2ad5bc091c7f923652f08e4534dd8be60dab83d9028b26dfc94",
+        "blockindex": 0,
+        "blocktime": 1794052896,
+        "txid": "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223",
+        "txidem": "87d2f898d210e22423c886872c82e6b814c3014fe7d8bab68fbba5078c39acfd",
+        "walletconflicts": [],
+        "time": 1794052896,
+        "timereceived": 1794052896,
+        "details": [
+          {
+            "account": "",
+            "address": "nexareg:nqtsq5g5ze6av2g588tvepxk7lp002k9fmkmhmn9g4pgkrjc",
+            "category": "generate",
+            "satoshi": 1000000000,
+            "amount": 10000000.0,
+            "vout": 0
+          }
+        ],
+        "hex": "0000020100ca9a3b00000000170051141675d6291439d6cc84d6f7c2f7aac54eedbbee650000000000000000000f6a51000b000000000000000000000000000000"
+      },
+      "block": {
+        "hash": "9b20ab47475ba2ad5bc091c7f923652f08e4534dd8be60dab83d9028b26dfc94",
+        "confirmations": 102,
+        "height": 1,
+        "size": 247,
+        "txcount": 1,
+        "feePoolAmt": 0,
+        "merkleroot": "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223",
+        "time": 1794052896,
+        "mediantime": 1794052896,
+        "nonce": "00000000",
+        "bits": "207fffff",
+        "difficulty": 4.656542373906925E-10,
+        "chainwork": "0000000000000000000000000000000000000000000000000000000000000004",
+        "utxoCommitment": "",
+        "minerData": "",
+        "status": "valid header, tree, transactions, chain, and scripts; has data, has undo; processed, linked",
+        "onMainChain": true,
+        "previousblockhash": "d71ee431e307d12dfef31a6b21e071f1d5652c0eb6155c04e3222612c9d0b371",
+        "ancestorhash": "d71ee431e307d12dfef31a6b21e071f1d5652c0eb6155c04e3222612c9d0b371",
+        "nextblockhash": "85b42a12e5ce5cac01d262846a9fc6b4e80afd056dc5b94d9c1928c360e62745",
+        "txid": [
+          "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223"
+        ],
+        "txidem": [
+          "87d2f898d210e22423c886872c82e6b814c3014fe7d8bab68fbba5078c39acfd"
+        ]
+      }
+    },
+    {
+      "depth": 103,
+      "wallet": {
+        "satoshi": 1000000000,
+        "amount": 10000000.0,
+        "confirmations": 103,
+        "generated": true,
+        "blockhash": "9b20ab47475ba2ad5bc091c7f923652f08e4534dd8be60dab83d9028b26dfc94",
+        "blockindex": 0,
+        "blocktime": 1794052896,
+        "txid": "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223",
+        "txidem": "87d2f898d210e22423c886872c82e6b814c3014fe7d8bab68fbba5078c39acfd",
+        "walletconflicts": [],
+        "time": 1794052896,
+        "timereceived": 1794052896,
+        "details": [
+          {
+            "account": "",
+            "address": "nexareg:nqtsq5g5ze6av2g588tvepxk7lp002k9fmkmhmn9g4pgkrjc",
+            "category": "generate",
+            "satoshi": 1000000000,
+            "amount": 10000000.0,
+            "vout": 0
+          }
+        ],
+        "hex": "0000020100ca9a3b00000000170051141675d6291439d6cc84d6f7c2f7aac54eedbbee650000000000000000000f6a51000b000000000000000000000000000000"
+      },
+      "block": {
+        "hash": "9b20ab47475ba2ad5bc091c7f923652f08e4534dd8be60dab83d9028b26dfc94",
+        "confirmations": 103,
+        "height": 1,
+        "size": 247,
+        "txcount": 1,
+        "feePoolAmt": 0,
+        "merkleroot": "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223",
+        "time": 1794052896,
+        "mediantime": 1794052896,
+        "nonce": "00000000",
+        "bits": "207fffff",
+        "difficulty": 4.656542373906925E-10,
+        "chainwork": "0000000000000000000000000000000000000000000000000000000000000004",
+        "utxoCommitment": "",
+        "minerData": "",
+        "status": "valid header, tree, transactions, chain, and scripts; has data, has undo; processed, linked",
+        "onMainChain": true,
+        "previousblockhash": "d71ee431e307d12dfef31a6b21e071f1d5652c0eb6155c04e3222612c9d0b371",
+        "ancestorhash": "d71ee431e307d12dfef31a6b21e071f1d5652c0eb6155c04e3222612c9d0b371",
+        "nextblockhash": "85b42a12e5ce5cac01d262846a9fc6b4e80afd056dc5b94d9c1928c360e62745",
+        "txid": [
+          "04ba0ffa49b1a873dee6f79fc47a05e9b37d07efbde9e3af41a65009dcc32223"
+        ],
+        "txidem": [
+          "87d2f898d210e22423c886872c82e6b814c3014fe7d8bab68fbba5078c39acfd"
+        ]
+      }
+    }
+  ]
+}
