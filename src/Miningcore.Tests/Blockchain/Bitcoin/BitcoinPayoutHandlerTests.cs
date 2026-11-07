@@ -2231,18 +2231,19 @@ public partial class BitcoinPayoutHandlerTests : TestBase
     }
 
     [Fact]
-    public async Task Classification_SubsequentImmatureResponse_UpdatesRewardAndProgress()
+    public async Task Classification_SubsequentImmatureResponse_PreservesRewardAndUpdatesProgress()
     {
         var fixture = await CreateFixtureAsync();
         var block = PendingBlock("coinbase-txid");
         fixture.Handler.TransactionResponse = SuccessTransaction("immature", 50m, 10);
+        block.Reward = 25m;
 
         var result = await fixture.Handler.ClassifyBlocksAsync(fixture.Pool,
             new[] { block }, CancellationToken.None);
 
         Assert.Equal(new[] { block }, result);
         Assert.Equal(BlockStatus.Pending, block.Status);
-        Assert.Equal(50m, block.Reward);
+        Assert.Equal(25m, block.Reward);
         Assert.InRange(block.ConfirmationProgress, double.Epsilon, 0.999999d);
         Assert.True(block.NotifyBlockConfirmationProgressOnUpdate);
         fixture.MessageBus.DidNotReceive().SendMessage(
@@ -2810,13 +2811,13 @@ public partial class BitcoinPayoutHandlerTests : TestBase
         {
             new RpcResponse<JToken>(JObject.FromObject(new
             {
-                amount,
+                amount = category == "immature" ? 0m : amount,
                 confirmations,
                 generated = true,
                 blockindex = 0,
                 blockhash = "doge-block",
                 txid = "coinbase-txid",
-                details = new[] { new { category } },
+                details = new[] { new { category, amount } },
             })),
         };
     }
@@ -2840,6 +2841,8 @@ public partial class BitcoinPayoutHandlerTests : TestBase
 
         public RpcResponse<DaemonBlock> BlockResponse { get; set; }
         public bool UseDaemonRpc { get; set; }
+        public Func<CancellationToken, Task<RpcResponse<DaemonBlock>>> BlockLookupOverride { get; set; }
+        public Func<CancellationToken, Task<RpcResponse<JToken>[]>> WalletLookupOverride { get; set; }
         public void SetLogger(NLog.Logger value) => logger = value;
         public RpcResponse<JToken>[] TransactionResponse { get; set; }
         public PersistedBlock FinalizedAuxPowBlock { get; set; }
@@ -2887,6 +2890,8 @@ public partial class BitcoinPayoutHandlerTests : TestBase
             CancellationToken ct)
         {
             BlockCalls++;
+            if(BlockLookupOverride != null)
+                return BlockLookupOverride(ct);
             if(UseDaemonRpc)
                 return base.GetBlockAsync(blockHash, ct);
             return Task.FromResult(BlockResponse);
@@ -2896,6 +2901,8 @@ public partial class BitcoinPayoutHandlerTests : TestBase
             CancellationToken ct)
         {
             TransactionCalls++;
+            if(WalletLookupOverride != null)
+                return WalletLookupOverride(ct);
             if(UseDaemonRpc)
                 return base.GetTransactionsAsync(blocks, ct);
             return Task.FromResult(TransactionResponse);

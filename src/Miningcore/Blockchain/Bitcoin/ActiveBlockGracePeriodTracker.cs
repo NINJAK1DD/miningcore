@@ -5,7 +5,7 @@ namespace Miningcore.Blockchain.Bitcoin;
 public interface IActiveBlockGracePeriodTracker
 {
     bool TryAcquireNotification(string poolId, long blockId, string blockHash, string blockType,
-        DateTime now, TimeSpan alertAfter);
+        DateTime now, TimeSpan alertAfter, TimeSpan? repeatAfter = null, string reason = null);
 
     void MarkNotificationSent(string poolId, long blockId, string blockHash, string blockType);
 
@@ -20,7 +20,7 @@ public class ActiveBlockGracePeriodTracker : IActiveBlockGracePeriodTracker
         new(StringComparer.OrdinalIgnoreCase);
 
     public bool TryAcquireNotification(string poolId, long blockId, string blockHash,
-        string blockType, DateTime now, TimeSpan alertAfter)
+        string blockType, DateTime now, TimeSpan alertAfter, TimeSpan? repeatAfter = null, string reason = null)
     {
         var episode = episodes.GetOrAdd(CreateKey(poolId, blockId, blockHash, blockType),
             _ => new Episode(now));
@@ -30,10 +30,17 @@ public class ActiveBlockGracePeriodTracker : IActiveBlockGracePeriodTracker
             if(now - episode.FirstUnavailableAt < alertAfter)
                 return false;
 
-            if(episode.NotificationSent || episode.NotificationInProgress)
+            if(episode.NotificationInProgress)
+                return false;
+
+            var reasonChanged = reason != null && !string.Equals(reason, episode.LastReason, StringComparison.Ordinal);
+            if(episode.NotificationSent && !reasonChanged &&
+               (!repeatAfter.HasValue || now - episode.LastSentAt < repeatAfter.Value))
                 return false;
 
             episode.NotificationInProgress = true;
+            episode.PendingAt = now;
+            episode.PendingReason = reason;
             return true;
         }
     }
@@ -48,6 +55,8 @@ public class ActiveBlockGracePeriodTracker : IActiveBlockGracePeriodTracker
         {
             episode.NotificationInProgress = false;
             episode.NotificationSent = true;
+            episode.LastSentAt = episode.PendingAt;
+            episode.LastReason = episode.PendingReason;
         }
     }
 
@@ -59,8 +68,7 @@ public class ActiveBlockGracePeriodTracker : IActiveBlockGracePeriodTracker
 
         lock(episode)
         {
-            if(!episode.NotificationSent)
-                episode.NotificationInProgress = false;
+            episode.NotificationInProgress = false;
         }
     }
 
@@ -85,5 +93,9 @@ public class ActiveBlockGracePeriodTracker : IActiveBlockGracePeriodTracker
         public DateTime FirstUnavailableAt { get; }
         public bool NotificationSent { get; set; }
         public bool NotificationInProgress { get; set; }
+        public DateTime LastSentAt { get; set; }
+        public DateTime PendingAt { get; set; }
+        public string LastReason { get; set; }
+        public string PendingReason { get; set; }
     }
 }

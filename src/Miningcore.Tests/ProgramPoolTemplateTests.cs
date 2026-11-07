@@ -29,7 +29,7 @@ using Xunit;
 namespace Miningcore.Tests;
 
 [Collection(IntegrationDeadlineCollection.Name)]
-public class ProgramPoolTemplateTests
+public partial class ProgramPoolTemplateTests
 {
     [Fact]
     public async Task RecoveryMode_StopsHostAndSkipsNormalBackgroundServices()

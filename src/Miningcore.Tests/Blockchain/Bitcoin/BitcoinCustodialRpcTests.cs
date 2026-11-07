@@ -58,12 +58,14 @@ public partial class BitcoinPayoutHandlerTests
                 Hash = current["block"]["hash"].Value<string>(),
                 BlockHeight = current["block"]["height"].Value<ulong>(),
                 TransactionConfirmationData = current["block"]["txid"][0].Value<string>(),
+                Reward = 17m,
             };
             await fixture.Handler.ClassifyBlocksAsync(fixture.Pool, new[] { block }, CancellationToken.None);
             var confirmed = current["depth"].Value<int>() >= 102;
             Assert.Equal(confirmed ? BlockStatus.Confirmed : BlockStatus.Pending, block.Status);
             Assert.Equal(confirmed, block.NotifyBlockUnlockedOnUpdate);
-            Assert.Equal(current["wallet"]["amount"].Value<decimal>(), block.Reward);
+            Assert.Equal(current["wallet"]["details"][0]["category"].Value<string>() == "immature"
+                ? 17m : current["wallet"]["amount"].Value<decimal>(), block.Reward);
         }
     }
 
@@ -170,12 +172,13 @@ public partial class BitcoinPayoutHandlerTests
                 fixture.MessageBus, new ActiveBlockGracePeriodTracker());
         await handler.ConfigureAsync(new ClusterConfig(), fixture.Config, CancellationToken.None);
         var block = PendingBlock("coinbase-txid");
+        block.Reward = 25m;
         using var deadline = new CancellationTokenSource(System.TimeSpan.FromSeconds(10));
         Assert.Single(await handler.ClassifyBlocksAsync(fixture.Pool,
             new[] { block }, deadline.Token));
         Assert.Equal(confirmed ? BlockStatus.Confirmed : BlockStatus.Pending, block.Status);
         Assert.Equal(confirmed, block.NotifyBlockUnlockedOnUpdate);
-        Assert.Equal(50m, block.Reward);
+        Assert.Equal(category == "immature" ? 25m : 50m, block.Reward);
         Assert.Equal("coinbase-txid", block.TransactionConfirmationData);
         Assert.Equal(category == "generate" && confirmations >= 102 ? 1 : 0, blockCalls);
         Assert.Equal(1, transactionCalls);

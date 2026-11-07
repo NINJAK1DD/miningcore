@@ -101,6 +101,22 @@ public class BitcoinCustodialSettlementIntegrationTests(IsolatedPostgresServer s
             bus.DidNotReceive().SendMessage(Arg.Any<BlockUnlockedNotification>(), Arg.Any<string>());
         }
 
+        if(type == "auxpow")
+        {
+            await db.Observer.ExecuteAsync("UPDATE blocks SET transactionconfirmationdata = 'auxpow-block:block-hash'");
+            await Cycle();
+            await AssertUnsettled();
+            Assert.Equal("coinbase", await db.Observer.ExecuteScalarAsync<string>("SELECT transactionconfirmationdata FROM blocks"));
+        }
+        state.Category = "immature";
+        state.Confirmations = 1;
+        await Cycle();
+        await AssertUnsettled();
+        Assert.Equal(25m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT reward FROM blocks"));
+        state.Category = "generate";
+        state.Confirmations = walletMaturity;
+        bus.ClearReceivedCalls();
+
         // Wallet-mature rewards must survive repeated processing/restarts without liability.
         await Cycle();
         handler = await Handler();
@@ -117,7 +133,13 @@ public class BitcoinCustodialSettlementIntegrationTests(IsolatedPostgresServer s
         state.Category = "immature";
         await Cycle();
         await AssertUnsettled();
+        Assert.Equal(50m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT reward FROM blocks"));
         state.Category = "generate";
+        state.Amount = 0;
+        await Cycle();
+        await AssertUnsettled();
+        Assert.Equal(50m, await db.Observer.ExecuteScalarAsync<decimal>("SELECT reward FROM blocks"));
+        state.Amount = 50m;
         state.MissingConfirmations = true;
         var progress = await db.Observer.ExecuteScalarAsync<double>("SELECT confirmationprogress FROM blocks");
         bus.ClearReceivedCalls();
@@ -137,6 +159,38 @@ public class BitcoinCustodialSettlementIntegrationTests(IsolatedPostgresServer s
         await Cycle();
         await AssertUnsettled();
         state.Active = true;
+
+        // A second writer can replace evidence while the row is still pending.
+        // Classification A must never overwrite persisted identity B or allocate A.
+        foreach(var mutation in new[]
+                {
+                    (Column: "hash", Value: "replacement-block", Original: "block-hash"),
+                    (Column: "transactionconfirmationdata", Value: "replacement-coinbase", Original: "coinbase"),
+                    (Column: "miner", Value: "replacement-finder", Original: "finder"),
+                })
+        {
+            var observation = await db.Factory.Run(con => blocks.GetPendingBlocksForPoolAsync(con, coin));
+            await handler.ClassifyBlocksAsync(pool, observation, CancellationToken.None);
+            var classified = Assert.Single(observation);
+            Assert.Equal(BlockStatus.Confirmed, classified.Status);
+            // Column names are fixed test constants, never user/RPC input.
+            await db.Observer.ExecuteAsync($"UPDATE blocks SET {mutation.Column} = @Value", new { mutation.Value });
+            var changed = await db.Observer.ExecuteScalarAsync<string>("SELECT row_to_json(blocks)::text FROM blocks");
+            var staleManager = Manager();
+            await staleManager.RunBlockUpdateTransactionAsync(config, classified,
+                (con, tx) => staleManager.ApplyConfirmedBlockAsync(con, tx, pool, classified, handler, scheme, CancellationToken.None));
+            await AssertUnsettled();
+            Assert.Equal(changed, await db.Observer.ExecuteScalarAsync<string>("SELECT row_to_json(blocks)::text FROM blocks"));
+            await db.Observer.ExecuteAsync($"UPDATE blocks SET {mutation.Column} = @Value", new { Value = mutation.Original });
+        }
+
+        var zeroCredit = await db.Factory.Run(con => blocks.GetPendingBlocksForPoolAsync(con, coin));
+        await handler.ClassifyBlocksAsync(pool, zeroCredit, CancellationToken.None);
+        zeroCredit[0].Reward = 0;
+        var guardedManager = Manager();
+        await guardedManager.RunBlockUpdateTransactionAsync(config, zeroCredit[0],
+            (con, tx) => guardedManager.ApplyConfirmedBlockAsync(con, tx, pool, zeroCredit[0], handler, scheme, CancellationToken.None));
+        await AssertUnsettled();
 
         // Force a database failure after the terminal block update, during credit.
         await db.Observer.ExecuteAsync("""
@@ -184,6 +238,7 @@ public class BitcoinCustodialSettlementIntegrationTests(IsolatedPostgresServer s
         public int? WalletError;
         public bool Active = true;
         public int Submissions;
+        public decimal Amount = 50m;
     }
 
     private sealed class FixtureHandler : BitcoinPayoutHandler
@@ -202,8 +257,8 @@ public class BitcoinCustodialSettlementIntegrationTests(IsolatedPostgresServer s
                 var wallet = JObject.FromObject(new
                 {
                     txid = block.TransactionConfirmationData, blockhash = block.Hash,
-                    generated = true, blockindex = 0, amount = 50m,
-                    details = new[] { new { category = state.Category } },
+                    generated = true, blockindex = 0, amount = state.Category == "immature" ? 0m : state.Amount,
+                    details = new[] { new { category = state.Category, amount = state.Amount } },
                 });
                 if(!state.MissingConfirmations) wallet["confirmations"] = state.Confirmations;
                 return new RpcResponse<JToken>(wallet, state.WalletError.HasValue

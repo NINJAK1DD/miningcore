@@ -521,6 +521,20 @@ public class PayoutManager : ProcessStatusBackgroundService
             if(persisted == null)
                 return false;
 
+            if(BitcoinConfirmationPolicy.UsesSharedClassification(poolConfig.Template) &&
+               !(BitcoinPayoutHandler.IsDirectCoinbaseSettlement(persisted) &&
+                 BitcoinPayoutHandler.IsDirectCoinbaseSettlement(block)))
+            {
+                var observed = block.CustodialClassificationIdentity ?? CustodialBlockIdentity.Capture(block);
+                if(!string.Equals(poolConfig.Id, persisted.PoolId, StringComparison.Ordinal) ||
+                   observed != CustodialBlockIdentity.Capture(persisted) ||
+                   (block.Status == BlockStatus.Confirmed && block.Reward <= 0))
+                {
+                    logger.Warn(() => $"Custodial block {block.Id}: stale identity or invalid reward; retry classification before settlement");
+                    return false;
+                }
+            }
+
             var pearlCustodial = poolConfig.Template is PearlCoinTemplate;
             if(pearlCustodial && !Miningcore.Blockchain.Pearl.PearlPayoutHandler.CanApplyClassification(persisted, block))
                 return false;

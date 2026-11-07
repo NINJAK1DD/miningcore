@@ -30,6 +30,7 @@ public partial class BitcoinPayoutHandlerTests
     {
         var fixture = await CreateFixtureAsync(coinTemplate: coin, minimumConfirmations: threshold);
         var block = PendingBlock("coinbase-txid");
+        block.Reward = 75m;
         block.Type = coin == "litecoin" ? "merged-parent" : "auxpow";
         fixture.Handler.TransactionResponse = SuccessTransaction(category, 75m, confirmations);
         for(var cycle = 0; cycle < 2; cycle++)
@@ -82,6 +83,9 @@ public partial class BitcoinPayoutHandlerTests
     [InlineData("txid", "\"other\"")]
     [InlineData("blockhash", "\"other\"")]
     [InlineData("amount", "-1")]
+    [InlineData("amount", "0")]
+    [InlineData("amount", "null")]
+    [InlineData("amount", "\"50\"")]
     [InlineData("details", "[null]")]
     [InlineData("details", "[{\"category\":\"orphan\"}]")]
     [InlineData("details", "[{\"category\":\"unknown\"}]")]

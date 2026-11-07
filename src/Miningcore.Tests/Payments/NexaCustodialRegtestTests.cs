@@ -55,6 +55,7 @@ public partial class MergedMiningPayoutRegtestTests
         {
             PoolId = config.Id, Hash = hash, BlockHeight = 1,
             TransactionConfirmationData = txid, Status = BlockStatus.Pending,
+            Reward = reward,
         };
         var block = Candidate();
         var captures = new JArray();
@@ -75,7 +76,7 @@ public partial class MergedMiningPayoutRegtestTests
             await handler.ClassifyBlocksAsync(pool, new[] { block }, CancellationToken.None);
             Assert.Equal(depth < 102 ? BlockStatus.Pending : BlockStatus.Confirmed, block.Status);
             Assert.Equal(depth >= 102, block.NotifyBlockUnlockedOnUpdate);
-            if(depth >= 101) Assert.Equal(reward, block.Reward);
+            Assert.Equal(reward, block.Reward);
         }
         // A low operator override must still respect Nexa's actual wallet maturity.
         config.Extra["minimumConfirmations"] = 1;

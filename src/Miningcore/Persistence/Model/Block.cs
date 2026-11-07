@@ -57,4 +57,18 @@ public class Block
     /// </summary>
     public bool BitcoinBlake2bCustodialEvidenceVerified { get; set; }
     public bool PearlCustodialEvidenceVerified { get; set; }
+
+    // Internal, runtime-only input identity. Never projected from API/database
+    // data; retain it across legitimate pending-marker normalization by the handler.
+    internal CustodialBlockIdentity CustodialClassificationIdentity { get; set; }
+}
+
+internal sealed record CustodialBlockIdentity(long Id, string PoolId, ulong Height,
+    string Hash, string Coinbase, string Type, string Miner, DateTime Created,
+    string Source, double NetworkDifficulty, string SettlementMode)
+{
+    public static CustodialBlockIdentity Capture(Block block) => new(block.Id,
+        block.PoolId, block.BlockHeight, block.Hash, block.TransactionConfirmationData,
+        block.Type, block.Miner, block.Created, block.Source, block.NetworkDifficulty,
+        block.SettlementMode);
 }
