@@ -34,9 +34,9 @@
     },
     {
       "template": "browncoin",
-      "repository": null,
-      "evidence": "https://github.com/fennectech/Browncoin",
-      "note": "SoiledCold5/Browncoin moved here; README describes Scrypt, but this template uses Verthash. Exact daemon lineage unresolved."
+      "repository": "https://github.com/browncoin-project/Browncoin",
+      "evidence": "https://browncoin-project.github.io/",
+      "note": "Project website links the daemon and v1.2 Verthash hard fork at block 400000. This matches the template; older SoiledCold5/fennectech Scrypt source is not substituted."
     },
     {
       "template": "cmusicai",

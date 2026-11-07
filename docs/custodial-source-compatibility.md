@@ -13,10 +13,10 @@ Satoshicash route through the Bitcoin handler; Equihash either selects it explic
 or inherits its classification in `EquihashPayoutHandler`. Bitcoin BLAKE2b overrides
 classification and is excluded.
 
-- **171** have the expected wallet and block source fields located at immutable revisions.
+- **172** have the expected wallet and block source fields located at immutable revisions.
 - **One** (TDCoin) has matching source in a candidate repository whose upstream
   ownership still needs confirmation.
-- **Eight** lack an authoritative source matching the configured template.
+- **Seven** lack an authoritative source matching the configured template.
 - **BTC, LTC, DOGE and Nexa** have live isolated-daemon regression evidence described
   in the policy. Representative Progpow, Satoshicash and both Equihash routing
   branches have HTTP decoder/handler tests; selected families also have PostgreSQL
@@ -57,12 +57,12 @@ changing mining algorithms or network parameters in this security fix.
 
 ## Recovered links and unresolved cases
 
-The initial 40 templates without repository links yielded **32 matching project or
-historical upstream repositories**, **one TDCoin candidate**, and **seven unresolved
+The initial 40 templates without repository links yielded **33 matching project or
+historical upstream repositories**, **one TDCoin candidate**, and **six unresolved
 matching-source cases**. Separately, Datromax and Ultronai owner-only links were
 resolved to daemon repositories, the Flux frontend link was corrected for this
 audit, and historical Vkax source was recovered. Litecoin II's existing repository
-remains unavailable, bringing the unresolved total to eight.
+remains unavailable, bringing the unresolved total to seven.
 
 The [research record](custodial-repository-research.json) preserves provenance and
 caveats. Links below identify source evidence, not download recommendations.
@@ -76,7 +76,7 @@ production template behavior is changed.
 | `bitflate` | [bitflate/bitflate](https://github.com/bitflate/bitflate) | [Evidence](https://bitcointalk.org/index.php?topic=5110495.0) — Project announcement and project repository. |
 | `bithereum` | [BTHPOS/BTH](https://github.com/BTHPOS/BTH) | [Evidence](https://github.com/BTHPOS) — Project organization links bithereum.network. |
 | `bitrae` | [bitraenet/bitrae](https://github.com/bitraenet/bitrae) | [Evidence](https://bitrae.net) — Project website links repository. |
-| `browncoin` | Unresolved | [Evidence](https://github.com/fennectech/Browncoin) — SoiledCold5/Browncoin moved here; README describes Scrypt, but this template uses Verthash. Exact daemon lineage unresolved. |
+| `browncoin` | [browncoin-project/Browncoin](https://github.com/browncoin-project/Browncoin) | [Project website](https://browncoin-project.github.io/) links this daemon and the v1.2 Verthash hard fork at block 400000, matching the template. |
 | `cmusicai` | [CMUSICAI/Cmusic](https://github.com/CMUSICAI/Cmusic) | [Evidence](https://cmusic.ai) — Project website links wallet repository. |
 | `cpuchain` | [cpuchain/cpuchain](https://github.com/cpuchain/cpuchain) | [Evidence](https://www.cpuchain.org) — Project website links releases. |
 | `emrals` | Unresolved | [Evidence](https://github.com/Emrals/masternode) — Original Emrals/emrals is unavailable; jamesdwilson/emrals is a candidate archive, not verified as the current upstream. |
@@ -118,9 +118,9 @@ production template behavior is changed.
 | `vkax` | [vkaxproject/vkax](https://github.com/vkaxproject/vkax) | [Evidence](https://github.com/vkaxproject/vkax/blob/master/README.md) — Historical upstream says development moved to vkaxcore/VKAX, which is unavailable. Audit historical source only. |
 
 Unavailable originals and unverified mirrors are deliberately not treated as
-authoritative replacements. In particular, Browncoin's recovered source advertises
-Scrypt while this template selects Verthash; Widecore is a JavaScript stack rather
-than the Widecoin daemon. TDCoin's candidate source matches the public genesis,
+authoritative replacements. Browncoin's current project website resolves the
+Verthash lineage; the earlier Scrypt repository was not substituted. Widecore is a
+JavaScript stack rather than the Widecoin daemon. TDCoin's candidate source matches the public genesis,
 reward, port and address-prefix information but still lacks an independently
 established maintainer relationship.
 

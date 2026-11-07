@@ -188,8 +188,7 @@ dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --no-build \
 
 Nexa's [official 2.2.0.0 release metadata](https://gitlab.com/api/v4/projects/nexa%2Fnexa/releases/nexa2.2.0.0)
 links the [Linux x64 archive](https://www.bitcoinunlimited.info/nexa/2.2.0.0/nexa-2.2.0.0-linux64.tar.gz).
-The checked SHA-256 is
-`83df20afc40f0e33c35b0212684f19bc699b655524c4d40fd03fb19d12b49de5`;
+The checked SHA-256 is `83df20afc40f0e33c35b0212684f19bc699b655524c4d40fd03fb19d12b49de5`;
 the daemon reports `v2.2.0.0-6651a9470`. Set `MININGCORE_TEST_NEXAD` to that binary.
 The test creates its own loopback-only datadir with peer discovery disabled.
 `MININGCORE_TEST_NEXA_CAPTURE` optionally writes a new public regtest observation
