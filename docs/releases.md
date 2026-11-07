@@ -43,6 +43,8 @@ or share-relay nodes do not reject an unused payout threshold. Bitcoin BLAKE2b's
 separate maturity policy still permits zero operator delay and always enforces
 network maturity plus one confirmation. Shared payout-handler configuration retains
 a second defensive check.
+The startup gate also skips a share-relay sender without PostgreSQL even when
+payment flags are enabled, matching whether the payment processor actually starts.
 Invalid or unavailable observations preserve the last
 trustworthy pending progress; unchanged observations no longer publish progress
 events. All unverifiable custodial reward paths warn once per distinct fixed reason
@@ -64,6 +66,9 @@ Classification logs describe eligibility; successful custodial confirmation is l
 only after database commit. Alert episodes use stable pool/row identities so claim
 and merged-parent type normalization neither restarts the grace period nor leaks an
 old episode.
+Committed amounts use the same precision and coin symbol as classification logs.
+Debug payout-manager logs report classification record count and elapsed time for
+commissioning backlog monitoring; they do not imply a successful settlement.
 
 Blocks unknown to the configured node are no longer automatically orphaned. A node
 resync, replacement or pruned stale block can therefore leave an ordinary reward

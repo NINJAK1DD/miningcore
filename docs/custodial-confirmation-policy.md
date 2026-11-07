@@ -27,6 +27,10 @@ For shared-family pools that process payments, nonpositive effective thresholds
 throw `PoolStartupException` during main pool startup, after templates are assigned
 and before Stratum listeners are reserved. Both cluster and pool payment processing
 must be enabled: Stratum-only/share-relay nodes do not use this payout policy.
+Validation uses the same `ShouldRunPaymentProcessor` gate as service startup. A
+share-relay sender without PostgreSQL therefore ignores an unused threshold even
+when payment flags remain enabled in its shared configuration; a relay with
+PostgreSQL and enabled payments still validates it.
 The startup error includes the pool and a fixed configuration explanation. The same
 resolver is also used in payout-handler `ConfigureAsync` as a second safety net;
 payout-cycle configuration alone would detect this too late and its generic error
@@ -119,6 +123,46 @@ of uncertain submission markers: discarding a persisted reward solely because a
 replacement node cannot find it could erase a genuine liability. Independently
 verified inactive blocks still become orphaned. Restore a suitable synchronized node
 and owning wallet; do not rewrite balances or mark rows paid to silence an alert.
+
+### Backlog monitoring and reconciliation
+
+Eligible mature rewards currently require sequential `getblock` verification.
+During commissioning, measure healthy and slow/unavailable-daemon cases with a
+representative backlog and compare time spent on later pools in the payout cycle.
+Enable Debug logging for `Miningcore.Payments.PayoutManager` to record each shared
+classification attempt's input record count and elapsed milliseconds, including
+attempts that throw or cancel. This measures classification only, not database
+loading, allocation or wallet submission, and does not imply successful settlement.
+
+The existing Prometheus summary `miningcore_rpcrequest_execution_time` exposes
+`_count` and `_sum` with `pool` and `method` labels. Compare `getblock` and `batch`
+sample deltas and durations over the same interval. These are pool-wide RPC samples,
+not an exact count of payout calls or transactions within a batch; transport failures
+before a response may have no sample. Use sanitized proxy/node request counters to
+corroborate those cases. Do not enable credential-bearing request-body logging.
+
+Record outstanding volume and oldest evidence with a read-only staging query:
+
+```sql
+SELECT poolid, type, count(*) AS pending_count, min(created) AS oldest_pending
+FROM blocks WHERE status = 'pending'
+GROUP BY poolid, type ORDER BY poolid, type;
+```
+
+If latency is material, retain the backlog size, RPC timings/timeouts, cycle timing
+and deployed configuration for a separately reviewed bounded-concurrency or batching
+change. Do not weaken verification or increase unbounded RPC parallelism to drain it.
+
+For persistently unknown historical blocks, preserve a database snapshot and the
+row's original hash, height, coinbase, miner and submission-marker evidence. Verify
+node synchronization, chain/network, wallet ownership/indexing and proxy access;
+compare against a suitable archival or independently synchronized node. Restore a
+node and owning wallet that can provide authoritative evidence, then let ordinary
+classification retry. Unknown is not proof of inactivity. If evidence cannot be
+recovered, retain the liability and document the unresolved case for controlled
+financial reconciliation; no expiry or manual `Confirmed`/paid edit is authorized
+by this procedure. Reversal of already credited/spent rewards after a later reorg
+requires a separate accounting design and review.
 
 ## Shared-handler compatibility and remaining trust boundary
 
@@ -222,6 +266,17 @@ upgrade smoke with the exact signed release artifact and intended BTC/LTC/DOGE
 configurations in an isolated staging database and regtest wallets. Retain the
 artifact checksum, source revision, configuration revision and test results.
 
+At merge, prefer a squash merge so the reviewed fix can be reverted or cherry-picked
+as one change. This is a maintainer merge recommendation, not a release or rollout
+approval. Preserve signed/verified commit provenance under the repository's merge policy.
+
+Before staging, allow `getblock` through RPC proxies as well as the wallet RPCs.
+A blocked lookup holds rewards below complete progress and raises the delayed alert.
+With default thresholds, an LTC reward first reported as `generate` at depth 101
+waits until 102; a DOGE reward first reported as `generate` at 241 waits until 251
+(ten additional confirmations). Verify the actual deployed daemon and pool override;
+regtest maturity can differ. Immature rows retain their recorded candidate reward.
+
 1. Record the staging financial baseline: pending/confirmed blocks, rewards,
    balances, payments, payment batches and wallet submissions. Confirm the
    exclusive payout lease prevents a second financial writer.
@@ -263,6 +318,12 @@ that omitted the Bitcoin template family. After specifying the real family and
 rebuilding, all **384 affected handler/configuration tests passed with zero failures
 or skips**. The live BTC/LTC/DOGE/Nexa and eight PostgreSQL cases passed in that
 focused run. Both builds were warning/error-free; documentation guards also passed.
+
+The final relay-gate and monitoring follow-up passed **261 targeted tests, zero
+failures and one optional BLAKE2b daemon skip**, including the startup gate matrix,
+payout-manager/diagnostic tests and all eight PostgreSQL settlement cases. Its build
+reported zero warnings/errors; all 57 documentation link/index checks, the
+wallet-backup guard and 60 release-documentation tests passed.
 
 The existing PPS migration fixture requires database administrator privileges.
 The final run used a disposable loopback-only PostgreSQL cluster for that fixture;

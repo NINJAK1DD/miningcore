@@ -83,6 +83,28 @@ public partial class ProgramPoolTemplateTests
         }
     }
 
+    [Theory]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, true)]
+    public void CustodialThreshold_UsesActualPaymentProcessorGate(bool relay, bool postgres, bool runs)
+    {
+        var pool = new PoolConfig { Id = "shared-config", Enabled = true,
+            Template = new BitcoinTemplate { Family = CoinFamily.Bitcoin },
+            Extra = new Dictionary<string, object> { ["minimumConfirmations"] = 0 },
+            PaymentProcessing = new PoolPaymentProcessingConfig { Enabled = true } };
+        var config = new ClusterConfig { Pools = new[] { pool },
+            ShareRelay = relay ? new ShareRelayConfig() : null,
+            Persistence = postgres ? new PersistenceConfig { Postgres = new PostgresConfig() } : null,
+            PaymentProcessing = new ClusterPaymentProcessingConfig { Enabled = true } };
+        Assert.Equal(runs, Program.ShouldRunPaymentProcessor(config));
+        if(runs)
+            Assert.Throws<PoolStartupException>(() => Program.ValidateBitcoinConfirmationDeployment(config));
+        else
+            Program.ValidateBitcoinConfirmationDeployment(config);
+    }
+
     [Fact]
     public void CustodialThreshold_ProductionStartupChecksBeforeReservingListeners()
     {
