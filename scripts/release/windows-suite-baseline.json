@@ -1,7 +1,7 @@
 {
-  "source_commit": "da02d89a9dd71faba291bb664b8b972b16d37406",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42507062590",
-  "minimum_total": 5893,
+  "source_commit": "60e17c394cd9174887fcb79fe202c132e97db7ad",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42512584069",
+  "minimum_total": 5905,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -904,6 +904,11 @@
       "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
       "method": "Migration_RejectsWrongIndex_AndPreservesLegacyAuditReceipts",
       "case": "Migration_RejectsWrongIndex_AndPreservesLegacyAuditReceipts"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "Migration_RetiresOnlyObsoleteTrustedEndpoints_AndKeepsHistoryAndOtherLiveSchemas",
+      "case": "Migration_RetiresOnlyObsoleteTrustedEndpoints_AndKeepsHistoryAndOtherLiveSchemas"
     },
     {
       "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
