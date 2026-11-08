@@ -353,6 +353,10 @@ procedure for incidents that can affect accounting or availability.
 - **Exit status `78` / PostgreSQL timestamp configuration required:** verify the current schema,
   explicitly set `persistence.postgres.enableLegacyTimestamps`, then reset the failed service and
   restart. See [timestamp compatibility](configuration.md#postgresql-timestamp-compatibility).
+- **Repeated exit status `1` / live payout lock:** a brief instance overlap can retry normally.
+  Alert on a sustained restart loop, identify the intended active instance, and investigate
+  duplicate service/container scheduling. Do not clear ownership while another instance holds
+  the lock. Preserve its logs and wallet evidence before changing deployment state.
 - **Exit status `78` / retained payout owner without a live lock:** use the
   [guided payout recovery assistant](database.md#guided-payout-ownership-recovery) after stopping
   the previous instance and reconciling wallet history.

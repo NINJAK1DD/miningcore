@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Diagnostics;
+using Newtonsoft.Json.Linq;
 using System.Data;
 using Miningcore.Persistence;
 using Miningcore.Tests.Util.Postgres;
@@ -401,6 +403,116 @@ public class PayoutOwnershipRecoveryIntegrationTests
             Assert.Equal(0, await db.Connection.ExecuteScalarAsync<int>($"SELECT count(*) FROM {db.AuditSchema}.payout_manager_recovery_events"));
         }
         finally { await db.Connection.ExecuteAsync($"ROLLBACK; DROP OWNED BY {role}; DROP ROLE {role}"); }
+    }
+
+    [PostgresIntegrationFact]
+    public async Task AuditAppend_RequiresOwnExclusiveTwoKeyLock_AndDuplicateReceiptKeepsOwner()
+    {
+        await using var db = await Database.CreateAsync();
+        var snapshot = await db.Recovery.InspectAsync(CancellationToken.None);
+        var append = $"SELECT * FROM {db.AuditSchema}.record_payout_recovery(@eventId,@owner,7::bigint,'test',123,now(),now(),'test',123,'preclaimed')";
+        var args = new { eventId = Guid.NewGuid(), owner = db.Owner };
+        var keys = $"{PostgresPayoutManagerLease.LockNamespace},{PostgresPayoutManagerLease.LockKey}";
+        await using(var other = new NpgsqlConnection(db.ConnectionString))
+        {
+            await other.OpenAsync();
+            await other.ExecuteAsync($"SELECT pg_advisory_lock({keys})");
+            var denied = await Assert.ThrowsAsync<PostgresException>(() => db.Connection.QueryAsync(append, args));
+            Assert.Equal(PostgresErrorCodes.ObjectNotInPrerequisiteState, denied.SqlState);
+        }
+        foreach(var wrongLock in new[] { "SELECT 1", $"SELECT pg_advisory_xact_lock_shared({keys})",
+            $"SELECT pg_advisory_xact_lock({((long) PostgresPayoutManagerLease.LockNamespace << 32) | PostgresPayoutManagerLease.LockKey}::bigint)" })
+        {
+            using var tx = db.Connection.BeginTransaction();
+            await db.Connection.ExecuteAsync(wrongLock, transaction: tx);
+            var denied = await Assert.ThrowsAsync<PostgresException>(() => db.Connection.QueryAsync(append, args, tx));
+            Assert.Equal(PostgresErrorCodes.ObjectNotInPrerequisiteState, denied.SqlState);
+            tx.Rollback();
+        }
+        Assert.Equal(0, await db.Connection.ExecuteScalarAsync<int>("SELECT count(*) FROM payout_manager_recovery_events"));
+        Assert.Equal(2, await db.Connection.ExecuteScalarAsync<int>(
+            "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=@AuditSchema AND 'search_path=pg_catalog, pg_temp'=ANY(p.proconfig)", new { db.AuditSchema }));
+        using(var tx = db.Connection.BeginTransaction())
+        {
+            await db.Connection.ExecuteAsync($"SELECT pg_advisory_xact_lock({keys})", transaction: tx);
+            await db.Connection.QueryAsync(append, args, tx);
+            tx.Commit();
+        }
+        var error = await Assert.ThrowsAsync<PayoutRecoveryException>(() => db.Recovery.ReleaseAsync(snapshot, "incident", CancellationToken.None));
+        Assert.Contains("audit event already exists", error.Message);
+        Assert.Contains(db.AuditSchema, error.Message);
+        Assert.Equal(ProcessExitCodes.PayoutOwnershipBlocked, error.ExitCode);
+        Assert.Equal(db.Owner, await db.OwnerAsync());
+        Assert.Equal(1, await db.Connection.ExecuteScalarAsync<int>("SELECT count(*) FROM payout_manager_recovery_events"));
+    }
+
+    [PostgresIntegrationFact]
+    public async Task FreshProcesses_ApplyExplicitTimestampMode_AndMainReturns78ForBothDetectionFailures()
+    {
+        await using var db = await Database.CreateAsync();
+        var target = "recovery_timestamp_" + Guid.NewGuid().ToString("N");
+        var directory = Path.Combine(Path.GetTempPath(), target);
+        Directory.CreateDirectory(directory);
+        await db.Connection.ExecuteAsync($"CREATE DATABASE {target}");
+        try
+        {
+            var settings = new NpgsqlConnectionStringBuilder(db.ConnectionString) { Database = target, Pooling = false };
+            await using var fixture = new NpgsqlConnection(settings.ConnectionString);
+            await fixture.OpenAsync();
+            await fixture.ExecuteAsync("CREATE TABLE payout_manager_ownership (id smallint PRIMARY KEY, generation bigint, owner_id uuid, owner_host text, owner_process_id int, acquired timestamptz, released timestamptz); INSERT INTO payout_manager_ownership VALUES(1,0,NULL,NULL,NULL,NULL,NULL)");
+            var config = JObject.Parse("""
+                {"paymentProcessing":{"enabled":false},"api":{"enabled":false},
+                 "logging":{"level":"info","enableConsoleLog":true,"enableConsoleColors":false},
+                 "pools":[{"id":"timestamp-test","coin":"bitcoin","enabled":true,"enableInternalStratum":false,"address":"fixture","ports":{"3032":{"difficulty":1}},
+                   "daemons":[{"host":"127.0.0.1","port":1,"user":"fixture","password":"fixture"}],
+                   "paymentProcessing":{"enabled":false}}]}
+                """);
+            var postgres = new JObject { ["host"] = settings.Host, ["port"] = settings.Port, ["user"] = settings.Username,
+                ["password"] = settings.Password, ["database"] = target };
+            config["persistence"] = new JObject { ["postgres"] = postgres };
+            config["shareRecoveryFile"] = Path.Combine(directory, "shares.txt");
+            config["shareRecoveryStateDirectory"] = directory;
+            var configFile = Path.Combine(directory, "config.json");
+            foreach(var legacy in new[] { true, false })
+            {
+                postgres["enableLegacyTimestamps"] = legacy;
+                await File.WriteAllTextAsync(configFile, config.ToString());
+                var result = await RunProcessAsync(directory, "payout-timestamp-probe", configFile, legacy.ToString());
+                Assert.True(result.ExitCode == 0, result.Output);
+            }
+            postgres.Remove("enableLegacyTimestamps");
+            await File.WriteAllTextAsync(configFile, config.ToString());
+            foreach(var legacy in new[] { false, true })
+            {
+                if(legacy) await fixture.ExecuteAsync("CREATE TABLE shares(created timestamp without time zone)");
+                var result = await RunProcessAsync(directory, "payout-main", "-c", configFile, "--no-payout-recovery-prompt");
+                Assert.True(result.ExitCode == 78, result.Output);
+                Assert.Contains(legacy ? "Legacy PostgreSQL timestamps detected" : "Unable to determine the PostgreSQL timestamp type", result.Output);
+            }
+        }
+        finally
+        {
+            await db.Connection.ExecuteAsync($"DROP DATABASE {target} WITH (FORCE)");
+            Directory.Delete(directory, true);
+        }
+    }
+
+    private static async Task<(int ExitCode, string Output)> RunProcessAsync(string directory, params string[] args)
+    {
+        var start = new ProcessStartInfo("dotnet") { WorkingDirectory = directory, UseShellExecute = false,
+            RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true };
+        foreach(var argument in new[] { "exec", "--runtimeconfig", Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.runtimeconfig.json"),
+            "--depsfile", Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.deps.json"),
+            Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.ProcessHost.dll") }) start.ArgumentList.Add(argument);
+        foreach(var argument in args) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start);
+        process.StandardInput.Close();
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        try { await process.WaitForExitAsync(timeout.Token); }
+        finally { if(!process.HasExited) { process.Kill(true); await process.WaitForExitAsync(); } }
+        return (process.ExitCode, await stdout + await stderr);
     }
 
     private sealed class DelegateFactory(Func<Task<IDbConnection>> open) : IConnectionFactory

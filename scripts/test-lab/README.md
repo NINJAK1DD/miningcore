@@ -73,3 +73,17 @@ documents. Run the helper's regression checks with
 The .NET recovery integration tests cover active locks, changed owners/tables,
 concurrent recovery, a terminated guard session, missing/denied schema, bounded large-table
 history, cross-schema evidence, changed database/role/endpoint, audit rollback and uncertain commits.
+
+The recovery live check also performs a logical dump/restore into another disposable database,
+verifies that changed ownership OIDs refuse release before migration, reapplies the audit migration,
+and confirms a guarded release preserves the original receipts. It covers both timestamp-detection
+failures returning 78 from Main. The CI integration suite launches fresh process hosts for explicit
+timestamp modes before Npgsql initialization and both detection failures; the terminal lab also
+covers the normal-startup prompt path.
+
+Before promoting the broader RC.2 release, enable the pinned Bitcoin BLAKE2b Knots regtest binary
+with `MININGCORE_TEST_BLAKE2B_BITCOIND` in addition to the three standard daemon variables. Use the
+checksum/version from `.github/workflows/dotnet.yml`, keep it in the isolated lab, and run the full
+suite through `with-postgres.sh`. This includes uncertain wallet submissions, mempool loss,
+restart/revalidation and duplicate-payment checks. Record remaining optional daemon/hardware
+skips individually; a passing PostgreSQL recovery test does not replace wallet reconciliation.

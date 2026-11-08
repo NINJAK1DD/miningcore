@@ -38,7 +38,7 @@ app_password=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 printf '%s\n' "$admin_password" >"$scratch/admin-password"
 printf '%s:%s:*:%s:%s\n' "$PGHOST" "$PGPORT" "$PGUSER" "$admin_password" >"$scratch/admin.pgpass"
 printf '%s:%s:*:miningcore:%s\n' "$PGHOST" "$PGPORT" "$app_password" >"$scratch/app.pgpass"
-sudo chown "$PGUSER" "$scratch/admin-password" "$scratch/app.pgpass"
+sudo chown "$PGUSER" "$scratch/admin-password" "$scratch/admin.pgpass" "$scratch/app.pgpass"
 export PGPASSFILE="$scratch/admin.pgpass"
 # The caller owns this log; only initdb must run as the unprivileged database user.
 # shellcheck disable=SC2024
@@ -85,6 +85,12 @@ psql -X -v ON_ERROR_STOP=1 -f "$repo/src/Miningcore/Persistence/Postgres/Scripts
 audit_schema=$(psql -X -Atc "SELECT 'miningcore_audit_' || 'payout_manager_ownership'::regclass::oid::text")
 test "$(psql -X -Atc "SELECT count(*) FROM $audit_schema.payout_manager_recovery_events")" -eq 2
 echo 'PASS: reapplying the audit migration preserves recorded releases'
+
+sudo -u "$PGUSER" env -i PATH="$pg_bin:$PATH" PGHOST="$PGHOST" PGPORT="$PGPORT" \
+  PGUSER="$PGUSER" PGDATABASE="$PGDATABASE" PGPASSFILE="$scratch/admin.pgpass" \
+  python3 "$repo/scripts/test-lab/test-payout-recovery-restore.py" "$test_host" "$scratch" \
+  "$repo/src/Miningcore/Persistence/Postgres/Scripts/add_payout_recovery_audit.sql"
+
 
 printf '%s\n' "MININGCORE_TEST_POSTGRES=Host=127.0.0.1;Port=$PGPORT;Username=miningcore;Password=$app_password;Database=postgres" >"$scratch/pool.env"
 # Use the documented actual-unit drop-in dependencies against this isolated database.

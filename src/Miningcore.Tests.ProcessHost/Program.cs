@@ -82,6 +82,29 @@ if(args.Length == 1 && args[0] == "payout-lock-keys")
     return 0;
 }
 
+// Synthetic, disposable restore-drill fixture only; the shipped CLI always requires confirmations.
+if(args.Length == 2 && args[0] == "payout-release-probe")
+{
+    var config = MiningcoreProgram.ReadConfig(args[1]);
+    var recovery = new Miningcore.Payments.PostgresPayoutOwnershipRecovery(
+        new Miningcore.Persistence.Postgres.PgConnectionFactory(PostgresConnectionPolicy.Build(config.Persistence.Postgres).ConnectionString));
+    try
+    {
+        var snapshot = await recovery.InspectAsync(CancellationToken.None);
+        var receipt = await recovery.ReleaseAsync(snapshot, "isolated-restore-drill", CancellationToken.None);
+        Console.WriteLine(receipt.EventId);
+        return 0;
+    }
+    catch(Miningcore.Payments.PayoutRecoveryException error)
+    {
+        Console.Error.WriteLine(error.Message);
+        return error.ExitCode;
+    }
+}
+
+if(args.Length > 1 && args[0] == "payout-main")
+    return await MiningcoreProgram.Main(args.Skip(1).ToArray());
+
 if(args.Length is 3 or 4 && args[0] == "payout-timestamp-probe")
 {
     var startup = args.Length == 4 && args[3] == "startup";

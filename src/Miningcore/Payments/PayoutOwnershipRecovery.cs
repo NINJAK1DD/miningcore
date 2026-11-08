@@ -212,6 +212,11 @@ internal sealed class PostgresPayoutOwnershipRecovery(IConnectionFactory cf, Act
             throw new PayoutRecoveryException(writingAudit ? AuditMigration :
                 "The inspected ownership table is unavailable or the configured role cannot lock/update it. Protection was kept. Check schema permissions and inspect again.");
         }
+        catch(PostgresException ex) when(!committing && writingAudit && ex.SqlState == PostgresErrorCodes.UniqueViolation &&
+            ex.SchemaName == AuditSchema(inspected.RelationId) && ex.TableName == "payout_manager_recovery_events")
+        {
+            throw new PayoutRecoveryException($"A recovery audit event already exists for this owner or event ID. Protection was kept. Inspect {AuditSchema(inspected.RelationId)}.payout_manager_recovery_events for owner {inspected.OwnerId}, generation {inspected.Generation}, and reconcile the prior attempt before retrying. Do not delete audit history or bypass ownership protection.");
+        }
         catch(NpgsqlException) when(!ct.IsCancellationRequested || committing)
         {
             throw new PayoutRecoveryException(committing

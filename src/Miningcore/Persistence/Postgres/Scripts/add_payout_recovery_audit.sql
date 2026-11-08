@@ -74,7 +74,7 @@ BEGIN
 );',audit_schema);
     EXECUTE format('ALTER TABLE %I.payout_manager_recovery_events OWNER TO %I',audit_schema,admin_role);
     EXECUTE format($ddl$CREATE OR REPLACE FUNCTION %I.guard_payout_recovery_events() RETURNS trigger
-        LANGUAGE plpgsql SET search_path TO pg_catalog AS $body$
+        LANGUAGE plpgsql SET search_path TO pg_catalog, pg_temp AS $body$
         BEGIN RAISE EXCEPTION 'Payout recovery audit events are append-only' USING ERRCODE='55000'; END $body$ $ddl$,audit_schema);
     EXECUTE format('DROP TRIGGER IF EXISTS trg_payout_recovery_events_append_only ON %I.payout_manager_recovery_events',audit_schema);
     EXECUTE format('CREATE TRIGGER trg_payout_recovery_events_append_only BEFORE UPDATE OR DELETE OR TRUNCATE ON %I.payout_manager_recovery_events FOR EACH STATEMENT EXECUTE FUNCTION %I.guard_payout_recovery_events()',audit_schema,audit_schema);
@@ -85,14 +85,26 @@ BEGIN
         owner_pid integer, owner_acquired timestamptz, owner_released timestamptz,
         releasing_machine text, releasing_pid integer, incident text)
         RETURNS TABLE(event_id uuid, released timestamptz)
-        LANGUAGE sql SECURITY DEFINER SET search_path TO pg_catalog AS $body$
-            INSERT INTO %I.payout_manager_recovery_events
+        LANGUAGE plpgsql SECURITY DEFINER SET search_path TO pg_catalog, pg_temp AS $body$
+        BEGIN
+            -- Inspect only catalogs under administrator privileges. The caller must
+            -- hold the same exclusive two-integer lock used by guarded recovery.
+            IF NOT EXISTS(SELECT FROM pg_catalog.pg_locks
+                WHERE locktype='advisory' AND pid=pg_catalog.pg_backend_pid()
+                  AND database=(SELECT oid FROM pg_catalog.pg_database WHERE datname=current_database())
+                  AND classid=19779 AND objid=5259609 AND objsubid=2
+                  AND mode='ExclusiveLock' AND granted) THEN
+                RAISE EXCEPTION 'Recovery audit append requires this backend to hold the exclusive payout advisory lock'
+                    USING ERRCODE='55000';
+            END IF;
+            RETURN QUERY INSERT INTO %I.payout_manager_recovery_events AS recorded
                 (event_id,database_name,database_role,ownership_schema,ownership_relation,owner_id,
                  generation,owner_host,owner_process_id,acquired,released,releasing_host,releasing_process_id,incident_reference)
             VALUES(event,current_database(),coalesce(nullif(current_setting('role'),'none'),session_user),%L,%s,
                 owner_token,owner_generation,owner_machine,owner_pid,owner_acquired,owner_released,
                 releasing_machine,releasing_pid,incident)
-            RETURNING event_id,released
+            RETURNING recorded.event_id,recorded.released;
+        END
         $body$ $ddl$,audit_schema,audit_schema,ownership_schema,ownership);
     -- Remove inherited/default ACLs as well as direct grants, including column grants.
     FOR grantee IN SELECT DISTINCT pg_get_userbyid(a.grantee) FROM pg_namespace n,

@@ -135,6 +135,12 @@ for statement in (
     assert denied.returncode != 0, statement
 assert sql(f"SELECT count(*) FROM {audit_table}") == "1"
 print("PASS: an application-owned database cannot drop, directly insert into or rewrite protected audit storage")
+append = f"SELECT * FROM {audit_schema}.record_payout_recovery('{uuid.uuid4()}','{uuid.uuid4()}',7::bigint,'forged',123,now(),now(),'forged',123,'forged')"
+denied = subprocess.run(["psql", "-X", "-v", "ON_ERROR_STOP=1", "-c", append], capture_output=True, text=True)
+assert denied.returncode != 0 and "exclusive payout advisory lock" in denied.stderr, denied.stderr
+assert sql(f"SELECT count(*) FROM {audit_table}") == "1"
+print("PASS: the pool role cannot append an audit event without holding the payout lock")
+
 
 
 for legacy in (True, False):
@@ -224,4 +230,8 @@ try:
     assert "Set persistence.postgres.enableLegacyTimestamps to true and restart" in result.stdout + result.stderr
 finally:
     sql("DROP TABLE shares")
-print("PASS: auto-detected legacy timestamps fail closed with an explicit-setting remedy")
+print("PASS: auto-detected legacy timestamps fail closed with exit 78 and an explicit-setting remedy")
+result = subprocess.run(command, input="", capture_output=True, text=True, timeout=30)
+assert result.returncode == 78, result.stdout + result.stderr
+assert "Unable to determine the PostgreSQL timestamp type" in result.stdout + result.stderr
+print("PASS: indeterminate timestamp schema exits 78 from Main without restarting")
