@@ -17,6 +17,7 @@ using Autofac;
 using Miningcore.Blockchain.Alephium.Configuration;
 using NLog;
 using Miningcore.Configuration;
+using Miningcore.Crypto.Hashing;
 using Miningcore.Extensions;
 using Miningcore.Messaging;
 using Miningcore.Mining;
@@ -726,8 +727,11 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
         SetupJobUpdates(ct);
     }
 
+    internal Func<bool> Blake3CapabilityProbe { get; init; } = Blake3NativeCapability.IsAvailable;
+
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
+        Blake3NativeCapability.EnsureAvailable(pc.Id, Blake3CapabilityProbe);
         coin = pc.Template.As<AlephiumCoinTemplate>();
 
         extraPoolConfig = pc.Extra.SafeExtensionDataAs<AlephiumPoolConfigExtra>();

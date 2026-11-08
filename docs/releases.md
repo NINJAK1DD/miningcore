@@ -68,7 +68,42 @@ first connection, including standalone recovery. After correcting the configurat
 or require clearing payout state. The two-minute recovery limit is per idle prompt, and scripted
 TTY startups can use `--no-payout-recovery-prompt`; it cannot be combined with standalone recovery.
 
-## Upcoming v0.4.0-rc.2: custodial coinbase confirmations
+## Upcoming v0.4.0-rc.2
+
+### Native Blake3 startup validation
+
+Alephium, Xelis and the AIX/CAS/HTN/KLS/CSS/NTL/NXL/PUG/PYI/WALA Kaspa variants
+now reject startup before daemon configuration if `libmultihash` lacks a working
+`blake3_export`. This includes Pyrin's post-fork dependency. Custom coin templates
+selecting the `blake3` hasher also require the capability before hasher activation.
+Bitcoin-family managers resolve all six hasher slots before daemon configuration,
+including nested and optional compositions, and attach the current pool ID to
+cached capability failures from shared templates.
+The check runs in the shared Bitcoin-template base, covering Handshake, Nexa,
+Satoshicash and Progpow as well as Bitcoin and merged-mining managers.
+Malformed custom hasher definitions, such as unknown names or invalid constructor
+arguments, now stop pool startup during this preflight instead of failing and
+being retried during job updates. This includes optional and proof-of-stake slots
+even when the current chain does not use them. Correct the template before restarting.
+The bundled Windows DLL does not provide this export: affected Windows pools now
+fail at startup instead of failing when shares or candidates require Blake3.
+Deploy a supported, source-built Linux runtime for these pools; this change does
+not add native Windows support. Other Kaspa variants remain unaffected.
+
+The once-per-process self-test checks keyed and unkeyed inputs at block and chunk
+boundaries, including a 16,385-byte input that exercises wide SIMD batches on the
+actual CPU. Release portability tests also exercise that input under constrained
+QEMU CPU models. Xelis separately requires its v1 and v2 proof-hash exports and
+known-answer tests. Missing Blake3 is reported by name; unexpected managed probe
+failures retain pool context without exposing raw diagnostic text. Fatal native
+failures are not converted to ordinary missing-capability errors.
+
+Restart after replacing the native library. Validate the packaged runtime before
+deployment; passing startup vectors is not certification of an arbitrary native
+binary or of every possible input. Mining targets, share accounting and payouts
+are unchanged.
+
+### Custodial coinbase confirmations
 
 Bitcoin-family custodial rewards now require both wallet maturity (`generate`) and
 the effective `minimumConfirmations` before confirmation, balance allocation and
@@ -302,8 +337,9 @@ The pinned real-daemon fixture also verifies acceptance of an originally issued
 timestamp after newer timestamp-only work is obtained. Template replacement
 semantics are retained; see the [freshness evidence and limits](xelis-target-validation.md#timestamp-only-template-freshness).
 
-Xelis startup now requires an x64 native library exporting both v1 and v2 hash
-functions and passing both pinned known-answer self-tests. Zeroing, unwritten
+Xelis startup now requires an x64 native library exporting v1 and v2 hash
+functions plus `blake3_export`, passing the proof-hash and keyed/unkeyed Blake3
+known-answer self-tests. Zeroing, unwritten
 or incorrect native hash output refuses startup before work can be issued.
 Unsupported architectures and the uncertified bundled Windows ABI
 fail pool startup instead of allowing miners to receive unusable work. The
