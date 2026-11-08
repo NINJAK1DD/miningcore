@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
 using Xunit;
+using Dapper;
+using Npgsql;
 
 namespace Miningcore.Tests.Util.Postgres;
 
@@ -10,6 +12,15 @@ namespace Miningcore.Tests.Util.Postgres;
 // the original test failure rather than replacing it or silently passing a damaged fixture.
 internal static class PostgresTestCleanup
 {
+    internal static async Task DropRecoveryAuditAsync(NpgsqlConnection db, string schema)
+    {
+        await db.ExecuteAsync("ROLLBACK; RESET SESSION AUTHORIZATION; RESET ROLE");
+        var relation = await db.ExecuteScalarAsync<long?>(
+            "SELECT to_regclass(@table)::oid::bigint", new { table = schema + ".payout_manager_ownership" });
+        if(relation.HasValue)
+            await db.ExecuteAsync($"DROP SCHEMA IF EXISTS miningcore_audit_{relation.Value} CASCADE");
+    }
+
     internal static async Task RunAsync(Func<Task> body, params Func<Task>[] cleanup)
     {
         var errors = new List<Exception>();
