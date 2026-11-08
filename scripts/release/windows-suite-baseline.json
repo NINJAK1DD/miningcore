@@ -1,7 +1,7 @@
 {
-  "source_commit": "d5a64505ddb6571290248b37ff80da3beeb7960f",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42476001430",
-  "minimum_total": 5843,
+  "source_commit": "3dc7414f43b926f6c357f241d952f258302d36de",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42500985293",
+  "minimum_total": 5891,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -804,6 +804,116 @@
       "class": "Miningcore.Tests.Persistence.Postgres.PayoutManagerLeaseIntegrationTests",
       "method": "DisposeAsync_ReleasesAdvisoryLock",
       "case": "DisposeAsync_ReleasesAdvisoryLock"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ActiveLock_AndLockAcquiredDuringPrompt_BothRefuseRelease",
+      "case": "ActiveLock_AndLockAcquiredDuringPrompt_BothRefuseRelease"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ActiveLock_SkipsBlockedHistory_AndInspectorDoesNotAcquireLock",
+      "case": "ActiveLock_SkipsBlockedHistory_AndInspectorDoesNotAcquireLock"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "AuditFailure_RollsBackRelease_AndAuditSurvivesNextLease",
+      "case": "AuditFailure_RollsBackRelease_AndAuditSurvivesNextLease"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "CancelledRelease_LeavesOwnerAndLockAvailable",
+      "case": "CancelledRelease_LeavesOwnerAndLockAvailable"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ChangedActualDatabaseTarget_WithSameSchemaAndOwner_IsRefused",
+      "case": "ChangedActualDatabaseTarget_WithSameSchemaAndOwner_IsRefused"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ChangedActualRole_AndMissingPrivileges_AreReportedSeparately",
+      "case": "ChangedActualRole_AndMissingPrivileges_AreReportedSeparately"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ChangedGenerationOrToken_AndRepeatedRelease_AreRefused",
+      "case": "ChangedGenerationOrToken_AndRepeatedRelease_AreRefused"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ConcurrentRecovery_OnlyOneReleaseSucceeds",
+      "case": "ConcurrentRecovery_OnlyOneReleaseSucceeds"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "DeadlineDuringRelease_RollsBackOwnerAndAudit",
+      "case": "DeadlineDuringRelease_RollsBackOwnerAndAudit"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "DifferentBatchSchema_IsIdentifiedAndNeverShownAsEvidence",
+      "case": "DifferentBatchSchema_IsIdentifiedAndNeverShownAsEvidence"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "DifferentResolvedSchema_CannotReleaseInspectedOwner",
+      "case": "DifferentResolvedSchema_CannotReleaseInspectedOwner"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "GuardedRelease_AllowsNextGenerationAndStillExcludesSecondManager",
+      "case": "GuardedRelease_AllowsNextGenerationAndStillExcludesSecondManager"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "IdentityChanges_AreRefusedWithoutAuditOrMutation",
+      "case": "IdentityChanges_AreRefusedWithoutAuditOrMutation"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "LargeHistory_UsesIndex_AndReturnsLatestTen",
+      "case": "LargeHistory_UsesIndex_AndReturnsLatestTen"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "LostCommitResponse_ReinspectionDistinguishesCommittedAndRolledBack",
+      "case": "LostCommitResponse_ReinspectionDistinguishesCommittedAndRolledBack"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "LostGuardSession_RemainsBlockedUntilExplicitRecovery",
+      "case": "LostGuardSession_RemainsBlockedUntilExplicitRecovery"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "Migration_RejectsApplicationOwnedAuditLookalikes",
+      "case": "Migration_RejectsApplicationOwnedAuditLookalikes"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "Migration_RejectsWrongIndex_AndPreservesLegacyAuditReceipts",
+      "case": "Migration_RejectsWrongIndex_AndPreservesLegacyAuditReceipts"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "MissingOwnershipSchema_HasMigrationGuidance",
+      "case": "MissingOwnershipSchema_HasMigrationGuidance"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ReplacedHistoryAfterConfirmation_IsRefused",
+      "case": "ReplacedHistoryAfterConfirmation_IsRefused"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ReplacedTable_WithIdenticalOwner_IsRefused",
+      "case": "ReplacedTable_WithIdenticalOwner_IsRefused"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "TimestampDetection_OnlyUsesCurrentSchema",
+      "case": "TimestampDetection_OnlyUsesCurrentSchema"
     },
     {
       "class": "Miningcore.Tests.Persistence.Postgres.PostgresCommandTimeoutIntegrationTests",
