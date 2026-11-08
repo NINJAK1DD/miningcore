@@ -261,7 +261,7 @@ public class Program : ProcessStatusBackgroundService
                 clusterConfig = ReadConfig(configFileOption.Value(), true);
                 processStatus = new ProcessStatus();
                 ApplyExplicitPostgresTimestampBehavior(clusterConfig);
-                ConfigureLogging();
+                ConfigureLogging(recoveryMode: true);
                 var recoveryExitCode = await RecoverPayoutOwnershipAsync(clusterConfig);
                 if(recoveryExitCode != 0)
                     processStatus.MarkFailed(recoveryExitCode);
@@ -2047,14 +2047,15 @@ public class Program : ProcessStatusBackgroundService
         return result.ToString();
     }
 
-    private static void ConfigureLogging()
+    private static void ConfigureLogging(bool recoveryMode = false)
     {
         // Recovery must remain visible even when an operator deliberately supplies the smallest
         // accepted import configuration or constructs it outside the JSON sanitization path.
+        recoveryMode |= isShareRecoveryMode;
         var config = clusterConfig.Logging ??
-            (isShareRecoveryMode ? new ClusterLoggingConfig() : null);
+            (recoveryMode ? new ClusterLoggingConfig() : null);
         LogManager.Configuration = CreateLoggingConfiguration(config,
-            isShareRecoveryMode, clusterConfig.Pools);
+            recoveryMode, clusterConfig.Pools);
 
         logger = LogManager.GetLogger("Core");
     }

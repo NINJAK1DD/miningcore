@@ -117,6 +117,7 @@ output = terminal([
     (f"type RELEASE {owner}:", f"RELEASE {owner}\n"),
 ], 0)
 assert "Released ownership generation 7" in output, output
+assert "Operator released payout ownership generation 7" in output, output
 assert sql("SELECT owner_id IS NULL FROM payout_manager_ownership") == "t"
 assert sql(f"SELECT count(*) FROM {audit_table} WHERE owner_id='{owner}' AND incident_reference='lab-267'") == "1"
 assert sql(f"SELECT NOT has_table_privilege(current_user, '{audit_table}', 'INSERT,UPDATE,DELETE,TRUNCATE')") == "t"
