@@ -428,26 +428,54 @@ public partial class StratumAdmissionTests
             AdmissionTimeProvider = time ?? TimeProvider.System;
             var addresses = Enumerable.Repeat(listenAddress ?? IPAddress.Loopback, ports);
             if(secondaryListenAddress != null) addresses = addresses.Append(secondaryListenAddress);
-            var reservations = addresses.Select(address =>
+            var reservations = new List<StratumListenerReservation>();
+            var usedPorts = new HashSet<int>();
+            try
             {
-                var socket = CreateBoundSocket(new IPEndPoint(address, 0));
-                var endpoint = new StratumEndpoint((IPEndPoint) socket.LocalEndPoint,
-                    endpointConfig ?? new PoolEndpoint { TcpProxyProtocol = proxy, TlsAuto = tlsAuto,
-                        Tls = tlsCertificate != null, TlsPfxFile = tlsCertificate });
-                var reservation = new StratumListenerReservation(poolConfig.Id, endpoint, socket);
-                reservation.Activate();
-                return reservation;
-            }).ToArray();
-            Reservations = reservations;
-            endpoints = reservations.Select(x => x.Endpoint.IPEndPoint).ToArray();
-            if(cluster == null)
-            {
-                poolConfig.Enabled = true;
-                poolConfig.EnableInternalStratum = true;
-                poolConfig.Ports = reservations.ToDictionary(x => x.Endpoint.IPEndPoint.Port, x => x.Endpoint.PoolEndpoint);
-                clusterConfig.Pools = new[] { poolConfig };
+                foreach(var address in addresses)
+                {
+                    var socket = BindDistinctPort(address, usedPorts, CreateBoundSocket);
+                    try
+                    {
+                        var endpoint = new StratumEndpoint((IPEndPoint) socket.LocalEndPoint,
+                            endpointConfig ?? new PoolEndpoint { TcpProxyProtocol = proxy, TlsAuto = tlsAuto,
+                                Tls = tlsCertificate != null, TlsPfxFile = tlsCertificate });
+                        var reservation = new StratumListenerReservation(poolConfig.Id, endpoint, socket);
+                        reservations.Add(reservation);
+                        reservation.Activate();
+                    }
+                    catch { socket.Dispose(); throw; }
+                }
+                Reservations = reservations.ToArray();
+                endpoints = reservations.Select(x => x.Endpoint.IPEndPoint).ToArray();
+                if(cluster == null)
+                {
+                    poolConfig.Enabled = true;
+                    poolConfig.EnableInternalStratum = true;
+                    poolConfig.Ports = reservations.ToDictionary(x => x.Endpoint.IPEndPoint.Port, x => x.Endpoint.PoolEndpoint);
+                    clusterConfig.Pools = new[] { poolConfig };
+                }
+                run = RunAsync(stop.Token, Reservations);
             }
-            run = RunAsync(stop.Token, reservations);
+            catch
+            {
+                foreach(var reservation in reservations) reservation.Dispose();
+                stop.Dispose();
+                ((IDisposable) ctx).Dispose();
+                throw;
+            }
+        }
+        internal static Socket BindDistinctPort(IPAddress address, ISet<int> usedPorts, Func<IPEndPoint, Socket> bind)
+        {
+            // Different local addresses may receive the same numeric port, while
+            // PoolConfig.Ports is keyed only by port. Bound retries prevent a hang.
+            for(var attempt = 0; attempt < 32; attempt++)
+            {
+                var socket = bind(new IPEndPoint(address, 0));
+                if(usedPorts.Add(((IPEndPoint) socket.LocalEndPoint).Port)) return socket;
+                socket.Dispose();
+            }
+            throw new InvalidOperationException("Unable to allocate distinct fixture listener ports after 32 attempts");
         }
         internal async Task<TcpClient> Connect(int port = 0, IPAddress source = null)
         {

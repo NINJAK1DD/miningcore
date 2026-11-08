@@ -252,12 +252,13 @@ public partial class StratumAdmissionTests
     public async Task LateClientBan_RejectsNextRequest_WhileHealthyClientAndOtherPoolContinue(bool proxy, bool tls)
     {
         // Windows cannot route a loopback-bound client to a non-loopback listener.
-        // A second listener on the same pool preserves two real transport identities.
-        await using var lab = new BanLab(proxy, tls, loopbackListener: !proxy);
+        // Keep the same-listener isolation check on platforms that support that route.
+        var separateLoopbackListener = !proxy && OperatingSystem.IsWindows();
+        await using var lab = new BanLab(proxy, tls, loopbackListener: separateLoopbackListener);
         await using var other = new BanLab(false, tls);
         using var client = await BanSession.Connect(lab);
         using var healthy = await BanSession.Connect(lab, source: proxy ? lab.Address : IPAddress.Loopback,
-            port: proxy ? 0 : 1);
+            port: separateLoopbackListener ? 1 : 0);
         var identity = proxy ? IPAddress.Parse("192.0.2.211") : lab.Address;
         if(proxy)
         {

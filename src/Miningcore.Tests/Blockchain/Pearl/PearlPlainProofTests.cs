@@ -11,6 +11,18 @@ namespace Miningcore.Tests.Blockchain.Pearl;
 
 public class PearlPlainProofTests
 {
+    [Fact]
+    public void FixtureManifestPreservesExactNamesInTheMainAssembly()
+    {
+        // Explicit contract for every current Fixtures/Pearl input, including .bin
+        // names that must not be inferred as a culture or moved to a satellite.
+        var names = GetType().Assembly.GetManifestResourceNames();
+        foreach(var file in new[] { "mainnet-activations.json", "mainnet-template.json", "network-vectors.json",
+            "python-block.bin.gz", "python-block.bin.json", "regtest-template.json", "share-only-proof.bin.gz",
+            "share-only-proof.json", "srb-proof.bin.gz", "srb-proof.json", "wire-vectors.json" })
+            Assert.Contains("Miningcore.Tests.Fixtures.Pearl." + file, names);
+    }
+
     [Theory]
     [InlineData(376ul)]
     [InlineData(7432ul)]

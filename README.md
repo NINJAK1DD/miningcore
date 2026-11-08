@@ -657,8 +657,10 @@ source build. For local toolchain-compatibility testing, an installed alternativ
 with `MININGCORE_WINDOWS_PLATFORM_TOOLSET`; setting it forces a native rebuild so the selected
 toolset is actually exercised. Release CI remains pinned to v143.
 
-The required Windows CI job also runs the complete test suite and retains its TRX results.
-Run the same suite locally with:
+The Windows CI job runs the complete test suite and fails on test failures or growth beyond
+the reviewed skip ceiling. It reports skipped cases and retains TRX results for 30 days.
+This workflow check does not itself configure branch-protection requirements.
+With the .NET SDK and Visual Studio C++ workload described above installed, run locally with:
 
 ```powershell
 dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --configuration Release --logger "trx;LogFileName=windows-full.trx" --results-directory build/ci-tests
