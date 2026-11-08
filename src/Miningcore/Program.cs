@@ -260,8 +260,11 @@ public class Program : ProcessStatusBackgroundService
             {
                 clusterConfig = ReadConfig(configFileOption.Value(), true);
                 processStatus = new ProcessStatus();
-                if(!await RecoverPayoutOwnershipAsync(clusterConfig))
-                    processStatus.MarkFailed(ProcessExitCodes.PayoutOwnershipBlocked);
+                ApplyExplicitPostgresTimestampBehavior(clusterConfig);
+                ConfigureLogging();
+                var recoveryExitCode = await RecoverPayoutOwnershipAsync(clusterConfig);
+                if(recoveryExitCode != 0)
+                    processStatus.MarkFailed(recoveryExitCode);
                 else
                     Console.WriteLine("Recovery completed. Start exactly one intended Miningcore instance or restart its service.");
                 return;
@@ -274,15 +277,20 @@ public class Program : ProcessStatusBackgroundService
                 isShareRecoveryMode);
             var apiConfig = clusterConfig.Api;
 
+            ApplyExplicitPostgresTimestampBehavior(clusterConfig);
             ConfigureLogging();
             // Prompt before any hosted services, listeners or wallet clients start. Services
             // without a terminal retain the normal fail-closed lease acquisition path.
-            if(!isShareRecoveryMode && ShouldRunPaymentProcessor(clusterConfig) &&
-               HasInteractiveTerminal() && !await RecoverPayoutOwnershipAsync(clusterConfig, true))
+            if(!isShareRecoveryMode && ShouldOfferPayoutRecovery(clusterConfig,
+                   HasInteractiveTerminal(), noPayoutRecoveryPromptOption.HasValue()))
             {
-                processStatus = new ProcessStatus();
-                processStatus.MarkFailed(ProcessExitCodes.PayoutOwnershipBlocked);
-                return;
+                var recoveryExitCode = await RecoverPayoutOwnershipAsync(clusterConfig, true);
+                if(recoveryExitCode != 0)
+                {
+                    processStatus = new ProcessStatus();
+                    processStatus.MarkFailed(recoveryExitCode);
+                    return;
+                }
             }
             LogSkippedStratumListenerValidation(clusterConfig);
             LogRuntimeInfo();
@@ -522,6 +530,7 @@ public class Program : ProcessStatusBackgroundService
     private static CommandOption verifyShareRecoveryStateOption;
     private static CommandOption acknowledgeShareRecoveryStateOption;
     private static CommandOption recoverPayoutOwnershipOption;
+    private static CommandOption noPayoutRecoveryPromptOption;
     private static CommandOption generateSchemaOption;
     private static bool isShareRecoveryMode;
     private static ClusterConfig clusterConfig;
@@ -1451,7 +1460,16 @@ public class Program : ProcessStatusBackgroundService
     private static bool HasInteractiveTerminal() =>
         !Console.IsInputRedirected && !Console.IsOutputRedirected;
 
-    private static async Task<bool> RecoverPayoutOwnershipAsync(ClusterConfig config, bool quietIfUnowned = false)
+    internal static bool ShouldOfferPayoutRecovery(ClusterConfig config, bool interactive, bool disabled) =>
+        interactive && !disabled && ShouldRunPaymentProcessor(config);
+
+    internal static void ApplyExplicitPostgresTimestampBehavior(ClusterConfig config)
+    {
+        if(config.Persistence?.Postgres?.EnableLegacyTimestamps is bool legacy)
+            AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", legacy);
+    }
+
+    private static async Task<int> RecoverPayoutOwnershipAsync(ClusterConfig config, bool quietIfUnowned = false)
     {
         var connectionString = PostgresConnectionPolicy.Build(config.Persistence?.Postgres);
         var recovery = new PostgresPayoutOwnershipRecovery(new PgConnectionFactory(connectionString.ToString()));
@@ -1464,22 +1482,19 @@ public class Program : ProcessStatusBackgroundService
         Console.CancelKeyPress += cancel;
         try
         {
-            return await PayoutOwnershipRecoveryAssistant.RunAsync(recovery, Console.In,
+            return (int) await PayoutOwnershipRecoveryAssistant.RunAsync(recovery, Console.In,
                 Console.Out, HasInteractiveTerminal(), cancellation.Token, quietIfUnowned);
         }
         catch(OperationCanceledException) when(cancellation.IsCancellationRequested)
         {
             Console.Error.WriteLine("Recovery cancelled. Inspect ownership again before retrying if cancellation occurred during release.");
-            return false;
+            return ProcessExitCodes.PayoutOwnershipBlocked;
         }
-        catch(InvalidOperationException ex)
+        catch(PayoutRecoveryException ex)
         {
-            throw new PoolStartupException(ex.Message);
-        }
-        catch(Npgsql.NpgsqlException)
-        {
-            throw new PoolStartupException("Payout ownership recovery could not complete. Check database connectivity, permissions and migrations. " +
-                "Inspect ownership again before retrying: a connection failure during release can leave its commit result unknown.");
+            Console.Error.WriteLine(ex.Message);
+            logger?.Warn(ex.Message);
+            return ex.ExitCode;
         }
         finally
         {
@@ -1521,6 +1536,8 @@ public class Program : ProcessStatusBackgroundService
         recoverPayoutOwnershipOption = app.Option("--recover-payout-ownership",
             "Interactively inspect and recover payout ownership, then exit without starting services",
             CommandOptionType.NoValue);
+        noPayoutRecoveryPromptOption = app.Option("--no-payout-recovery-prompt",
+            "Disable automatic startup recovery prompts (retained owners still block payouts)", CommandOptionType.NoValue);
         generateSchemaOption = app.Option("-gcs|--generate-config-schema <outputfile>", "Generate JSON schema from configuration options", CommandOptionType.SingleValue);
         app.HelpOption("-? | -h | --help");
 
@@ -2391,17 +2408,18 @@ public class Program : ProcessStatusBackgroundService
             if(columnType != null)
                 enableLegacyTimestampBehavior = columnType.ToLower().Contains("without time zone");
             else
-                logger.Warn(() => "Unable to auto-detect Npgsql Legacy Timestamp Behavior. Please set 'EnableLegacyTimestamps' in your Miningcore Database configuration to'true' or 'false' to bypass auto-detection in case of problems");
+                throw new PoolStartupException("Unable to determine the PostgreSQL timestamp type. Check the shares schema and explicitly set persistence.postgres.enableLegacyTimestamps to true or false before restarting.");
         }
 
         else
             enableLegacyTimestampBehavior = clusterConfig.Persistence.Postgres.EnableLegacyTimestamps.Value;
 
+        if(enableLegacyTimestampBehavior && !clusterConfig.Persistence.Postgres.EnableLegacyTimestamps.HasValue)
+            throw new PoolStartupException("Legacy PostgreSQL timestamps detected. Set persistence.postgres.enableLegacyTimestamps to true and restart; timestamp behavior must be configured before the first database connection.");
+
         if(enableLegacyTimestampBehavior)
         {
             logger.Info(()=> "Enabling Npgsql Legacy Timestamp Behavior");
-
-            AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
         }
     }
 

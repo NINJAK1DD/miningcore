@@ -694,49 +694,84 @@ may need to reconcile a wallet submission whose response was lost.
 
 ### Guided payout ownership recovery
 
-In a foreground terminal, normal startup offers a recovery assistant before starting any hosted
-services when payout processing is enabled and an ownership conflict exists. Choosing to keep
-protection exits with status 78. Successful recovery continues normal startup, which must acquire
-fresh ownership; another instance winning that acquisition still blocks startup.
+In a foreground terminal, normal startup can offer recovery before any hosted services start.
+Use `--no-payout-recovery-prompt` for unattended terminals, containers with an allocated TTY,
+or scripted tmux/screen sessions. This disables the prompt, not payout ownership protection.
+Every interactive recovery session has a **two-minute deadline**, including confirmations.
+If reconciliation needs longer, keep protection and rerun the assistant after completing it.
 
-A systemd service or redirected session never waits for input or accepts piped confirmations.
-Ownership conflicts exit with status 78; the updated packaged unit prevents restart loops for that
-status. Stop the service first, then run the standalone assistant from a terminal as the same account
-and with the same configuration/environment as the service. For the packaged layout:
+A retained owner without a live lock exits with status **78**; the packaged unit prevents restart
+loops for this case. A live lock exits with retryable status **1**, so a short overlap does not
+permanently stop a supervised service. Inspection reads lock state without acquiring the payout
+lock. Successful foreground recovery continues startup, which must acquire fresh ownership.
+Redirected input cannot approve release, and a non-terminal service never waits for input.
+
+Before using guided release, install its audit storage and payment-history index. Stop all payout
+managers and apply the migration from the verified candidate release **as a separate database
+administrator**, in the same schema as `payout_manager_ownership` and `payment_batches`:
 
 ```console
 sudo systemctl stop miningcore
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_payout_recovery_audit.sql"
+```
+
+Use the candidate-directory selection and schema precautions in the upgrade procedure above.
+The migration leaves retained owners and payment records unchanged. It creates an index on the
+history ordering columns and an administrator-owned `payout_manager_recovery_events` table,
+granting the ownership-table role SELECT and INSERT only. Fresh `createdb.sql` includes it.
+Without this migration, normal clean startup remains available, but guided release fails closed.
+
+Run the standalone assistant as the service account, with the same configuration/environment:
+
+```console
 sudo -u miningcore /usr/bin/dotnet /opt/miningcore/Miningcore.dll \
   -c /etc/miningcore/config.json --recover-payout-ownership
 ```
 
-This command inspects only the configured PostgreSQL database and starts no mining, API or wallet
-services. It exits after recovery; it does not launch a second foreground pool alongside systemd.
-For custom layouts, substitute the actual binary, service account and config paths. Preserve any
-PostgreSQL environment settings used by the service (such as `PGSSLROOTCERT`) and ensure the account
-can read the same certificates. Do not change database roles to work around permission errors.
+It starts no mining, API or wallet services and exits after recovery. Substitute the actual paths
+for custom layouts. Preserve PostgreSQL environment settings (such as `PGSSLROOTCERT`) and
+certificate access. Do not change database roles to bypass a permission failure.
 
-The assistant shows the resolved database/role/schema, previous host/PID, acquisition time, owner
-token/generation, current lock state and up to ten recent recorded payment batches. These are
-diagnostics, not proof that release is safe. It cannot prove a remote process is dead, recover missing
-logs, or establish whether a wallet sent a payment that never reached the database. Follow the wallet
-reconciliation procedure below whenever a submission may have occurred.
+The assistant displays the database, role, endpoint, ownership schema/relation identity, previous
+host/PID, acquisition time and owner token/generation. Option **2** refreshes these details and
+payment evidence; option **3** refreshes again before asking for confirmations. A changed owner,
+database identity or live lock refuses release. The resolved payment table's schema/OID is shown;
+a table outside the ownership schema is not used as evidence.
 
-Choose **1** (the default) to keep protection, **2** to review evidence and instructions, or **3** to
-begin release. Release requires typing `STOPPED`, `CHECKED` and `RELEASE <displayed-owner-token>`
-after stopping every old instance/restart loop and completing wallet reconciliation. If unsure,
-keep protection. Blank input, EOF, a failed confirmation or cancellation before release leaves the
-marker intact. A connection failure during commit requires inspecting again because the commit
-result may be unknown.
+Payment history is optional, bounded to two seconds and the latest ten batches across all times.
+It is skipped entirely while a live payout lock exists. A missing/denied/timed-out query is labelled
+unavailable, not presented as an empty payment history. These rows are not a complete wallet
+history and cannot prove an old process is dead or that no unrecorded payment was sent. Reconcile
+wallets, logs and database records externally whenever evidence is incomplete.
 
-Release obtains the same advisory lock, pins the inspected table and matches the exact owner token
-and generation inside a transaction. A live lock, changed table or changed owner refuses release.
-It clears only ownership fields and records the release time; it does not change balances, payments,
-payment batches or the generation. The terminal reports the released token/generation and time;
-normal foreground startup also logs the action through its configured logger. Preserve the
-standalone terminal result with the incident record. There is no force or automatic-clear option.
+Choose **1** (default) to keep protection. Release requires `STOPPED`, `CHECKED`, a nonempty
+incident reference (up to 200 characters; do not include secrets), and `RELEASE <owner-token>`.
+Surrounding whitespace is ignored. Blank input, EOF, failed confirmation, cancellation or timeout
+before release keeps protection. Release refusals return 78. Inspection/connectivity errors return
+1 and explicitly say whether a release was attempted.
 
-Only after successful recovery, start exactly one intended service:
+Release reacquires the advisory lock and checks the exact token/generation, database/role/endpoint
+and pinned ownership table. It inserts the complete previous owner, release time, releasing host/PID
+and incident reference into `payout_manager_recovery_events` **in the same transaction** as clearing
+ownership. Audit insertion failure rolls the release back. The terminal reports the audit event UUID;
+standalone mode also configures normal logging. Balances, payments, batches and generation are unchanged.
+
+Audit rows survive later lease acquisition. UPDATE, DELETE and TRUNCATE are rejected, and the
+application role is not granted those privileges. Database administrators can still change schema,
+triggers or permissions; this is an operational audit trail, not a tamper-proof record against an
+administrator. Preserve normal database backups and the incident record.
+
+A lost commit response is explicitly reported as **unknown**, with the attempted audit UUID.
+Before retrying, inspect both the event and ownership row using a read-only database session:
+
+```sql
+SELECT * FROM payout_manager_recovery_events WHERE event_id = 'REPLACE_WITH_REPORTED_UUID';
+SELECT * FROM payout_manager_ownership WHERE id = 1;
+```
+
+Qualify both tables with the reported schema. Do not assume that a connection failure means the
+release rolled back. After confirmed recovery, start exactly one intended instance:
 
 ```console
 sudo systemctl reset-failed miningcore
@@ -744,7 +779,8 @@ sudo systemctl start miningcore
 sudo systemctl status miningcore --no-pager -l
 ```
 
-The SQL procedure below remains available for diagnosis and recovery with older binaries.
+The manual procedure below remains for diagnosis and older binaries; it does not create the new
+assistant's audit event. Prefer guided release when the migrated version is installed.
 
 ### Manual diagnosis and recovery
 

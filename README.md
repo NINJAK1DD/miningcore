@@ -440,7 +440,7 @@ sudo systemctl status miningcore --no-pager -l
 
 The unit runs as the unprivileged `miningcore` account, creates persistent state/log directories,
 allows Miningcore's bounded clean shutdown to finish, and prevents an unsafe automatic restart
-after dual persistence failure (exit status 74) or a payout ownership conflict (exit status 78).
+after dual persistence failure (exit status 74) or a retained payout owner without a live lock (exit status 78).
 If interrupted shutdown leaves payout protection in place, use the
 [guided recovery assistant](docs/database.md#guided-payout-ownership-recovery).
 Existing installations must update their installed unit and run `daemon-reload`; replacing

@@ -10,18 +10,20 @@ binaries must be installed under `/usr/lib/postgresql/*/bin` (or selected with
 
 ## Run the suite
 
-For the primary Windows checkout (a normal Git directory, not a linked worktree),
-run from PowerShell:
+Validate an exact committed revision in a separate Linux checkout. From the source
+checkout in PowerShell, export a bundle (including Git history for GitVersion):
 
 ```powershell
-wsl -d Ubuntu --exec bash /mnt/c/Users/Admin/Documents/Codex/miningcore/scripts/test-lab/sync-wsl.sh /mnt/c/Users/Admin/Documents/Codex/miningcore /home/ubuntu/miningcore
-wsl -d Ubuntu --exec bash /home/ubuntu/miningcore/scripts/test-lab/run-tests.sh
+git bundle create build/test-lab/miningcore.bundle --all
+wsl -d Ubuntu --exec git clone /mnt/c/path/to/miningcore/build/test-lab/miningcore.bundle /home/ubuntu/miningcore-review
+wsl -d Ubuntu --exec git -C /home/ubuntu/miningcore-review checkout --detach <commit-sha>
+wsl -d Ubuntu --exec bash /home/ubuntu/miningcore-review/scripts/test-lab/run-tests.sh
 ```
 
-Sync includes uncommitted source; it overwrites the Linux test copy. Edit the Windows
-source. For a PR, validate a clean exported commit/tree in a separate Linux checkout
-instead so unrelated local edits cannot affect the results. Run `scripts/test-lab/run-tests.sh`
-from that checkout; the runner locates its own repository root.
+Create `build/test-lab` first if needed. Substitute the actual source path, a new
+Linux destination, and the reviewed commit SHA. The checkout must contain only
+that revision; do not overlay unrelated working edits. The runner locates its own
+repository root. Keep Windows and Linux build outputs separate.
 
 The runner restores serially with the repository's NuGet audit policy, forces a non-incremental
 managed/native build, audits warnings and runs the complete .NET suite with real
@@ -30,7 +32,7 @@ root. Results are in `build/test-lab/build.log` and `build/test-lab/ubuntu-test-
 Pass ordinary `dotnet test` options after the script path when focused checks are needed.
 
 By default, `with-postgres.sh` creates a disposable PostgreSQL cluster on a random
-loopback port and removes it after the command finishes. Its test-only `miningcore`
+loopback port and removes it after the command finishes. Its randomly authenticated test-only `miningcore`
 administrator is required by role-management and accounting-migration fixtures;
 the shared lab database remains unchanged. To use an existing **disposable test**
 database instead, set `MININGCORE_TEST_POSTGRES` to an administrator connection.
@@ -51,10 +53,14 @@ wsl -d Ubuntu -u root --exec bash /home/ubuntu/miningcore/scripts/test-lab/test-
 ```
 
 Substitute the separate checkout path when testing a PR. Root is used only to manage
-temporary systemd units; PostgreSQL and the payout process run as `ubuntu`. The script
-creates an isolated PostgreSQL cluster and two temporary units, tests the real CLI in
+temporary systemd units; PostgreSQL, the Python driver and the recovery CLI run as `ubuntu`.
+The CLI uses a non-superuser database role. Every cluster/role gets a fresh random SCRAM
+password kept in restricted files/environment; no trust authentication or fixed password is used. The script
+creates an isolated PostgreSQL cluster and temporary units, tests the real CLI in
 a pseudo-terminal, and checks redirected input, default keep, cancellation, exact
-release, planned maintenance and simultaneous application/database shutdown. It never
+release, timestamp initialization, foreground startup, planned maintenance and simultaneous
+application/database shutdown. It asserts the CLI effective UID and directly verifies that exit
+78 does not restart while an ordinary failure does. It never
 reboots the host or stops the shared lab database, and removes its temporary resources.
 
 The service fixture uses the same `Wants`/`After` ordering as the packaged helper.
@@ -63,4 +69,5 @@ requires stopping Miningcore first, as the [ordering guide](../../docs/systemd-p
 documents. Run the helper's regression checks with
 `bash scripts/release/test-systemd-postgresql-ordering.sh` as well.
 The .NET recovery integration tests cover active locks, changed owners/tables,
-concurrent recovery and a terminated guard session.
+concurrent recovery, a terminated guard session, missing/denied schema, bounded large-table
+history, cross-schema evidence, changed database/role/endpoint, audit rollback and uncertain commits.

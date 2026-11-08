@@ -11,12 +11,15 @@ import time
 import uuid
 from pathlib import Path
 
-app, scratch = sys.argv[1:]
+app, scratch, test_host = sys.argv[1:]
+assert os.geteuid() != 0, "The CLI driver must run as the unprivileged lab account"
 config = Path(scratch) / "recovery.json"
 config.write_text(json.dumps({"persistence": {"postgres": {
     "host": os.environ["PGHOST"], "port": int(os.environ["PGPORT"]),
     "user": os.environ["PGUSER"], "database": os.environ["PGDATABASE"],
+    "password": Path(os.environ["PGPASSFILE"]).read_text().strip().split(":")[-1],
 }}, "pools": []}))
+config.chmod(0o600)
 command = ["dotnet", app, "-c", str(config), "--recover-payout-ownership"]
 
 
@@ -32,12 +35,14 @@ def seed():
     return owner
 
 
-def terminal(steps, expected):
+def terminal(steps, expected, timeout=30):
     master, slave = pty.openpty()
     process = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave)
+    uid_line = next(line for line in Path(f"/proc/{process.pid}/status").read_text().splitlines() if line.startswith("Uid:"))
+    assert all(int(uid) == os.geteuid() for uid in uid_line.split()[1:]), uid_line
     os.close(slave)
     transcript = ""
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + timeout
     try:
         while time.monotonic() < deadline:
             if select.select([master], [], [], 0.1)[0]:
@@ -56,7 +61,11 @@ def terminal(steps, expected):
                     process.send_signal(signal.SIGINT)
                 else:
                     os.write(master, answer.encode())
-        assert process.wait(timeout=5) == expected, transcript
+        try:
+            status = process.wait(timeout=5)
+        except subprocess.TimeoutExpired as error:
+            raise AssertionError(f"CLI timed out; pending prompts: {steps!r}\n{transcript}") from error
+        assert status == expected, transcript
         assert not steps, transcript
         return transcript
     finally:
@@ -65,6 +74,16 @@ def terminal(steps, expected):
             process.wait()
         os.close(master)
 
+
+sql("ALTER TABLE payout_manager_ownership RENAME TO saved_ownership")
+try:
+    result = subprocess.run(command, input="", text=True, capture_output=True, timeout=30)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "add_payout_manager_ownership.sql" in result.stdout + result.stderr
+    assert "Sequence contains no elements" not in result.stdout + result.stderr
+finally:
+    sql("ALTER TABLE saved_ownership RENAME TO payout_manager_ownership")
+print("PASS: Main reports actionable missing-ownership migration guidance")
 
 owner = seed()
 result = subprocess.run(command, input=f"3\nSTOPPED\nCHECKED\nRELEASE {owner}\n", text=True, capture_output=True, timeout=30)
@@ -80,12 +99,111 @@ terminal([("Choice [1]:", None)], 78)
 assert sql("SELECT owner_id FROM payout_manager_ownership") == owner
 print("PASS: Ctrl+C exits the terminal assistant without clearing ownership")
 
+output = terminal([], 78, timeout=150)
+assert "timed out" in output, output
+assert sql("SELECT owner_id FROM payout_manager_ownership") == owner
+print("PASS: an unattended real terminal times out and preserves ownership")
+
 output = terminal([
     ("Choice [1]:", "3\n"),
     ("Type STOPPED", "STOPPED\n"),
     ("Type CHECKED", "CHECKED\n"),
+    ("Incident reference", "lab-267\n"),
     (f"type RELEASE {owner}:", f"RELEASE {owner}\n"),
 ], 0)
 assert "Released ownership generation 7" in output, output
 assert sql("SELECT owner_id IS NULL FROM payout_manager_ownership") == "t"
+assert sql(f"SELECT count(*) FROM payout_manager_recovery_events WHERE owner_id='{owner}' AND incident_reference='lab-267'") == "1"
+assert sql("SELECT NOT has_table_privilege(current_user, 'payout_manager_recovery_events', 'UPDATE,DELETE,TRUNCATE')") == "t"
+assert sql("SELECT NOT rolsuper FROM pg_roles WHERE rolname=current_user") == "t"
+assert sql("SELECT pg_get_userbyid(relowner)<>current_user FROM pg_class WHERE oid='payout_manager_recovery_events'::regclass") == "t"
 print("PASS: explicit terminal recovery clears only the inspected owner and exits successfully")
+
+for legacy in (True, False):
+    document = json.loads(config.read_text())
+    document["persistence"]["postgres"]["enableLegacyTimestamps"] = legacy
+    config.write_text(json.dumps(document))
+    result = subprocess.run(["dotnet", test_host, "payout-timestamp-probe", str(config), str(legacy)],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+print("PASS: fresh CLI processes apply explicit timestamp behavior before recovery connects")
+
+owner = seed()
+keys = json.loads(subprocess.check_output(["dotnet", test_host, "payout-lock-keys"], text=True))
+locker = subprocess.Popen(["psql", "-X", "-c",
+    f"SELECT pg_advisory_lock({keys['LockNamespace']},{keys['LockKey']}); SELECT pg_sleep(30)"],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+try:
+    for _ in range(100):
+        if sql(f"SELECT EXISTS(SELECT FROM pg_locks WHERE locktype='advisory' AND classid={keys['LockNamespace']} AND objid={keys['LockKey']} AND objsubid=2 AND granted)") == "t":
+            break
+        time.sleep(0.05)
+    result = subprocess.run(command, input="", text=True, capture_output=True, timeout=30)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Choice [1]" not in result.stdout
+    assert sql("SELECT owner_id FROM payout_manager_ownership") == owner
+finally:
+    locker.send_signal(signal.SIGINT)
+    locker.wait(timeout=5)
+print("PASS: Main returns retryable exit 1 for a live lock, not retained-owner exit 78")
+
+# Normal startup must prompt before opening API/Stratum listeners or wallet clients.
+example = (Path(__file__).resolve().parents[2] / "config.example.json").read_text(encoding="utf-8-sig")
+# The maintained example uses full-line JSON comments accepted by Miningcore.
+normal = json.loads("\n".join(line for line in example.splitlines() if not line.lstrip().startswith("//")))
+normal["persistence"] = json.loads(config.read_text())["persistence"]
+normal["paymentProcessing"]["enabled"] = True
+normal["pools"][0]["enabled"] = True
+normal["pools"][0]["paymentProcessing"]["enabled"] = True
+normal["logging"] = {"level": "info", "enableConsoleLog": True, "enableConsoleColors": False}
+normal["api"] = {"enabled": False}
+normal["shareRecoveryFile"] = str(Path(scratch) / "normal-shares.txt")
+normal["shareRecoveryStateDirectory"] = scratch
+config.write_text(json.dumps(normal))
+command = ["dotnet", app, "-c", str(config)]
+transcript = terminal([("Choice [1]:", "1\n")], 78)
+assert "Starting Pool" not in transcript and "Stratum port" not in transcript
+assert sql("SELECT owner_id FROM payout_manager_ownership") == owner
+print("PASS: normal terminal startup offers recovery before hosted services start")
+
+for legacy in (True, False):
+    normal["persistence"]["postgres"]["enableLegacyTimestamps"] = legacy
+    config.write_text(json.dumps(normal))
+    command = ["dotnet", test_host, "payout-timestamp-probe", str(config), str(legacy), "startup"]
+    terminal([("Choice [1]:", "1\n")], 0)
+print("PASS: fresh normal-startup processes apply timestamp behavior before the prompt")
+
+command = ["dotnet", app, "-c", str(config)]
+# These minimal fixtures deliberately lack normal mining tables, so preflight must
+# fail after bypassing the assistant. No wallet client or listener can start.
+result = subprocess.run(command, input="3\n", capture_output=True, text=True, timeout=30)
+assert result.returncode == 1, result.stdout + result.stderr
+assert "Choice [1]" not in result.stdout and "Owner token:" not in result.stdout
+assert sql("SELECT owner_id FROM payout_manager_ownership") == owner
+command.append("--no-payout-recovery-prompt")
+transcript = terminal([], 1)
+assert "Choice [1]" not in transcript and "Owner token:" not in transcript
+assert sql("SELECT owner_id FROM payout_manager_ownership") == owner
+print("PASS: normal startup skips recovery for redirected input and explicit opt-out")
+command.pop()
+transcript = terminal([
+    ("Choice [1]:", "3\n"), ("Type STOPPED", "STOPPED\n"),
+    ("Type CHECKED", "CHECKED\n"), ("Incident reference", "lab-startup-267\n"),
+    (f"type RELEASE {owner}:", f"RELEASE {owner}\n"),
+], 1)
+assert "Released ownership generation 7" in transcript, transcript
+assert sql("SELECT owner_id IS NULL FROM payout_manager_ownership") == "t"
+print("PASS: successful foreground recovery continues to normal preflight")
+transcript = terminal([], 1)
+assert "Choice [1]" not in transcript and "No payout ownership marker" not in transcript
+print("PASS: unowned normal startup remains quiet and continues to preflight")
+
+normal["persistence"]["postgres"].pop("enableLegacyTimestamps")
+config.write_text(json.dumps(normal))
+try:
+    result = subprocess.run(command, input="", capture_output=True, text=True, timeout=30)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Set persistence.postgres.enableLegacyTimestamps to true and restart" in result.stdout + result.stderr
+finally:
+    sql("DROP TABLE shares")
+print("PASS: auto-detected legacy timestamps fail closed with an explicit-setting remedy")

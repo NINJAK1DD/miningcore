@@ -559,7 +559,7 @@ public class PayoutManagerTests
             fixture.Manager.StartAsync(CancellationToken.None));
 
         Assert.Contains("Another payout manager", ex.Message);
-        Assert.Equal(ProcessExitCodes.PayoutOwnershipBlocked, fixture.ProcessStatus.ExitCode);
+        Assert.Equal(ProcessExitCodes.GeneralFailure, fixture.ProcessStatus.ExitCode);
     }
 
     [Fact]
@@ -569,11 +569,13 @@ public class PayoutManagerTests
         const string reason = "A durable payout-manager ownership marker remains for host pool-1 process 42";
         fixture.PayoutLease.TryAcquireAsync(Arg.Any<CancellationToken>()).Returns(false);
         fixture.PayoutLease.AcquisitionFailure.Returns(reason);
+        fixture.PayoutLease.RequiresRecovery.Returns(true);
 
         var ex = await Assert.ThrowsAsync<PoolStartupException>(() =>
             fixture.Manager.StartAsync(CancellationToken.None));
 
         Assert.Equal(reason, ex.Message);
+        Assert.Equal(ProcessExitCodes.PayoutOwnershipBlocked, fixture.ProcessStatus.ExitCode);
     }
 
     [Fact]

@@ -38,6 +38,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
     private bool financialOutcomeUncertain;
 
     public string AcquisitionFailure { get; private set; }
+    public bool RequiresRecovery { get; private set; }
 
     internal bool CanReleaseOwnership
     {
@@ -97,6 +98,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                 return true;
 
             AcquisitionFailure = null;
+            RequiresRecovery = false;
 
             var candidate = await cf.OpenConnectionAsync();
             var advisoryLockHeld = false;
@@ -173,6 +175,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 
                     if(generation == 0)
                     {
+                        RequiresRecovery = true;
                         currentOwner = await ReadOwnershipAsync(candidate, tx, ct);
                         tx.Rollback();
                         AcquisitionFailure = DescribeOwnershipConflict(currentOwner, false);

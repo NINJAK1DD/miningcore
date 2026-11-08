@@ -54,14 +54,51 @@ if(args.Length > 0 && args[0] == "payout-lease")
         return 64;
     using var payoutHost = Host.CreateDefaultBuilder().Build();
     await using var lease = new Miningcore.Payments.PostgresPayoutManagerLease(
-        new Miningcore.Persistence.Postgres.PgConnectionFactory(args[1]));
+        new Miningcore.Persistence.Postgres.PgConnectionFactory(args[1] == "-"
+            ? Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES") : args[1]));
     if(!await lease.TryAcquireAsync(CancellationToken.None))
-        return 78;
+        return lease.RequiresRecovery ? 78 : 1;
     await File.WriteAllTextAsync(args[2], "acquired");
     await payoutHost.RunAsync();
     await lease.DisposeAsync();
     await File.WriteAllTextAsync(args[2] + ".released", "released");
     return 0;
+}
+
+if(args.Length == 3 && args[0] == "exit-once")
+{
+    var first = !File.Exists(args[1]);
+    await File.AppendAllTextAsync(args[1], "started\n");
+    return first ? int.Parse(args[2]) : 0;
+}
+
+if(args.Length == 1 && args[0] == "payout-lock-keys")
+{
+    Console.WriteLine(JsonConvert.SerializeObject(new
+    {
+        Miningcore.Payments.PostgresPayoutManagerLease.LockNamespace,
+        Miningcore.Payments.PostgresPayoutManagerLease.LockKey,
+    }));
+    return 0;
+}
+
+if(args.Length is 3 or 4 && args[0] == "payout-timestamp-probe")
+{
+    var startup = args.Length == 4 && args[3] == "startup";
+    var result = await MiningcoreProgram.Main(startup ? ["-c", args[1]] : ["--recover-payout-ownership", "-c", args[1]]);
+    if(result != (startup ? 78 : 0)) return 1;
+    var config = MiningcoreProgram.ReadConfig(args[1]);
+    await using var con = new Npgsql.NpgsqlConnection(PostgresConnectionPolicy.Build(config.Persistence.Postgres).ConnectionString);
+    await con.OpenAsync();
+    await using var command = new Npgsql.NpgsqlCommand("SELECT @value::timestamp", con);
+    command.Parameters.AddWithValue("value", NpgsqlTypes.NpgsqlDbType.Timestamp, DateTime.UtcNow);
+    var legacy = bool.Parse(args[2]);
+    try
+    {
+        await command.ExecuteScalarAsync();
+        return legacy ? 0 : 1;
+    }
+    catch(ArgumentException) when(!legacy) { return 0; }
 }
 
 if(args.Length > 0 && string.Equals(args[0], "api",
