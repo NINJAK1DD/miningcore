@@ -69,6 +69,22 @@ public class PayoutOwnershipRecoveryAssistantTests
         Assert.Equal(0, recovery.Releases);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MissingReleasePermission_KeepsBeforeConfirmations(bool revokedOnRefresh)
+    {
+        var recovery = new Recovery { DenyOnRefresh = revokedOnRefresh };
+        if(!revokedOnRefresh)
+            recovery.Snapshot = recovery.Snapshot with { ReleaseWarning = PostgresPayoutOwnershipRecovery.ReleaseDenied };
+        var output = new StringWriter();
+        Assert.Equal(PayoutRecoveryResult.Kept, await RunAsync(recovery, "3\nSTOPPED\nCHECKED\n", output));
+        Assert.Contains("dedicated recovery identity", output.ToString());
+        Assert.DoesNotContain("Type STOPPED", output.ToString());
+        if(!revokedOnRefresh) Assert.DoesNotContain("Choice", output.ToString());
+        Assert.Equal(0, recovery.Releases);
+    }
+
     [Fact]
     public async Task Cancellation_DoesNotRelease()
     {
@@ -258,6 +274,7 @@ public class PayoutOwnershipRecoveryAssistantTests
         public int Releases;
         public int Inspections;
         public bool ChangeOwnerOnRefresh;
+        public bool DenyOnRefresh;
         public string Incident;
         public PayoutOwnershipSnapshot Released;
 
@@ -266,6 +283,8 @@ public class PayoutOwnershipRecoveryAssistantTests
             ct.ThrowIfCancellationRequested();
             if(++Inspections > 1 && ChangeOwnerOnRefresh)
                 Snapshot = Snapshot with { OwnerId = Guid.NewGuid() };
+            if(Inspections > 1 && DenyOnRefresh)
+                Snapshot = Snapshot with { ReleaseWarning = PostgresPayoutOwnershipRecovery.ReleaseDenied };
             return Task.FromResult(Snapshot);
         }
 

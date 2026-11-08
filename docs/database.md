@@ -773,6 +773,9 @@ incident reference (up to 200 characters; do not include secrets), and `RELEASE 
 Surrounding whitespace is ignored. Blank input, EOF, failed confirmation, cancellation or timeout
 before release keeps protection. Release refusals return 78. Inspection/connectivity errors return
 1 and explicitly say whether a release was attempted.
+Inspection checks the login's audit append access before offering release. A restricted login is
+directed to the dedicated recovery identity and keeps protection without asking for confirmations.
+The check repeats on refresh; permissions and all ownership safeguards still apply at release time.
 
 Terminal detection and confirmation strings are procedural checks, not authentication. Software
 controlling a pseudo-terminal can supply the same answers. Restrict access to the host and database
@@ -852,6 +855,11 @@ It checks effective privileges, including PUBLIC/inherited grants, and rejects a
 in any role with append access even if that membership is not inherited. Remove unintended role/grant paths
 and rerun the check if it fails. Reapplying the audit migration restores the application's EXECUTE
 grant; this check deliberately fails until that grant is revoked again.
+This example requires a standalone recovery login with no other role memberships, administrative
+attributes, audit-write privileges (including column grants), or audit-schema CREATE permission.
+It also rejects ownership of the append function. Excess permissions must be removed and the check
+rerun; do not relax it just to make deployment pass. It validates this recovery boundary, not every
+possible privilege on unrelated database objects.
 
 <!-- BEGIN DEDICATED RECOVERY CHECK -->
 ```sql
@@ -868,6 +876,15 @@ SELECT NOT has_function_privilege('miningcore', :'append_function', 'EXECUTE')
    AND has_table_privilege('miningcore_recovery', 'public.payment_batches', 'SELECT')
    AND has_schema_privilege('miningcore_recovery', :'audit_schema', 'USAGE')
    AND has_table_privilege('miningcore_recovery', format('%I.payout_manager_recovery_events', :'audit_schema'), 'SELECT')
+   AND NOT has_table_privilege('miningcore_recovery', format('%I.payout_manager_recovery_events', :'audit_schema'), 'INSERT,UPDATE,DELETE,TRUNCATE')
+   AND NOT has_any_column_privilege('miningcore_recovery', format('%I.payout_manager_recovery_events', :'audit_schema'), 'INSERT,UPDATE')
+   AND NOT has_schema_privilege('miningcore_recovery', :'audit_schema', 'CREATE')
+   AND EXISTS (SELECT FROM pg_roles WHERE rolname='miningcore_recovery' AND rolcanlogin
+       AND NOT (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls))
+   AND NOT EXISTS (SELECT FROM pg_roles r WHERE r.rolname <> 'miningcore_recovery'
+       AND pg_has_role('miningcore_recovery', r.oid, 'MEMBER'))
+   AND NOT EXISTS (SELECT FROM pg_proc p JOIN pg_roles r ON r.oid=p.proowner
+       WHERE p.oid=to_regprocedure(:'append_function') AND r.rolname='miningcore_recovery')
    AND has_function_privilege('miningcore_recovery', :'append_function', 'EXECUTE') AS recovery_permissions_ok \gset
 \if :recovery_permissions_ok
   \echo Dedicated recovery permission check passed
@@ -878,8 +895,8 @@ SELECT NOT has_function_privilege('miningcore', :'append_function', 'EXECUTE')
 <!-- END DEDICATED RECOVERY CHECK -->
 
 Also connect with each actual login through the intended endpoint to verify authentication and TLS;
-catalog permission checks do not test those. Review role attributes/memberships separately: the recovery
-login must remain restricted and must not inherit the application or audit-administrator role.
+catalog permission checks do not test those. The automated check requires a restricted standalone
+login; review unrelated table access and destination authentication separately.
 
 For the operating-system boundary, create a separate account once on Ubuntu:
 
@@ -899,6 +916,9 @@ Prepare `/secure/staging/recovery.json` in an administrator-only location before
 Use the same PostgreSQL endpoint/database, verified TLS settings and explicit timestamp mode as the
 service, with `persistence.postgres.user` set to `miningcore_recovery` and its separate password.
 The standalone recovery configuration can use `"pools": []`; do not copy wallet credentials into it.
+Use console-only logging, for example `"logging": { "level": "info", "enableConsoleColors": false }`.
+Omit service file targets under `/var/log/miningcore`; do not grant the recovery OS account access
+to that directory. Standalone recovery uses console logging and ignores service file targets.
 Keep both the staging file and installed configuration unreadable to `miningcore`, and do not add
 the service account to the `miningcore-recovery` group or grant it sudo access to that identity.
 Stop if either file-access check fails. The nologin shell prevents interactive login; an authorised

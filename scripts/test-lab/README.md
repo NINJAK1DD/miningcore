@@ -86,6 +86,9 @@ The live check also executes the [dedicated-login GRANT example and acceptance S
 directly from the guide. It rejects missing permissions, PUBLIC/inherited application execution,
 non-inherited recovery-role membership and migration-restored defaults, then proves with actual
 database logins that application release is denied while restricted recovery records its own identity.
+It also rejects audit DML/column-write grants, schema CREATE, administrative attributes, role
+memberships and append-function ownership. A real terminal check verifies that a restricted login
+keeps protection and receives dedicated-identity guidance before any menu or confirmations.
 
 The automated restore drill uses two databases within one disposable cluster. Before production
 RC.2 deployment, also complete the [cross-cluster acceptance rehearsal](../../docs/database.md#cross-cluster-release-acceptance)

@@ -19,6 +19,7 @@ internal sealed record PayoutOwnershipSnapshot
     public string BatchSchema { get; init; }
     public long? BatchRelationId { get; init; }
     public string EvidenceWarning { get; init; }
+    public string ReleaseWarning { get; init; }
     public long Generation { get; init; }
     public Guid? OwnerId { get; init; }
     public string OwnerHost { get; init; }
@@ -47,7 +48,8 @@ internal sealed class PostgresPayoutOwnershipRecovery(IConnectionFactory cf, Act
 {
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
     internal const string OwnershipMigration = "The payout-manager ownership schema is missing. Apply add_payout_manager_ownership.sql before recovery.";
-    internal const string AuditMigration = "Recovery audit storage is unavailable. Apply add_payout_recovery_audit.sql as a separate database administrator and restore protected audit schema USAGE, SELECT and record_payout_recovery EXECUTE permissions. Protection was kept.";
+    internal const string AuditMigration = "Recovery audit storage is unavailable or this login lacks access. If release is restricted, use the dedicated recovery identity and its protected configuration; do not grant release access back to the service login. Otherwise have the database administrator verify add_payout_recovery_audit.sql and the intended recovery login's permissions. Protection was kept.";
+    internal const string ReleaseDenied = "This database login cannot release payout ownership. Use the dedicated recovery identity and its protected configuration, or ask the administrator to verify the intended recovery login's permissions. Do not grant release access back to a deliberately restricted service login. Protection was kept.";
     private static readonly object lockParameters = new
     {
         lockNamespace = PostgresPayoutManagerLease.LockNamespace,
@@ -81,6 +83,24 @@ internal sealed class PostgresPayoutOwnershipRecovery(IConnectionFactory cf, Act
                 throw new PayoutRecoveryException(OwnershipMigration, ProcessExitCodes.GeneralFailure);
             if(snapshot.OwnerId == null || snapshot.LockHeld)
                 return snapshot;
+
+            // Advisory UI preflight only: release still enforces permissions transactionally.
+            // A missing migration and an intentionally restricted login both keep protection.
+            var auditSchema = AuditSchema(snapshot.RelationId);
+            try
+            {
+                var canAppend = await con.ExecuteScalarAsync<bool?>(new CommandDefinition(@"
+                    SELECT has_schema_privilege(current_user, @auditSchema, 'USAGE')
+                        AND has_function_privilege(current_user, to_regprocedure(@signature), 'EXECUTE')",
+                    new { auditSchema, signature = Table(auditSchema, "record_payout_recovery") +
+                        "(uuid,uuid,bigint,text,integer,timestamptz,timestamptz,text,integer,text)" },
+                    commandTimeout: 5, cancellationToken: ct));
+                snapshot = snapshot with { ReleaseWarning = canAppend == true ? null : canAppend == false ? ReleaseDenied : AuditMigration };
+            }
+            catch(PostgresException ex) when(ex.SqlState is PostgresErrorCodes.InvalidSchemaName or PostgresErrorCodes.UndefinedFunction or PostgresErrorCodes.InsufficientPrivilege)
+            {
+                snapshot = snapshot with { ReleaseWarning = ex.SqlState == PostgresErrorCodes.InsufficientPrivilege ? ReleaseDenied : AuditMigration };
+            }
 
             // Optional evidence has its own timeout/failure boundary, outside a transaction.
             try
@@ -279,6 +299,11 @@ internal static class PayoutOwnershipRecoveryAssistant
                 await output.WriteLineAsync("A live database session holds the payout lock. Release is refused; normal service startup may retry. Stop the previous instance cleanly first.");
                 return PayoutRecoveryResult.Busy;
             }
+            if(snapshot.ReleaseWarning != null)
+            {
+                await output.WriteLineAsync(snapshot.ReleaseWarning);
+                return await KeepAsync(output);
+            }
             await output.WriteLineAsync("The database lock is available, but this does NOT prove the previous process has stopped or that all wallet payments were recorded.");
             if(!interactive)
             {
@@ -310,6 +335,11 @@ internal static class PayoutOwnershipRecoveryAssistant
             }
             snapshot = fresh;
             await ShowOwnerAsync(snapshot, output);
+            if(snapshot.ReleaseWarning != null)
+            {
+                await output.WriteLineAsync(snapshot.ReleaseWarning);
+                return await KeepAsync(output);
+            }
             await output.WriteLineAsync($"Payment evidence relation: {Display(snapshot.BatchSchema)}.payment_batches; OID {snapshot.BatchRelationId?.ToString() ?? "unavailable"}");
             if(snapshot.EvidenceWarning != null)
                 await output.WriteLineAsync(snapshot.EvidenceWarning);

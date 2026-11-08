@@ -26,6 +26,7 @@ public class PayoutOwnershipRecoveryIntegrationTests
         Assert.Equal(db.Schema, snapshot.Schema);
         Assert.Equal(db.Owner, snapshot.OwnerId);
         Assert.False(snapshot.LockHeld);
+        Assert.Null(snapshot.ReleaseWarning);
         Assert.Single(snapshot.Batches);
         await db.Recovery.ReleaseAsync(snapshot, "incident-267", CancellationToken.None);
         Assert.Null(await db.OwnerAsync());
@@ -324,12 +325,24 @@ public class PayoutOwnershipRecoveryIntegrationTests
             var snapshot = await restricted.InspectAsync(CancellationToken.None);
             Assert.Equal(role, snapshot.DatabaseRole);
             Assert.NotNull(snapshot.EvidenceWarning);
+            Assert.Contains("dedicated recovery identity", snapshot.ReleaseWarning);
             var original = await db.Recovery.InspectAsync(CancellationToken.None);
             var changed = await Assert.ThrowsAsync<PayoutRecoveryException>(() => restricted.ReleaseAsync(original, "incident", CancellationToken.None));
             Assert.Contains("database, role, endpoint", changed.Message);
             var auditDenied = await Assert.ThrowsAsync<PayoutRecoveryException>(() => restricted.ReleaseAsync(snapshot, "incident", CancellationToken.None));
             Assert.Contains("add_payout_recovery_audit.sql", auditDenied.Message);
             Assert.Equal(db.Owner, await db.OwnerAsync());
+            var signature = $"{db.AuditSchema}.record_payout_recovery(uuid,uuid,bigint,text,integer,timestamptz,timestamptz,text,integer,text)";
+            await db.Connection.ExecuteAsync($"GRANT USAGE ON SCHEMA {db.AuditSchema} TO {role}; GRANT EXECUTE ON FUNCTION {signature} TO {role}");
+            var allowed = await restricted.InspectAsync(CancellationToken.None);
+            Assert.Null(allowed.ReleaseWarning);
+            await db.Connection.ExecuteAsync($"REVOKE EXECUTE ON FUNCTION {signature} FROM {role}");
+            Assert.Contains("dedicated recovery identity", (await restricted.InspectAsync(CancellationToken.None)).ReleaseWarning);
+            var revoked = await Assert.ThrowsAsync<PayoutRecoveryException>(() => restricted.ReleaseAsync(allowed, "incident", CancellationToken.None));
+            Assert.Contains("dedicated recovery identity", revoked.Message);
+            Assert.Equal(db.Owner, await db.OwnerAsync());
+            await db.Connection.ExecuteAsync($"DROP FUNCTION {signature}");
+            Assert.Contains("add_payout_recovery_audit.sql", (await restricted.InspectAsync(CancellationToken.None)).ReleaseWarning);
         }
         finally { await db.Connection.ExecuteAsync($"DROP OWNED BY {role}; DROP ROLE {role}"); }
     }

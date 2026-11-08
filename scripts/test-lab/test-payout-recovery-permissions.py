@@ -1,10 +1,14 @@
 """Execute the documented dedicated-login grants/check in the disposable live-test cluster."""
 import json
+import errno
 import os
+import pty
+import select
 from pathlib import Path
 import secrets
 import subprocess
 import sys
+import time
 import uuid
 
 test_host, scratch, migration = sys.argv[1:]
@@ -43,6 +47,36 @@ def verify(success=True):
 def migrate():
     subprocess.run(["psql", "-X", "-v", "ON_ERROR_STOP=1", "-d", database, "-f", migration],
                    check=True, stdout=subprocess.DEVNULL, timeout=30)
+
+
+def restricted_terminal(config):
+    app = repo / "src/Miningcore/bin/Debug/net10.0/Miningcore.dll"
+    master, slave = pty.openpty()
+    process = subprocess.Popen(["dotnet", str(app), "-c", str(config), "--recover-payout-ownership"],
+                               stdin=slave, stdout=slave, stderr=slave)
+    os.close(slave)
+    transcript = ""
+    try:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], 0.1)[0]:
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+                    break
+                if not chunk:
+                    break
+                transcript += chunk.decode(errors="replace")
+        assert process.wait(timeout=2) == 78, transcript
+        assert "dedicated recovery identity" in transcript, transcript
+        assert "Choice [1]" not in transcript and "Type STOPPED" not in transcript, transcript
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        os.close(master)
 
 
 sql(f"CREATE DATABASE {database} OWNER miningcore", os.environ["PGDATABASE"])
@@ -104,6 +138,40 @@ try:
     verify()
     print("PASS: migration-restored application access blocks acceptance until restrictions are reapplied")
 
+    for privilege, resource in [
+        ("INSERT", f"TABLE {audit}.payout_manager_recovery_events"),
+        ("UPDATE", f"TABLE {audit}.payout_manager_recovery_events"),
+        ("DELETE", f"TABLE {audit}.payout_manager_recovery_events"),
+        ("TRUNCATE", f"TABLE {audit}.payout_manager_recovery_events"),
+        ("INSERT (incident_reference)", f"TABLE {audit}.payout_manager_recovery_events"),
+        ("UPDATE (incident_reference)", f"TABLE {audit}.payout_manager_recovery_events"),
+        ("CREATE", "SCHEMA " + audit),
+    ]:
+        sql(f"GRANT {privilege} ON {resource} TO {recovery_role}")
+        verify(False)
+        sql(f"REVOKE {privilege} ON {resource} FROM {recovery_role}")
+        verify()
+    print("PASS: acceptance rejects excessive audit DML, column writes and schema creation")
+
+    for attribute, restore in [("SUPERUSER", "NOSUPERUSER"), ("CREATEDB", "NOCREATEDB"),
+                               ("CREATEROLE", "NOCREATEROLE"), ("REPLICATION", "NOREPLICATION"),
+                               ("BYPASSRLS", "NOBYPASSRLS"), ("NOLOGIN", "LOGIN")]:
+        sql(f"ALTER ROLE {recovery_role} {attribute}")
+        verify(False)
+        sql(f"ALTER ROLE {recovery_role} {restore}")
+        verify()
+    for member in ["miningcore", os.environ["PGUSER"], group]:
+        sql(f"ALTER ROLE {recovery_role} NOINHERIT; GRANT {member} TO {recovery_role}")
+        verify(False)
+        sql(f"REVOKE {member} FROM {recovery_role}; ALTER ROLE {recovery_role} INHERIT")
+        verify()
+    sql(f"ALTER FUNCTION {function} OWNER TO {recovery_role}")
+    verify(False)
+    sql(f"ALTER FUNCTION {function} OWNER TO {os.environ['PGUSER']}")
+    sql(block("GRANTS"))
+    verify()
+    print("PASS: acceptance rejects administrative attributes, role memberships and append-function ownership")
+
     owner = str(uuid.uuid4())
     sql(f"INSERT INTO payout_manager_ownership(id,owner_id,owner_host,owner_process_id,acquired) VALUES(1,'{owner}','synthetic',123,now())")
     app_password = (Path(scratch) / "app.pgpass").read_text().strip().split(":")[-1]
@@ -113,11 +181,16 @@ try:
             "host": os.environ["PGHOST"], "port": int(os.environ["PGPORT"]), "database": database,
             "user": role, "password": secret, "enableLegacyTimestamps": False}}, "pools": []}))
         config.chmod(0o600)
+        if role == "miningcore":
+            restricted_terminal(config)
+            assert sql("SELECT owner_id FROM payout_manager_ownership") == owner
+            print("PASS: restricted CLI login keeps protection before any menu or confirmation")
         result = subprocess.run(["dotnet", test_host, "payout-release-probe", str(config)],
                                 capture_output=True, text=True, timeout=30)
         assert result.returncode == expected, result.stdout + result.stderr
         if expected:
             assert "audit storage is unavailable" in result.stderr
+            assert "dedicated recovery identity" in result.stderr
             assert sql("SELECT owner_id FROM payout_manager_ownership") == owner
     assert sql("SELECT owner_id IS NULL FROM payout_manager_ownership") == "t"
     assert sql(f"SELECT database_role FROM {audit}.payout_manager_recovery_events") == recovery_role

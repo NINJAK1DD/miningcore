@@ -53,6 +53,9 @@ recovery credentials where production requires stronger separation; terminal con
 are not authentication. Preserve the rehearsal evidence separately from CI and wallet reconciliation.
 For that configuration, reapply the [dedicated-login grants](database.md#dedicated-recovery-identity-and-permissions)
 and require its automated permission check to pass after every migration/restore before activation.
+The check rejects excessive audit privileges and administrative recovery identities as well as missing
+grants. Guided inspection now keeps protection before prompting when the login lacks audit append
+access, directing intentionally restricted service logins to the dedicated recovery identity.
 
 When multiple failures occur, process exit status uses precedence **74 > 78 > ordinary failure**.
 An earlier retryable failure therefore cannot mask a later condition requiring operator recovery.
