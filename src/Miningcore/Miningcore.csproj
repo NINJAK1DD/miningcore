@@ -93,8 +93,9 @@
         <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
         <PackageReference Include="JetBrains.Annotations" Version="2026.2.0" />
         <PackageReference Include="MailKit" Version="4.18.2" />
-        <!-- Pin the patched transitive dependency until all upstream packages resolve
-             Pkcs >= 10.0.13; remove only after restore/audit confirms that floor. -->
+        <!-- Security floor: Pkcs >= 10.0.13 (CVE-2026-84008, CVE-2026-70162). Tracks the
+             current 10.0.x servicing band; remove only when restore/audit shows every
+             transitive path meets the floor without it. See docs/dependency-security.md. -->
         <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
         <PackageReference Include="McMaster.Extensions.CommandLineUtils" Version="5.1.0" />
         <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14" />

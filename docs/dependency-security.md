@@ -1,8 +1,14 @@
 # Dependency security
 
-Miningcore restores the complete transitive package graph with `NuGetAuditMode=all`.
-`TreatWarningsAsErrors=true` makes every reported severity (`NU1901` through `NU1904`) fail restore;
-high and critical findings are also explicitly included in `WarningsAsErrors`.
+Miningcore restores the complete transitive package graph with `NuGetAuditMode=all` and an explicit
+`NuGetAuditLevel=low`. With `TreatWarningsAsErrors=true`, every audit finding (`NU1901` through
+`NU1904`) fails restore. `NU1903` and `NU1904` are also listed in `WarningsAsErrors`, so high and
+critical findings remain fatal even if a local build sets `TreatWarningsAsErrors=false`.
+
+Miningcore now explicitly adopts this stricter policy. It supersedes the earlier decision to leave
+low and moderate findings as warnings: enabling compiler warnings as errors also made these audit
+findings fatal. A newly published advisory of any severity blocks builds and releases until the
+dependency is upgraded or a scoped, written risk acceptance is recorded as described below.
 
 Run the same audit explicitly with:
 
@@ -18,13 +24,15 @@ be used only with that written risk acceptance; do not disable NuGet auditing or
 
 ## PKCS servicing override
 
-Miningcore pins `System.Security.Cryptography.Pkcs` to 10.0.14. Keep this explicit
-servicing reference so an older transitive minimum cannot select an affected package.
-No audit suppression or severity downgrade is required. The fixes for
+Miningcore references `System.Security.Cryptography.Pkcs` directly to keep normal dependency
+resolution at or above 10.0.13, the first .NET 10 package with the fixes for
 [CVE-2026-70162](https://github.com/dotnet/announcements/issues/454) and
-[CVE-2026-84008](https://github.com/dotnet/announcements/issues/468) first shipped in
-10.0.13; this update retains them on the next servicing release. Verify the complete
-dependency graph before removing the override, and keep the deployed .NET runtime patched.
+[CVE-2026-84008](https://github.com/dotnet/announcements/issues/468).
+The reference follows the current 10.0.x servicing release;
+[`Miningcore.csproj`](../src/Miningcore/Miningcore.csproj) holds the exact version.
+Remove it only after restore and a complete vulnerable-package audit show every transitive path
+resolves 10.0.13 or later without it. No audit suppression or severity downgrade is required.
+Miningcore publishes framework-dependent, so also keep the deployed .NET runtime patched.
 
 ## AutoMapper 16 licence decision
 
