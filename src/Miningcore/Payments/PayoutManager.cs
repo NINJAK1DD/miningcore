@@ -124,6 +124,7 @@ public class PayoutManager : ProcessStatusBackgroundService
 
         if(!await payoutLease.TryAcquireAsync(ct))
         {
+            ProcessStatus.MarkFailed(ProcessExitCodes.PayoutOwnershipBlocked);
             var reason = payoutLease.AcquisitionFailure;
 
             throw new PoolStartupException(string.IsNullOrWhiteSpace(reason)

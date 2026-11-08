@@ -350,8 +350,9 @@ procedure for incidents that can affect accounting or availability.
   [share-recovery fatal-state reconciliation](database.md#reconcile-fatal-share-recovery-state).
 - **Recovery journal contains records:** preserve the source and use the
   [manifested one-shot importer](database.md#inspect-and-import-a-recovery-journal).
-- **Another payout manager owns the database:** prove the old process and backend are dead, then
-  follow [payout ownership recovery](database.md#recover-payout-manager-ownership-safely).
+- **Exit status `78` / another payout manager owns the database:** use the
+  [guided payout recovery assistant](database.md#guided-payout-ownership-recovery) after stopping
+  the previous instance and reconciling wallet history.
 - **`sendmany` returns code `-6`:** inspect confirmed inputs, fee ownership and fallback mode; see
   [fee reserve readiness](#fee-reserve-and-balance-readiness).
 - **Auxiliary template update fails:** confirm recovery and inspect DOGE sync, load, RPC pressure

@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Isolated live PostgreSQL/systemd and terminal checks; never stops the shared lab database.
+set -euo pipefail
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+test_host="$repo/src/Miningcore.Tests.ProcessHost/bin/Debug/net10.0/Miningcore.Tests.ProcessHost.dll"
+app="$repo/src/Miningcore/bin/Debug/net10.0/Miningcore.dll"
+test -f "$test_host"
+test -f "$app"
+sudo -n true
+pg_bins=(/usr/lib/postgresql/*/bin/initdb)
+pg_bin=$(dirname "${pg_bins[-1]}")
+scratch=$(mktemp -d /tmp/miningcore-payout-recovery.XXXXXXXX)
+unit="miningcore-payout-test-$(basename "$scratch" | tr -cd 'a-zA-Z0-9')"
+pg_unit="$unit-postgres.service"
+pool_unit="$unit-pool.service"
+cleanup() {
+  sudo systemctl stop "$pool_unit" "$pg_unit" >/dev/null 2>&1 || true
+  sudo systemctl reset-failed "$pool_unit" "$pg_unit" >/dev/null 2>&1 || true
+  sudo rm -f -- "/run/systemd/system/$pool_unit" "/run/systemd/system/$pg_unit"
+  sudo systemctl daemon-reload
+  case "$scratch" in /tmp/miningcore-payout-recovery.*) rm -rf -- "$scratch" ;; esac
+}
+trap cleanup EXIT
+export PGHOST=127.0.0.1 PGUSER
+if [[ $(id -u) == 0 ]]; then
+  PGUSER=${MININGCORE_LAB_USER:-ubuntu}
+  chown "$PGUSER" "$scratch"
+else
+  PGUSER=$(id -un)
+fi
+export PGPORT
+PGPORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+export PGDATABASE=postgres
+# The caller owns this log; only initdb must run as the unprivileged database user.
+# shellcheck disable=SC2024
+sudo -u "$PGUSER" "$pg_bin/initdb" -D "$scratch/data" -A trust --no-locale >"$scratch/initdb.log"
+cat >"$scratch/$pg_unit" <<EOF
+[Service]
+Type=simple
+User=$PGUSER
+KillSignal=SIGINT
+ExecStart=$pg_bin/postgres -D $scratch/data -h 127.0.0.1 -p $PGPORT -k $scratch
+EOF
+sudo install -m 0644 "$scratch/$pg_unit" "/run/systemd/system/$pg_unit"
+sudo systemctl daemon-reload
+sudo systemctl start "$pg_unit"
+wait_postgres() {
+  for ((i=0; i<100; i++)); do
+    if "$pg_bin/pg_isready" -q; then return; fi
+    sleep 0.1
+  done
+  return 1
+}
+wait_postgres
+psql -X -v ON_ERROR_STOP=1 >/dev/null <<'SQL'
+CREATE TABLE payment_batches(poolid text NOT NULL, transactionconfirmationdata text NOT NULL,
+  created timestamptz NOT NULL, PRIMARY KEY(poolid, transactionconfirmationdata));
+CREATE TABLE payout_manager_ownership(id smallint PRIMARY KEY CHECK(id=1), generation bigint NOT NULL DEFAULT 0,
+  owner_id uuid, owner_host text, owner_process_id integer, acquired timestamptz, released timestamptz);
+SQL
+
+python3 "$repo/scripts/test-lab/test-payout-recovery-cli.py" "$app" "$scratch"
+
+connection="Host=127.0.0.1;Port=$PGPORT;Username=$PGUSER;Database=postgres"
+# Use the documented actual-unit drop-in dependencies against this isolated database.
+cat >"$scratch/$pool_unit" <<EOF
+[Unit]
+After=$pg_unit
+Wants=$pg_unit
+[Service]
+Type=simple
+User=$PGUSER
+TimeoutStopSec=90
+WorkingDirectory=$repo
+ExecStart=/usr/bin/dotnet $test_host payout-lease "$connection" $scratch/ready
+EOF
+sudo install -m 0644 "$scratch/$pool_unit" "/run/systemd/system/$pool_unit"
+sudo systemctl daemon-reload
+sudo systemctl start "$pool_unit"
+wait_pool() {
+  for ((i=0; i<100; i++)); do
+    if test -f "$scratch/ready"; then return; fi
+    sleep 0.1
+  done
+  sudo journalctl -u "$pool_unit" --no-pager
+  return 1
+}
+wait_pool
+# Independent maintenance follows the documented manual sequence.
+sudo systemctl stop "$pool_unit"
+sudo systemctl stop "$pg_unit"
+test -f "$scratch/ready.released"
+sudo systemctl start "$pg_unit"
+wait_postgres
+test "$(psql -X -Atc 'SELECT owner_id IS NULL FROM payout_manager_ownership')" = t
+echo 'PASS: planned maintenance releases ownership before stopping PostgreSQL'
+
+rm -- "$scratch/ready" "$scratch/ready.released"
+sudo systemctl start "$pool_unit"
+wait_pool
+# The same stop transaction used at host shutdown must preserve the reverse order.
+sudo systemctl stop "$pool_unit" "$pg_unit"
+test -f "$scratch/ready.released"
+sudo systemctl start "$pg_unit"
+wait_postgres
+test "$(psql -X -Atc 'SELECT owner_id IS NULL FROM payout_manager_ownership')" = t
+echo 'PASS: simultaneous shutdown stops Miningcore before PostgreSQL'
+
+# The packaged helper supplies the actual cluster dependency, not a blanket umbrella.
+grep -q '^After=' "$repo/packaging/systemd/postgresql-ordering.conf.example"
+grep -q '^RestartPreventExitStatus=74 78' "$repo/packaging/systemd/miningcore.service"

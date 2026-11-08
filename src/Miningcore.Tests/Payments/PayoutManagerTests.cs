@@ -559,6 +559,7 @@ public class PayoutManagerTests
             fixture.Manager.StartAsync(CancellationToken.None));
 
         Assert.Contains("Another payout manager", ex.Message);
+        Assert.Equal(ProcessExitCodes.PayoutOwnershipBlocked, fixture.ProcessStatus.ExitCode);
     }
 
     [Fact]

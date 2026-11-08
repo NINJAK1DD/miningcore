@@ -294,7 +294,8 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
             ? "Another payout manager currently holds the PostgreSQL advisory lock."
             : "A durable payout-manager ownership marker remains without the advisory lock.";
         var recovery = "Run exactly one payout/reconciliation processor per database. " +
-            "Clear a durable marker only after confirming the recorded process is dead and reconciling any wallet submission with an uncertain outcome.";
+            "Clear a durable marker only after confirming the recorded process is dead and reconciling any wallet submission with an uncertain outcome. " +
+            PayoutOwnershipRecoveryAssistant.RecoveryHint;
 
         if(owner?.OwnerId == null)
             return $"{conflict} {recovery}";

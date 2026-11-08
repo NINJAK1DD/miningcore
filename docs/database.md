@@ -692,6 +692,62 @@ complete payout-manager lifetime. The advisory lock rejects a second live manage
 continues to block replacement after a process, host or database-session loss, because an operator
 may need to reconcile a wallet submission whose response was lost.
 
+### Guided payout ownership recovery
+
+In a foreground terminal, normal startup offers a recovery assistant before starting any hosted
+services when payout processing is enabled and an ownership conflict exists. Choosing to keep
+protection exits with status 78. Successful recovery continues normal startup, which must acquire
+fresh ownership; another instance winning that acquisition still blocks startup.
+
+A systemd service or redirected session never waits for input or accepts piped confirmations.
+Ownership conflicts exit with status 78; the updated packaged unit prevents restart loops for that
+status. Stop the service first, then run the standalone assistant from a terminal as the same account
+and with the same configuration/environment as the service. For the packaged layout:
+
+```console
+sudo systemctl stop miningcore
+sudo -u miningcore /usr/bin/dotnet /opt/miningcore/Miningcore.dll \
+  -c /etc/miningcore/config.json --recover-payout-ownership
+```
+
+This command inspects only the configured PostgreSQL database and starts no mining, API or wallet
+services. It exits after recovery; it does not launch a second foreground pool alongside systemd.
+For custom layouts, substitute the actual binary, service account and config paths. Preserve any
+PostgreSQL environment settings used by the service (such as `PGSSLROOTCERT`) and ensure the account
+can read the same certificates. Do not change database roles to work around permission errors.
+
+The assistant shows the resolved database/role/schema, previous host/PID, acquisition time, owner
+token/generation, current lock state and up to ten recent recorded payment batches. These are
+diagnostics, not proof that release is safe. It cannot prove a remote process is dead, recover missing
+logs, or establish whether a wallet sent a payment that never reached the database. Follow the wallet
+reconciliation procedure below whenever a submission may have occurred.
+
+Choose **1** (the default) to keep protection, **2** to review evidence and instructions, or **3** to
+begin release. Release requires typing `STOPPED`, `CHECKED` and `RELEASE <displayed-owner-token>`
+after stopping every old instance/restart loop and completing wallet reconciliation. If unsure,
+keep protection. Blank input, EOF, a failed confirmation or cancellation before release leaves the
+marker intact. A connection failure during commit requires inspecting again because the commit
+result may be unknown.
+
+Release obtains the same advisory lock, pins the inspected table and matches the exact owner token
+and generation inside a transaction. A live lock, changed table or changed owner refuses release.
+It clears only ownership fields and records the release time; it does not change balances, payments,
+payment batches or the generation. The terminal reports the released token/generation and time;
+normal foreground startup also logs the action through its configured logger. Preserve the
+standalone terminal result with the incident record. There is no force or automatic-clear option.
+
+Only after successful recovery, start exactly one intended service:
+
+```console
+sudo systemctl reset-failed miningcore
+sudo systemctl start miningcore
+sudo systemctl status miningcore --no-pager -l
+```
+
+The SQL procedure below remains available for diagnosis and recovery with older binaries.
+
+### Manual diagnosis and recovery
+
 Stop Miningcore before stopping or restarting its PostgreSQL server during planned maintenance. A
 clean Miningcore shutdown clears the durable row; stopping PostgreSQL first destroys the guard
 session and deliberately leaves the row owned. When PostgreSQL is local, the safe order is:

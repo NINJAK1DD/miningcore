@@ -12,6 +12,9 @@ public static class ProcessExitCodes
 {
     public const int GeneralFailure = 1;
 
+    // Requires operator recovery; restarting cannot resolve a retained payout owner.
+    public const int PayoutOwnershipBlocked = 78;
+
     // EX_IOERR. The packaged systemd unit deliberately does not restart this status because
     // Miningcore could not durably account for accepted shares in either PostgreSQL or the
     // recovery journal. An operator must reconcile the incident before starting it again.

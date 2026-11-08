@@ -180,6 +180,12 @@ public class Program : ProcessStatusBackgroundService
 
             var app = ParseCommandLine(args);
 
+            if(recoverPayoutOwnershipOption.HasValue() &&
+               (shareRecoveryOption.HasValue() || verifyShareRecoveryStateOption.HasValue() ||
+                acknowledgeShareRecoveryStateOption.HasValue() || versionOption.HasValue() ||
+                generateSchemaOption.HasValue()))
+                throw new PoolStartupException("Use --recover-payout-ownership on its own with -c <configfile>.");
+
             if(versionOption.HasValue())
             {
                 app.ShowVersion();
@@ -244,7 +250,20 @@ public class Program : ProcessStatusBackgroundService
 
             if(!configFileOption.HasValue())
             {
+                if(recoverPayoutOwnershipOption.HasValue())
+                    throw new PoolStartupException("Payout ownership recovery requires -c <configfile>.");
                 app.ShowHelp();
+                return;
+            }
+
+            if(recoverPayoutOwnershipOption.HasValue())
+            {
+                clusterConfig = ReadConfig(configFileOption.Value(), true);
+                processStatus = new ProcessStatus();
+                if(!await RecoverPayoutOwnershipAsync(clusterConfig))
+                    processStatus.MarkFailed(ProcessExitCodes.PayoutOwnershipBlocked);
+                else
+                    Console.WriteLine("Recovery completed. Start exactly one intended Miningcore instance or restart its service.");
                 return;
             }
 
@@ -256,6 +275,15 @@ public class Program : ProcessStatusBackgroundService
             var apiConfig = clusterConfig.Api;
 
             ConfigureLogging();
+            // Prompt before any hosted services, listeners or wallet clients start. Services
+            // without a terminal retain the normal fail-closed lease acquisition path.
+            if(!isShareRecoveryMode && ShouldRunPaymentProcessor(clusterConfig) &&
+               HasInteractiveTerminal() && !await RecoverPayoutOwnershipAsync(clusterConfig, true))
+            {
+                processStatus = new ProcessStatus();
+                processStatus.MarkFailed(ProcessExitCodes.PayoutOwnershipBlocked);
+                return;
+            }
             LogSkippedStratumListenerValidation(clusterConfig);
             LogRuntimeInfo();
             ValidateRuntimeEnvironment();
@@ -493,6 +521,7 @@ public class Program : ProcessStatusBackgroundService
     private static CommandOption shareRecoveryOption;
     private static CommandOption verifyShareRecoveryStateOption;
     private static CommandOption acknowledgeShareRecoveryStateOption;
+    private static CommandOption recoverPayoutOwnershipOption;
     private static CommandOption generateSchemaOption;
     private static bool isShareRecoveryMode;
     private static ClusterConfig clusterConfig;
@@ -1419,6 +1448,45 @@ public class Program : ProcessStatusBackgroundService
         return document;
     }
 
+    private static bool HasInteractiveTerminal() =>
+        !Console.IsInputRedirected && !Console.IsOutputRedirected;
+
+    private static async Task<bool> RecoverPayoutOwnershipAsync(ClusterConfig config, bool quietIfUnowned = false)
+    {
+        var connectionString = PostgresConnectionPolicy.Build(config.Persistence?.Postgres);
+        var recovery = new PostgresPayoutOwnershipRecovery(new PgConnectionFactory(connectionString.ToString()));
+        using var cancellation = new CancellationTokenSource();
+        ConsoleCancelEventHandler cancel = (_, args) =>
+        {
+            args.Cancel = true;
+            cancellation.Cancel();
+        };
+        Console.CancelKeyPress += cancel;
+        try
+        {
+            return await PayoutOwnershipRecoveryAssistant.RunAsync(recovery, Console.In,
+                Console.Out, HasInteractiveTerminal(), cancellation.Token, quietIfUnowned);
+        }
+        catch(OperationCanceledException) when(cancellation.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Recovery cancelled. Inspect ownership again before retrying if cancellation occurred during release.");
+            return false;
+        }
+        catch(InvalidOperationException ex)
+        {
+            throw new PoolStartupException(ex.Message);
+        }
+        catch(Npgsql.NpgsqlException)
+        {
+            throw new PoolStartupException("Payout ownership recovery could not complete. Check database connectivity, permissions and migrations. " +
+                "Inspect ownership again before retrying: a connection failure during release can leave its commit result unknown.");
+        }
+        finally
+        {
+            Console.CancelKeyPress -= cancel;
+        }
+    }
+
     private static CommandLineApplication ParseCommandLine(string[] args,
         bool suppressDiagnostics = false)
     {
@@ -1449,6 +1517,9 @@ public class Program : ProcessStatusBackgroundService
         acknowledgeShareRecoveryStateOption = app.Option(
             "--acknowledge-share-recovery-state",
             "After database reconciliation, verify and durably acknowledge fatal share-recovery evidence",
+            CommandOptionType.NoValue);
+        recoverPayoutOwnershipOption = app.Option("--recover-payout-ownership",
+            "Interactively inspect and recover payout ownership, then exit without starting services",
             CommandOptionType.NoValue);
         generateSchemaOption = app.Option("-gcs|--generate-config-schema <outputfile>", "Generate JSON schema from configuration options", CommandOptionType.SingleValue);
         app.HelpOption("-? | -h | --help");

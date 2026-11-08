@@ -17,7 +17,8 @@ Restart=on-failure
 RestartSec=5
 # Exit 74 means accepted shares were stored by neither PostgreSQL nor the recovery journal.
 # Automatic restart is unsafe until the operator has reconciled the journal and fatal marker.
-RestartPreventExitStatus=74
+# Exit 78 requires guided payout ownership recovery; do not restart in a loop.
+RestartPreventExitStatus=74 78
 KillSignal=SIGTERM
 TimeoutStartSec=30
 # Miningcore reserves part of its 45-second host budget for durable recovery state. Keep a

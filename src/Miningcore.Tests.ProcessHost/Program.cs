@@ -48,6 +48,22 @@ if(args.Length > 0 && string.Equals(args[0], "hold",
        StringComparison.Ordinal))
     return await HoldRecoveryOwnershipAsync(args);
 
+if(args.Length > 0 && args[0] == "payout-lease")
+{
+    if(args.Length != 3)
+        return 64;
+    using var payoutHost = Host.CreateDefaultBuilder().Build();
+    await using var lease = new Miningcore.Payments.PostgresPayoutManagerLease(
+        new Miningcore.Persistence.Postgres.PgConnectionFactory(args[1]));
+    if(!await lease.TryAcquireAsync(CancellationToken.None))
+        return 78;
+    await File.WriteAllTextAsync(args[2], "acquired");
+    await payoutHost.RunAsync();
+    await lease.DisposeAsync();
+    await File.WriteAllTextAsync(args[2] + ".released", "released");
+    return 0;
+}
+
 if(args.Length > 0 && string.Equals(args[0], "api",
        StringComparison.Ordinal))
     return await RunApiListenerAsync(args);

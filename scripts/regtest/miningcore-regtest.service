@@ -11,6 +11,7 @@ WorkingDirectory=/opt/miningcore
 ExecStart=/usr/bin/dotnet /opt/miningcore/Miningcore.dll -c /etc/miningcore/config.json
 Restart=on-failure
 RestartSec=5
+RestartPreventExitStatus=74 78
 # .NET's systemd/console lifetime handles SIGTERM. Do not override this with
 # SIGINT for a non-interactive service or graceful host shutdown may not start.
 KillSignal=SIGTERM
