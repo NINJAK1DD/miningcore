@@ -95,7 +95,7 @@
         <PackageReference Include="MailKit" Version="4.18.2" />
         <!-- Pin the patched transitive dependency until all upstream packages resolve
              Pkcs >= 10.0.13; remove only after restore/audit confirms that floor. -->
-        <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
+        <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
         <PackageReference Include="McMaster.Extensions.CommandLineUtils" Version="5.1.0" />
         <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14" />
         <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.14" />
