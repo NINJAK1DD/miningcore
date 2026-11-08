@@ -91,6 +91,10 @@ sudo -u "$PGUSER" env -i PATH="$pg_bin:$PATH" PGHOST="$PGHOST" PGPORT="$PGPORT" 
   python3 "$repo/scripts/test-lab/test-payout-recovery-restore.py" "$test_host" "$scratch" \
   "$repo/src/Miningcore/Persistence/Postgres/Scripts/add_payout_recovery_audit.sql"
 
+sudo -u "$PGUSER" env -i PATH="$pg_bin:$PATH" PGHOST="$PGHOST" PGPORT="$PGPORT" \
+  PGUSER="$PGUSER" PGDATABASE="$PGDATABASE" PGPASSFILE="$scratch/admin.pgpass" \
+  python3 "$repo/scripts/test-lab/test-payout-recovery-permissions.py" "$test_host" "$scratch" \
+  "$repo/src/Miningcore/Persistence/Postgres/Scripts/add_payout_recovery_audit.sql"
 
 printf '%s\n' "MININGCORE_TEST_POSTGRES=Host=127.0.0.1;Port=$PGPORT;Username=miningcore;Password=$app_password;Database=postgres" >"$scratch/pool.env"
 # Use the documented actual-unit drop-in dependencies against this isolated database.

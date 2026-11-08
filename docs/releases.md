@@ -51,6 +51,8 @@ RC.2 deployment acceptance also requires the isolated
 role/permission checks and explicit resolution of historical-endpoint exceptions. Choose dedicated
 recovery credentials where production requires stronger separation; terminal confirmations alone
 are not authentication. Preserve the rehearsal evidence separately from CI and wallet reconciliation.
+For that configuration, reapply the [dedicated-login grants](database.md#dedicated-recovery-identity-and-permissions)
+and require its automated permission check to pass after every migration/restore before activation.
 
 When multiple failures occur, process exit status uses precedence **74 > 78 > ordinary failure**.
 An earlier retryable failure therefore cannot mask a later condition requiring operator recovery.
