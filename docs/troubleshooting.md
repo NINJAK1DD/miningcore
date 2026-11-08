@@ -202,6 +202,9 @@ identifiers before sharing; retain the original privately.
   reconciliation and must never be imported.
 - **The recovery journal contains records.** Preserve the source and use the manifested one-shot
   importer. Follow [recovery-journal import](database.md#inspect-and-import-a-recovery-journal).
+- **Exit status `78` / PostgreSQL timestamp configuration required:** verify the current schema,
+  explicitly set `persistence.postgres.enableLegacyTimestamps`, then reset the failed service and
+  restart. See [timestamp compatibility](configuration.md#postgresql-timestamp-compatibility).
 - **Exit status `78` / retained payout owner without a live lock.** Use the
   [guided ownership recovery assistant](database.md#guided-payout-ownership-recovery). It requires
   confirmation that the previous instance is stopped and wallet reconciliation is complete.

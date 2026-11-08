@@ -332,6 +332,77 @@ public class PayoutOwnershipRecoveryIntegrationTests
         finally { await db.Connection.ExecuteAsync($"DROP OWNED BY {role}; DROP ROLE {role}"); }
     }
 
+    [PostgresIntegrationFact]
+    public async Task ReplacedHistoryAfterConfirmation_IsRefused()
+    {
+        await using var db = await Database.CreateAsync();
+        var snapshot = await db.Recovery.InspectAsync(CancellationToken.None);
+        await db.Connection.ExecuteAsync("ALTER TABLE payment_batches RENAME TO old_batches; CREATE TABLE payment_batches (LIKE old_batches INCLUDING ALL)");
+        var error = await Assert.ThrowsAsync<PayoutRecoveryException>(() => db.Recovery.ReleaseAsync(snapshot, "incident", CancellationToken.None));
+        Assert.Contains("payment-history relation changed", error.Message);
+        Assert.Equal(db.Owner, await db.OwnerAsync());
+    }
+
+    [PostgresIntegrationFact]
+    public async Task TimestampDetection_OnlyUsesCurrentSchema()
+    {
+        await using var db = await Database.CreateAsync();
+        await using var other = await Database.CreateAsync();
+        await other.Connection.ExecuteAsync("CREATE TABLE shares(created timestamp without time zone)");
+        Assert.Null(await Program.GetPostgresColumnType(db.Factory, "shares", "created"));
+        await db.Connection.ExecuteAsync("CREATE TABLE shares(created timestamptz)");
+        Assert.Equal("timestamp with time zone", await Program.GetPostgresColumnType(db.Factory, "shares", "created"));
+    }
+
+    [PostgresIntegrationFact]
+    public async Task DeadlineDuringRelease_RollsBackOwnerAndAudit()
+    {
+        await using var db = await Database.CreateAsync();
+        var snapshot = await db.Recovery.InspectAsync(CancellationToken.None);
+        using var blocker = db.Connection.BeginTransaction();
+        await db.Connection.ExecuteAsync("LOCK TABLE payout_manager_recovery_events IN ACCESS EXCLUSIVE MODE", transaction: blocker);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => db.Recovery.ReleaseAsync(snapshot, "incident", deadline.Token));
+        blocker.Rollback();
+        Assert.Equal(db.Owner, await db.OwnerAsync());
+        Assert.Equal(0, await db.Connection.ExecuteScalarAsync<int>("SELECT count(*) FROM payout_manager_recovery_events"));
+    }
+
+    [PostgresIntegrationFact]
+    public async Task Migration_RejectsWrongIndex_AndPreservesLegacyAuditReceipts()
+    {
+        await using var db = await Database.CreateAsync();
+        var migration = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_payout_recovery_audit.sql"));
+        await db.Connection.ExecuteAsync("DROP INDEX idx_payment_batches_recovery_created; CREATE INDEX idx_payment_batches_recovery_created ON payment_batches(poolid)");
+        var error = await Assert.ThrowsAsync<PostgresException>(() => db.Connection.ExecuteAsync(migration));
+        Assert.Contains("Invalid idx_payment_batches", error.MessageText);
+        await db.Connection.ExecuteAsync("ROLLBACK; DROP INDEX idx_payment_batches_recovery_created");
+        await db.Connection.ExecuteAsync(migration);
+        var receipt = await db.Recovery.ReleaseAsync(await db.Recovery.InspectAsync(CancellationToken.None), "legacy-receipt", CancellationToken.None);
+        await db.Connection.ExecuteAsync($"ALTER TABLE {db.AuditSchema}.payout_manager_recovery_events SET SCHEMA \"{db.Schema}\"; DROP SCHEMA {db.AuditSchema} CASCADE");
+        await db.Connection.ExecuteAsync(migration);
+        Assert.Equal(db.Owner, await db.Connection.ExecuteScalarAsync<Guid>("SELECT owner_id FROM payout_manager_recovery_events WHERE event_id=@EventId", receipt));
+        Assert.Equal("legacy-receipt", await db.Connection.ExecuteScalarAsync<string>("SELECT incident_reference FROM payout_manager_recovery_events"));
+    }
+
+    [PostgresIntegrationFact]
+    public async Task Migration_RejectsApplicationOwnedAuditLookalikes()
+    {
+        await using var db = await Database.CreateAsync();
+        var role = "audit_impostor_" + Guid.NewGuid().ToString("N");
+        await db.Connection.ExecuteAsync($"CREATE ROLE {role}; CREATE TABLE payout_manager_recovery_events (forged text); ALTER TABLE payout_manager_recovery_events OWNER TO {role}");
+        try
+        {
+            var migration = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_payout_recovery_audit.sql"));
+            var error = await Assert.ThrowsAsync<PostgresException>(() => db.Connection.ExecuteAsync(migration));
+            Assert.Contains("plain table owned by this administrator", error.MessageText);
+            await db.Connection.ExecuteAsync("ROLLBACK");
+            Assert.Equal(db.Owner, await db.OwnerAsync());
+            Assert.Equal(0, await db.Connection.ExecuteScalarAsync<int>($"SELECT count(*) FROM {db.AuditSchema}.payout_manager_recovery_events"));
+        }
+        finally { await db.Connection.ExecuteAsync($"ROLLBACK; DROP OWNED BY {role}; DROP ROLE {role}"); }
+    }
+
     private sealed class DelegateFactory(Func<Task<IDbConnection>> open) : IConnectionFactory
     {
         public Task<IDbConnection> OpenConnectionAsync() => open();
@@ -343,6 +414,7 @@ public class PayoutOwnershipRecoveryIntegrationTests
         public Guid Owner { get; } = Guid.NewGuid();
         public NpgsqlConnection Connection { get; private set; }
         public string ConnectionString { get; private set; }
+        public string AuditSchema { get; private set; }
         public PgConnectionFactory Factory { get; private set; }
         public PostgresPayoutOwnershipRecovery Recovery { get; private set; }
 
@@ -370,6 +442,8 @@ public class PayoutOwnershipRecoveryIntegrationTests
                     INSERT INTO payout_manager_ownership VALUES(1, 7, @owner, 'test-host', 123, now() - interval '1 hour', NULL);
                     INSERT INTO payment_batches VALUES('test-pool', 'test-transaction', now());", new { owner = db.Owner });
                 await db.Connection.ExecuteAsync(await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_payout_recovery_audit.sql")));
+                db.AuditSchema = PostgresPayoutOwnershipRecovery.AuditSchema(await db.Connection.ExecuteScalarAsync<long>("SELECT 'payout_manager_ownership'::regclass::oid::bigint"));
+                await db.Connection.ExecuteAsync($"SET search_path TO \"{db.Schema}\", {db.AuditSchema}, public");
                 db.Factory = new PgConnectionFactory(new NpgsqlConnectionStringBuilder(connectionString)
                 {
                     SearchPath = $"\"{db.Schema}\",public",
@@ -379,6 +453,7 @@ public class PayoutOwnershipRecoveryIntegrationTests
             }
             catch
             {
+                await db.Connection.ExecuteAsync("ROLLBACK");
                 await db.DisposeAsync();
                 throw;
             }
@@ -389,6 +464,7 @@ public class PayoutOwnershipRecoveryIntegrationTests
 
         public async ValueTask DisposeAsync()
         {
+            if(AuditSchema != null) await Connection.ExecuteAsync($"DROP SCHEMA IF EXISTS {AuditSchema} CASCADE");
             await Connection.ExecuteAsync($"SET search_path TO public; DROP SCHEMA IF EXISTS \"{Schema}\" CASCADE");
             await Connection.DisposeAsync();
         }

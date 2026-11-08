@@ -25,6 +25,10 @@ The RC.1 schema already includes the RC.1 structures. The matrix below is for
 existing databases, not an instruction to rerun upgrade scripts after a fresh
 schema import. Schema installation does not enable every optional coin or PPS v1.
 
+Builds after RC.1 that include guided payout recovery also require the
+[next-candidate recovery migration and timestamp checklist](releases.md#guided-recovery-migration-matrix).
+That additive requirement does not change the frozen RC.1 matrix below.
+
 ## Database migration matrix
 
 Stop every writer and payout manager using the database and take a proven backup

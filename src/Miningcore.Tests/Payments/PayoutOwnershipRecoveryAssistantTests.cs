@@ -157,6 +157,69 @@ public class PayoutOwnershipRecoveryAssistantTests
         Assert.Equal(expected, Program.ShouldOfferPayoutRecovery(config, terminal, disabled));
     }
 
+    [Fact]
+    public async Task CancellationWrappedByProvider_IsReportedWithoutStackTrace()
+    {
+        var output = new StringWriter();
+        var recovery = new PostgresPayoutOwnershipRecovery(new CancelledOpenFactory());
+        Assert.Equal(PayoutRecoveryResult.Kept, await PayoutOwnershipRecoveryAssistant.RunAsync(recovery,
+            new StringReader(""), output, true, CancellationToken.None, promptTimeout: TimeSpan.FromMilliseconds(30)));
+        Assert.Contains("timed out", output.ToString());
+        Assert.DoesNotContain("provider-private-details", output.ToString());
+    }
+
+    [Fact]
+    public async Task DeadlineDuringRelease_KeepsProtectionAndExplainsReinspection()
+    {
+        var recovery = new Recovery { WaitDuringRelease = true };
+        var output = new StringWriter();
+        var answers = $"3\nSTOPPED\nCHECKED\nincident\nRELEASE {recovery.Snapshot.OwnerId}\n";
+        Assert.Equal(PayoutRecoveryResult.Kept, await PayoutOwnershipRecoveryAssistant.RunAsync(recovery,
+            new StringReader(answers), output, true, CancellationToken.None, promptTimeout: TimeSpan.FromMilliseconds(50)));
+        Assert.Contains("timed out", output.ToString());
+        Assert.Equal(0, recovery.Releases);
+    }
+
+    [Fact]
+    public async Task ActiveOperator_GetsFreshIdleBudgetForEachPrompt()
+    {
+        var recovery = new Recovery();
+        var answers = $"3\nSTOPPED\nCHECKED\nincident\nRELEASE {recovery.Snapshot.OwnerId}\n";
+        var output = new StringWriter();
+        Assert.Equal(PayoutRecoveryResult.Ready, await PayoutOwnershipRecoveryAssistant.RunAsync(recovery,
+            new SlowReader(answers), output, true, CancellationToken.None, promptTimeout: TimeSpan.FromMilliseconds(500)));
+        Assert.DoesNotContain("--no-payout-recovery-prompt", output.ToString());
+    }
+
+    [Fact]
+    public async Task InvalidAnswers_ExplainTheRequiredInput()
+    {
+        var output = new StringWriter();
+        await RunAsync(new Recovery(), "wrong\n3\nSTOPPED\nCHECKED\n\n", output);
+        Assert.Contains("Enter 1, 2 or 3", output.ToString());
+        Assert.Contains("Invalid incident reference", output.ToString());
+    }
+
+    private sealed class SlowReader(string answers) : StringReader(answers)
+    {
+        public override async ValueTask<string> ReadLineAsync(CancellationToken ct)
+        {
+            await Task.Delay(150, ct);
+            return await base.ReadLineAsync(ct);
+        }
+    }
+
+    private sealed class CancelledOpenFactory : Miningcore.Persistence.IConnectionFactory, Miningcore.Persistence.ICancellableConnectionFactory
+    {
+        public Task<System.Data.IDbConnection> OpenConnectionAsync() => throw new InvalidOperationException();
+        public async Task<System.Data.IDbConnection> OpenConnectionAsync(CancellationToken ct)
+        {
+            try { await Task.Delay(Timeout.InfiniteTimeSpan, ct); }
+            catch(OperationCanceledException) { throw new Npgsql.NpgsqlException("provider-private-details"); }
+            throw new InvalidOperationException();
+        }
+    }
+
     private sealed class WaitingReader : StringReader
     {
         public WaitingReader() : base("") { }
@@ -174,6 +237,7 @@ public class PayoutOwnershipRecoveryAssistantTests
             Database = "test", DatabaseRole = "test", Schema = "public", OwnerId = Guid.NewGuid(),
             Generation = 7, OwnerHost = "pool-host", OwnerProcessId = 123,
         };
+        public bool WaitDuringRelease;
         public int Releases;
         public int Inspections;
         public bool ChangeOwnerOnRefresh;
@@ -188,13 +252,14 @@ public class PayoutOwnershipRecoveryAssistantTests
             return Task.FromResult(Snapshot);
         }
 
-        public Task<PayoutRecoveryReceipt> ReleaseAsync(PayoutOwnershipSnapshot inspected, string incidentReference, CancellationToken ct)
+        public async Task<PayoutRecoveryReceipt> ReleaseAsync(PayoutOwnershipSnapshot inspected, string incidentReference, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
+            if(WaitDuringRelease) await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             Releases++;
             Incident = incidentReference;
             Released = inspected;
-            return Task.FromResult(new PayoutRecoveryReceipt(Guid.NewGuid(), DateTime.UtcNow));
+            return new PayoutRecoveryReceipt(Guid.NewGuid(), DateTime.UtcNow);
         }
     }
 }

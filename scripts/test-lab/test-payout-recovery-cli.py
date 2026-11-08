@@ -85,6 +85,11 @@ finally:
     sql("ALTER TABLE saved_ownership RENAME TO payout_manager_ownership")
 print("PASS: Main reports actionable missing-ownership migration guidance")
 
+result = subprocess.run(command + ["--no-payout-recovery-prompt"], input="", capture_output=True, text=True, timeout=30)
+assert result.returncode == 1 and "on its own" in result.stdout + result.stderr
+print("PASS: contradictory recovery flags are rejected before database access")
+audit_schema = sql("SELECT 'miningcore_audit_' || 'payout_manager_ownership'::regclass::oid::text")
+audit_table = audit_schema + ".payout_manager_recovery_events"
 owner = seed()
 result = subprocess.run(command, input=f"3\nSTOPPED\nCHECKED\nRELEASE {owner}\n", text=True, capture_output=True, timeout=30)
 assert result.returncode == 78, result.stdout + result.stderr
@@ -113,11 +118,24 @@ output = terminal([
 ], 0)
 assert "Released ownership generation 7" in output, output
 assert sql("SELECT owner_id IS NULL FROM payout_manager_ownership") == "t"
-assert sql(f"SELECT count(*) FROM payout_manager_recovery_events WHERE owner_id='{owner}' AND incident_reference='lab-267'") == "1"
-assert sql("SELECT NOT has_table_privilege(current_user, 'payout_manager_recovery_events', 'UPDATE,DELETE,TRUNCATE')") == "t"
+assert sql(f"SELECT count(*) FROM {audit_table} WHERE owner_id='{owner}' AND incident_reference='lab-267'") == "1"
+assert sql(f"SELECT NOT has_table_privilege(current_user, '{audit_table}', 'INSERT,UPDATE,DELETE,TRUNCATE')") == "t"
 assert sql("SELECT NOT rolsuper FROM pg_roles WHERE rolname=current_user") == "t"
-assert sql("SELECT pg_get_userbyid(relowner)<>current_user FROM pg_class WHERE oid='payout_manager_recovery_events'::regclass") == "t"
+assert sql(f"SELECT pg_get_userbyid(relowner)<>current_user FROM pg_class WHERE oid='{audit_table}'::regclass") == "t"
 print("PASS: explicit terminal recovery clears only the inspected owner and exits successfully")
+assert sql("SELECT pg_get_userbyid(datdba)=current_user FROM pg_database WHERE datname=current_database()") == "t"
+assert sql("SELECT pg_has_role(current_user, nspowner, 'USAGE') FROM pg_namespace WHERE nspname='public'") == "t"
+for statement in (
+    f"DROP TABLE {audit_table}", f"DROP SCHEMA {audit_schema} CASCADE",
+    f"ALTER TABLE {audit_table} DISABLE TRIGGER ALL",
+    f"INSERT INTO {audit_table} SELECT * FROM {audit_table}",
+    f"UPDATE {audit_table} SET incident_reference='forged'", f"DELETE FROM {audit_table}", f"TRUNCATE {audit_table}",
+):
+    denied = subprocess.run(["psql", "-X", "-v", "ON_ERROR_STOP=1", "-c", statement], capture_output=True, text=True)
+    assert denied.returncode != 0, statement
+assert sql(f"SELECT count(*) FROM {audit_table}") == "1"
+print("PASS: an application-owned database cannot drop, directly insert into or rewrite protected audit storage")
+
 
 for legacy in (True, False):
     document = json.loads(config.read_text())
@@ -202,7 +220,7 @@ normal["persistence"]["postgres"].pop("enableLegacyTimestamps")
 config.write_text(json.dumps(normal))
 try:
     result = subprocess.run(command, input="", capture_output=True, text=True, timeout=30)
-    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.returncode == 78, result.stdout + result.stderr
     assert "Set persistence.postgres.enableLegacyTimestamps to true and restart" in result.stdout + result.stderr
 finally:
     sql("DROP TABLE shares")

@@ -54,12 +54,14 @@ wsl -d Ubuntu -u root --exec bash /home/ubuntu/miningcore/scripts/test-lab/test-
 
 Substitute the separate checkout path when testing a PR. Root is used only to manage
 temporary systemd units; PostgreSQL, the Python driver and the recovery CLI run as `ubuntu`.
-The CLI uses a non-superuser database role. Every cluster/role gets a fresh random SCRAM
+The CLI uses a non-superuser role that owns its test database and `public`, matching the documented
+installation. It must still be unable to drop the protected audit schema/table, rewrite rows, disable
+triggers or insert rows directly. Every cluster/role gets a fresh random SCRAM
 password kept in restricted files/environment; no trust authentication or fixed password is used. The script
 creates an isolated PostgreSQL cluster and temporary units, tests the real CLI in
 a pseudo-terminal, and checks redirected input, default keep, cancellation, exact
 release, timestamp initialization, foreground startup, planned maintenance and simultaneous
-application/database shutdown. It asserts the CLI effective UID and directly verifies that exit
+application/database shutdown, idle timeout renewal, rejected flag combinations and protected audit permissions. It asserts the CLI effective UID and directly verifies that exit
 78 does not restart while an ordinary failure does. It never
 reboots the host or stops the shared lab database, and removes its temporary resources.
 

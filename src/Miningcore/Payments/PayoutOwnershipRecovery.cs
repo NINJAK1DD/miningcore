@@ -47,12 +47,13 @@ internal sealed class PostgresPayoutOwnershipRecovery(IConnectionFactory cf, Act
 {
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
     internal const string OwnershipMigration = "The payout-manager ownership schema is missing. Apply add_payout_manager_ownership.sql before recovery.";
-    internal const string AuditMigration = "Recovery audit storage is unavailable. Apply add_payout_recovery_audit.sql as a separate database administrator and grant the configured role SELECT and INSERT on payout_manager_recovery_events. Protection was kept.";
+    internal const string AuditMigration = "Recovery audit storage is unavailable. Apply add_payout_recovery_audit.sql as a separate database administrator and restore protected audit schema USAGE, SELECT and record_payout_recovery EXECUTE permissions. Protection was kept.";
     private static readonly object lockParameters = new
     {
         lockNamespace = PostgresPayoutManagerLease.LockNamespace,
         lockKey = PostgresPayoutManagerLease.LockKey,
     };
+    internal static string AuditSchema(long relationId) => "miningcore_audit_" + relationId;
     private static string Table(string schema, string name) => "\"" + schema.Replace("\"", "\"\"") + "\".\"" + name + "\"";
 
     public async Task<PayoutOwnershipSnapshot> InspectAsync(CancellationToken ct)
@@ -103,6 +104,10 @@ internal sealed class PostgresPayoutOwnershipRecovery(IConnectionFactory cf, Act
                 return snapshot with { EvidenceWarning = "Payment history could not be read within its time/permission limit. Ownership inspection succeeded; reconcile history externally. Apply add_payout_recovery_audit.sql for the history index." };
             }
         }
+        catch(NpgsqlException) when(ct.IsCancellationRequested)
+        {
+            throw new OperationCanceledException("Ownership inspection cancelled; no release was attempted.", ct);
+        }
         catch(PostgresException ex) when(ex.SqlState == PostgresErrorCodes.UndefinedTable)
         {
             throw new PayoutRecoveryException(OwnershipMigration, ProcessExitCodes.GeneralFailure);
@@ -149,9 +154,27 @@ internal sealed class PostgresPayoutOwnershipRecovery(IConnectionFactory cf, Act
                     inspected.ServerPort, inspected.RelationId, table }, tx, commandTimeout: 5, cancellationToken: ct));
             if(!sameRelation)
                 throw new PayoutRecoveryException("The inspected database, role, endpoint or ownership table changed. Protection was kept.");
-            var audit = Table(inspected.Schema, "payout_manager_recovery_events");
+            if(inspected.EvidenceWarning == null && inspected.BatchRelationId.HasValue)
+            {
+                var history = Table(inspected.BatchSchema, "payment_batches");
+                try
+                {
+                    await con.ExecuteAsync(new CommandDefinition($"LOCK TABLE {history} IN ACCESS SHARE MODE",
+                        transaction: tx, commandTimeout: 5, cancellationToken: ct));
+                    if(!await con.ExecuteScalarAsync<bool>(new CommandDefinition(@"
+                        SELECT to_regclass('payment_batches')::oid::bigint=@BatchRelationId
+                            AND to_regclass(@history)::oid::bigint=@BatchRelationId",
+                        new { inspected.BatchRelationId, history }, tx, commandTimeout: 5, cancellationToken: ct)))
+                        throw new PayoutRecoveryException("The payment-history relation changed. Protection was kept; inspect and reconcile again.");
+                }
+                catch(PostgresException ex) when(ex.SqlState is PostgresErrorCodes.UndefinedTable or PostgresErrorCodes.UndefinedFunction or PostgresErrorCodes.InvalidSchemaName or PostgresErrorCodes.InsufficientPrivilege)
+                {
+                    throw new PayoutRecoveryException("The inspected payment-history relation is unavailable. Protection was kept; inspect and reconcile again.");
+                }
+            }
+            var auditFunction = Table(AuditSchema(inspected.RelationId), "record_payout_recovery");
             writingAudit = true;
-            // Missing/denied audit INSERT rolls back the ownership UPDATE as well.
+            // Missing/denied audit append rolls back the ownership UPDATE as well.
             var receipt = await con.QuerySingleOrDefaultAsync<PayoutRecoveryReceipt>(new CommandDefinition($@"
                 WITH previous AS MATERIALIZED (
                     SELECT * FROM {table} WHERE id=1 AND owner_id=@OwnerId AND generation=@Generation FOR UPDATE
@@ -161,13 +184,10 @@ internal sealed class PostgresPayoutOwnershipRecovery(IConnectionFactory cf, Act
                     RETURNING previous.owner_id, previous.generation, previous.owner_host,
                         previous.owner_process_id, previous.acquired, target.released
                 )
-                INSERT INTO {audit}(event_id, database_name, database_role, ownership_schema, ownership_relation,
-                    owner_id, generation, owner_host, owner_process_id, acquired, released, releasing_host,
-                    releasing_process_id, incident_reference)
-                SELECT @eventId, current_database(), current_user, @Schema, @RelationId,
-                    released.owner_id, released.generation, released.owner_host, released.owner_process_id,
-                    released.acquired, released.released, @host, @pid, @incidentReference
-                FROM released RETURNING event_id AS EventId, released AS Released",
+                SELECT receipt.event_id AS EventId, receipt.released AS Released
+                FROM released CROSS JOIN LATERAL {auditFunction}(@eventId, released.owner_id,
+                    released.generation, released.owner_host, released.owner_process_id,
+                    released.acquired, released.released, @host, @pid, @incidentReference) receipt",
                 new { inspected.OwnerId, inspected.Generation, inspected.Schema, inspected.RelationId,
                     eventId, host = Environment.MachineName, pid = Environment.ProcessId, incidentReference },
                 tx, commandTimeout: 5, cancellationToken: ct));
@@ -179,11 +199,15 @@ internal sealed class PostgresPayoutOwnershipRecovery(IConnectionFactory cf, Act
                 tx.Commit();
             else
                 commit(tx);
-            logger.Warn("Operator released payout ownership generation {0}, token {1}; audit event {2}",
-                inspected.Generation, inspected.OwnerId, receipt.EventId);
+            logger.Warn("Operator released payout ownership generation {0}, token {1}; audit event {2}; incident {3}; released {4:O}",
+                inspected.Generation, inspected.OwnerId, receipt.EventId, JsonSerializer.Serialize(incidentReference), receipt.Released);
             return receipt;
         }
-        catch(PostgresException ex) when(!committing && ex.SqlState is PostgresErrorCodes.UndefinedTable or PostgresErrorCodes.InsufficientPrivilege)
+        catch(NpgsqlException) when(!committing && ct.IsCancellationRequested)
+        {
+            throw new OperationCanceledException("Release cancelled before commit. Protection was kept.", ct);
+        }
+        catch(PostgresException ex) when(!committing && ex.SqlState is PostgresErrorCodes.UndefinedTable or PostgresErrorCodes.UndefinedFunction or PostgresErrorCodes.InvalidSchemaName or PostgresErrorCodes.InsufficientPrivilege)
         {
             throw new PayoutRecoveryException(writingAudit ? AuditMigration :
                 "The inspected ownership table is unavailable or the configured role cannot lock/update it. Protection was kept. Check schema permissions and inspect again.");
@@ -212,10 +236,18 @@ internal static class PayoutOwnershipRecoveryAssistant
         TextWriter output, bool interactive, CancellationToken ct, bool quietIfUnowned = false, TimeSpan? promptTimeout = null)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadline.CancelAfter(promptTimeout ?? PromptTimeout);
+        var timeout = promptTimeout ?? PromptTimeout;
+        deadline.CancelAfter(timeout);
+        async Task<string> ReadPromptAsync()
+        {
+            deadline.CancelAfter(timeout);
+            var answer = await ReadLineAsync(input, deadline.Token);
+            deadline.CancelAfter(timeout);
+            return answer;
+        }
         try
         {
-            return await RunCoreAsync(recovery, input, output, interactive, deadline.Token, quietIfUnowned);
+            return await RunCoreAsync(recovery, input, output, interactive, deadline.Token, quietIfUnowned, ReadPromptAsync);
         }
         catch(OperationCanceledException) when(!ct.IsCancellationRequested && deadline.IsCancellationRequested)
         {
@@ -225,7 +257,7 @@ internal static class PayoutOwnershipRecoveryAssistant
     }
 
     private static async Task<PayoutRecoveryResult> RunCoreAsync(IPayoutOwnershipRecovery recovery, TextReader input,
-        TextWriter output, bool interactive, CancellationToken ct, bool quietIfUnowned)
+        TextWriter output, bool interactive, CancellationToken ct, bool quietIfUnowned, Func<Task<string>> readPrompt)
     {
         while(true)
         {
@@ -248,14 +280,19 @@ internal static class PayoutOwnershipRecoveryAssistant
                 await output.WriteLineAsync("Recovery requires an interactive terminal. Protection was kept. " + RecoveryHint);
                 return PayoutRecoveryResult.Kept;
             }
-            await output.WriteLineAsync("This recovery session expires after two minutes; timeout keeps protection. Use --no-payout-recovery-prompt to disable automatic startup prompts.");
+            await output.WriteLineAsync("Each prompt expires after two minutes of inactivity; timeout keeps protection.");
+            if(quietIfUnowned)
+                await output.WriteLineAsync("Use --no-payout-recovery-prompt to disable automatic startup prompts.");
             await output.WriteLineAsync("[1] Keep protection and exit (default)\n[2] Refresh recorded payments and recovery checks\n[3] Release protection after completing the checks");
             await output.WriteAsync("Choice [1]: ");
-            var choice = await ReadLineAsync(input, ct);
+            var choice = await readPrompt();
             if(choice is null or "" or "1")
                 return await KeepAsync(output);
             if(choice is not ("2" or "3"))
+            {
+                await output.WriteLineAsync("Enter 1, 2 or 3.");
                 continue;
+            }
             // Refresh immediately before displaying reconciliation evidence and confirmations.
             var fresh = await recovery.InspectAsync(ct);
             if(fresh.OwnerId != snapshot.OwnerId || fresh.Generation != snapshot.Generation ||
@@ -275,7 +312,7 @@ internal static class PayoutOwnershipRecoveryAssistant
             {
                 await output.WriteLineAsync("Latest recorded payment batches (up to 10, across all times; not a complete wallet history):");
                 foreach(var batch in snapshot.Batches)
-                    await output.WriteLineAsync($"  {batch.Created.ToUniversalTime():O} pool {Display(batch.PoolId)} transaction {Display(batch.TransactionId)}");
+                    await output.WriteLineAsync($"  {batch.Created.ToUniversalTime():O} pool {Display(batch.PoolId)} transaction {Display(batch.TransactionId)} [{(snapshot.Acquired.HasValue ? batch.Created >= snapshot.Acquired.Value ? "at/after acquisition" : "before acquisition" : "acquisition unknown")}]");
                 if(snapshot.Batches.Count == 0)
                     await output.WriteLineAsync("  No recorded batches found. This does NOT prove no payment was sent.");
             }
@@ -284,28 +321,34 @@ internal static class PayoutOwnershipRecoveryAssistant
             if(choice == "2")
                 continue;
             await output.WriteAsync("Type STOPPED to confirm every previous instance is stopped and cannot restart: ");
-            if(await ReadLineAsync(input, ct) != "STOPPED")
+            if(await readPrompt() != "STOPPED")
                 return await KeepAsync(output);
             await output.WriteAsync("Type CHECKED to confirm wallet/log reconciliation is complete and no uncertain payout remains: ");
-            if(await ReadLineAsync(input, ct) != "CHECKED")
+            if(await readPrompt() != "CHECKED")
                 return await KeepAsync(output);
             await output.WriteAsync("Incident reference (1-200 characters, no secrets): ");
-            var incident = await ReadLineAsync(input, ct);
+            var incident = await readPrompt();
             if(string.IsNullOrWhiteSpace(incident) || incident.Length > 200 || incident.Any(char.IsControl))
+            {
+                await output.WriteLineAsync("Invalid incident reference: enter 1–200 characters without control characters.");
                 return await KeepAsync(output);
+            }
             await output.WriteAsync($"To release only this record, type RELEASE {snapshot.OwnerId}: ");
-            if(await ReadLineAsync(input, ct) != $"RELEASE {snapshot.OwnerId}")
+            if(await readPrompt() != $"RELEASE {snapshot.OwnerId}")
                 return await KeepAsync(output);
             ct.ThrowIfCancellationRequested();
             var receipt = await recovery.ReleaseAsync(snapshot, incident, ct);
-            await output.WriteLineAsync($"Released ownership generation {snapshot.Generation}, token {snapshot.OwnerId} at {receipt.Released.ToUniversalTime():O}. Audit event {receipt.EventId}. Normal startup must acquire new ownership before payouts can run.");
+            await output.WriteLineAsync($"Released ownership generation {snapshot.Generation}, token {snapshot.OwnerId} at {receipt.Released.ToUniversalTime():O}. Audit event {receipt.EventId} in {AuditTable(snapshot)}. Normal startup must acquire new ownership before payouts can run.");
             return PayoutRecoveryResult.Ready;
         }
     }
 
+    private static string AuditTable(PayoutOwnershipSnapshot snapshot) => PostgresPayoutOwnershipRecovery.AuditSchema(snapshot.RelationId) + ".payout_manager_recovery_events";
+
     private static async Task ShowOwnerAsync(PayoutOwnershipSnapshot snapshot, TextWriter output)
     {
         await output.WriteLineAsync($"Database: {Display(snapshot.Database)}; role: {Display(snapshot.DatabaseRole)}; schema: {Display(snapshot.Schema)}; ownership OID {snapshot.RelationId}");
+        await output.WriteLineAsync($"Protected audit relation: {Display(AuditTable(snapshot))}");
         await output.WriteLineAsync($"Database endpoint (rechecked on release): {Display(snapshot.ServerAddress)}; port: {snapshot.ServerPort?.ToString() ?? "unknown"}");
         await output.WriteLineAsync($"Previous host: {Display(snapshot.OwnerHost)}; process: {snapshot.OwnerProcessId?.ToString() ?? "unknown"}");
         await output.WriteLineAsync($"Ownership acquired (UTC): {snapshot.Acquired?.ToUniversalTime().ToString("O") ?? "unknown"}");

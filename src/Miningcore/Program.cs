@@ -183,7 +183,7 @@ public class Program : ProcessStatusBackgroundService
             if(recoverPayoutOwnershipOption.HasValue() &&
                (shareRecoveryOption.HasValue() || verifyShareRecoveryStateOption.HasValue() ||
                 acknowledgeShareRecoveryStateOption.HasValue() || versionOption.HasValue() ||
-                generateSchemaOption.HasValue()))
+                generateSchemaOption.HasValue() || noPayoutRecoveryPromptOption.HasValue()))
                 throw new PoolStartupException("Use --recover-payout-ownership on its own with -c <configfile>.");
 
             if(versionOption.HasValue())
@@ -2408,14 +2408,20 @@ public class Program : ProcessStatusBackgroundService
             if(columnType != null)
                 enableLegacyTimestampBehavior = columnType.ToLower().Contains("without time zone");
             else
+            {
+                services.GetRequiredService<IProcessStatus>().MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
                 throw new PoolStartupException("Unable to determine the PostgreSQL timestamp type. Check the shares schema and explicitly set persistence.postgres.enableLegacyTimestamps to true or false before restarting.");
+            }
         }
 
         else
             enableLegacyTimestampBehavior = clusterConfig.Persistence.Postgres.EnableLegacyTimestamps.Value;
 
         if(enableLegacyTimestampBehavior && !clusterConfig.Persistence.Postgres.EnableLegacyTimestamps.HasValue)
+        {
+            services.GetRequiredService<IProcessStatus>().MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
             throw new PoolStartupException("Legacy PostgreSQL timestamps detected. Set persistence.postgres.enableLegacyTimestamps to true and restart; timestamp behavior must be configured before the first database connection.");
+        }
 
         if(enableLegacyTimestampBehavior)
         {
@@ -2798,9 +2804,9 @@ public class Program : ProcessStatusBackgroundService
                 "Bitcoin direct SOLO coinbase payout requires the direct-settlement block schema. Apply add_bitcoin_direct_solo.sql before starting canonical Bitcoin SOLO, or explicitly set soloCoinbasePayout to false to retain custodial settlement.");
     }
 
-    private static async Task<string> GetPostgresColumnType(IConnectionFactory cf, string table, string column)
+    internal static async Task<string> GetPostgresColumnType(IConnectionFactory cf, string table, string column)
     {
-        const string query = "SELECT data_type FROM information_schema.columns WHERE table_name = @table AND column_name = @column";
+        const string query = "SELECT data_type FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = @table AND column_name = @column";
 
         return await cf.Run(async con => await con.ExecuteScalarAsync<string>(query, new { table, column }));
     }

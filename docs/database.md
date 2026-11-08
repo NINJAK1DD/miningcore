@@ -697,8 +697,9 @@ may need to reconcile a wallet submission whose response was lost.
 In a foreground terminal, normal startup can offer recovery before any hosted services start.
 Use `--no-payout-recovery-prompt` for unattended terminals, containers with an allocated TTY,
 or scripted tmux/screen sessions. This disables the prompt, not payout ownership protection.
-Every interactive recovery session has a **two-minute deadline**, including confirmations.
-If reconciliation needs longer, keep protection and rerun the assistant after completing it.
+Each prompt has a **two-minute idle timeout**, renewed after each answer. An active operator can
+complete a longer standalone session; database operations remain bounded and cancellable.
+If reconciliation needs longer than an idle interval, keep protection and rerun after completing it.
 
 A retained owner without a live lock exits with status **78**; the packaged unit prevents restart
 loops for this case. A live lock exits with retryable status **1**, so a short overlap does not
@@ -718,8 +719,19 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
 
 Use the candidate-directory selection and schema precautions in the upgrade procedure above.
 The migration leaves retained owners and payment records unchanged. It creates an index on the
-history ordering columns and an administrator-owned `payout_manager_recovery_events` table,
-granting the ownership-table role SELECT and INSERT only. Fresh `createdb.sql` includes it.
+history ordering columns and an administrator-owned schema named `miningcore_audit_<ownership-OID>`.
+The assistant displays its exact name. This schema contains `payout_manager_recovery_events` and
+its append function; the application receives schema USAGE, table SELECT and function EXECUTE,
+with no direct INSERT, UPDATE, DELETE, TRUNCATE or schema CREATE. Fresh `createdb.sql` includes it.
+The separate schema protects history even when `miningcore` owns the database and therefore owns
+`public` through `pg_database_owner` (PostgreSQL 15+).
+
+Reapplying the migration moves an earlier ownership-schema audit table into the protected schema
+without changing its event UUIDs. If both locations contain audit tables, it stops for administrator
+reconciliation. It also rejects an incompatible existing history index instead of silently accepting
+it. Inspect any reported index mismatch before replacing the index with
+`CREATE INDEX idx_payment_batches_recovery_created ON payment_batches(created DESC, poolid, transactionconfirmationdata)`
+in the ownership schema during the maintenance window. Do not drop payment or audit data.
 Without this migration, normal clean startup remains available, but guided release fails closed.
 
 Run the standalone assistant as the service account, with the same configuration/environment:
@@ -737,9 +749,12 @@ The assistant displays the database, role, endpoint, ownership schema/relation i
 host/PID, acquisition time and owner token/generation. Option **2** refreshes these details and
 payment evidence; option **3** refreshes again before asking for confirmations. A changed owner,
 database identity or live lock refuses release. The resolved payment table's schema/OID is shown;
-a table outside the ownership schema is not used as evidence.
+a table outside the ownership schema is not used as evidence. If available history was displayed,
+release pins and rechecks that relation too; replacement or a changed resolution refuses release.
+This does not freeze the contents between prompts: reconciliation must still include external wallets/logs.
 
-Payment history is optional, bounded to two seconds and the latest ten batches across all times.
+Payment history is optional; each query is bounded to two seconds and returns the latest ten batches
+across all times. Each row is labelled before or at/after acquisition (or acquisition unknown).
 It is skipped entirely while a live payout lock exists. A missing/denied/timed-out query is labelled
 unavailable, not presented as an empty payment history. These rows are not a complete wallet
 history and cannot prove an old process is dead or that no unrecorded payment was sent. Reconcile
@@ -753,24 +768,40 @@ before release keeps protection. Release refusals return 78. Inspection/connecti
 
 Release reacquires the advisory lock and checks the exact token/generation, database/role/endpoint
 and pinned ownership table. It inserts the complete previous owner, release time, releasing host/PID
-and incident reference into `payout_manager_recovery_events` **in the same transaction** as clearing
+and incident reference through the protected append function into the audit table **in the same transaction** as clearing
 ownership. Audit insertion failure rolls the release back. The terminal reports the audit event UUID;
 standalone mode also configures normal logging. Balances, payments, batches and generation are unchanged.
 
 Audit rows survive later lease acquisition. UPDATE, DELETE and TRUNCATE are rejected, and the
-application role is not granted those privileges. Database administrators can still change schema,
-triggers or permissions; this is an operational audit trail, not a tamper-proof record against an
-administrator. Preserve normal database backups and the incident record.
+application role is not granted those privileges and cannot drop the administrator-owned audit
+schema or table. The database owner can still drop the entire database, and a superuser can alter
+any object. The append function accepts typed evidence and records the database and calling role
+itself, without running privileged SQL against application-owned relations. It narrows direct write
+access; its authorised callers can still supply false incident/owner claims. It is an operational
+record of authorised recovery, not independent proof against compromised financial credentials.
+For stricter separation, an administrator can revoke the application's EXECUTE grant and grant it
+only to a dedicated recovery login with the necessary ownership-table access; use that login's
+configuration for standalone recovery. Normal startup can still inspect ownership, but cannot
+release it without the recovery login. Never grant the application membership in the audit owner.
+
+Retain the release receipt UUID, UTC time and incident reference in central operational logs and
+the incident ticket. The release logger records all three, with the reference escaped; do not put
+secrets in it. Back up the whole database, including every `miningcore_audit_*` schema and its ACLs;
+a public-only dump omits the history. Verify restoration and permissions during backup drills.
+When an ownership table is deliberately replaced, preserve its old audit schema for retention;
+its successor has a different OID and audit schema.
 
 A lost commit response is explicitly reported as **unknown**, with the attempted audit UUID.
 Before retrying, inspect both the event and ownership row using a read-only database session:
 
 ```sql
-SELECT * FROM payout_manager_recovery_events WHERE event_id = 'REPLACE_WITH_REPORTED_UUID';
+SELECT * FROM miningcore_audit_12345.payout_manager_recovery_events
+WHERE event_id = 'REPLACE_WITH_REPORTED_UUID';
 SELECT * FROM payout_manager_ownership WHERE id = 1;
 ```
 
-Qualify both tables with the reported schema. Do not assume that a connection failure means the
+Replace `miningcore_audit_12345` with the protected audit schema printed by the assistant and
+qualify ownership with its separately reported schema. Do not assume that a connection failure means the
 release rolled back. After confirmed recovery, start exactly one intended instance:
 
 ```console

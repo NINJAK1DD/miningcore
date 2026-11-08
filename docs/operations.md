@@ -350,6 +350,9 @@ procedure for incidents that can affect accounting or availability.
   [share-recovery fatal-state reconciliation](database.md#reconcile-fatal-share-recovery-state).
 - **Recovery journal contains records:** preserve the source and use the
   [manifested one-shot importer](database.md#inspect-and-import-a-recovery-journal).
+- **Exit status `78` / PostgreSQL timestamp configuration required:** verify the current schema,
+  explicitly set `persistence.postgres.enableLegacyTimestamps`, then reset the failed service and
+  restart. See [timestamp compatibility](configuration.md#postgresql-timestamp-compatibility).
 - **Exit status `78` / retained payout owner without a live lock:** use the
   [guided payout recovery assistant](database.md#guided-payout-ownership-recovery) after stopping
   the previous instance and reconciling wallet history.

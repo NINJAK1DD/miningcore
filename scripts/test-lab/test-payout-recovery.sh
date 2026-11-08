@@ -63,6 +63,7 @@ wait_postgres() {
 wait_postgres
 psql -X -v ON_ERROR_STOP=1 >/dev/null <<SQL
 CREATE ROLE miningcore LOGIN PASSWORD '$app_password' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+ALTER DATABASE postgres OWNER TO miningcore;
 CREATE TABLE shares(created timestamp without time zone);
 ALTER TABLE shares OWNER TO miningcore;
 CREATE TABLE payment_batches(poolid text NOT NULL, transactionconfirmationdata text NOT NULL,
@@ -81,7 +82,8 @@ sudo -u "$PGUSER" env -i PYTHONUNBUFFERED=1 PATH="$PATH" HOME="$(getent passwd "
   PGPASSFILE="$scratch/app.pgpass" python3 "$repo/scripts/test-lab/test-payout-recovery-cli.py" "$app" "$scratch" "$test_host"
 
 psql -X -v ON_ERROR_STOP=1 -f "$repo/src/Miningcore/Persistence/Postgres/Scripts/add_payout_recovery_audit.sql" >/dev/null
-test "$(psql -X -Atc 'SELECT count(*) FROM payout_manager_recovery_events')" -eq 2
+audit_schema=$(psql -X -Atc "SELECT 'miningcore_audit_' || 'payout_manager_ownership'::regclass::oid::text")
+test "$(psql -X -Atc "SELECT count(*) FROM $audit_schema.payout_manager_recovery_events")" -eq 2
 echo 'PASS: reapplying the audit migration preserves recorded releases'
 
 printf '%s\n' "MININGCORE_TEST_POSTGRES=Host=127.0.0.1;Port=$PGPORT;Username=miningcore;Password=$app_password;Database=postgres" >"$scratch/pool.env"

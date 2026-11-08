@@ -1044,4 +1044,6 @@ for a legacy timestamp-without-time-zone schema and `false` for the current time
 Without an explicit setting, startup may inspect the schema, but it cannot safely change Npgsql's
 process-wide timestamp mode after that connection. A detected legacy schema therefore stops with
 instructions to set `enableLegacyTimestamps: true` and restart. An indeterminate schema also stops;
-check the schema and explicitly select the correct mode. Do not rely on late auto-enabling.
+check the schema and explicitly select the correct mode. Detection uses only the current schema,
+not an unrelated `shares` table elsewhere in the database. Both cases exit 78, so the packaged
+service waits for configuration repair rather than repeatedly restarting. Do not rely on late auto-enabling.

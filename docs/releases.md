@@ -22,6 +22,35 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased (after v0.4.0-rc.1): guided payout recovery and timestamp setup
+
+Include these operator steps in the next candidate's deployment checklist (including RC.2 if this
+change ships there). Normal upgrades must preserve ownership markers and financial records.
+
+### Guided recovery migration matrix
+
+| Existing deployment | Before enabling the new guided release |
+| --- | --- |
+| Existing ownership tables, no audit migration | Stop every payout manager, take a restorable full backup, and apply the candidate's `add_payout_recovery_audit.sql` as a separate administrator using the application's ownership schema/search path. |
+| Earlier guided recovery build with an audit table in `public` or another application-owned schema | Reapply the updated audit migration. It moves history into an administrator-owned `miningcore_audit_<ownership-OID>` schema, preserves receipt UUIDs and replaces direct INSERT access with restricted function execution. |
+| New empty database using this candidate | Import this candidate's `createdb.sql` once; it includes protected audit storage. Never import it over an existing database. |
+| Legacy `timestamp without time zone` shares with no explicit timestamp setting | Set `persistence.postgres.enableLegacyTimestamps` to `true` before starting the candidate. Use `false` for the modern `timestamptz` schema; verify the actual current schema first. |
+
+Without the audit migration, clean startup still works but guided release refuses to clear an owner.
+Install it during the upgrade rather than discovering the missing permission/storage mid-incident.
+Keep administrator ownership of the audit schema and include it in backups. Validate table/role
+permissions, preserve `RestartPreventExitStatus=74 78` and the actual-cluster PostgreSQL ordering,
+reload the unit and verify fresh ownership acquisition on clean startup. See the
+[guided recovery and audit procedure](database.md#guided-payout-ownership-recovery).
+
+Timestamp auto-detection no longer attempts to change Npgsql's cached mode after opening a
+connection. A legacy or indeterminate current schema without an explicit setting stops with exit
+78 and a configuration remedy; systemd does not retry it. Explicit settings take effect before the
+first connection, including standalone recovery. After correcting the configuration, use
+`systemctl reset-failed miningcore` and start the service. This change does not convert timestamps
+or require clearing payout state. The two-minute recovery limit is per idle prompt, and scripted
+TTY startups can use `--no-payout-recovery-prompt`; it cannot be combined with standalone recovery.
+
 ## Upcoming v0.4.0-rc.2: custodial coinbase confirmations
 
 Bitcoin-family custodial rewards now require both wallet maturity (`generate`) and

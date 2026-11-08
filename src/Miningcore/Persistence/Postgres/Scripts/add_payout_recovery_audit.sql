@@ -1,11 +1,60 @@
--- Stop payout managers. Run as a separate administrator in the ownership-table schema.
--- Existing balances, payment batches and ownership markers are not modified.
+-- Stop payout managers. Run as a separate administrator with the application's search_path.
+-- Existing owner markers, payments and audit event identities are preserved.
 BEGIN;
 SET LOCAL ROLE NONE;
 CREATE INDEX IF NOT EXISTS idx_payment_batches_recovery_created
     ON payment_batches(created DESC, poolid, transactionconfirmationdata);
-
-CREATE TABLE IF NOT EXISTS payout_manager_recovery_events
+DO $migration$
+DECLARE
+    ownership oid := 'payout_manager_ownership'::regclass;
+    ownership_schema name;
+    audit_schema name := 'miningcore_audit_' || ownership::text;
+    app_role name;
+    admin_role name := session_user;
+    grantee name;
+    entry record;
+    signature text;
+BEGIN
+    SELECT n.nspname, pg_get_userbyid(c.relowner) INTO ownership_schema, app_role
+        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=ownership;
+    IF ownership_schema <> current_schema() THEN
+        RAISE EXCEPTION 'Set search_path to the ownership schema before migrating payout recovery';
+    END IF;
+    IF app_role=admin_role AND NOT EXISTS(SELECT FROM pg_roles WHERE rolname=admin_role AND rolsuper)
+       OR app_role<>admin_role AND pg_has_role(app_role, admin_role, 'MEMBER') THEN
+        RAISE EXCEPTION 'Run as a separate administrator whose role is not inherited by the application';
+    END IF;
+    IF NOT EXISTS (
+        SELECT FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_am a ON a.oid=c.relam
+        WHERE i.indexrelid=to_regclass(format('%I.idx_payment_batches_recovery_created', ownership_schema))
+          AND i.indrelid=to_regclass(format('%I.payment_batches', ownership_schema))
+          AND a.amname='btree' AND i.indisvalid AND i.indisready
+          AND i.indnkeyatts=3 AND i.indnatts=3 AND i.indexprs IS NULL AND i.indpred IS NULL
+          AND pg_get_indexdef(i.indexrelid,1,true)='created'
+          AND i.indoption[0]=3 AND i.indoption[1]=0 AND i.indoption[2]=0
+          AND pg_get_indexdef(i.indexrelid,2,true)='poolid'
+          AND pg_get_indexdef(i.indexrelid,3,true)='transactionconfirmationdata') THEN
+        RAISE EXCEPTION 'Invalid idx_payment_batches_recovery_created; have an administrator inspect and replace it with the documented three-column B-tree';
+    END IF;
+    IF EXISTS(SELECT FROM pg_namespace WHERE nspname=audit_schema AND nspowner<>(SELECT oid FROM pg_roles WHERE rolname=admin_role)) THEN
+        RAISE EXCEPTION 'Existing audit schema must be owned by this separate administrator';
+    END IF;
+    EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION %I',audit_schema,admin_role);
+    -- Never adopt an application-created lookalike into a SECURITY DEFINER write path.
+    IF EXISTS(SELECT FROM pg_class c WHERE c.oid IN (
+            to_regclass(format('%I.payout_manager_recovery_events',ownership_schema)),
+            to_regclass(format('%I.payout_manager_recovery_events',audit_schema)))
+        AND (c.relowner<>(SELECT oid FROM pg_roles WHERE rolname=admin_role) OR c.relkind<>'r' OR c.relrowsecurity)) THEN
+        RAISE EXCEPTION 'Existing audit storage must be a plain table owned by this administrator without row security';
+    END IF;
+    -- Upgrade early recovery builds without deleting or recreating their audit history.
+    IF to_regclass(format('%I.payout_manager_recovery_events',ownership_schema)) IS NOT NULL THEN
+        IF to_regclass(format('%I.payout_manager_recovery_events',audit_schema)) IS NOT NULL THEN
+            RAISE EXCEPTION 'Both legacy and protected audit tables exist; reconcile them before retrying';
+        END IF;
+        EXECUTE format('ALTER TABLE %I.payout_manager_recovery_events SET SCHEMA %I',ownership_schema,audit_schema);
+    END IF;
+    EXECUTE format('CREATE TABLE IF NOT EXISTS %I.payout_manager_recovery_events
 (
     event_id UUID PRIMARY KEY,
     database_name TEXT NOT NULL,
@@ -22,40 +71,56 @@ CREATE TABLE IF NOT EXISTS payout_manager_recovery_events
     releasing_process_id INT NOT NULL,
     incident_reference TEXT NOT NULL CHECK(length(btrim(incident_reference)) BETWEEN 1 AND 200),
     UNIQUE(ownership_relation, owner_id, generation)
-);
-
-CREATE OR REPLACE FUNCTION guard_payout_recovery_events() RETURNS TRIGGER
-LANGUAGE plpgsql SET search_path TO pg_catalog AS $$
-BEGIN
-    RAISE EXCEPTION 'Payout recovery audit events are append-only' USING ERRCODE='55000';
-END $$;
-DROP TRIGGER IF EXISTS trg_payout_recovery_events_append_only ON payout_manager_recovery_events;
-CREATE TRIGGER trg_payout_recovery_events_append_only
-    BEFORE UPDATE OR DELETE OR TRUNCATE ON payout_manager_recovery_events
-    FOR EACH STATEMENT EXECUTE FUNCTION guard_payout_recovery_events();
-
-DO $$
-DECLARE app_role NAME; admin_role NAME := session_user; grantee NAME;
-BEGIN
-    SELECT pg_get_userbyid(relowner) INTO app_role FROM pg_class
-        WHERE oid='payout_manager_ownership'::regclass;
-    IF app_role = admin_role AND NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=admin_role AND rolsuper) THEN
-        RAISE EXCEPTION 'Run the payout recovery audit migration as a separate database administrator';
-    END IF;
-    IF app_role <> admin_role AND pg_has_role(app_role, admin_role, 'MEMBER') THEN
-        RAISE EXCEPTION 'The pool role must not inherit the recovery audit administrator role';
-    END IF;
-    EXECUTE format('ALTER TABLE payout_manager_recovery_events OWNER TO %I', admin_role);
-    EXECUTE format('ALTER FUNCTION guard_payout_recovery_events() OWNER TO %I', admin_role);
-    FOR grantee IN
-        SELECT DISTINCT pg_get_userbyid(a.grantee) FROM pg_class c, LATERAL aclexplode(c.relacl) a
-        WHERE c.oid='payout_manager_recovery_events'::regclass AND a.grantee<>0
-            AND a.grantee<>(SELECT oid FROM pg_roles WHERE rolname=admin_role)
+);',audit_schema);
+    EXECUTE format('ALTER TABLE %I.payout_manager_recovery_events OWNER TO %I',audit_schema,admin_role);
+    EXECUTE format($ddl$CREATE OR REPLACE FUNCTION %I.guard_payout_recovery_events() RETURNS trigger
+        LANGUAGE plpgsql SET search_path TO pg_catalog AS $body$
+        BEGIN RAISE EXCEPTION 'Payout recovery audit events are append-only' USING ERRCODE='55000'; END $body$ $ddl$,audit_schema);
+    EXECUTE format('DROP TRIGGER IF EXISTS trg_payout_recovery_events_append_only ON %I.payout_manager_recovery_events',audit_schema);
+    EXECUTE format('CREATE TRIGGER trg_payout_recovery_events_append_only BEFORE UPDATE OR DELETE OR TRUNCATE ON %I.payout_manager_recovery_events FOR EACH STATEMENT EXECUTE FUNCTION %I.guard_payout_recovery_events()',audit_schema,audit_schema);
+    -- Only typed caller-supplied evidence enters this function. It never executes SQL
+    -- against application-owned relations under administrator privileges.
+    EXECUTE format($ddl$CREATE OR REPLACE FUNCTION %I.record_payout_recovery(
+        event uuid, owner_token uuid, owner_generation bigint, owner_machine text,
+        owner_pid integer, owner_acquired timestamptz, owner_released timestamptz,
+        releasing_machine text, releasing_pid integer, incident text)
+        RETURNS TABLE(event_id uuid, released timestamptz)
+        LANGUAGE sql SECURITY DEFINER SET search_path TO pg_catalog AS $body$
+            INSERT INTO %I.payout_manager_recovery_events
+                (event_id,database_name,database_role,ownership_schema,ownership_relation,owner_id,
+                 generation,owner_host,owner_process_id,acquired,released,releasing_host,releasing_process_id,incident_reference)
+            VALUES(event,current_database(),coalesce(nullif(current_setting('role'),'none'),session_user),%L,%s,
+                owner_token,owner_generation,owner_machine,owner_pid,owner_acquired,owner_released,
+                releasing_machine,releasing_pid,incident)
+            RETURNING event_id,released
+        $body$ $ddl$,audit_schema,audit_schema,ownership_schema,ownership);
+    -- Remove inherited/default ACLs as well as direct grants, including column grants.
+    FOR grantee IN SELECT DISTINCT pg_get_userbyid(a.grantee) FROM pg_namespace n,
+        LATERAL aclexplode(n.nspacl) a WHERE n.nspname=audit_schema AND a.grantee<>0
+        AND a.grantee<>(SELECT oid FROM pg_roles WHERE rolname=admin_role)
+    LOOP EXECUTE format('REVOKE ALL ON SCHEMA %I FROM %I CASCADE',audit_schema,grantee); END LOOP;
+    EXECUTE format('REVOKE ALL ON SCHEMA %I FROM PUBLIC',audit_schema);
+    FOR grantee IN SELECT DISTINCT pg_get_userbyid(a.grantee) FROM pg_class c,
+        LATERAL aclexplode(c.relacl) a WHERE c.oid=to_regclass(format('%I.payout_manager_recovery_events',audit_schema))
+        AND a.grantee<>0 AND a.grantee<>(SELECT oid FROM pg_roles WHERE rolname=admin_role)
+    LOOP EXECUTE format('REVOKE ALL ON %I.payout_manager_recovery_events FROM %I CASCADE',audit_schema,grantee); END LOOP;
+    FOR entry IN SELECT at.attname,a.grantee FROM pg_attribute at,LATERAL aclexplode(at.attacl) a
+        WHERE at.attrelid=to_regclass(format('%I.payout_manager_recovery_events',audit_schema)) AND at.attnum>0
+        AND a.grantee<>(SELECT oid FROM pg_roles WHERE rolname=admin_role)
+    LOOP EXECUTE format('REVOKE ALL (%I) ON %I.payout_manager_recovery_events FROM %s CASCADE',entry.attname,audit_schema,
+        CASE WHEN entry.grantee=0 THEN 'PUBLIC' ELSE quote_ident(pg_get_userbyid(entry.grantee)) END); END LOOP;
+    EXECUTE format('REVOKE ALL ON %I.payout_manager_recovery_events FROM PUBLIC',audit_schema);
+    FOR entry IN SELECT p.oid::regprocedure AS routine FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=audit_schema
     LOOP
-        EXECUTE format('REVOKE ALL ON payout_manager_recovery_events FROM %I CASCADE', grantee);
+        EXECUTE format('ALTER FUNCTION %s OWNER TO %I',entry.routine,admin_role);
+        FOR grantee IN SELECT DISTINCT pg_get_userbyid(a.grantee) FROM pg_proc p,LATERAL aclexplode(p.proacl) a
+            WHERE p.oid=entry.routine::oid AND a.grantee<>0 AND a.grantee<>(SELECT oid FROM pg_roles WHERE rolname=admin_role)
+        LOOP EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I CASCADE',entry.routine,grantee); END LOOP;
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',entry.routine);
     END LOOP;
-    REVOKE ALL ON payout_manager_recovery_events FROM PUBLIC;
-    REVOKE ALL ON FUNCTION guard_payout_recovery_events() FROM PUBLIC;
-    EXECUTE format('GRANT SELECT, INSERT ON payout_manager_recovery_events TO %I', app_role);
-END $$;
+    signature := format('%I.record_payout_recovery(uuid,uuid,bigint,text,integer,timestamptz,timestamptz,text,integer,text)',audit_schema);
+    EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I',audit_schema,app_role);
+    EXECUTE format('GRANT SELECT ON %I.payout_manager_recovery_events TO %I',audit_schema,app_role);
+    EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO %I',signature,app_role);
+END $migration$;
 COMMIT;
