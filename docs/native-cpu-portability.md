@@ -164,7 +164,9 @@ also examines all 25 top-level native Makefiles, allowing reviewed optional flag
 only on their specific translation units. The native probe runs
 RandomX and RandomARQ known-answer hashes, Panthera and SCash cross-CPU hash
 comparisons, CryptoNote integrated-address decoding, GhostRider, Chukwa, Argon2d250,
-BLAKE3, HighwayHash and VerusHash 2.2 vectors. It also executes Cortex header hashing/SipHash
+BLAKE3, HighwayHash and VerusHash 2.2 vectors. Blake3 includes keyed and unkeyed
+16,385-byte inputs to exercise multi-chunk SIMD dispatch and its tail, both on the
+host and under the constrained QEMU CPU model. It also executes Cortex header hashing/SipHash
 and duplicate-edge rejection, and all four Zano exports with both malformed input
 and the mainnet genesis block. Zano checks positive serialization, hashing-blob,
 mining-hash and block-ID results; Cortex still covers rejection rather than valid

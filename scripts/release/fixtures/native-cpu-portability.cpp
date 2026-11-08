@@ -139,6 +139,16 @@ int main(int argc, char** argv)
     auto blake3 = symbol<void (*)(const char*, char*, uint32_t, const char*, uint32_t)>(lib, "blake3_export");
     blake3("", reinterpret_cast<char*>(output), 0, nullptr, 0);
     check_hash(output, "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262");
+    // 17 chunks exercise hash_many's widest batch and its tail on the host CPU,
+    // and the lower SIMD tiers selected under QEMU. Same i % 251 input pattern
+    // as the official vectors; this added length is cross-checked with BouncyCastle.
+    input.resize(16385);
+    for(size_t i = 0; i < input.size(); ++i) input[i] = static_cast<uint8_t>(i % 251);
+    blake3(reinterpret_cast<const char*>(input.data()), reinterpret_cast<char*>(output), input.size(), nullptr, 0);
+    check_hash(output, "1dabe216be2578830263b049de1639f39f05a4da616b9b78c7a5e4e41662fd1f");
+    const char* blake3_key = "whats the Elvish word for friend";
+    blake3(reinterpret_cast<const char*>(input.data()), reinterpret_cast<char*>(output), input.size(), blake3_key, 32);
+    check_hash(output, "9f1e8750b485576aa8af42e403bfb340665b45a952799d0155756c994db7dfd2");
     dlclose(lib);
     highwayhash(directory);
 
