@@ -7,6 +7,7 @@ using Miningcore.Blockchain.Xelis.Configuration;
 using Miningcore.Blockchain.Xelis.DaemonRequests;
 using Miningcore.Blockchain.Xelis.DaemonResponses;
 using Miningcore.Configuration;
+using Miningcore.Crypto.Hashing;
 using Miningcore.Extensions;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
@@ -296,10 +297,13 @@ public class XelisJobManager : JobManagerBase<XelisJob>
 
     public XelisCoinTemplate Coin => coin;
 
+    internal Func<bool> Blake3CapabilityProbe { get; set; } = Blake3NativeCapability.IsAvailable;
+    internal Func<bool> XelisCapabilityProbe { get; set; } = XelisNativeCapability.IsAvailable;
+
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
-        if(!XelisNativeCapability.IsAvailable())
-            throw new TrustedPoolStartupException("Xelis requires an x64 native runtime with v1, v2 and Blake3 hash exports passing known-answer self-tests", pc.Id);
+        Blake3NativeCapability.EnsureAvailable(pc.Id, Blake3CapabilityProbe);
+        XelisNativeCapability.EnsureAvailable(pc.Id, XelisCapabilityProbe);
         coin = pc.Template.As<XelisCoinTemplate>();
 
         extraPoolConfig = pc.Extra.SafeExtensionDataAs<XelisPoolConfigExtra>();

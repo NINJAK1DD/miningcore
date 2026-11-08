@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Autofac;
 using Miningcore.Blockchain;
@@ -14,13 +15,15 @@ using Miningcore.Mining;
 using Miningcore.Tests.Mining;
 using Miningcore.Time;
 using NSubstitute;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Org.BouncyCastle.Crypto.Digests;
 using Org.BouncyCastle.Crypto.Parameters;
 using Xunit;
 
 namespace Miningcore.Tests.Crypto;
 
-public class Blake3NativeCapabilityTests
+public class Blake3NativeCapabilityTests : TestBase
 {
     internal static byte[] ReferenceHash(ReadOnlySpan<byte> input, byte[] key = null)
     {
@@ -32,7 +35,7 @@ public class Blake3NativeCapabilityTests
         return output;
     }
 
-    private sealed class Hasher(byte[] key, string mode) : IHashAlgorithm
+    private sealed class Hasher(byte[] key, string mode, int brokenLength = -1) : IHashAlgorithm
     {
         public void Digest(ReadOnlySpan<byte> input, Span<byte> output, params object[] extra)
         {
@@ -41,9 +44,81 @@ public class Blake3NativeCapabilityTests
             if(mode == "zero") { output.Clear(); return; }
             var result = ReferenceHash(mode == "ignores-input" ? ReadOnlySpan<byte>.Empty : input,
                 mode == "ignores-key" ? null : key);
-            if(mode == "wrong") result[0] ^= 1;
+            if(mode == "wrong" || input.Length == brokenLength) result[0] ^= 1;
             result.CopyTo(output);
         }
+    }
+
+    [Theory]
+    [InlineData(64, false)] [InlineData(64, true)]
+    [InlineData(65, false)] [InlineData(65, true)]
+    [InlineData(1024, false)] [InlineData(1024, true)]
+    [InlineData(1025, false)] [InlineData(1025, true)]
+    [InlineData(16385, false)] [InlineData(16385, true)]
+    public void RejectsImplementationsBrokenOnlyAtBlockChunkOrSimdBoundary(int length, bool keyed)
+    {
+        Assert.False(Blake3NativeCapability.IsAvailable(_ => true,
+            key => new Hasher(key, "valid", (key != null) == keyed ? length : -1)));
+    }
+
+    [Fact]
+    public void CachedUnexpectedFailuresHaveSafePerPoolContext()
+    {
+        const string secret = "secret-native-path-and-key";
+        var calls = 0;
+        var probe = new Lazy<bool>(() => { calls++; throw new InvalidOperationException(secret); });
+        foreach(var poolId in new[] { "pool-a", "pool-b" })
+        {
+            foreach(var ensure in new Action<string>[]
+            {
+                id => Blake3NativeCapability.EnsureAvailable(id, () => probe.Value),
+                id => XelisNativeCapability.EnsureAvailable(id, () => probe.Value),
+            })
+            {
+                var failure = Assert.Throws<TrustedPoolStartupException>(() => ensure(poolId));
+                Assert.Equal(poolId, failure.PoolId);
+                Assert.Contains("unexpected managed validation failure", failure.Message);
+                Assert.DoesNotContain(secret, failure.ToString());
+                Assert.DoesNotContain(secret, JsonConvert.SerializeObject(failure));
+                Assert.Null(failure.InnerException);
+                Assert.IsType<InvalidOperationException>(failure.OriginalFailure);
+            }
+        }
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public void FatalNativeFailuresAndCancellationAreNotDisguisedAsMissingCapabilities()
+    {
+        foreach(var error in new Exception[] { new OutOfMemoryException(), new StackOverflowException(),
+            new AccessViolationException(), new SEHException(), new OperationCanceledException() })
+        {
+            Assert.Same(error, Record.Exception(() => Blake3NativeCapability.EnsureAvailable("test", () => throw error)));
+            Assert.Same(error, Record.Exception(() => XelisNativeCapability.EnsureAvailable("test", () => throw error)));
+        }
+    }
+
+    [Fact]
+    public void EveryShippedKaspaTemplateHasAnExplicitCapabilityClassification()
+    {
+        var required = new HashSet<string> { "AIX", "CAS", "HTN", "KLS", "CSS", "NTL", "NXL", "PUG", "PYI", "WALA" };
+        var independent = new HashSet<string> { "KAS", "SPR", "BTM", "BRICS", "BGA", "KASV2", "SDR", "CYTX" };
+        var actual = ModuleInitializer.CoinTemplates.Values.OfType<KaspaCoinTemplate>().Select(x => x.Symbol).ToHashSet();
+        Assert.Equal(required.Concat(independent).OrderBy(x => x), actual.OrderBy(x => x));
+        foreach(var symbol in actual)
+            Assert.Equal(required.Contains(symbol), KaspaJobManager.RequiresBlake3(symbol));
+    }
+
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public void CustomTemplateFactoryChecksBlake3IncludingNestedDefinitions(bool nested)
+    {
+        var definition = JObject.Parse(nested ? "{\"hash\":\"reverse\",\"args\":[{\"hash\":\"blake3\"}]}" : "{\"hash\":\"blake3\"}");
+        if(!Blake3NativeCapability.IsAvailable())
+            Assert.Contains("blake3_export", Assert.Throws<TrustedPoolStartupException>(
+                () => HashAlgorithmFactory.GetHash(ModuleInitializer.Container, definition)).Message);
+        else
+            Assert.NotNull(HashAlgorithmFactory.GetHash(ModuleInitializer.Container, definition));
     }
 
     [Theory]
@@ -83,6 +158,58 @@ public class Blake3NativeCapabilityTests
         Id = "native-capability-test", Template = template,
         PaymentProcessing = new PoolPaymentProcessingConfig(), Daemons = [],
     };
+
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public void AlephiumStartupOrderingIsDeterministicOnEveryPlatform(bool available)
+    {
+        var manager = new AlephiumProbe { Blake3CapabilityProbe = () => available };
+        var pool = Pool(new AlephiumCoinTemplate { Symbol = "ALPH" });
+        if(available) manager.Configure(pool, new ClusterConfig());
+        else Assert.Throws<TrustedPoolStartupException>(() => manager.Configure(pool, new ClusterConfig()));
+        Assert.Equal(available, manager.ConfiguredDaemons);
+    }
+
+    [Theory]
+    [InlineData("AIX")] [InlineData("CAS")] [InlineData("HTN")] [InlineData("KLS")]
+    [InlineData("CSS")] [InlineData("NTL")] [InlineData("NXL")] [InlineData("PUG")]
+    [InlineData("PYI")] [InlineData("WALA")] [InlineData("KAS")] [InlineData("SPR")]
+    [InlineData("BTM")] [InlineData("BRICS")] [InlineData("BGA")] [InlineData("KASV2")]
+    [InlineData("SDR")] [InlineData("CYTX")]
+    public void KaspaStartupOrderingIsDeterministicOnEveryPlatform(string symbol)
+    {
+        foreach(var available in new[] { false, true })
+        {
+            var calls = 0;
+            var manager = new KaspaProbe { Blake3CapabilityProbe = () => { calls++; return available; } };
+            var pool = Pool(new KaspaCoinTemplate { Symbol = symbol });
+            var required = KaspaJobManager.RequiresBlake3(symbol);
+            if(available || !required) manager.Configure(pool, new ClusterConfig());
+            else Assert.Throws<TrustedPoolStartupException>(() => manager.Configure(pool, new ClusterConfig()));
+            Assert.Equal(available || !required, manager.ConfiguredDaemons);
+            Assert.Equal(required ? 1 : 0, calls);
+        }
+    }
+
+    [Fact]
+    public void XelisNamesTheMissingCapabilityBeforeDaemonConfiguration()
+    {
+        var manager = new XelisJobManager(Substitute.For<IComponentContext>(), new StandardClock(),
+            Substitute.For<IMessageBus>(), Substitute.For<IExtraNonceProvider>())
+        {
+            Blake3CapabilityProbe = () => false,
+            XelisCapabilityProbe = () => throw new Exception("must not probe Xelis yet"),
+        };
+        // Deliberately no template/daemon configuration: either gate must run first.
+        var pool = new PoolConfig { Id = "xel-test" };
+        var missingBlake3 = Assert.Throws<TrustedPoolStartupException>(() => manager.Configure(pool, new ClusterConfig()));
+        Assert.Contains("blake3_export", missingBlake3.Message);
+        Assert.Equal(pool.Id, missingBlake3.PoolId);
+        manager.Blake3CapabilityProbe = () => true;
+        manager.XelisCapabilityProbe = () => false;
+        Assert.Contains("xelis_hash_v2_export", Assert.Throws<TrustedPoolStartupException>(
+            () => manager.Configure(pool, new ClusterConfig())).Message);
+    }
 
     [Fact]
     public void AlephiumChecksNativeCapabilityBeforeConfiguringDaemons()

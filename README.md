@@ -657,6 +657,10 @@ requires its v1 and v2 proof hash self-tests. The bundled Windows `libmultihash.
 provide these exports, so these pools refuse startup with a targeted diagnostic. A passing
 managed lifecycle test does not certify a Windows native runtime. Use a supported source-built
 Linux runtime for these pools; there is no configuration bypass for the startup checks.
+Custom templates selecting the `blake3` hasher, including nested hash compositions, require
+the same capability before activation. Startup vectors cover block/chunk boundaries and
+wide SIMD batches with keyed and unkeyed inputs up to 16,385 bytes. Restart after replacing
+the native runtime; capabilities are cached for the process lifetime.
 
 For managed-only development on a machine without the C++ workload, `dotnet build` and unrelated
 tests may use `-p:BuildOdoCryptWindows=false`. That development-only opt-out omits Odocrypt from the
