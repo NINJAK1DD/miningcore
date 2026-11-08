@@ -111,6 +111,9 @@ public class XelisLifecycleTests
     private static StratumConnection Issue(XelisJob source, Proof proof)
     {
         NonBitcoinCandidateCreditTests.Set(source, "xelisHash", proof);
+        // Isolate lifecycle assertions from the optional native Blake3 dependency.
+        // This placeholder block hash does not certify native block identities.
+        NonBitcoinCandidateCreditTests.Set(source, "blake3Hasher", new Proof());
         var worker = XelisDifficultyTests.Worker(1);
         NonBitcoinCandidateCreditTests.Set(worker, "RemoteEndpoint", new IPEndPoint(IPAddress.Loopback, 12345));
         var context = worker.ContextAs<XelisWorkerContext>();
@@ -240,7 +243,11 @@ public class XelisLifecycleTests
         var pending = Submit(fixture, a, job.JobId, deadline.Token);
         try
         {
-            await fixture.SubmissionEntered.Task.WaitAsync(deadline.Token);
+            // Surface an early submission failure instead of masking it with the
+            // timeout waiting for an RPC that the failed task will never send.
+            var first = await Task.WhenAny(pending, fixture.SubmissionEntered.Task).WaitAsync(deadline.Token);
+            if(first == pending) await pending;
+            Assert.False(pending.IsCompleted, "Submission must remain blocked at the daemon until released");
             fixture.HeaderAlgorithm = "xel/v3";
             Assert.False(await fixture.Manager.Refresh(deadline.Token));
             await Assert.ThrowsAsync<XelisWorkUnavailableException>(() => Submit(fixture, b, job.JobId, deadline.Token));
