@@ -20,6 +20,15 @@ public class PpsArithmeticSchemaTests
         PostgresTestScripts.PathFor(name))
         .Replace("\\set ON_ERROR_STOP on", "").Replace("SET ROLE miningcore;", "");
 
+    private static async Task DropRecoveryAuditAsync(NpgsqlConnection db, string schema)
+    {
+        await db.ExecuteAsync("ROLLBACK; RESET SESSION AUTHORIZATION; RESET ROLE");
+        var relation = await db.ExecuteScalarAsync<long?>(
+            "SELECT to_regclass(@table)::oid::bigint", new { table = schema + ".payout_manager_ownership" });
+        if(relation.HasValue)
+            await db.ExecuteAsync($"DROP SCHEMA IF EXISTS miningcore_audit_{relation.Value} CASCADE");
+    }
+
     [PostgresIntegrationFact]
     public async Task PreflightRejectsEveryMalformedArithmeticContract()
     {
@@ -80,6 +89,7 @@ public class PpsArithmeticSchemaTests
         }
         finally
         {
+            await DropRecoveryAuditAsync(db, schema);
             await db.ExecuteAsync($"SET search_path TO public; DROP SCHEMA {schema} CASCADE");
         }
     }
@@ -115,6 +125,7 @@ public class PpsArithmeticSchemaTests
             }
             finally
             {
+                await DropRecoveryAuditAsync(db, schema);
                 await db.ExecuteAsync($"RESET SESSION AUTHORIZATION; RESET ROLE; SET search_path TO public; DROP SCHEMA IF EXISTS {schema} CASCADE; DROP ROLE {app}");
             }
         }
@@ -162,6 +173,7 @@ public class PpsArithmeticSchemaTests
         }
         finally
         {
+            await DropRecoveryAuditAsync(db, schema);
             await db.ExecuteAsync($"SET search_path TO public; DROP SCHEMA {schema} CASCADE");
         }
     }
@@ -279,6 +291,7 @@ public class PpsArithmeticSchemaTests
             }
             finally
             {
+                await DropRecoveryAuditAsync(db, schema);
                 await db.ExecuteAsync($@"RESET SESSION AUTHORIZATION; RESET ROLE; SET search_path TO public;
                     DROP SCHEMA IF EXISTS {schema} CASCADE;
                     DROP ROLE IF EXISTS {app}, {owner}, {activationLogin}, {escalation}");
@@ -448,6 +461,7 @@ public class PpsArithmeticSchemaTests
             }
             finally
             {
+                await DropRecoveryAuditAsync(db, schema);
                 await db.ExecuteAsync($"RESET SESSION AUTHORIZATION; RESET ROLE; DROP TABLE IF EXISTS pg_temp.pps_arithmetic_transitions; SET search_path TO public; DROP SCHEMA IF EXISTS {schema} CASCADE; DROP ROLE {app}; DROP ROLE {thirdParty}; DROP ROLE IF EXISTS {adminMember}");
             }
         }
