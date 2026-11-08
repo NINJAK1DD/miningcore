@@ -35,6 +35,10 @@ including nested and optional compositions, and attach the current pool ID to
 cached capability failures from shared templates.
 The check runs in the shared Bitcoin-template base, covering Handshake, Nexa,
 Satoshicash and Progpow as well as Bitcoin and merged-mining managers.
+Malformed custom hasher definitions, such as unknown names or invalid constructor
+arguments, now stop pool startup during this preflight instead of failing and
+being retried during job updates. This includes optional and proof-of-stake slots
+even when the current chain does not use them. Correct the template before restarting.
 The bundled Windows DLL does not provide this export: affected Windows pools now
 fail at startup instead of failing when shares or candidates require Blake3.
 Deploy a supported, source-built Linux runtime for these pools; this change does

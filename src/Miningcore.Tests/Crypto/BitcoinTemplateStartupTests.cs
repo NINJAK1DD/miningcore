@@ -162,6 +162,32 @@ public class BitcoinTemplateStartupTests : TestBase
     }
 
     [Fact]
+    public void EveryShippedBitcoinTemplateResolvesAllSixHasherSlots()
+    {
+        var templates = ModuleInitializer.CoinTemplates
+            .Where(x => x.Value is BitcoinTemplate).OrderBy(x => x.Key).ToArray();
+        Assert.NotEmpty(templates);
+        Assert.Contains(templates, x => x.Value.Symbol == "LTC");
+        Assert.Contains(templates, x => x.Value.Symbol == "DOGE");
+        foreach(var (name, value) in templates)
+        {
+            var template = (BitcoinTemplate) value;
+            var failure = Record.Exception(() =>
+            {
+                // Include optional/PoS slots even for chains that do not use them
+                // immediately. New shipped templates are picked up automatically.
+                Assert.Equal(template.MerkleTreeHasher != null, template.MerkleTreeHasherValue != null);
+                Assert.Equal(template.CoinbaseHasher != null, template.CoinbaseHasherValue != null);
+                Assert.Equal(template.HeaderHasher != null, template.HeaderHasherValue != null);
+                Assert.Equal(template.ShareHasher != null, template.ShareHasherValue != null);
+                Assert.Equal(template.BlockHasher != null, template.BlockHasherValue != null);
+                Assert.Equal(template.PoSBlockHasher != null, template.PoSBlockHasherValue != null);
+            });
+            Assert.True(failure == null, $"Shipped Bitcoin template '{name}' failed hasher preflight: {failure}");
+        }
+    }
+
+    [Fact]
     public void NonBitcoinTemplateConsumerRemainsUnaffected()
     {
         var manager = new EquihashProbe();
