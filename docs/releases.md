@@ -22,7 +22,7 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
-## Upcoming v0.4.0-rc.2: custodial coinbase confirmations
+## Upcoming v0.4.0-rc.2
 
 ### Native Blake3 startup validation
 
@@ -30,6 +30,9 @@ Alephium, Xelis and the AIX/CAS/HTN/KLS/CSS/NTL/NXL/PUG/PYI/WALA Kaspa variants
 now reject startup before daemon configuration if `libmultihash` lacks a working
 `blake3_export`. This includes Pyrin's post-fork dependency. Custom coin templates
 selecting the `blake3` hasher also require the capability before hasher activation.
+Bitcoin-family managers resolve all six hasher slots before daemon configuration,
+including nested and optional compositions, and attach the current pool ID to
+cached capability failures from shared templates.
 The bundled Windows DLL does not provide this export: affected Windows pools now
 fail at startup instead of failing when shares or candidates require Blake3.
 Deploy a supported, source-built Linux runtime for these pools; this change does

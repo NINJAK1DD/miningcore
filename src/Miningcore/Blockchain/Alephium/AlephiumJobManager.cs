@@ -727,7 +727,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
         SetupJobUpdates(ct);
     }
 
-    internal Func<bool> Blake3CapabilityProbe { get; set; } = Blake3NativeCapability.IsAvailable;
+    internal Func<bool> Blake3CapabilityProbe { get; init; } = Blake3NativeCapability.IsAvailable;
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {

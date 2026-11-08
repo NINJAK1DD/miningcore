@@ -1,15 +1,18 @@
 using System;
 using System.Linq;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using Autofac;
 using Miningcore.Blockchain;
 using Miningcore.Blockchain.Alephium;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Kaspa;
 using Miningcore.Blockchain.Xelis;
 using Miningcore.Configuration;
 using Miningcore.Crypto;
 using Miningcore.Crypto.Hashing;
+using Miningcore.Crypto.Hashing.Algorithms;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Tests.Mining;
@@ -109,6 +112,88 @@ public class Blake3NativeCapabilityTests : TestBase
             Assert.Equal(required.Contains(symbol), KaspaJobManager.RequiresBlake3(symbol));
     }
 
+    [Fact]
+    public void KaspaClassificationMatchesInstantiatedJobHashersIncludingPrivateCustomHashers()
+    {
+        foreach(var symbol in ModuleInitializer.CoinTemplates.Values.OfType<KaspaCoinTemplate>().Select(x => x.Symbol).Distinct())
+        {
+            var requiresBlake3 = false;
+            // Pyrin changes its dependency at the fork. Other current families have
+            // the same Blake3 dependency at every height; avoid creating FishHash's
+            // native dataset just to inspect the pre-fork Karlsen hash composition.
+            foreach(var height in symbol == "PYI" ? new[] { 0UL, ulong.MaxValue } : new[] { 0UL })
+            {
+                var manager = new KaspaProbe { Blake3CapabilityProbe = () => true };
+                manager.Configure(Pool(new KaspaCoinTemplate { Symbol = symbol }), new ClusterConfig());
+                typeof(KaspaJobManager).GetField("network", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(manager, "mainnet");
+                var job = (KaspaJob) typeof(KaspaJobManager).GetMethod("CreateJob", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(manager, new object[] { height });
+                for(var type = job.GetType(); type != null; type = type.BaseType)
+                    requiresBlake3 |= type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                        .Any(field => field.GetValue(job) is Blake3IHash);
+            }
+            Assert.Equal(KaspaJobManager.RequiresBlake3(symbol), requiresBlake3);
+        }
+    }
+
+    private sealed class BitcoinProbe() : BitcoinJobManager(Substitute.For<IComponentContext>(), new StandardClock(),
+        Substitute.For<IMessageBus>(), Substitute.For<IExtraNonceProvider>())
+    {
+        internal bool ConfiguredDaemons;
+        protected override void ConfigureDaemons() => ConfiguredDaemons = true;
+    }
+
+    [Theory]
+    [InlineData("merkleTreeHasherValue")] [InlineData("coinbaseHasherValue")]
+    [InlineData("headerHasherValue")] [InlineData("shareHasherValue")]
+    [InlineData("blockHasherValue")] [InlineData("posBlockHasherValue")]
+    public void BitcoinResolvesEveryHasherBeforeDaemonsAndReattributesCachedFailures(string field)
+    {
+        var template = new BitcoinTemplate();
+        var calls = 0;
+        var original = new InvalidOperationException("private-native-detail");
+        // Inject at the Lazy boundary rather than altering the process-wide capability
+        // cache. The factory rejection is deterministic on supported and unsupported CPUs.
+        typeof(BitcoinTemplate).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(template,
+            new Lazy<IHashAlgorithm>(() => { calls++; throw new TrustedPoolStartupException("blake3_export required", null, original); }));
+        foreach(var id in new[] { "bitcoin-a", "bitcoin-b" })
+        foreach(var stratum in new[] { false, true })
+        {
+            var manager = new BitcoinProbe();
+            var pool = Pool(template);
+            pool.Id = id;
+            pool.EnableInternalStratum = stratum;
+            var error = Assert.Throws<TrustedPoolStartupException>(() => manager.Configure(pool, new ClusterConfig()));
+            Assert.Equal(id, error.PoolId);
+            Assert.Equal("blake3_export required", error.Message);
+            Assert.Same(original, error.OriginalFailure);
+            Assert.DoesNotContain("private-native-detail", error.ToString());
+            Assert.False(manager.ConfiguredDaemons);
+        }
+        Assert.Equal(1, calls);
+    }
+
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public void BitcoinCustomBlake3TemplateIsCheckedBeforeDaemons(bool nested)
+    {
+        var template = new BitcoinTemplate
+        {
+            ComponentContext = ModuleInitializer.Container,
+            HeaderHasher = JObject.Parse(nested ? "{\"hash\":\"reverse\",\"args\":[{\"hash\":\"BLAKE3\"}]}" : "{\"hash\":\"BLAKE3\"}"),
+        };
+        var pool = Pool(template);
+        var manager = new BitcoinProbe();
+        if(Blake3NativeCapability.IsAvailable()) manager.Configure(pool, new ClusterConfig());
+        else
+        {
+            var error = Assert.Throws<TrustedPoolStartupException>(() => manager.Configure(pool, new ClusterConfig()));
+            Assert.Equal(pool.Id, error.PoolId);
+            Assert.Contains("blake3_export", error.Message);
+        }
+        Assert.Equal(Blake3NativeCapability.IsAvailable(), manager.ConfiguredDaemons);
+    }
+
     [Theory]
     [InlineData(false)] [InlineData(true)]
     public void CustomTemplateFactoryChecksBlake3IncludingNestedDefinitions(bool nested)
@@ -205,10 +290,14 @@ public class Blake3NativeCapabilityTests : TestBase
         var missingBlake3 = Assert.Throws<TrustedPoolStartupException>(() => manager.Configure(pool, new ClusterConfig()));
         Assert.Contains("blake3_export", missingBlake3.Message);
         Assert.Equal(pool.Id, missingBlake3.PoolId);
-        manager.Blake3CapabilityProbe = () => true;
-        manager.XelisCapabilityProbe = () => false;
+        var missingProof = new XelisJobManager(Substitute.For<IComponentContext>(), new StandardClock(),
+            Substitute.For<IMessageBus>(), Substitute.For<IExtraNonceProvider>())
+        {
+            Blake3CapabilityProbe = () => true,
+            XelisCapabilityProbe = () => false,
+        };
         Assert.Contains("xelis_hash_v2_export", Assert.Throws<TrustedPoolStartupException>(
-            () => manager.Configure(pool, new ClusterConfig())).Message);
+            () => missingProof.Configure(pool, new ClusterConfig())).Message);
     }
 
     [Fact]

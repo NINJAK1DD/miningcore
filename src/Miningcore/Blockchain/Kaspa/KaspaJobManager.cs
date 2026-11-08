@@ -833,7 +833,7 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
     internal static bool RequiresBlake3(string symbol) => symbol is
         "AIX" or "CAS" or "HTN" or "KLS" or "CSS" or "NTL" or "NXL" or "PUG" or "PYI" or "WALA";
 
-    internal Func<bool> Blake3CapabilityProbe { get; set; } = Blake3NativeCapability.IsAvailable;
+    internal Func<bool> Blake3CapabilityProbe { get; init; } = Blake3NativeCapability.IsAvailable;
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {

@@ -297,8 +297,8 @@ public class XelisJobManager : JobManagerBase<XelisJob>
 
     public XelisCoinTemplate Coin => coin;
 
-    internal Func<bool> Blake3CapabilityProbe { get; set; } = Blake3NativeCapability.IsAvailable;
-    internal Func<bool> XelisCapabilityProbe { get; set; } = XelisNativeCapability.IsAvailable;
+    internal Func<bool> Blake3CapabilityProbe { get; init; } = Blake3NativeCapability.IsAvailable;
+    internal Func<bool> XelisCapabilityProbe { get; init; } = XelisNativeCapability.IsAvailable;
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
