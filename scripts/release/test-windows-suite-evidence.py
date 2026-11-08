@@ -105,7 +105,7 @@ def report(path, baseline_path):
 def refresh_baseline(root, baseline, source_commit, source_run):
     if not re.fullmatch(r"[0-9a-fA-F]{40}", source_commit or ""):
         raise ValueError("Source commit must be a full 40-character Git SHA")
-    if not re.fullmatch(r"https://github.com/NINJAK1DD/miningcore/actions/runs/[1-9][0-9]*", source_run or ""):
+    if not re.fullmatch(r"https://github\.com/NINJAK1DD/miningcore/actions/runs/[1-9][0-9]*", source_run or ""):
         raise ValueError("Source run must be a Miningcore GitHub Actions run URL")
     # Refresh only the skip inventory. Never silently drop required cases or lower
     # the discovery floor to bless an incomplete run, even during regeneration.
@@ -324,6 +324,17 @@ class EvidenceTests(unittest.TestCase):
                             ("a" * 40, "https://example.com/run/1"), ("a" * 40, "")):
             with self.subTest(commit=commit, run=run), self.assertRaises(ValueError):
                 refresh_baseline(self.fixture(), self.baseline, commit, run)
+
+    def test_refresh_requires_exact_github_host_and_run_path(self):
+        valid = "https://github.com/NINJAK1DD/miningcore/actions/runs/123"
+        self.assertEqual(valid, refresh_baseline(self.fixture(), self.baseline, "a" * 40, valid)["source_run"])
+        invalid = [valid.replace("github.com", host) for host in
+                   ("githubXcom", "github-com", "github/com", "github.com.example.com", "github.com@example.com")]
+        invalid += [valid.replace("https://", "http://"), valid.replace("miningcore/", "other/"),
+                    valid + "/jobs/1", valid + "?run=1", valid + "#fragment", valid + "\n"]
+        for run in invalid:
+            with self.subTest(run=run), self.assertRaisesRegex(ValueError, "Source run"):
+                refresh_baseline(self.fixture(), self.baseline, "a" * 40, run)
 
     def test_baseline_write_is_atomic_and_never_overwrites_trx(self):
         with tempfile.TemporaryDirectory() as directory:

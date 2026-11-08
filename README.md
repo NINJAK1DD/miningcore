@@ -680,20 +680,23 @@ python scripts/release/test-windows-suite-evidence.py --self-test build/ci-tests
 ```
 
 For an intentional baseline change, download the complete successful Windows TRX and refresh
-the baseline with its full source commit and Actions run URL. For example, using the checked-in
-baseline's source run:
+the baseline with its full source commit and Actions run URL. Replace the placeholders below
+with the values for that downloaded artifact:
 
 ```powershell
-python scripts/release/test-windows-suite-evidence.py build/ci-tests/windows-full.trx --write-baseline scripts/release/windows-suite-baseline.json --source-commit d5a64505ddb6571290248b37ff80da3beeb7960f --source-run https://github.com/NINJAK1DD/miningcore/actions/runs/42476001430
+python scripts/release/test-windows-suite-evidence.py build/ci-tests/windows-full.trx --write-baseline scripts/release/windows-suite-baseline.json --source-commit '<full-commit-sha>' --source-run 'https://github.com/NINJAK1DD/miningcore/actions/runs/<run-id>'
 git diff -- scripts/release/windows-suite-baseline.json
 ```
 
-Use the commit and URL that actually produced your downloaded TRX. The helper records this
-provenance, refreshes skipped identities, and raises the discovery minimum to the observed count.
+Use the commit and URL that actually produced your downloaded TRX. The helper checks their
+format; it does not authenticate them against the TRX. It records this provenance, refreshes
+skipped identities, and raises the discovery minimum to the observed count.
 It refuses failed or incomplete evidence, a lower discovery count, or missing/skipped required
 cases. It preserves the required-case list and writes atomically. Inspect the diff before committing;
-intentional required-case renames or removals still need a separate explicit edit. CI never
-regenerates or automatically accepts the baseline.
+intentional required-case renames or removals still need a separate explicit edit. When retiring
+tests intentionally, review the expected count reduction and manually adjust `minimum_total`
+before regeneration; required-case entries must be reviewed separately. CI never regenerates
+or automatically accepts the baseline.
 
 TLS fixtures generate their own certificates and require the exact server identity or their
 private test root. Run them in a clean Windows VM or a test environment whose loopback traffic
