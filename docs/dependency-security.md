@@ -69,3 +69,32 @@ References:
 - [BouncyCastle.Crypto 1.9.0 lifecycle statement](https://github.com/bcgit/bc-csharp/discussions/450)
 - [Example advisory package-ID mapping](https://github.com/advisories/GHSA-v435-xc8x-wvr9)
 - [NuGet audit warnings](https://learn.microsoft.com/nuget/reference/errors-and-warnings/nu1901-nu1904)
+
+## Published dependency and runtime acceptance
+
+After a normal framework-dependent release publish, run the existing release gate:
+
+```console
+bash scripts/release/validate-managed-dependencies.sh publish
+```
+
+The gate checks the exact PKCS version from `Miningcore.csproj` in both the published
+`Miningcore.deps.json` library inventory and its active runtime target, and requires the runtime
+asset and DLL to be present. It follows future servicing reference updates without embedding a
+second current-version pin. It also rejects a reference below the 10.0.13 security floor.
+
+The gate prints `dotnet --list-runtimes`, then runs the dependency smoke under Miningcore's own
+published runtime configuration and dependency manifest. The smoke reports the selected .NET
+runtime version and location and requires .NET 10.0.14 or a later .NET 10 servicing release.
+The SDK used to compile the application and an inventory of installed runtimes alone do not
+establish which runtime executes it. CI's explicitly selected SDK is serviced to 10.0.403 in all
+three workflows; Ubuntu distribution-SDK lanes retain their independently checked package baseline.
+
+Before deployment, check `dotnet --list-runtimes` using the service's configured .NET installation
+and environment. Keep both `Microsoft.NETCore.App` and `Microsoft.AspNetCore.App` patched to the
+latest supported .NET 10 servicing release (at least 10.0.14 for this acceptance baseline), and
+restart the service after patching. A passing CI smoke records the CI host's selection, not the
+production service's selection; check any service-specific `DOTNET_ROOT` and roll-forward settings.
+These checks supplement the complete NuGet audit; they do not replace it.
+
+Baseline source: [Microsoft .NET 10.0.14 servicing release](https://github.com/dotnet/core/blob/main/release-notes/10.0/10.0.14/10.0.14.md).

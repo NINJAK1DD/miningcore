@@ -33,6 +33,12 @@ require_file "$publish_dir/BouncyCastle.Cryptography.dll"
 require_file "$publish_dir/BouncyCastle.Crypto.dll"
 require_file "$dependency_manifest"
 
+python3 "$script_dir/validate-published-pkcs.py" "$publish_dir" "$miningcore_project"
+
+# Inventory alone does not prove which runtime the application selects. The smoke
+# below also reports and checks the runtime chosen with Miningcore's runtimeconfig.
+dotnet --list-runtimes
+
 expected_version="$(sed -nE \
   's/.*PackageReference Include="Portable.BouncyCastle" Version="([^"]+)".*/\1/p' \
   "$miningcore_project")"

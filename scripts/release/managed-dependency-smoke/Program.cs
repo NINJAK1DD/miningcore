@@ -1,4 +1,9 @@
 using NBitcoin.Zcash;
+using System.Runtime.InteropServices;
+
+Console.WriteLine($"Selected runtime: {RuntimeInformation.FrameworkDescription} at {RuntimeEnvironment.GetRuntimeDirectory()}");
+if(Environment.Version.Major != 10 || Environment.Version.Minor != 0 || Environment.Version.Build < 14)
+    throw new InvalidOperationException("Release validation requires the supported .NET 10 runtime at 10.0.14 or later servicing level");
 
 // NBitcoin.Zcash 3.0.0 BLAKE2bWriter with a 16-byte zero personalization and no payload.
 const string expectedHash = "a8e32ff1cd45abfa87778f7747dfe5d1a1da9960b02eabe8b243e526c051570e";
