@@ -16,14 +16,19 @@ public class StratumFixturePortTests
     }
 
     [Fact]
-    public void DuplicateNumericPortIsDisposedBeforeRetryAndUniqueSocketIsRetained()
+    public void DuplicateNumericPortRemainsBoundDuringRetryAndUniqueSocketIsRetained()
     {
         using var duplicate = Bind();
         using var unique = Bind();
         var used = new HashSet<int> { ((IPEndPoint) duplicate.LocalEndPoint).Port };
         var calls = 0;
         var result = StratumAdmissionTests.Server.BindDistinctPort(IPAddress.Loopback, used,
-            _ => ++calls == 1 ? duplicate : unique);
+            _ =>
+            {
+                if(++calls == 1) return duplicate;
+                Assert.False(duplicate.SafeHandle.IsClosed);
+                return unique;
+            });
         Assert.Same(unique, result);
         Assert.Equal(2, calls);
         Assert.True(duplicate.SafeHandle.IsClosed);
@@ -41,6 +46,7 @@ public class StratumFixturePortTests
             Assert.Throws<InvalidOperationException>(() => StratumAdmissionTests.Server.BindDistinctPort(
                 IPAddress.Loopback, used, _ =>
                 {
+                    Assert.All(sockets, socket => Assert.False(socket.SafeHandle.IsClosed));
                     var socket = Bind();
                     used.Add(((IPEndPoint) socket.LocalEndPoint).Port);
                     sockets.Add(socket);
@@ -50,5 +56,21 @@ public class StratumFixturePortTests
             Assert.All(sockets, socket => Assert.True(socket.SafeHandle.IsClosed));
         }
         finally { foreach(var socket in sockets) socket.Dispose(); }
+    }
+
+    [Fact]
+    public void BindFailureReleasesPreviouslyRejectedSockets()
+    {
+        using var duplicate = Bind();
+        var used = new HashSet<int> { ((IPEndPoint) duplicate.LocalEndPoint).Port };
+        var calls = 0;
+        Assert.Throws<SocketException>(() => StratumAdmissionTests.Server.BindDistinctPort(
+            IPAddress.Loopback, used, _ =>
+            {
+                if(++calls == 1) return duplicate;
+                Assert.False(duplicate.SafeHandle.IsClosed);
+                throw new SocketException((int) SocketError.AddressNotAvailable);
+            }));
+        Assert.True(duplicate.SafeHandle.IsClosed);
     }
 }

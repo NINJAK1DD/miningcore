@@ -21,6 +21,16 @@ public class PearlPlainProofTests
             "python-block.bin.gz", "python-block.bin.json", "regtest-template.json", "share-only-proof.bin.gz",
             "share-only-proof.json", "srb-proof.bin.gz", "srb-proof.json", "wire-vectors.json" })
             Assert.Contains("Miningcore.Tests.Fixtures.Pearl." + file, names);
+
+        // This independently generated source inventory grows with the directory,
+        // even if a future fixture is accidentally excluded from EmbeddedResource.
+        using var inventory = GetType().Assembly.GetManifestResourceStream("Miningcore.Tests.PearlFixtureInventory");
+        Assert.NotNull(inventory);
+        using var reader = new StreamReader(inventory);
+        var files = reader.ReadToEnd().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        Assert.NotEmpty(files);
+        Assert.Equal(files.Select(file => "Miningcore.Tests.Fixtures.Pearl." + file).OrderBy(x => x),
+            names.Where(name => name.StartsWith("Miningcore.Tests.Fixtures.Pearl.", StringComparison.Ordinal)).OrderBy(x => x));
     }
 
     [Theory]

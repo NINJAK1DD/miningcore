@@ -469,13 +469,25 @@ public partial class StratumAdmissionTests
         {
             // Different local addresses may receive the same numeric port, while
             // PoolConfig.Ports is keyed only by port. Bound retries prevent a hang.
-            for(var attempt = 0; attempt < 32; attempt++)
+            var rejected = new List<Socket>();
+            try
             {
-                var socket = bind(new IPEndPoint(address, 0));
-                if(usedPorts.Add(((IPEndPoint) socket.LocalEndPoint).Port)) return socket;
-                socket.Dispose();
+                for(var attempt = 0; attempt < 32; attempt++)
+                {
+                    var socket = bind(new IPEndPoint(address, 0));
+                    // Keep collisions bound until allocation ends so the OS cannot
+                    // return the same local endpoint again on the next attempt.
+                    rejected.Add(socket);
+                    if(!usedPorts.Add(((IPEndPoint) socket.LocalEndPoint).Port)) continue;
+                    rejected.RemoveAt(rejected.Count - 1);
+                    return socket;
+                }
+                throw new InvalidOperationException("Unable to allocate distinct fixture listener ports after 32 attempts");
             }
-            throw new InvalidOperationException("Unable to allocate distinct fixture listener ports after 32 attempts");
+            finally
+            {
+                foreach(var socket in rejected) socket.Dispose();
+            }
         }
         internal async Task<TcpClient> Connect(int port = 0, IPAddress source = null)
         {

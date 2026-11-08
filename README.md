@@ -657,8 +657,12 @@ source build. For local toolchain-compatibility testing, an installed alternativ
 with `MININGCORE_WINDOWS_PLATFORM_TOOLSET`; setting it forces a native rebuild so the selected
 toolset is actually exercised. Release CI remains pinned to v143.
 
-The Windows CI job runs the complete test suite and fails on test failures or growth beyond
-the reviewed skip ceiling. It reports skipped cases and retains TRX results for 30 days.
+The Windows CI job runs the complete test suite and validates a reviewed discovery minimum,
+passing executions of all 22 original regression cases, and the exact skipped-case identities
+in [the Windows evidence baseline](scripts/release/windows-suite-baseline.json), in addition to
+the explicit skip ceiling. Legitimate test removals, renames or skip changes require a reviewed
+baseline update; new passing tests are allowed. The baseline records its source commit and CI run.
+CI reports skipped cases and retains TRX results for 30 days.
 This workflow check does not itself configure branch-protection requirements.
 With the .NET SDK and Visual Studio C++ workload described above installed, run locally with:
 

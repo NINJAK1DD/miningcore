@@ -1,0 +1,999 @@
+{
+  "source_commit": "aa6a9529d8ee46eb2e5abfc193348ac61e1672e8",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42441128187",
+  "minimum_total": 5842,
+  "required_passes": [
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
+      "method": "CompleteBlockMatchesOfficialPythonGatewayAndNodeIncludingCompactSizeBoundaries",
+      "case": "CompleteBlockMatchesOfficialPythonGatewayAndNodeIncludingCompactSizeBoundaries"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "AdmittedProfileBoundsLeavesSiblingsAndRowCoverage",
+      "case": "AdmittedProfileBoundsLeavesSiblingsAndRowCoverage"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "CompressedAndRawFormsHaveIdenticalCanonicalBytes",
+      "case": "CompressedAndRawFormsHaveIdenticalCanonicalBytes(gzip: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "CompressedAndRawFormsHaveIdenticalCanonicalBytes",
+      "case": "CompressedAndRawFormsHaveIdenticalCanonicalBytes(gzip: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "LegacyAndCurrentFormsHaveIdenticalCanonicalBytes",
+      "case": "LegacyAndCurrentFormsHaveIdenticalCanonicalBytes"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation",
+      "case": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation(offset: 0, value: 18446744073709551615)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation",
+      "case": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation(offset: 16, value: 65537)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation",
+      "case": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation(offset: 24, value: 0)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation",
+      "case": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation(offset: 24, value: 129)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation",
+      "case": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation(offset: 32, value: 18446744073709551615)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation",
+      "case": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation(offset: 40, value: 18446744073709551615)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation",
+      "case": "MaliciousDimensionsAndNestedCountsFailBeforeAllocation(offset: 8, value: 0)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "RealMinerFixtureMatchesPinnedDimensionsAndDigest",
+      "case": "RealMinerFixtureMatchesPinnedDimensionsAndDigest"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "SeededMutationCampaignBoundsNestedStructuresAndCompressedInput",
+      "case": "SeededMutationCampaignBoundsNestedStructuresAndCompressedInput"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPlainProofTests",
+      "method": "TruncatedAndOversizedDataFail",
+      "case": "TruncatedAndOversizedDataFail"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPoolTests",
+      "method": "ConcretePoolAuthorizesPublishesImmutableTargetsAndSerializesReplacement",
+      "case": "ConcretePoolAuthorizesPublishesImmutableTargetsAndSerializesReplacement(separateWorker: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPoolTests",
+      "method": "ConcretePoolAuthorizesPublishesImmutableTargetsAndSerializesReplacement",
+      "case": "ConcretePoolAuthorizesPublishesImmutableTargetsAndSerializesReplacement(separateWorker: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.XelisLifecycleTests",
+      "method": "AdmittedBlockReceiptSurvivesRetirementWhileUnrelatedOldSharesAreRejected",
+      "case": "AdmittedBlockReceiptSurvivesRetirementWhileUnrelatedOldSharesAreRejected"
+    },
+    {
+      "class": "Miningcore.Tests.Notifications.SmtpTransportTests",
+      "method": "AuthenticatedDeliverySucceedsOverTrustedTls",
+      "case": "AuthenticatedDeliverySucceedsOverTrustedTls(mode: \"implicitTls\")"
+    },
+    {
+      "class": "Miningcore.Tests.Stratum.StratumAdmissionTests",
+      "method": "LateClientBan_RejectsNextRequest_WhileHealthyClientAndOtherPoolContinue",
+      "case": "LateClientBan_RejectsNextRequest_WhileHealthyClientAndOtherPoolContinue(proxy: False, tls: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Stratum.StratumAdmissionTests",
+      "method": "LateClientBan_RejectsNextRequest_WhileHealthyClientAndOtherPoolContinue",
+      "case": "LateClientBan_RejectsNextRequest_WhileHealthyClientAndOtherPoolContinue(proxy: False, tls: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Stratum.StratumServerTests",
+      "method": "RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake",
+      "case": "RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake"
+    }
+  ],
+  "expected_skips": [
+    {
+      "class": "Miningcore.Tests.Benchmarks.Benchmarks",
+      "method": "Run_Benchmarks",
+      "case": "Run_Benchmarks"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Beam.BeamGpuProofTests",
+      "method": "PhysicalBeamHashThreeProofRetainsNativeIdCreditAndDuplicateContract",
+      "case": "PhysicalBeamHashThreeProofRetainsNativeIdCreditAndDuplicateContract"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Beam.BeamGpuProofTests",
+      "method": "PhysicalProofCandidateCapsCreditAndKeepsDuplicateOwnership",
+      "case": "PhysicalProofCandidateCapsCreditAndKeepsDuplicateOwnership"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinDirectSoloRegtestTests",
+      "method": "CustodialJob_SubmitsBip54CoinbaseToPreActivationNode",
+      "case": "CustodialJob_SubmitsBip54CoinbaseToPreActivationNode"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinDirectSoloRegtestTests",
+      "method": "DirectJob_SubmitsAndConfirmsWithoutDestinationWalletOwnership",
+      "case": "DirectJob_SubmitsAndConfirmsWithoutDestinationWalletOwnership"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinDuplicateSubscriptionTests",
+      "method": "BitcoinCore_AcceptsOutstandingCustodialAndDirectBlocksAfterDuplicateSubscribe",
+      "case": "BitcoinCore_AcceptsOutstandingCustodialAndDirectBlocksAfterDuplicateSubscribe"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinPayoutHandlerRegtestTests",
+      "method": "BrokenSendMany_ReportsEveryWalletOnlyTransaction",
+      "case": "BrokenSendMany_ReportsEveryWalletOnlyTransaction"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinPayoutHandlerRegtestTests",
+      "method": "ConfirmationBetweenMempoolAndWalletQueries_CompletesPayout",
+      "case": "ConfirmationBetweenMempoolAndWalletQueries_CompletesPayout"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinPayoutHandlerRegtestTests",
+      "method": "CustodialCoinbase_WalletMaturityWaitsForConfiguredDepth",
+      "case": "CustodialCoinbase_WalletMaturityWaitsForConfiguredDepth"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinPayoutHandlerRegtestTests",
+      "method": "WalletBroadcastDisabled_FailsAfterBoundedVerificationRetries",
+      "case": "WalletBroadcastDisabled_FailsAfterBoundedVerificationRetries"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinPayoutHandlerRegtestTests",
+      "method": "WalletBroadcastEnabled_AcceptsInitiallyUnbroadcastMempoolTransaction",
+      "case": "WalletBroadcastEnabled_AcceptsInitiallyUnbroadcastMempoolTransaction"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinPublicationRegtestTests",
+      "method": "CandidateOnlyHighMinimum_RealBlockCannotInflatePpsCreditAndReplayIsIdempotent",
+      "case": "CandidateOnlyHighMinimum_RealBlockCannotInflatePpsCreditAndReplayIsIdempotent"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinPublicationRegtestTests",
+      "method": "CanonicalProof_RemainsAcceptedAfterPublicationFailureAndReconnect",
+      "case": "CanonicalProof_RemainsAcceptedAfterPublicationFailureAndReconnect"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinPublicationRegtestTests",
+      "method": "DirectSoloProof_KeepsImmutableCreditAfterPublicationFailureAndReconnect",
+      "case": "DirectSoloProof_KeepsImmutableCreditAfterPublicationFailureAndReconnect"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinPublicationRegtestTests",
+      "method": "MinimumDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit",
+      "case": "MinimumDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinPublicationRegtestTests",
+      "method": "NiceHashDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit",
+      "case": "NiceHashDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinPublicationRegtestTests",
+      "method": "PpsV1Proof_KeepsOneDurableCreditAfterPublicationFailureAndReconnect",
+      "case": "PpsV1Proof_KeepsOneDurableCreditAfterPublicationFailureAndReconnect"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinPublicationRegtestTests",
+      "method": "StaticDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit",
+      "case": "StaticDifficulty_RealInFlightProofKeepsOriginalExactlyOnceCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinVersionRollingRegtestTests",
+      "method": "SourceVerifiedMask_SubmitsRolledHeaderToBitcoinCore",
+      "case": "SourceVerifiedMask_SubmitsRolledHeaderToBitcoinCore"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bAllocationResolutionTests",
+      "method": "AuditedResolution_RealPsqlDryRunApplyReplayAndInvalidCasesPreserveFinancialState",
+      "case": "AuditedResolution_RealPsqlDryRunApplyReplayAndInvalidCasesPreserveFinancialState"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bAllocationResolutionTests",
+      "method": "ReconciliationAudit_ReportsDenseRemainingBacklogWithoutFinancialWrites",
+      "case": "ReconciliationAudit_ReportsDenseRemainingBacklogWithoutFinancialWrites"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bMaturityRegtestTests",
+      "method": "AllocationHistoryQuery_ScopesPoolStatusTypeAndTimeWithoutOptionalDirectSchema",
+      "case": "AllocationHistoryQuery_ScopesPoolStatusTypeAndTimeWithoutOptionalDirectSchema"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bMaturityRegtestTests",
+      "method": "ExplicitRegtestSchedule_AllowsEnforcementBeforeCoveredCoinbaseStart",
+      "case": "ExplicitRegtestSchedule_AllowsEnforcementBeforeCoveredCoinbaseStart"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bMaturityRegtestTests",
+      "method": "HistoricalRecovery_AfterLaterPropOrPplnsSettlementWithPrunedShares_HoldsAllocationAcrossRestart",
+      "case": "HistoricalRecovery_AfterLaterPropOrPplnsSettlementWithPrunedShares_HoldsAllocationAcrossRestart"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bMaturityRegtestTests",
+      "method": "PersistedOrphan_ReactivationThroughPayoutManagerRestoresAllSchemesExactlyOnce",
+      "case": "PersistedOrphan_ReactivationThroughPayoutManagerRestoresAllSchemesExactlyOnce"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bMaturityRegtestTests",
+      "method": "PrunedCoinbase_UsesHeadersToMatureAndReconcileWithoutBlockBodies",
+      "case": "PrunedCoinbase_UsesHeadersToMatureAndReconcileWithoutBlockBodies"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bMaturityRegtestTests",
+      "method": "PrunedRollingCoinbase_UsesCreationParentMtpWithoutBlockBodies",
+      "case": "PrunedRollingCoinbase_UsesCreationParentMtpWithoutBlockBodies"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bMaturityRegtestTests",
+      "method": "RollingWallet_PreStartRewardUses111ConfirmationsIncludingRpcProgress",
+      "case": "RollingWallet_PreStartRewardUses111ConfirmationsIncludingRpcProgress"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bMaturityRegtestTests",
+      "method": "RollingWallet_UsesCreationParentAcrossExpiryRestartAndReorg",
+      "case": "RollingWallet_UsesCreationParentAcrossExpiryRestartAndReorg"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bMaturityRegtestTests",
+      "method": "WalletMaturity_ReleaseRestartReorgAndReconsiderKeepPendingRewardsTruthful",
+      "case": "WalletMaturity_ReleaseRestartReorgAndReconsiderKeepPendingRewardsTruthful"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bMaturityRegtestTests",
+      "method": "WalletRejectsImmatureFunds_LeavesPaymentsUnbooked",
+      "case": "WalletRejectsImmatureFunds_LeavesPaymentsUnbooked"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bRegtestTests",
+      "method": "HeaderV2_AcceptedProofSurvivesTerminalVarDiffPublicationFailure",
+      "case": "HeaderV2_AcceptedProofSurvivesTerminalVarDiffPublicationFailure"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bRegtestTests",
+      "method": "HeaderV2_AllPayoutSchemes_SubmitAcceptedCustodialBlocks",
+      "case": "HeaderV2_AllPayoutSchemes_SubmitAcceptedCustodialBlocks"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bRegtestTests",
+      "method": "HeaderV2_BackwardWallCorrectionPreservesMonotonicVarDiffAndAcceptedCredit",
+      "case": "HeaderV2_BackwardWallCorrectionPreservesMonotonicVarDiffAndAcceptedCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bRegtestTests",
+      "method": "HeaderV2_ForwardWallCorrectionPreservesMonotonicVarDiffAndAcceptedCredit",
+      "case": "HeaderV2_ForwardWallCorrectionPreservesMonotonicVarDiffAndAcceptedCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bRegtestTests",
+      "method": "HeaderV2_RealStratumPpsProof_CommitsExactlyOnceToPostgres",
+      "case": "HeaderV2_RealStratumPpsProof_CommitsExactlyOnceToPostgres"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bRegtestTests",
+      "method": "HeaderV2_ZeroIntervalVarDiffHonorsMaxDeltaAfterAcceptedProof",
+      "case": "HeaderV2_ZeroIntervalVarDiffHonorsMaxDeltaAfterAcceptedProof"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bRegtestTests",
+      "method": "HeaderV2_ZeroIntervalVarDiffPreservesAcceptedProofAndConnection",
+      "case": "HeaderV2_ZeroIntervalVarDiffPreservesAcceptedProofAndConnection"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bStartupTests",
+      "method": "ProductionContainer_SetupJobManagerReachesRealDaemonAndPublishesJob",
+      "case": "ProductionContainer_SetupJobManagerReachesRealDaemonAndPublishesJob"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.BitcoinBlake2b.BitcoinBlake2bUpgradePaymentTests",
+      "method": "SuccessfulAndUncertainPayments_SurviveMempoolLossRestartAndRevalidationWithoutDuplicate",
+      "case": "SuccessfulAndUncertainPayments_SurviveMempoolLossRestartAndRevalidationWithoutDuplicate"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Kaspa.KaspaDifficultyCreditTests",
+      "method": "CandidateCreditUsesHashTargetAndMultiplierForEveryValidator",
+      "case": "CandidateCreditUsesHashTargetAndMultiplierForEveryValidator"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Kaspa.KaspaDifficultyCreditTests",
+      "method": "EquivalentEffectiveNonceEncodingsCannotCreateAnotherCredit",
+      "case": "EquivalentEffectiveNonceEncodingsCannotCreateAnotherCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Kaspa.KaspaDifficultyCreditTests",
+      "method": "FullWidthProofJustAboveCompactTargetRemainsOrdinary",
+      "case": "FullWidthProofJustAboveCompactTargetRemainsOrdinary"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Kaspa.KaspaDifficultyCreditTests",
+      "method": "ProductionValidator_CreditsIssuedAssignmentAndExpiresOnlyRetiredWork",
+      "case": "ProductionValidator_CreditsIssuedAssignmentAndExpiresOnlyRetiredWork"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Kaspa.KaspaDifficultyCreditTests",
+      "method": "RejectedProofCanRecoverAtNewAssignmentAndConcurrentAliasesCommitExactlyOnce",
+      "case": "RejectedProofCanRecoverAtNewAssignmentAndConcurrentAliasesCommitExactlyOnce"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Kaspa.KaspaDifficultyCreditTests",
+      "method": "ShortNonceProjectionUsesPrefixPlusLeftPaddedMinerTail",
+      "case": "ShortNonceProjectionUsesPrefixPlusLeftPaddedMinerTail"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlAccountingIntegrationTests",
+      "method": "ShareAndCandidateCommitAtomicallyWithBoundedQueueAndExactlyOnceReplay",
+      "case": "ShareAndCandidateCommitAtomicallyWithBoundedQueueAndExactlyOnceReplay"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlAuditPrivilegeTests",
+      "method": "FreshAndUpgradedAuditHistoryIsAdminOwnedAndApplicationReadOnly",
+      "case": "FreshAndUpgradedAuditHistoryIsAdminOwnedAndApplicationReadOnly"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlCandidateNodeTests",
+      "method": "RealNodeDuplicateOrphanStaysUncertainUntilItsParentArrives",
+      "case": "RealNodeDuplicateOrphanStaysUncertainUntilItsParentArrives"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlLiveLabTests",
+      "method": "RealGpuProof_BuildsBlockAcceptedByProofEnabledRegtest",
+      "case": "RealGpuProof_BuildsBlockAcceptedByProofEnabledRegtest"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlNoIndexLiveTests",
+      "method": "ConfirmedDuringDowntimeReconcilesWithoutTxIndexOrSecondWalletSend",
+      "case": "ConfirmedDuringDowntimeReconcilesWithoutTxIndexOrSecondWalletSend"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "AboveTipConfirmedRewardDoesNotBlockExistingIntentReconciliation",
+      "case": "AboveTipConfirmedRewardDoesNotBlockExistingIntentReconciliation"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "AbsentExtensionsUseDefaultsAndExplicitOverridesArePreserved",
+      "case": "AbsentExtensionsUseDefaultsAndExplicitOverridesArePreserved"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "AuditedNoBroadcastReleaseArchivesIntentAndPreservesBalances",
+      "case": "AuditedNoBroadcastReleaseArchivesIntentAndPreservesBalances"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "ClassificationAndPaymentPreferTheWalletChainOverTheFirstHealthyNode",
+      "case": "ClassificationAndPaymentPreferTheWalletChainOverTheFirstHealthyNode"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "CompetingCatchupBetweenClassificationAndPayoutCannotReleaseHold",
+      "case": "CompetingCatchupBetweenClassificationAndPayoutCannotReleaseHold"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "ConfirmedIntentWithoutTransactionIndexRequiresCanonicalBlockMembership",
+      "case": "ConfirmedIntentWithoutTransactionIndexRequiresCanonicalBlockMembership"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "DeferredHoldsCoverUnvisitedBatchesAndRequireStableCanonicalEvidence",
+      "case": "DeferredHoldsCoverUnvisitedBatchesAndRequireStableCanonicalEvidence"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "DivergentWalletCannotPreventReorgObservationOrAuthorizeFreshCredit",
+      "case": "DivergentWalletCannotPreventReorgObservationOrAuthorizeFreshCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "ExistingIntentCanReconcileWhenNoNodeMatchesTheWalletTip",
+      "case": "ExistingIntentCanReconcileWhenNoNodeMatchesTheWalletTip"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "FailedOrPartialBatchRetainsIntentWithoutPayingAgain",
+      "case": "FailedOrPartialBatchRetainsIntentWithoutPayingAgain"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "FeeShortfallDoesNotCreateIntentAndFundingCanResumeAfterRestart",
+      "case": "FeeShortfallDoesNotCreateIntentAndFundingCanResumeAfterRestart"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "FragmentedInventoryLargerThanTheOrdinaryRpcLimitStillPaysFromLargeInputs",
+      "case": "FragmentedInventoryLargerThanTheOrdinaryRpcLimitStillPaysFromLargeInputs"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "LaggingNodeDefersRewardsAndConfirmedBlockRemainsPayableAfterCatchup",
+      "case": "LaggingNodeDefersRewardsAndConfirmedBlockRemainsPayableAfterCatchup"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "LostReplyReconnectConflictPartialEvidenceAndPendingRebroadcastNeverSendTwice",
+      "case": "LostReplyReconnectConflictPartialEvidenceAndPendingRebroadcastNeverSendTwice"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "MatchingInvalidTipsCannotAuthorizeWalletSubmission",
+      "case": "MatchingInvalidTipsCannotAuthorizeWalletSubmission"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "MissingOrMalformedCanonicalHashCannotOrphanOrQuarantineRewards",
+      "case": "MissingOrMalformedCanonicalHashCannotOrphanOrQuarantineRewards"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "MissingPoolExtensionsSelectMainnetAndInvalidExplicitSettingsFailClosed",
+      "case": "MissingPoolExtensionsSelectMainnetAndInvalidExplicitSettingsFailClosed"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "PayoutFailsOverOnlyToANetworkAndTipValidatedNode",
+      "case": "PayoutFailsOverOnlyToANetworkAndTipValidatedNode"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPayoutIntegrationTests",
+      "method": "PreflightFailuresDoNotCreateIntentOrDebitAndBatchLimitPreservesRemainder",
+      "case": "PreflightFailuresDoNotCreateIntentOrDebitAndBatchLimitPreservesRemainder"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPoolTests",
+      "method": "DuplicateOrphanRetainsSerializedCandidateUntilParentArrival",
+      "case": "DuplicateOrphanRetainsSerializedCandidateUntilParentArrival"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPoolTests",
+      "method": "ShorterNodeRetainsSerializedCandidateAndCatchupCompletesTheSameBytes",
+      "case": "ShorterNodeRetainsSerializedCandidateAndCatchupCompletesTheSameBytes"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlPoolTests",
+      "method": "StorageFailureRetainsSerializedCandidateUntilNodeRecovery",
+      "case": "StorageFailureRetainsSerializedCandidateUntilNodeRecovery"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlProofVerifierTests",
+      "method": "ForeignOwnedExecutableAndAncestorAreRejectedBeforeExecution",
+      "case": "ForeignOwnedExecutableAndAncestorAreRejectedBeforeExecution"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlProofVerifierTests",
+      "method": "GlobalCapacityHasNoQueueAndCancellationKillsAndReapsWorkers",
+      "case": "GlobalCapacityHasNoQueueAndCancellationKillsAndReapsWorkers"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlProofVerifierTests",
+      "method": "GroupWritableExecutableOrDirectoryAndSymlinkAreRejected",
+      "case": "GroupWritableExecutableOrDirectoryAndSymlinkAreRejected"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlProofVerifierTests",
+      "method": "LaunchingThreadExitDoesNotKillAnActiveWorker",
+      "case": "LaunchingThreadExitDoesNotKillAnActiveWorker"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlProofVerifierTests",
+      "method": "OnlyExplicitRejectionCanBeAttributedToTheMiner",
+      "case": "OnlyExplicitRejectionCanBeAttributedToTheMiner"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlProofVerifierTests",
+      "method": "OversizedVersionOutputIsRejected",
+      "case": "OversizedVersionOutputIsRejected"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlProofVerifierTests",
+      "method": "VersionMismatchFailsClosed",
+      "case": "VersionMismatchFailsClosed"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlProofVerifierTests",
+      "method": "WorkerFailuresExposeOnlyBoundedDiagnosticFields",
+      "case": "WorkerFailuresExposeOnlyBoundedDiagnosticFields"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlRewardSchemeIntegrationTests",
+      "method": "AllFourSchemesAllocateFeesAndPayExactlyOnceWithTheirDistinctWorkRules",
+      "case": "AllFourSchemesAllocateFeesAndPayExactlyOnceWithTheirDistinctWorkRules"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Pearl.PearlRewardSchemeIntegrationTests",
+      "method": "PpsReceiptReplayRemaindersAndCandidateFailuresAreAtomicForBothArithmeticVersions",
+      "case": "PpsReceiptReplayRemaindersAndCandidateFailuresAreAtomicForBothArithmeticVersions"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.WarthogWalletAddressTests",
+      "method": "LiveDaemon_LocalAddressCheckIsAcceptedWithoutSendingKey",
+      "case": "LiveDaemon_LocalAddressCheckIsAcceptedWithoutSendingKey"
+    },
+    {
+      "class": "Miningcore.Tests.Crypto.HashingTests",
+      "method": "Allium_Hash_MatchesExternalGarlicoinVector",
+      "case": "Allium_Hash_MatchesExternalGarlicoinVector"
+    },
+    {
+      "class": "Miningcore.Tests.Crypto.HashingTests",
+      "method": "Argon2d250_Hash_MatchesKnownVector",
+      "case": "Argon2d250_Hash_MatchesKnownVector"
+    },
+    {
+      "class": "Miningcore.Tests.Crypto.HashingTests",
+      "method": "Flex_Hash_MatchesKnownVector",
+      "case": "Flex_Hash_MatchesKnownVector"
+    },
+    {
+      "class": "Miningcore.Tests.Crypto.HashingTests",
+      "method": "XelisV1PadsPrivateStateAndPreservesCallerWork",
+      "case": "XelisV1PadsPrivateStateAndPreservesCallerWork"
+    },
+    {
+      "class": "Miningcore.Tests.Crypto.HashingTests",
+      "method": "XelisV2MatchesUpstreamVectorsAndPreservesCallerWork",
+      "case": "XelisV2MatchesUpstreamVectorsAndPreservesCallerWork"
+    },
+    {
+      "class": "Miningcore.Tests.Crypto.HashingTests",
+      "method": "YescryptR16_Hash",
+      "case": "YescryptR16_Hash"
+    },
+    {
+      "class": "Miningcore.Tests.Crypto.HashingTests",
+      "method": "YescryptR32_Hash",
+      "case": "YescryptR32_Hash"
+    },
+    {
+      "class": "Miningcore.Tests.Crypto.HashingTests",
+      "method": "YescryptR8_Hash",
+      "case": "YescryptR8_Hash"
+    },
+    {
+      "class": "Miningcore.Tests.Crypto.HashingTests",
+      "method": "Yescrypt_Hash",
+      "case": "Yescrypt_Hash"
+    },
+    {
+      "class": "Miningcore.Tests.Crypto.HashingTests",
+      "method": "Zanonote_LoadsReviewedNativeEntryPoints",
+      "case": "Zanonote_LoadsReviewedNativeEntryPoints"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.CandidateVerifierBoundaryTests",
+      "method": "BlobVerifierAtNetworkThresholdCapsHighAssignmentsAndKeepsOrdinaryShares",
+      "case": "BlobVerifierAtNetworkThresholdCapsHighAssignmentsAndKeepsOrdinaryShares"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.CandidateVerifierBoundaryTests",
+      "method": "WarthogLegacySha256CandidateUsesConservativeUnitCredit",
+      "case": "WarthogLegacySha256CandidateUsesConservativeUnitCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.CandidateVerifierBoundaryTests",
+      "method": "WarthogNativeJanusProofNearEncodedTargetHasMatchingCredit",
+      "case": "WarthogNativeJanusProofNearEncodedTargetHasMatchingCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.CortexProofIdentityTests",
+      "method": "NativeRejectedCycleDoesNotConsumeAcceptedProofIdentity",
+      "case": "NativeRejectedCycleDoesNotConsumeAcceptedProofIdentity"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.CryptonoteDifficultyCreditTests",
+      "method": "NativeProof_AfterRejectedSubUnitAssignmentRetainsRepresentableCredit",
+      "case": "NativeProof_AfterRejectedSubUnitAssignmentRetainsRepresentableCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.CryptonoteDifficultyCreditTests",
+      "method": "NativeProof_FixedIncreaseAfterDynamicAssignmentKeepsOriginalCredit",
+      "case": "NativeProof_FixedIncreaseAfterDynamicAssignmentKeepsOriginalCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.CryptonoteDifficultyCreditTests",
+      "method": "NativeProof_FractionalAssignmentUsesRoundedCredit",
+      "case": "NativeProof_FractionalAssignmentUsesRoundedCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ErgoExactDifficultyTests",
+      "method": "CandidateCreditUsesExactCachedTargetEvenAfterTemplateMutationAndRetarget",
+      "case": "CandidateCreditUsesExactCachedTargetEvenAfterTemplateMutationAndRetarget"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ErgoExactDifficultyTests",
+      "method": "FullWidthProofAndStrictCandidateBoundaryUseExactDifficulty",
+      "case": "FullWidthProofAndStrictCandidateBoundaryUseExactDifficulty"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ErgoExactDifficultyTests",
+      "method": "RoundedProofCannotCrossOrdinaryShareAdmissionTolerance",
+      "case": "RoundedProofCannotCrossOrdinaryShareAdmissionTolerance"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.IssuedJobSnapshotTests",
+      "method": "Alephium_BelowIssuedTargetKeepsFamilySpecificRejection",
+      "case": "Alephium_BelowIssuedTargetKeepsFamilySpecificRejection"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.IssuedJobSnapshotTests",
+      "method": "NativeAlephiumCandidatesCapInStratumUnitsAndKeepDuplicateOwnership",
+      "case": "NativeAlephiumCandidatesCapInStratumUnitsAndKeepDuplicateOwnership"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.PoolFamilyAssignmentTests",
+      "method": "NativeCandidateCeilingsBoundQueuedAndFallingAssignmentsOnTcp",
+      "case": "NativeCandidateCeilingsBoundQueuedAndFallingAssignmentsOnTcp"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.PoolFamilyAssignmentTests",
+      "method": "NativeConcretePool_AuthorizationIdleAndBroadcastCompleteUnderContention",
+      "case": "NativeConcretePool_AuthorizationIdleAndBroadcastCompleteUnderContention"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.PoolFamilyAssignmentTests",
+      "method": "NativePool_AuthorizationCancellationDoesNotCommitQueuedDifficulty",
+      "case": "NativePool_AuthorizationCancellationDoesNotCommitQueuedDifficulty"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.PoolFamilyAssignmentTests",
+      "method": "NativePool_DispatchedFractionalHintPublishesIntegerCredit",
+      "case": "NativePool_DispatchedFractionalHintPublishesIntegerCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.PoolFamilyAssignmentTests",
+      "method": "NativePool_DispatchedHintsKeepOneResponseAndValidWork",
+      "case": "NativePool_DispatchedHintsKeepOneResponseAndValidWork"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.PoolFamilyAssignmentTests",
+      "method": "NativePool_DispatchedLoginWaitsBeforeAuthorizing",
+      "case": "NativePool_DispatchedLoginWaitsBeforeAuthorizing"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.PoolFamilyAssignmentTests",
+      "method": "NativePool_SubUnitRequestCannotPublishUnderweightedWork",
+      "case": "NativePool_SubUnitRequestCannotPublishUnderweightedWork"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.PoolFamilyAssignmentTests",
+      "method": "ZanoTemplateUpdateBetweenApplyAndSnapshotCannotSilentlyRetarget",
+      "case": "ZanoTemplateUpdateBetweenApplyAndSnapshotCannotSilentlyRetarget"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.SemanticProofIdentityTests",
+      "method": "ErgoUnusedTimeAndHexCaseCannotMintAnotherCredit",
+      "case": "ErgoUnusedTimeAndHexCaseCannotMintAnotherCredit"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.SemanticProofIdentityTests",
+      "method": "NativeAutolykosCandidatesRetainExactIssuedCreditAndCapOversizedAssignments",
+      "case": "NativeAutolykosCandidatesRetainExactIssuedCreditAndCapOversizedAssignments"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.XelisDaemonTests",
+      "method": "DisposableStagenetAcceptsPoolProofAndRejectsLowDifficulty",
+      "case": "DisposableStagenetAcceptsPoolProofAndRejectsLowDifficulty"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.BitcoinCustodialSettlementIntegrationTests",
+      "method": "RealManager_ThresholdRollbackRestartAndReplay_CreateExactlyOneSettlement",
+      "case": "RealManager_ThresholdRollbackRestartAndReplay_CreateExactlyOneSettlement"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.MergedMiningPayoutRegtestTests",
+      "method": "Nexa_RealCoinbaseWalletAndChainContractsEnforceMaturityAndPolicy",
+      "case": "Nexa_RealCoinbaseWalletAndChainContractsEnforceMaturityAndPolicy"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.MergedMiningPayoutRegtestTests",
+      "method": "PinnedDaemons_MatureRealRewardsAcrossEverySupportedScheme",
+      "case": "PinnedDaemons_MatureRealRewardsAcrossEverySupportedScheme"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.MergedMiningPayoutRegtestTests",
+      "method": "PinnedDaemons_WalletMaturityCannotBypassCustodialThreshold",
+      "case": "PinnedDaemons_WalletMaturityCannotBypassCustodialThreshold"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.PayoutHandlerPersistenceIntegrationTests",
+      "method": "ProductionRetryOverlapsUnfinishedCommitWithoutAnotherWalletSubmission",
+      "case": "ProductionRetryOverlapsUnfinishedCommitWithoutAnotherWalletSubmission"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.BitcoinDirectSoloIntegrationTests",
+      "method": "FreshDatabaseScript_SatisfiesDirectSoloPreflight",
+      "case": "FreshDatabaseScript_SatisfiesDirectSoloPreflight"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.BitcoinDirectSoloIntegrationTests",
+      "method": "Migration_RepairsContractAndPersistsImmutableEvidence",
+      "case": "Migration_RepairsContractAndPersistsImmutableEvidence"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.BitcoinDirectSoloIntegrationTests",
+      "method": "PayoutManager_RowLockPersistsEveryQuarantineTransition",
+      "case": "PayoutManager_RowLockPersistsEveryQuarantineTransition"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.ErgoExactDifficultySettlementTests",
+      "method": "ErgoExactNetworkDifficultyPersistsReplaysAndScoresPartialPplnsWindows",
+      "case": "ErgoExactNetworkDifficultyPersistsReplaysAndScoresPartialPplnsWindows"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.MergedMiningIndexIntegrationTests",
+      "method": "Migration_DropsOnlyIndexesOwnedByResolvedBlocksSchema",
+      "case": "Migration_DropsOnlyIndexesOwnedByResolvedBlocksSchema"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.MergedMiningIndexIntegrationTests",
+      "method": "PayoutOwnershipMigrationAndPreflight_RejectDeferrablePaymentBatchKey",
+      "case": "PayoutOwnershipMigrationAndPreflight_RejectDeferrablePaymentBatchKey"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.MergedMiningIndexIntegrationTests",
+      "method": "Preflight_UsesBlocksResolvedByCurrentSearchPath",
+      "case": "Preflight_UsesBlocksResolvedByCurrentSearchPath"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.MergedMiningIndexIntegrationTests",
+      "method": "RecoveryImportPreflight_RequiresImmediateFileHashPrimaryKey",
+      "case": "RecoveryImportPreflight_RequiresImmediateFileHashPrimaryKey"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.NonBitcoinCandidateSettlementTests",
+      "method": "AllConcretePolicies_ReplayOnceRollbackCleanlyAndSettleAllSupportedSchemes",
+      "case": "AllConcretePolicies_ReplayOnceRollbackCleanlyAndSettleAllSupportedSchemes"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutManagerLeaseIntegrationTests",
+      "method": "AcquisitionFailure_DistinguishesDurableMarkerFromActiveLock",
+      "case": "AcquisitionFailure_DistinguishesDurableMarkerFromActiveLock"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutManagerLeaseIntegrationTests",
+      "method": "DisposeAsync_ReleasesAdvisoryLock",
+      "case": "DisposeAsync_ReleasesAdvisoryLock"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresCommandTimeoutIntegrationTests",
+      "method": "CommitTimeoutPreservesUncertaintyUntilDatabaseReconciliation",
+      "case": "CommitTimeoutPreservesUncertaintyUntilDatabaseReconciliation"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresCommandTimeoutIntegrationTests",
+      "method": "DatabaseSetupRestoresAuthenticationAndTlsWithoutRedundantRestarts",
+      "case": "DatabaseSetupRestoresAuthenticationAndTlsWithoutRedundantRestarts"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresCommandTimeoutIntegrationTests",
+      "method": "PaymentTransactionRollsBackAndReplaysExactlyOnce",
+      "case": "PaymentTransactionRollsBackAndReplaysExactlyOnce"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresCommandTimeoutIntegrationTests",
+      "method": "PayoutHandlerCommitTimeoutReconcilesWithoutAnotherWalletSubmission",
+      "case": "PayoutHandlerCommitTimeoutReconcilesWithoutAnotherWalletSubmission"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresCommandTimeoutIntegrationTests",
+      "method": "PayoutHandlerRetriesDatabasePersistenceWithoutDoubleDebit",
+      "case": "PayoutHandlerRetriesDatabasePersistenceWithoutDoubleDebit"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresCommandTimeoutIntegrationTests",
+      "method": "PpsTimeoutOrCancellationRollsBackReceiptCreditAndRemainder",
+      "case": "PpsTimeoutOrCancellationRollsBackReceiptCreditAndRemainder"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresCommandTimeoutIntegrationTests",
+      "method": "RecoveryJournalSurvivesCopyTimeoutAndCommitArchiveInterruption",
+      "case": "RecoveryJournalSurvivesCopyTimeoutAndCommitArchiveInterruption"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresTlsIntegrationTests",
+      "method": "ConfiguredPathDoesNotFreezeCertificateFileContents",
+      "case": "ConfiguredPathDoesNotFreezeCertificateFileContents"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresTlsIntegrationTests",
+      "method": "MissingCaPreservesRetryClassificationAndCancellation",
+      "case": "MissingCaPreservesRetryClassificationAndCancellation"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresTlsIntegrationTests",
+      "method": "MissingDatabaseReportsItsCategoryWithoutExposingItsName",
+      "case": "MissingDatabaseReportsItsCategoryWithoutExposingItsName"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresTlsIntegrationTests",
+      "method": "OccupiedPortRetriesWithoutTouchingTheOtherListener",
+      "case": "OccupiedPortRetriesWithoutTouchingTheOtherListener"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresTlsIntegrationTests",
+      "method": "PassfileAccessFailuresAreSourceNeutralAndDoNotExposePaths",
+      "case": "PassfileAccessFailuresAreSourceNeutralAndDoNotExposePaths"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresTlsIntegrationTests",
+      "method": "PasswordSourcesAuthenticateUsingScramAndExplicitValuesTakePrecedence",
+      "case": "PasswordSourcesAuthenticateUsingScramAndExplicitValuesTakePrecedence"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresTlsIntegrationTests",
+      "method": "RealServerEnforcesCertificatePolicyWithoutDowngrade",
+      "case": "RealServerEnforcesCertificatePolicyWithoutDowngrade"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresTlsIntegrationTests",
+      "method": "TrustSourceLifecycleMatchesDocumentedPhysicalOpenBehavior",
+      "case": "TrustSourceLifecycleMatchesDocumentedPhysicalOpenBehavior"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresTlsIntegrationTests",
+      "method": "UnreadablePassfileReportsLocalAccessWithoutExposingItsPath",
+      "case": "UnreadablePassfileReportsLocalAccessWithoutExposingItsPath"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PpsArithmeticSchemaTests",
+      "method": "ApplicationMigrationFailsBeforeDdlForFreshPartialAndCompleteSchemas",
+      "case": "ApplicationMigrationFailsBeforeDdlForFreshPartialAndCompleteSchemas"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PpsArithmeticSchemaTests",
+      "method": "DedicatedBoundaryOwnerHandoffPreservesRuntimePreflightAndLimitedActivation",
+      "case": "DedicatedBoundaryOwnerHandoffPreservesRuntimePreflightAndLimitedActivation"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PpsArithmeticSchemaTests",
+      "method": "FreshAndUpgradedSchemasKeepAdministratorOwnershipAndAppReadAccess",
+      "case": "FreshAndUpgradedSchemasKeepAdministratorOwnershipAndAppReadAccess"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PpsArithmeticSchemaTests",
+      "method": "PreflightRejectsEveryMalformedArithmeticContract",
+      "case": "PreflightRejectsEveryMalformedArithmeticContract"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PpsArithmeticSchemaTests",
+      "method": "StartupReconcilesConfiguredAndDurableCutoffsBeforeAdmission",
+      "case": "StartupReconcilesConfiguredAndDurableCutoffsBeforeAdmission"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.SettlementShareAuditTests",
+      "method": "ArithmeticOwnershipPreflight_RejectsLegacyGrantOnlyOwnersBeforeMigration_AndAllowsReconciledWriter",
+      "case": "ArithmeticOwnershipPreflight_RejectsLegacyGrantOnlyOwnersBeforeMigration_AndAllowsReconciledWriter"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.SettlementShareAuditTests",
+      "method": "CumulativeShareOwnerPreflight_RejectsSuperuserButRequiresNoAccountingTables",
+      "case": "CumulativeShareOwnerPreflight_RejectsSuperuserButRequiresNoAccountingTables"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.SettlementShareAuditTests",
+      "method": "FullSettlementAudit_RunsOnFreshAccountingSchemaWithoutChangingReceipts",
+      "case": "FullSettlementAudit_RunsOnFreshAccountingSchemaWithoutChangingReceipts"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.SettlementShareAuditTests",
+      "method": "FullSettlementAudit_StillRejectsMissingShareAccountingColumns",
+      "case": "FullSettlementAudit_StillRejectsMissingShareAccountingColumns"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.SettlementShareAuditTests",
+      "method": "LegacySharesOnlyAudit_ScreensUnmigratedSchemaReadOnlyWithoutClearingMissingReceipts",
+      "case": "LegacySharesOnlyAudit_ScreensUnmigratedSchemaReadOnlyWithoutClearingMissingReceipts"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.SettlementShareAuditTests",
+      "method": "SettlementAudit_DetectsSpecialAndInvalidLegacyRowsWithoutChangingData",
+      "case": "SettlementAudit_DetectsSpecialAndInvalidLegacyRowsWithoutChangingData"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.ShareAccountingIntegrationTests",
+      "method": "AccountingBatch_IsAtomicIdempotentAndCarriesSubUnitRemainders",
+      "case": "AccountingBatch_IsAtomicIdempotentAndCarriesSubUnitRemainders"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.ShareAccountingIntegrationTests",
+      "method": "AccountingMigration_DoesNotRequireBlockSchema",
+      "case": "AccountingMigration_DoesNotRequireBlockSchema"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.ShareAccountingIntegrationTests",
+      "method": "ArithmeticCutover_PreservesLegacyReplayAndCarriesRemainderForward",
+      "case": "ArithmeticCutover_PreservesLegacyReplayAndCarriesRemainderForward"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.ShareAccountingIntegrationTests",
+      "method": "OrdinaryBatch_RemainsCompatibleWithLegacySharesTable",
+      "case": "OrdinaryBatch_RemainsCompatibleWithLegacySharesTable"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.ShareAccountingIntegrationTests",
+      "method": "PpsCalculatedAmount_UsesExactNumeric3824Boundary",
+      "case": "PpsCalculatedAmount_UsesExactNumeric3824Boundary"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.SharePartitionIntegrationTests",
+      "method": "PartitionAppendix_RebuildsParentTransactionally",
+      "case": "PartitionAppendix_RebuildsParentTransactionally"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.SharePartitionIntegrationTests",
+      "method": "PartitionedPrune_ConfinesCtidCandidatesToRequestedPool",
+      "case": "PartitionedPrune_ConfinesCtidCandidatesToRequestedPool"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.SharePartitionIntegrationTests",
+      "method": "Preflight_DetectsMissingListPartitionsAndAcceptsDefaultPartition",
+      "case": "Preflight_DetectsMissingListPartitionsAndAcceptsDefaultPartition"
+    },
+    {
+      "class": "Miningcore.Tests.Rpc.RpcTlsTests",
+      "method": "HttpsRestRedirectNeverReplaysToPlaintext",
+      "case": "HttpsRestRedirectNeverReplaysToPlaintext"
+    },
+    {
+      "class": "Miningcore.Tests.Rpc.RpcTlsTests",
+      "method": "ProductionTransportsVerifyCertificateBeforeSendingRpc",
+      "case": "ProductionTransportsVerifyCertificateBeforeSendingRpc"
+    },
+    {
+      "class": "Miningcore.Tests.Rpc.RpcTlsTests",
+      "method": "RestHttp2DoesNotDowngradeToHttp1",
+      "case": "RestHttp2DoesNotDowngradeToHttp1"
+    },
+    {
+      "class": "Miningcore.Tests.Stratum.StratumListenerPortabilityTests",
+      "method": "NativeBindFallbackCandidates_ResolveCurrentUnixPlatform",
+      "case": "NativeBindFallbackCandidates_ResolveCurrentUnixPlatform"
+    },
+    {
+      "class": "Miningcore.Tests.Stratum.StratumListenerReservationCoordinatorTests",
+      "method": "EndpointOccupiedByAnotherProcess_FailsWithSocketClassification",
+      "case": "EndpointOccupiedByAnotherProcess_FailsWithSocketClassification"
+    },
+    {
+      "class": "Miningcore.Tests.Stratum.StratumListenerReservationCoordinatorTests",
+      "method": "NonLocalSpecificAddress_ReportsEndpointAndSocketClassification",
+      "case": "NonLocalSpecificAddress_ReportsEndpointAndSocketClassification"
+    },
+    {
+      "class": "Miningcore.Tests.Stratum.StratumServerTests",
+      "method": "RunAsync_InvalidTlsHandshake_AllowsImmediateExclusiveRestart",
+      "case": "RunAsync_InvalidTlsHandshake_AllowsImmediateExclusiveRestart"
+    },
+    {
+      "class": "Miningcore.Tests.StratumListenerConfigurationTests",
+      "method": "DistinctSpecificAddresses_MatchRealLinuxSocketBinding",
+      "case": "DistinctSpecificAddresses_MatchRealLinuxSocketBinding"
+    }
+  ]
+}

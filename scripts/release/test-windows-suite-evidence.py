@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Require complete, successful Windows TRX evidence and a reviewed skip ceiling."""
+"""Require successful Windows TRX evidence with reviewed discovery and case baselines."""
 
 import argparse
 import collections
+import contextlib
+import copy
 import html
+import io
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -11,13 +15,29 @@ import unittest
 import xml.etree.ElementTree as ET
 
 NS = "{http://microsoft.com/schemas/VisualStudio/TeamTest/2010}"
+BASELINE = Path(__file__).with_name("windows-suite-baseline.json")
 
 
-def report(path, max_skipped):
-    root = ET.parse(path).getroot()
-    results = list(root.iter(NS + "UnitTestResult"))
-    if not results or max_skipped < 0:
-        raise ValueError("Nonempty test results and a nonnegative skip ceiling are required")
+def case_identity(case):
+    identity = tuple(case.get(key) for key in ("class", "method", "case"))
+    if any(not isinstance(value, str) or not value.strip() for value in identity):
+        raise ValueError("Case identity requires nonempty class, method and parameterized case name")
+    return identity
+
+
+def validate(root, max_skipped, baseline):
+    minimum = baseline["minimum_total"]
+    if type(minimum) is not int or minimum < 1 or max_skipped < 0:
+        raise ValueError("Positive discovery minimum and nonnegative skip ceiling are required")
+    required = collections.Counter(map(case_identity, baseline["required_passes"]))
+    expected_skips = collections.Counter(map(case_identity, baseline["expected_skips"]))
+    if not required or any(count != 1 for count in required.values()) or required.keys() & expected_skips.keys():
+        raise ValueError("Required cases must be nonempty, unique and disjoint from expected skips")
+    if expected_skips.total() > max_skipped:
+        raise ValueError("Expected skip baseline exceeds the reviewed ceiling")
+    results = root.findall(NS + "Results/" + NS + "UnitTestResult")
+    if not results:
+        raise ValueError("Nonempty test results are required")
     counts = collections.Counter(item.get("outcome") for item in results)
     if set(counts) - {"Passed", "NotExecuted"} or not counts["Passed"]:
         raise ValueError(f"Unsuccessful or unknown test outcomes: {dict(counts)}")
@@ -29,65 +49,199 @@ def report(path, max_skipped):
                           "executed": counts["Passed"], "failed": 0}.items():
         if int(counters.get(key, "-1")) != expected:
             raise ValueError(f"TRX counter mismatch: {key}")
+    if len(results) < minimum:
+        raise ValueError(f"Windows test coverage decreased: {len(results)} discovered; minimum {minimum}")
     # VSTest leaves notExecuted=0 for xUnit skips; count the individual results.
     if counts["NotExecuted"] > max_skipped:
         raise ValueError(f"Skipped {counts['NotExecuted']} tests; reviewed ceiling is {max_skipped}")
-    text = (f"Windows suite: {len(results)} total, {counts['Passed']} passed, "
-            f"{counts['NotExecuted']} skipped (ceiling {max_skipped}).\n\n")
-    # Preserve individual results: theory display names are not unique identifiers.
-    skipped = sorted(item.get("testName", "(unnamed)") for item in results
-                     if item.get("outcome") == "NotExecuted")
+
+    definitions = {}
+    for definition in root.findall(NS + "TestDefinitions/" + NS + "UnitTest"):
+        test_id = definition.get("id")
+        method = definition.find(NS + "TestMethod")
+        if not test_id or test_id in definitions or method is None:
+            raise ValueError("Missing or ambiguous test definition")
+        definitions[test_id] = method
+    observed = {"Passed": collections.Counter(), "NotExecuted": collections.Counter()}
+    executions = set()
+    for result in results:
+        method = definitions.get(result.get("testId"))
+        execution = result.get("executionId")
+        if method is None or not execution or execution in executions:
+            raise ValueError("Missing test definition or missing/duplicate execution identity")
+        executions.add(execution)
+        identity = case_identity({"class": method.get("className"), "method": method.get("name"),
+                                  "case": result.get("testName")})
+        observed[result.get("outcome")][identity] += 1
+    for identity in required:
+        if observed["Passed"][identity] != 1:
+            raise ValueError(f"Required regression case missing, repeated or not passed: {identity!r}")
+    skipped = observed["NotExecuted"]
+    if skipped != expected_skips:
+        raise ValueError(f"Skipped case baseline changed; added: {dict(skipped - expected_skips)!r}; "
+                         f"removed: {dict(expected_skips - skipped)!r}")
+    text = (f"Windows suite: {len(results)} total (minimum {minimum}), {counts['Passed']} passed, "
+            f"{counts['NotExecuted']} skipped (ceiling {max_skipped}).\n\n"
+            f"All {required.total()} required regression cases passed; exact skipped-case baseline matched.\n\n")
+    # Class + method + case avoid conflating identical display names from different tests.
+    names = [f"{cls}.{method}: {case}" for (cls, method, case), count in sorted(skipped.items())
+             for _ in range(count)]
     return text + "<details><summary>Skipped cases</summary>\n<pre>" + \
-        html.escape("\n".join(skipped)) + "</pre>\n</details>\n"
+        html.escape("\n".join(names)) + "</pre>\n</details>\n"
+
+
+def report(path, max_skipped, baseline_path):
+    with open(baseline_path, encoding="utf-8") as source:
+        baseline = json.load(source)
+    return validate(ET.parse(path).getroot(), max_skipped, baseline)
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("trx", nargs="?")
+    parser.add_argument("--max-skipped", type=int)
+    parser.add_argument("--baseline", type=Path, default=BASELINE)
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args(argv)
+    if args.trx and args.max_skipped is None:
+        parser.error("--max-skipped is required when validating a TRX")
+    if not args.trx and not args.self_test:
+        parser.error("TRX path is required")
+    return args
 
 
 class EvidenceTests(unittest.TestCase):
-    def test_validation(self):
+    def setUp(self):
+        self.cases = [
+            {"class": "Suite.A", "method": "Regression", "case": "Regression(value: 1)"},
+            {"class": "Suite.B", "method": "Regression", "case": "Regression(value: 1)"},
+            {"class": "Suite.Optional", "method": "Native", "case": "Native(<same&name>)"},
+        ]
+        self.baseline = {"minimum_total": 3, "required_passes": [self.cases[0]],
+                         "expected_skips": [self.cases[2]]}
+
+    def fixture(self, cases=None, outcomes=None):
+        cases = self.cases if cases is None else cases
+        outcomes = ["Passed", "Passed", "NotExecuted"] if outcomes is None else outcomes
+        root = ET.Element(NS + "TestRun")
+        results = ET.SubElement(root, NS + "Results")
+        definitions = ET.SubElement(root, NS + "TestDefinitions")
+        for i, (case, outcome) in enumerate(zip(cases, outcomes)):
+            ET.SubElement(results, NS + "UnitTestResult", testId=str(i), executionId=str(i),
+                          outcome=outcome, testName=case["case"])
+            definition = ET.SubElement(definitions, NS + "UnitTest", id=str(i))
+            ET.SubElement(definition, NS + "TestMethod", className=case["class"], name=case["method"])
+        result = ET.SubElement(root, NS + "ResultSummary", outcome="Completed")
+        ET.SubElement(result, NS + "Counters", total=str(len(cases)), executed=str(outcomes.count("Passed")),
+                      passed=str(outcomes.count("Passed")), failed="0", notExecuted="0")
+        return root
+
+    def check(self, root=None):
+        return validate(self.fixture() if root is None else root, 1, self.baseline)
+
+    def test_success_and_escaping(self):
+        self.assertIn("3 total (minimum 3), 2 passed, 1 skipped", self.check())
+        self.assertIn("&lt;same&amp;name&gt;", self.check())
+
+    def test_discovery_loss_with_consistent_counters(self):
+        with self.assertRaisesRegex(ValueError, "coverage decreased"):
+            self.check(self.fixture(self.cases[:1], ["Passed"]))
+
+    def test_required_case_cannot_trade_skip_with_optional_case(self):
+        with self.assertRaisesRegex(ValueError, "Required regression case"):
+            self.check(self.fixture(outcomes=["NotExecuted", "Passed", "Passed"]))
+
+    def test_skip_identity_changes_even_with_same_count(self):
+        with self.assertRaisesRegex(ValueError, "Skipped case baseline changed"):
+            self.check(self.fixture(outcomes=["Passed", "NotExecuted", "Passed"]))
+
+    def test_skip_removal_requires_review_too(self):
+        with self.assertRaisesRegex(ValueError, "Skipped case baseline changed"):
+            self.check(self.fixture(outcomes=["Passed"] * 3))
+
+    def test_required_case_disappearance_is_not_hidden_by_replacement(self):
+        for field, replacement in (("class", "Suite.B"), ("method", "Different"), ("case", "Regression(value: 2)")):
+            cases = copy.deepcopy(self.cases)
+            cases[0][field] = replacement
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "Required regression case"):
+                self.check(self.fixture(cases))
+
+    def test_new_passing_tests_are_allowed(self):
+        root = self.fixture(self.cases + [{"class": "New", "method": "Test", "case": "Test"}],
+                            ["Passed", "Passed", "NotExecuted", "Passed"])
+        self.assertIn("4 total", self.check(root))
+
+    def test_bad_outcomes_summaries_and_counters(self):
+        for outcomes in (["NotExecuted"] * 3, ["Passed", "Failed", "NotExecuted"],
+                         ["Passed", "Unknown", "NotExecuted"]):
+            with self.subTest(outcomes=outcomes), self.assertRaises(ValueError):
+                self.check(self.fixture(outcomes=outcomes))
+        with self.assertRaises(ValueError):
+            self.check(self.fixture([], []))
+        for field, value in (("outcome", "Aborted"), ("total", "9"), ("passed", "1"),
+                             ("executed", "1"), ("failed", "1")):
+            root = self.fixture()
+            summary = root.find(NS + "ResultSummary")
+            (summary if field == "outcome" else summary.find(NS + "Counters")).set(field, value)
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.check(root)
+        root = self.fixture()
+        root.remove(root.find(NS + "ResultSummary"))
+        with self.assertRaises(ValueError):
+            self.check(root)
+
+    def test_skip_ceiling_and_baseline_validation(self):
+        with self.assertRaisesRegex(ValueError, "ceiling"):
+            validate(self.fixture(), 0, self.baseline)
+        for field, value in (("minimum_total", 0), ("required_passes", []),
+                             ("required_passes", [self.cases[0]] * 2),
+                             ("required_passes", [self.cases[2]])):
+            baseline = {**self.baseline, field: value}
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                validate(self.fixture(), 1, baseline)
+
+    def test_missing_and_duplicate_execution_or_definition_rejected(self):
+        for change in ("missing-definition", "duplicate-definition", "missing-execution", "duplicate-execution", "empty-class"):
+            root = self.fixture()
+            definitions = root.find(NS + "TestDefinitions")
+            results = root.find(NS + "Results")
+            if change == "missing-definition": definitions.remove(definitions[0])
+            if change == "duplicate-definition": definitions.append(copy.deepcopy(definitions[0]))
+            if change == "missing-execution": results[0].attrib.pop("executionId")
+            if change == "duplicate-execution": results[1].set("executionId", "0")
+            if change == "empty-class": definitions[0][0].set("className", "")
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.check(root)
+
+    def test_missing_and_malformed_files(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "suite.trx"
-            with self.assertRaises(FileNotFoundError):
-                report(path, 1)
-            def write(outcomes, summary="Completed", total=None):
-                root = ET.Element(NS + "TestRun")
-                for outcome in outcomes:
-                    ET.SubElement(root, NS + "UnitTestResult", outcome=outcome, testName="<same&name>")
-                result = ET.SubElement(root, NS + "ResultSummary", outcome=summary)
-                ET.SubElement(result, NS + "Counters", total=str(len(outcomes) if total is None else total),
-                              executed=str(outcomes.count("Passed")), passed=str(outcomes.count("Passed")),
-                              failed="0", notExecuted=str(outcomes.count("NotExecuted")))
-                ET.ElementTree(root).write(path)
-            write(["Passed", "Passed", "NotExecuted"])
-            self.assertIn("3 total, 2 passed, 1 skipped", report(path, 1))
-            self.assertIn("&lt;same&amp;name&gt;", report(path, 1))
-            with self.assertRaises(ValueError):
-                report(path, 0)
-            for outcomes, summary, total in [([], "Completed", None),
-                    (["NotExecuted"], "Completed", None), (["Failed"], "Completed", None),
-                    (["Passed", "Unknown"], "Completed", None), (["Passed"], "Aborted", None),
-                    (["Passed"], "Completed", 2)]:
-                write(outcomes, summary, total)
-                with self.assertRaises(ValueError):
-                    report(path, 1)
+            baseline = Path(directory) / "baseline.json"
+            baseline.write_text(json.dumps(self.baseline), encoding="utf-8")
+            with self.assertRaises(FileNotFoundError): report(path, 1, baseline)
             path.write_text("<invalid", encoding="utf-8")
-            with self.assertRaises(ET.ParseError):
-                report(path, 1)
+            with self.assertRaises(ET.ParseError): report(path, 1, baseline)
+            ET.ElementTree(self.fixture()).write(path)
+            self.assertIn("3 total", report(path, 1, baseline))
+            baseline.write_text("{invalid", encoding="utf-8")
+            with self.assertRaises(json.JSONDecodeError): report(path, 1, baseline)
+
+    def test_ceiling_is_required_for_cli_validation(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_args(["suite.trx"])
+        self.assertEqual(1, parse_args(["--max-skipped", "1", "suite.trx"]).max_skipped)
+        self.assertTrue(parse_args(["--self-test"]).self_test)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("trx", nargs="?")
-    parser.add_argument("--max-skipped", type=int, default=176)
-    parser.add_argument("--self-test", action="store_true")
-    args = parser.parse_args()
+    args = parse_args()
     if args.self_test:
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(EvidenceTests)
         if not unittest.TextTestRunner().run(suite).wasSuccessful():
             raise SystemExit(1)
     if args.trx:
-        output = report(args.trx, args.max_skipped)
+        output = report(args.trx, args.max_skipped, args.baseline)
         print(output)
         if os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
                 summary.write(output)
-    elif not args.self_test:
-        parser.error("TRX path is required")
