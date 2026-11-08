@@ -20,6 +20,7 @@ for binary in "$MININGCORE_TEST_BITCOIND" "$MININGCORE_TEST_LITECOIND" \
   test -x "$binary" || { echo "Missing test dependency: $binary" >&2; exit 1; }
 done
 bash scripts/release/verify-ubuntu-dotnet-sdk.sh
+python3 scripts/release/sync-pps-arithmetic-migration.py --check
 dotnet restore src --disable-parallel
 mkdir -p build/test-lab
 : > build/test-lab/build.log
