@@ -822,9 +822,16 @@ Before putting the restored database into service:
    the new OID's protected audit schema; it does not move, erase or rewrite historical receipts.
 3. Retain all old `miningcore_audit_*` schemas for the incident/backup retention period. Their
    append functions still identify the old relation and must not be used for new recovery.
-   Revoke EXECUTE on those historical append functions from application/recovery roles, retaining
-   SELECT for historical inspection. Reapply dedicated recovery-login grants/revocations after
-   the migration, which restores the default application EXECUTE grant.
+   The migration automatically revokes EXECUTE from PUBLIC and non-owner grantees (including
+   delegated grants) on obsolete append functions when the schema, history table and function
+   are all owned by the administrator running it. It preserves historical rows and SELECT/USAGE.
+   An OID that still identifies a `payout_manager_ownership` table in any schema is left alone,
+   so other live ownership schemas keep working. Objects owned by another administrator and
+   lookalike schemas are also left alone: review these and any OID-reuse ambiguity manually,
+   revoking obsolete EXECUTE grants without changing history/read access. Verify old endpoints
+   reject the application/recovery login even when it holds the payout lock. Reapply dedicated
+   recovery-login grants/revocations after the migration, which restores the current endpoint's
+   default application EXECUTE grant.
 4. With the service-account database login, verify the new endpoint and its permissions without
    releasing any owner (substitute a qualified ownership relation for a custom schema):
 
@@ -848,7 +855,8 @@ Before putting the restored database into service:
    receipts remain intact, and missing/revoked audit permissions roll back the synthetic release.
 
 The documented live lab automates a dump/restore with changed OIDs, refusal before migration,
-post-migration release as the pool role, and preservation of the original receipt identities.
+post-migration release as the pool role, retirement of historical append permissions with read
+access preserved, and preservation of the original receipt identities.
 Only resume production after normal wallet reconciliation and startup checks succeed.
 
 ### Reconcile an uncertain or duplicate recovery receipt

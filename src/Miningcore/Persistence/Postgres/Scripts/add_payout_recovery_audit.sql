@@ -130,6 +130,36 @@ BEGIN
         LOOP EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I CASCADE',entry.routine,grantee); END LOOP;
         EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',entry.routine);
     END LOOP;
+    -- Retire only administrator-owned historical endpoints with no live ownership
+    -- table at their OID. Never read application-owned relations or change history/SELECT.
+    -- A different live ownership schema must keep its independent append endpoint.
+    FOR entry IN
+        SELECT n.nspname, p.oid AS routine_oid, p.proowner
+        FROM pg_catalog.pg_namespace n
+        JOIN pg_catalog.pg_proc p ON p.pronamespace=n.oid
+        JOIN pg_catalog.pg_class history ON history.relnamespace=n.oid
+            AND history.relname='payout_manager_recovery_events' AND history.relkind='r'
+        WHERE n.nspname ~ '^miningcore_audit_[0-9]+$'
+          AND n.nspowner=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname=admin_role)
+          AND p.proowner=n.nspowner AND history.relowner=n.nspowner
+          AND p.oid=to_regprocedure(format('%I.record_payout_recovery(uuid,uuid,bigint,text,integer,timestamptz,timestamptz,text,integer,text)',n.nspname))
+          AND NOT EXISTS(SELECT FROM pg_catalog.pg_class live
+              WHERE live.oid::text=substring(n.nspname::text FROM length('miningcore_audit_')+1)
+                AND live.relname='payout_manager_ownership' AND live.relkind IN ('r','p'))
+    LOOP
+        signature := format('%I.record_payout_recovery(uuid,uuid,bigint,text,integer,timestamptz,timestamptz,text,integer,text)',entry.nspname);
+        BEGIN
+            FOR grantee IN SELECT DISTINCT pg_get_userbyid(a.grantee)
+                FROM pg_catalog.pg_proc p,LATERAL aclexplode(p.proacl) a
+                WHERE p.oid=entry.routine_oid AND a.grantee<>0 AND a.grantee<>entry.proowner
+            LOOP EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM %I CASCADE',signature,grantee); END LOOP;
+            EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC',signature);
+            RAISE NOTICE 'Retired obsolete recovery append endpoint: %',signature;
+        EXCEPTION WHEN undefined_function OR invalid_schema_name THEN
+            -- A concurrent administrator may already have removed the historical endpoint.
+            NULL;
+        END;
+    END LOOP;
     signature := format('%I.record_payout_recovery(uuid,uuid,bigint,text,integer,timestamptz,timestamptz,text,integer,text)',audit_schema);
     EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I',audit_schema,app_role);
     EXECUTE format('GRANT SELECT ON %I.payout_manager_recovery_events TO %I',audit_schema,app_role);

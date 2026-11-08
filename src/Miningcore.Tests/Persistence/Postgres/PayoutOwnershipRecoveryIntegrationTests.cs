@@ -515,6 +515,61 @@ public class PayoutOwnershipRecoveryIntegrationTests
         return (process.ExitCode, await stdout + await stderr);
     }
 
+    [PostgresIntegrationFact]
+    public async Task Migration_RetiresOnlyObsoleteTrustedEndpoints_AndKeepsHistoryAndOtherLiveSchemas()
+    {
+        await using var old = await Database.CreateAsync();
+        await using var live = await Database.CreateAsync();
+        await using var target = await Database.CreateAsync();
+        var receipt = await old.Recovery.ReleaseAsync(await old.Recovery.InspectAsync(CancellationToken.None), "historic", CancellationToken.None);
+        var group = "audit_group_" + Guid.NewGuid().ToString("N");
+        var reader = "audit_reader_" + Guid.NewGuid().ToString("N");
+        var untrusted = "miningcore_audit_999999999999999999999";
+        string Function(string schema) => $"{schema}.record_payout_recovery(uuid,uuid,bigint,text,integer,timestamptz,timestamptz,text,integer,text)";
+        await live.Connection.ExecuteAsync($"CREATE ROLE {group}; CREATE ROLE {reader} IN ROLE {group}");
+        try
+        {
+            await live.Connection.ExecuteAsync($@"
+                GRANT USAGE ON SCHEMA {old.AuditSchema}, {live.AuditSchema} TO {group};
+                GRANT SELECT ON {old.AuditSchema}.payout_manager_recovery_events TO {group};
+                GRANT EXECUTE ON FUNCTION {Function(old.AuditSchema)}, {Function(live.AuditSchema)} TO {group} WITH GRANT OPTION;
+                GRANT EXECUTE ON FUNCTION {Function(old.AuditSchema)} TO PUBLIC;
+                SET ROLE {group}; GRANT EXECUTE ON FUNCTION {Function(old.AuditSchema)} TO {reader}; RESET ROLE;
+                CREATE SCHEMA {untrusted} AUTHORIZATION {group}; SET ROLE {group};
+                CREATE TABLE {untrusted}.payout_manager_recovery_events(event_id uuid);
+                CREATE FUNCTION {untrusted}.record_payout_recovery(uuid,uuid,bigint,text,integer,timestamptz,timestamptz,text,integer,text)
+                    RETURNS TABLE(event_id uuid,released timestamptz) LANGUAGE sql AS 'SELECT NULL::uuid,NULL::timestamptz'; RESET ROLE;");
+            // The old OID still exists, but no longer identifies a live ownership table.
+            await old.Connection.ExecuteAsync("ALTER TABLE payout_manager_ownership RENAME TO retired_ownership");
+            var migration = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_payout_recovery_audit.sql"));
+            await target.Connection.ExecuteAsync(migration);
+            await target.Connection.ExecuteAsync(migration); // Retirement is idempotent.
+            foreach(var role in new[] { group, reader })
+                Assert.False(await live.Connection.ExecuteScalarAsync<bool>("SELECT has_function_privilege(@role,@function,'EXECUTE')",
+                    new { role, function = Function(old.AuditSchema) }));
+            Assert.True(await live.Connection.ExecuteScalarAsync<bool>("SELECT has_function_privilege(@reader,@function,'EXECUTE')",
+                new { reader, function = Function(live.AuditSchema) }));
+            Assert.True(await live.Connection.ExecuteScalarAsync<bool>("SELECT has_function_privilege(@reader,@function,'EXECUTE')",
+                new { reader, function = Function(untrusted) }));
+            await live.Connection.ExecuteAsync($"SET ROLE {reader}");
+            try
+            {
+                Assert.Equal(receipt.EventId, await live.Connection.ExecuteScalarAsync<Guid>($"SELECT event_id FROM {old.AuditSchema}.payout_manager_recovery_events"));
+                var denied = await Assert.ThrowsAsync<PostgresException>(() => live.Connection.QueryAsync(
+                    $"SELECT * FROM {old.AuditSchema}.record_payout_recovery(@id,@owner,7::bigint,'test',123,now(),now(),'test',123,'blocked')",
+                    new { id = Guid.NewGuid(), owner = old.Owner }));
+                Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, denied.SqlState);
+            }
+            finally { await live.Connection.ExecuteAsync("RESET ROLE"); }
+            await live.Recovery.ReleaseAsync(await live.Recovery.InspectAsync(CancellationToken.None), "still-live", CancellationToken.None);
+            Assert.Equal(1, await old.Connection.ExecuteScalarAsync<int>("SELECT count(*) FROM payout_manager_recovery_events"));
+        }
+        finally
+        {
+            await live.Connection.ExecuteAsync($"RESET ROLE; DROP OWNED BY {reader}, {group}; DROP ROLE {reader}, {group}");
+        }
+    }
+
     private sealed class DelegateFactory(Func<Task<IDbConnection>> open) : IConnectionFactory
     {
         public Task<IDbConnection> OpenConnectionAsync() => open();

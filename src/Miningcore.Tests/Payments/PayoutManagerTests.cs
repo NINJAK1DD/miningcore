@@ -562,10 +562,14 @@ public class PayoutManagerTests
         Assert.Equal(ProcessExitCodes.GeneralFailure, fixture.ProcessStatus.ExitCode);
     }
 
-    [Fact]
-    public async Task StartAsync_ReportsLeaseAcquisitionFailure()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StartAsync_ReportsLeaseAcquisitionFailure(bool earlierServiceFailed)
     {
         var fixture = CreateFixture();
+        if(earlierServiceFailed)
+            fixture.ProcessStatus.MarkFailed();
         const string reason = "A durable payout-manager ownership marker remains for host pool-1 process 42";
         fixture.PayoutLease.TryAcquireAsync(Arg.Any<CancellationToken>()).Returns(false);
         fixture.PayoutLease.AcquisitionFailure.Returns(reason);

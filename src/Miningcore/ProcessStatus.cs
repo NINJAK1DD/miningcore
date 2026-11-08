@@ -33,11 +33,25 @@ public sealed class ProcessStatus : IProcessStatus
         if(failureExitCode <= 0)
             throw new ArgumentOutOfRangeException(nameof(failureExitCode));
 
-        if(failureExitCode == ProcessExitCodes.UnreconciledShareDurabilityLoss)
-            Interlocked.Exchange(ref exitCode, failureExitCode);
-        else
-            Interlocked.CompareExchange(ref exitCode, failureExitCode, 0);
+        // Preserve first failure within a priority, but never let ordinary failure
+        // mask operator-required recovery. CAS retries prevent concurrent downgrades.
+        while(true)
+        {
+            var current = Volatile.Read(ref exitCode);
+            if(FailurePriority(failureExitCode) <= FailurePriority(current))
+                return;
+            if(Interlocked.CompareExchange(ref exitCode, failureExitCode, current) == current)
+                return;
+        }
     }
+
+    private static int FailurePriority(int code) => code switch
+    {
+        ProcessExitCodes.UnreconciledShareDurabilityLoss => 3,
+        ProcessExitCodes.ConfigurationRequiresOperator => 2,
+        0 => 0,
+        _ => 1,
+    };
 }
 
 public abstract class ProcessStatusBackgroundService : BackgroundService

@@ -76,7 +76,8 @@ history, cross-schema evidence, changed database/role/endpoint, audit rollback a
 
 The recovery live check also performs a logical dump/restore into another disposable database,
 verifies that changed ownership OIDs refuse release before migration, reapplies the audit migration,
-and confirms a guarded release preserves the original receipts. It covers both timestamp-detection
+and confirms a guarded release preserves the original receipts. It also verifies the pool role
+can still read old history but cannot append through retired endpoints, even with the payout lock. It covers both timestamp-detection
 failures returning 78 from Main. The CI integration suite launches fresh process hosts for explicit
 timestamp modes before Npgsql initialization and both detection failures; the terminal lab also
 covers the normal-startup prompt path.

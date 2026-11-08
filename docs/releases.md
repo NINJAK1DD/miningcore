@@ -34,7 +34,7 @@ change ships there). Normal upgrades must preserve ownership markers and financi
 | Existing ownership tables, no audit migration | Stop every payout manager, take a restorable full backup, and apply the candidate's `add_payout_recovery_audit.sql` as a separate administrator using the application's ownership schema/search path. |
 | Earlier guided recovery build with an audit table in `public` or another application-owned schema | Reapply the updated audit migration. It moves history into an administrator-owned `miningcore_audit_<ownership-OID>` schema, preserves receipt UUIDs and replaces direct INSERT access with restricted function execution. |
 | Logical restore or move to a new database/server | Preserve object owners/ACLs and all old audit schemas, rerun the audit migration for the restored ownership OID, and verify the new recovery endpoint before service activation. Follow the post-restore backup drill. |
-| Earlier build already using `miningcore_audit_<ownership-OID>` | Reapply the updated audit migration to install the backend advisory-lock check and explicit `pg_catalog, pg_temp` function search path. Existing receipt rows remain unchanged. |
+| Earlier build already using `miningcore_audit_<ownership-OID>` | Reapply the updated audit migration to install the backend advisory-lock check, explicit `pg_catalog, pg_temp` function search path and automatic retirement of obsolete administrator-owned append endpoints. Existing receipt rows remain unchanged. |
 | New empty database using this candidate | Import this candidate's `createdb.sql` once; it includes protected audit storage. Never import it over an existing database. |
 | Legacy `timestamp without time zone` shares with no explicit timestamp setting | Set `persistence.postgres.enableLegacyTimestamps` to `true` before starting the candidate. Use `false` for the modern `timestamptz` schema; verify the actual current schema first. |
 
@@ -45,6 +45,9 @@ permissions, preserve `RestartPreventExitStatus=74 78` and the actual-cluster Po
 reload the unit and verify fresh ownership acquisition on clean startup. See the
 [guided recovery and audit procedure](database.md#guided-payout-ownership-recovery) and
 [post-restore checklist](database.md#payout-recovery-after-a-logical-restore).
+
+When multiple failures occur, process exit status uses precedence **74 > 78 > ordinary failure**.
+An earlier retryable failure therefore cannot mask a later condition requiring operator recovery.
 
 Timestamp auto-detection no longer attempts to change Npgsql's cached mode after opening a
 connection. A legacy or indeterminate current schema without an explicit setting stops with exit

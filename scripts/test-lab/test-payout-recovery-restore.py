@@ -45,6 +45,19 @@ try:
     print("PASS: logical restore changes OIDs and safely refuses release before audit reinitialization")
     subprocess.run(["psql", "-X", "-v", "ON_ERROR_STOP=1", "-d", target, "-f", migration],
                    check=True, stdout=subprocess.DEVNULL)
+    signature = f"miningcore_audit_{old_oid}.record_payout_recovery(uuid,uuid,bigint,text,integer,timestamptz,timestamptz,text,integer,text)"
+    assert sql(f"SELECT has_function_privilege('miningcore','{signature}','EXECUTE')", target) == "f"
+    assert sql(f"SELECT has_table_privilege('miningcore','{old_table}','SELECT')", target) == "t"
+    # Even with the correct lock, a retired endpoint must reject the actual pool login.
+    keys = json.loads(subprocess.check_output(["dotnet", test_host, "payout-lock-keys"], text=True))
+    app_env = dict(os.environ, PGUSER="miningcore", PGPASSFILE=str(Path(scratch) / "app.pgpass"))
+    obsolete = subprocess.run(["psql", "-X", "-v", "ON_ERROR_STOP=1", "-d", target, "-c",
+        f"BEGIN; SELECT pg_advisory_xact_lock({keys['LockNamespace']},{keys['LockKey']}); "
+        f"SELECT * FROM miningcore_audit_{old_oid}.record_payout_recovery('{uuid.uuid4()}','{owner}',7::bigint,'old',123,now(),now(),'old',123,'blocked'); COMMIT"],
+        env=app_env, capture_output=True, text=True)
+    assert obsolete.returncode != 0 and "permission denied for function" in obsolete.stderr, obsolete.stderr
+    assert subprocess.check_output(["psql", "-X", "-At", "-d", target, "-c", history_query], env=app_env, text=True).strip() == history
+    print("PASS: post-restore migration retires historical appends while keeping pool-role history reads")
     new_table = f"miningcore_audit_{new_oid}.payout_manager_recovery_events"
     assert sql(f"SELECT count(*) FROM {new_table}", target) == "0"
     released = subprocess.run(command, capture_output=True, text=True, timeout=30)

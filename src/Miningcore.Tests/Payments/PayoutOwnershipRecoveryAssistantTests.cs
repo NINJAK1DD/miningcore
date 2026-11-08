@@ -90,6 +90,23 @@ public class PayoutOwnershipRecoveryAssistantTests
         Assert.DoesNotContain('\u001b', output.ToString());
     }
 
+    [Theory]
+    [InlineData("add_payout_recovery_audit.sql")]
+    [InlineData("createdb.sql")]
+    public void AuditFunctionLockKeys_MatchThePayoutLease(string script)
+    {
+        var sql = File.ReadAllText(Miningcore.Tests.Util.Postgres.PostgresTestScripts.PathFor(script));
+        var body = sql.Split("CREATE OR REPLACE FUNCTION %I.record_payout_recovery(")[1]
+            .Split("$body$ $ddl$")[0];
+        var keys = System.Text.RegularExpressions.Regex.Match(body,
+            @"classid\s*=\s*(\d+)\s+AND\s+objid\s*=\s*(\d+)\s+AND\s+objsubid\s*=\s*2");
+        Assert.True(keys.Success, "The audit function must check the two-integer payout lock identity");
+        Assert.Equal(PostgresPayoutManagerLease.LockNamespace,
+            int.Parse(keys.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));
+        Assert.Equal(PostgresPayoutManagerLease.LockKey,
+            int.Parse(keys.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     private static Task<PayoutRecoveryResult> RunAsync(Recovery recovery, string answers, TextWriter output,
         bool interactive = true) => PayoutOwnershipRecoveryAssistant.RunAsync(recovery,
             new StringReader(answers), output, interactive, CancellationToken.None);
