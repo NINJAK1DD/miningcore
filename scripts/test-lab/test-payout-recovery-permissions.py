@@ -143,8 +143,11 @@ try:
         ("UPDATE", f"TABLE {audit}.payout_manager_recovery_events"),
         ("DELETE", f"TABLE {audit}.payout_manager_recovery_events"),
         ("TRUNCATE", f"TABLE {audit}.payout_manager_recovery_events"),
+        ("REFERENCES", f"TABLE {audit}.payout_manager_recovery_events"),
+        ("TRIGGER", f"TABLE {audit}.payout_manager_recovery_events"),
         ("INSERT (incident_reference)", f"TABLE {audit}.payout_manager_recovery_events"),
         ("UPDATE (incident_reference)", f"TABLE {audit}.payout_manager_recovery_events"),
+        ("REFERENCES (incident_reference)", f"TABLE {audit}.payout_manager_recovery_events"),
         ("CREATE", "SCHEMA " + audit),
     ]:
         sql(f"GRANT {privilege} ON {resource} TO {recovery_role}")
