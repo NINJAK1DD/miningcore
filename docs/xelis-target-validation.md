@@ -290,8 +290,11 @@ the scalar stage with unchanged hash math. The existing bundled Windows
 remains Linux-only. Source-vector success does not certify that bundled Windows
 pool runtime; updating and packaging its Xelis ABI remains #120 work.
 The job manager now refuses startup unless the process is x64 and the native
-library exports both `xelis_hash_export` and `xelis_hash_v2_export` and passes
-both known-answer self-tests before issuing work. Once per process, the production
+library exports `xelis_hash_export`, `xelis_hash_v2_export` and `blake3_export`, and passes
+all known-answer self-tests before issuing work. Blake3 is checked first so a
+partial runtime reports the missing `blake3_export` capability explicitly.
+Its keyed and unkeyed vectors cover 0, 3, 64, 65, 1024, 1025 and 16385 bytes,
+including block/chunk boundaries and the multi-chunk SIMD path. Once per process, the production
 managed wrappers hash 112 zero bytes and a nonzero 112-byte input per algorithm,
 comparing all 32 result bytes against
 the pinned upstream [v1](https://github.com/xelis-project/xelis-hash/blob/f48262b931438fdbf2932711613e020c02f1ea04/src/v1.rs)
