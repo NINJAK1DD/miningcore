@@ -650,6 +650,23 @@ build-windows.bat
 
 The published files are written to `build`.
 
+Pools that depend on native Blake3 validate its export and unkeyed/keyed known-answer hashes
+before configuring their daemons. This covers Alephium, Xelis, and the Kaspa variants AIX, CAS,
+HTN, KLS, CSS, NTL, NXL, PUG, PYI and WALA, including Pyrin's post-fork dependency. Xelis also
+requires its v1 and v2 proof hash self-tests. The bundled Windows `libmultihash.dll` does not
+provide these exports, so these pools refuse startup with a targeted diagnostic. A passing
+managed lifecycle test does not certify a Windows native runtime. Use a supported source-built
+Linux runtime for these pools; there is no configuration bypass for the startup checks.
+Custom templates selecting the `blake3` hasher, including nested hash compositions, require
+the same capability before activation.
+Bitcoin-family configuration resolves all six template hasher slots before daemon setup,
+with the current pool ID attached to capability errors even when templates are shared.
+This shared check also covers Handshake, Nexa, Satoshicash and Progpow managers;
+non-Bitcoin templates such as Equihash retain their existing configuration path.
+Startup vectors cover block/chunk boundaries and
+wide SIMD batches with keyed and unkeyed inputs up to 16,385 bytes. Restart after replacing
+the native runtime; capabilities are cached for the process lifetime.
+
 For managed-only development on a machine without the C++ workload, `dotnet build` and unrelated
 tests may use `-p:BuildOdoCryptWindows=false`. That development-only opt-out omits Odocrypt from the
 output: Odocrypt tests and runtime use will fail, and Windows publish always requires the verified

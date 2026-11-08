@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Autofac;
+using Miningcore.Crypto.Hashing;
 using Newtonsoft.Json.Linq;
 
 namespace Miningcore.Crypto;
@@ -27,6 +28,11 @@ public static class HashAlgorithmFactory
 
     private static IHashAlgorithm InstantiateHash(IComponentContext ctx, string name, object[] parameters)
     {
+        // Custom templates (including nested hash compositions) must not defer a
+        // missing Blake3 runtime until the first share. Check before cache/activation.
+        if(name == "blake3")
+            Blake3NativeCapability.EnsureAvailable(null);
+
         var isParameterized = parameters is { Length: > 0 };
 
         // check cache

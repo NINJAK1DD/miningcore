@@ -863,6 +863,27 @@ public abstract class BitcoinJobManagerBase<TJob> : JobManagerBase<TJob>
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
+        if(pc.Template is BitcoinTemplate template)
+        {
+            try
+            {
+                // Cover every BitcoinTemplate consumer, including sibling managers.
+                // Resolve optional/nested compositions before configuring daemons.
+                _ = template.MerkleTreeHasherValue;
+                _ = template.CoinbaseHasherValue;
+                _ = template.HeaderHasherValue;
+                _ = template.ShareHasherValue;
+                _ = template.BlockHasherValue;
+                _ = template.PoSBlockHasherValue;
+            }
+            catch(TrustedPoolStartupException ex)
+            {
+                // Shared templates cache Lazy failures. Attribute each rejection to
+                // the current pool without exposing the underlying exception text.
+                throw new TrustedPoolStartupException(ex.Message, pc.Id, ex.OriginalFailure ?? ex);
+            }
+        }
+
         pc.Extra.TryExtensionDataAs(out extraPoolConfig,
             out extraPoolConfigBindingError);
         extraPoolPaymentProcessingConfig = pc.PaymentProcessing?.Extra?.SafeExtensionDataAs<BitcoinPoolPaymentProcessingConfigExtra>();

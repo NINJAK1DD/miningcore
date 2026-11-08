@@ -9,6 +9,22 @@ Verus PBaaS vector and Zano genesis block ID have independent upstream expected
 values cited below. No expected values are generated from the binary under test
 at runtime.
 
+## Blake3 multi-chunk dispatch
+
+The portability probe hashes 16,385 bytes with byte `i` equal to `i % 251`, unkeyed
+and keyed with the ASCII key `whats the Elvish word for friend`. The 32-byte results are:
+
+- Unkeyed: `1dabe216be2578830263b049de1639f39f05a4da616b9b78c7a5e4e41662fd1f`.
+- Keyed: `9f1e8750b485576aa8af42e403bfb340665b45a952799d0155756c994db7dfd2`.
+
+The input pattern and key follow the [pinned official BLAKE3 vectors](https://github.com/BLAKE3-team/BLAKE3/blob/f55849f89cd85083c1c9daa2c5de20766f309c00/test_vectors/test_vectors.json).
+That file does not contain this length. These additional constants are checked
+against the independent BouncyCastle implementation by `Blake3NativeCapabilityTests`;
+they are never derived from the native binary being tested. Seventeen chunks
+exercise a full wide SIMD batch plus its tail. CI runs the actual exported wrapper
+on both the host CPU and constrained QEMU CPUs. Startup additionally checks official
+0, 3, 64, 65, 1024 and 1025-byte keyed/unkeyed vectors.
+
 ## VerusHash 2.2
 
 Input is 80 bytes with values `00` through `4f`, passed to `verushash2b2o_export`.
