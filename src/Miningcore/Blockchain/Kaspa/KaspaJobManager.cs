@@ -827,9 +827,16 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
         SetupJobUpdates(ct);
     }
 
+    // PYI needs Blake3 after its fork: reject an incomplete runtime at startup,
+    // rather than waiting for the first post-fork template or candidate.
+    internal static bool RequiresBlake3(string symbol) => symbol is
+        "AIX" or "CAS" or "HTN" or "KLS" or "CSS" or "NTL" or "NXL" or "PUG" or "PYI" or "WALA";
+
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         coin = pc.Template.As<KaspaCoinTemplate>();
+        if(RequiresBlake3(coin.Symbol))
+            Crypto.Hashing.Blake3NativeCapability.EnsureAvailable(pc.Id);
 
         extraPoolConfig = pc.Extra.SafeExtensionDataAs<KaspaPoolConfigExtra>();
         extraPoolPaymentProcessingConfig = pc.PaymentProcessing.Extra.SafeExtensionDataAs<KaspaPaymentProcessingConfigExtra>();

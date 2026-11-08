@@ -15,15 +15,16 @@ internal static class XelisNativeCapability
     // distinguish a working hasher from a stub or an unwritten output buffer.
     private static readonly Lazy<bool> available = new(() => IsAvailable(RuntimeInformation.ProcessArchitecture,
         name => library.Value != 0 && NativeLibrary.TryGetExport(library.Value, name, out _),
-        new XelisHash(), new XelisHashV2()));
+        new XelisHash(), new XelisHashV2(), Crypto.Hashing.Blake3NativeCapability.IsAvailable));
 
     internal static bool IsAvailable(Architecture architecture, Func<string, bool> hasExport,
-        IHashAlgorithm v1, IHashAlgorithm v2)
+        IHashAlgorithm v1, IHashAlgorithm v2, Func<bool> verifyBlake3)
     {
         try
         {
             if(architecture != Architecture.X64 ||
-                !hasExport("xelis_hash_export") || !hasExport("xelis_hash_v2_export"))
+                !hasExport("xelis_hash_export") || !hasExport("xelis_hash_v2_export") ||
+                !hasExport("blake3_export") || !verifyBlake3())
                 return false;
 
             var v1Input = new byte[112];

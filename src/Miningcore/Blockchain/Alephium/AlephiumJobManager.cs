@@ -728,6 +728,7 @@ public class AlephiumJobManager : JobManagerBase<AlephiumJob>
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
+        Crypto.Hashing.Blake3NativeCapability.EnsureAvailable(pc.Id);
         coin = pc.Template.As<AlephiumCoinTemplate>();
 
         extraPoolConfig = pc.Extra.SafeExtensionDataAs<AlephiumPoolConfigExtra>();

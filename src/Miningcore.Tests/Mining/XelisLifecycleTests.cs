@@ -358,9 +358,12 @@ public class XelisLifecycleTests
     public void NativeCapabilityRejectsUnsupportedArchitecturesAndMissingExportsBeforeAnyHash()
     {
         var unused = new Proof { BeforeHash = () => throw new Exception("must not hash") };
-        Assert.False(XelisNativeCapability.IsAvailable(Architecture.Arm64, _ => throw new Exception("must not load ARM stub"), unused, unused));
-        Assert.False(XelisNativeCapability.IsAvailable(Architecture.X64, name => name == "xelis_hash_export", unused, unused));
-        Assert.False(XelisNativeCapability.IsAvailable(Architecture.X64, _ => false, unused, unused));
+        Assert.False(XelisNativeCapability.IsAvailable(Architecture.Arm64, _ => throw new Exception("must not load ARM stub"), unused, unused, () => true));
+        Assert.False(XelisNativeCapability.IsAvailable(Architecture.X64, name => name == "xelis_hash_export", unused, unused, () => true));
+        Assert.False(XelisNativeCapability.IsAvailable(Architecture.X64, _ => false, unused, unused, () => true));
+        Assert.False(XelisNativeCapability.IsAvailable(Architecture.X64, name => name != "blake3_export", unused, unused,
+            () => throw new Exception("must not hash when the Blake3 export is missing")));
+        Assert.False(XelisNativeCapability.IsAvailable(Architecture.X64, _ => true, unused, unused, () => false));
         Assert.Equal(0, unused.Calls);
         if(OperatingSystem.IsLinux() && RuntimeInformation.ProcessArchitecture == Architecture.X64)
             Assert.True(XelisNativeCapability.IsAvailable());
@@ -387,7 +390,7 @@ public class XelisLifecycleTests
         var v1 = new KnownAnswerHasher(1, brokenVersion == 1 ? mode : "valid");
         var v2 = new KnownAnswerHasher(2, brokenVersion == 2 ? mode : "valid");
         Assert.Equal(brokenVersion == 0,
-            XelisNativeCapability.IsAvailable(Architecture.X64, _ => true, v1, v2));
+            XelisNativeCapability.IsAvailable(Architecture.X64, _ => true, v1, v2, () => true));
         var failedCalls = mode == "ignores-input" ? 2 : 1;
         Assert.Equal(brokenVersion == 1 ? failedCalls : 2, v1.Calls);
         Assert.Equal(brokenVersion == 1 ? 0 : brokenVersion == 2 ? failedCalls : 2, v2.Calls);

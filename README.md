@@ -657,6 +657,14 @@ source build. For local toolchain-compatibility testing, an installed alternativ
 with `MININGCORE_WINDOWS_PLATFORM_TOOLSET`; setting it forces a native rebuild so the selected
 toolset is actually exercised. Release CI remains pinned to v143.
 
+Pools that depend on native Blake3 validate its export and unkeyed/keyed known-answer hashes
+before configuring their daemons. This covers Alephium, Xelis, and the Kaspa variants AIX, CAS,
+HTN, KLS, CSS, NTL, NXL, PUG, PYI and WALA, including Pyrin's post-fork dependency. Xelis also
+requires its v1 and v2 proof hash self-tests. The bundled Windows `libmultihash.dll` does not
+provide these exports, so these pools refuse startup with a targeted diagnostic. A passing
+managed lifecycle test does not certify a Windows native runtime. Use a supported source-built
+Linux runtime for these pools; there is no configuration bypass for the startup checks.
+
 ### Docker Engine
 
 Install [Docker Engine for your Linux distribution](https://docs.docker.com/engine/install/) and
