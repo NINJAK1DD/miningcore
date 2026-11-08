@@ -772,6 +772,10 @@ Surrounding whitespace is ignored. Blank input, EOF, failed confirmation, cancel
 before release keeps protection. Release refusals return 78. Inspection/connectivity errors return
 1 and explicitly say whether a release was attempted.
 
+Terminal detection and confirmation strings are procedural checks, not authentication. Software
+controlling a pseudo-terminal can supply the same answers. Restrict access to the host and database
+credentials; use the dedicated recovery login described below when stronger separation is required.
+
 Release reacquires the advisory lock and checks the exact token/generation, database/role/endpoint
 and pinned ownership table. It inserts the complete previous owner, release time, releasing host/PID
 and incident reference through the protected append function into the audit table **in the same transaction** as clearing
@@ -791,6 +795,11 @@ For stricter separation, an administrator can revoke the application's EXECUTE g
 only to a dedicated recovery login with the necessary ownership-table access; use that login's
 configuration for standalone recovery. Normal startup can still inspect ownership, but cannot
 release it without the recovery login. Never grant the application membership in the audit owner.
+Keep recovery credentials outside the service account's readable configuration and secret stores.
+Verify effective permissions with both logins, including inherited role grants, after each migration
+or restore: the application must lack append-function EXECUTE and the recovery login must retain it.
+This separates access to audited recovery; it does not remove the database owner's ability to alter
+application-owned tables or make operator confirmations independent evidence of wallet reconciliation.
 
 Retain the release receipt UUID, UTC time and incident reference in central operational logs and
 the incident ticket. The release logger records all three, with the reference escaped; do not put
@@ -812,6 +821,8 @@ Before putting the restored database into service:
    and retain the full backup plus an inventory of every ownership schema and historical audit
    schema/event UUID. Record schema/table/function owners and intended application/recovery logins;
    explicitly review any different-administrator ownership or ambiguous OID mapping before activation.
+   Record each exception's responsible administrator, resolved relation/endpoint mapping and effective
+   permissions. Resolve and sign off each exception; an unexplained entry is not restore acceptance.
 2. Run the restored candidate's `add_payout_recovery_audit.sql` as the separate administrator
    **for each ownership schema**, selecting that schema in the session's search path. For `public`:
 
@@ -868,6 +879,29 @@ The documented live lab automates a dump/restore with changed OIDs, refusal befo
 post-migration release as the pool role, retirement of historical append permissions with read
 access preserved, and preservation of the original receipt identities.
 Only resume production after normal wallet reconciliation and startup checks succeed.
+
+#### Cross-cluster release acceptance
+
+Before deploying this feature in RC.2, also rehearse the restore between separately administered
+PostgreSQL clusters using isolated staging systems that match the intended deployment. The automated
+lab's two disposable databases exercise logical restore within one cluster; that result does not
+verify the destination's independently managed roles, authentication, TLS or service configuration.
+
+- Use synthetic financial data and test credentials, with production wallets and miners disconnected.
+  Restore a full database including all ownership/audit schemas, owners and ACLs. Provision the intended
+  destination roles and memberships explicitly; do not use `--no-owner` to bypass ownership errors.
+- Complete the checklist above for every ownership schema using the destination administrator and
+  intended application/recovery logins over the actual destination connection and authentication path.
+  Record both cluster identities, source revision, backup identity, role mappings and resolved OID or
+  administrative-ownership exceptions. Verify retained receipt identities and effective read/append
+  permissions, including denial through obsolete endpoints and any dedicated-login restrictions.
+- In this isolated rehearsal, verify guarded synthetic recovery, fresh ownership acquisition, normal
+  accounting and clean shutdown with the destination's service units. Confirm exit-code 74/78 restart
+  prevention and PostgreSQL ordering. Retain the results and administrator sign-off with the release
+  acceptance record before production activation.
+
+The rehearsal does not reconcile production wallets. Keep production ownership markers intact until
+their own wallet/log evidence has been reconciled through the normal recovery procedure.
 
 ### Reconcile an uncertain or duplicate recovery receipt
 

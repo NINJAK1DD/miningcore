@@ -46,6 +46,12 @@ reload the unit and verify fresh ownership acquisition on clean startup. See the
 [guided recovery and audit procedure](database.md#guided-payout-ownership-recovery) and
 [post-restore checklist](database.md#payout-recovery-after-a-logical-restore).
 
+RC.2 deployment acceptance also requires the isolated
+[cross-cluster restore rehearsal](database.md#cross-cluster-release-acceptance), including destination
+role/permission checks and explicit resolution of historical-endpoint exceptions. Choose dedicated
+recovery credentials where production requires stronger separation; terminal confirmations alone
+are not authentication. Preserve the rehearsal evidence separately from CI and wallet reconciliation.
+
 When multiple failures occur, process exit status uses precedence **74 > 78 > ordinary failure**.
 An earlier retryable failure therefore cannot mask a later condition requiring operator recovery.
 

@@ -82,6 +82,11 @@ failures returning 78 from Main. The CI integration suite launches fresh process
 timestamp modes before Npgsql initialization and both detection failures; the terminal lab also
 covers the normal-startup prompt path.
 
+The automated restore drill uses two databases within one disposable cluster. Before production
+RC.2 deployment, also complete the [cross-cluster acceptance rehearsal](../../docs/database.md#cross-cluster-release-acceptance)
+between separately administered staging clusters. Record destination role/ACL, authentication and
+service checks there; a passing local drill does not establish those deployment-specific results.
+
 Before promoting the broader RC.2 release, enable the pinned Bitcoin BLAKE2b Knots regtest binary
 with `MININGCORE_TEST_BLAKE2B_BITCOIND` in addition to the three standard daemon variables. Use the
 checksum/version from `.github/workflows/dotnet.yml`, keep it in the isolated lab, and run the full
