@@ -808,18 +808,25 @@ migration is reapplied. `pg_upgrade` preserves OIDs, but still verify the audit 
 
 Before putting the restored database into service:
 
-1. Keep all payout managers stopped, verify the restored ownership marker and financial records,
-   and retain the full backup plus an inventory of every historical audit schema/event UUID.
-2. Run the restored candidate's `add_payout_recovery_audit.sql` as the separate administrator,
-   using the application's ownership schema/search path. For the default `public` layout:
+1. Keep all payout managers stopped, verify the restored ownership markers and financial records,
+   and retain the full backup plus an inventory of every ownership schema and historical audit
+   schema/event UUID. Record schema/table/function owners and intended application/recovery logins;
+   explicitly review any different-administrator ownership or ambiguous OID mapping before activation.
+2. Run the restored candidate's `add_payout_recovery_audit.sql` as the separate administrator
+   **for each ownership schema**, selecting that schema in the session's search path. For `public`:
 
    ```console
    sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore_restore_test \
+     -c 'SET search_path TO public' \
      -f /opt/miningcore/migrations/add_payout_recovery_audit.sql
    ```
 
    Replace the database and candidate path with the restored deployment's values. This creates
    the new OID's protected audit schema; it does not move, erase or rewrite historical receipts.
+   Repeat the command for every other ownership schema; for example, use
+   `-c 'SET search_path TO "second"'` for a schema named `second`. Migrating one schema can retire
+   obsolete endpoints belonging to all restored schemas, but creates a replacement only for the
+   selected schema. The others safely refuse guided release until their own migration is applied.
 3. Retain all old `miningcore_audit_*` schemas for the incident/backup retention period. Their
    append functions still identify the old relation and must not be used for new recovery.
    The migration automatically revokes EXECUTE from PUBLIC and non-owner grantees (including
@@ -832,8 +839,9 @@ Before putting the restored database into service:
    reject the application/recovery login even when it holds the payout lock. Reapply dedicated
    recovery-login grants/revocations after the migration, which restores the current endpoint's
    default application EXECUTE grant.
-4. With the service-account database login, verify the new endpoint and its permissions without
-   releasing any owner (substitute a qualified ownership relation for a custom schema):
+4. For each ownership schema, use its intended service-account/recovery login to verify the new
+   endpoint and its permissions without releasing any owner (substitute that schema's qualified
+   ownership relation in the query):
 
    ```sql
    WITH audit AS (
@@ -849,7 +857,9 @@ Before putting the restored database into service:
    All three should be true for the intended recovery login. An intentionally restricted ordinary
    application login may have `can_release=false`. Compare historical receipt UUIDs/counts against
    the backup, inspect ownership with the assistant and choose **Keep**. Do not clear a retained
-   production marker just to test restore readiness.
+   production marker just to test restore readiness. Finish migration and permission verification
+   for every ownership schema, including manual review of excluded historical endpoints, before
+   reactivating any payout manager.
 5. In the isolated backup drill only, exercise a guarded release using synthetic ownership with
    wallets and mining services disabled. Confirm a new receipt appears in the new schema, old
    receipts remain intact, and missing/revoked audit permissions roll back the synthetic release.
