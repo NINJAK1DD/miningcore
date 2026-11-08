@@ -851,6 +851,8 @@ The documented live lab automates a dump/restore with changed OIDs, refusal befo
 post-migration release as the pool role, and preservation of the original receipt identities.
 Only resume production after normal wallet reconciliation and startup checks succeed.
 
+### Reconcile an uncertain or duplicate recovery receipt
+
 A lost commit response is explicitly reported as **unknown**, with the attempted audit UUID.
 Before retrying, inspect both the event and ownership row using a read-only database session:
 

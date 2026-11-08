@@ -1,7 +1,7 @@
 {
-  "source_commit": "3dc7414f43b926f6c357f241d952f258302d36de",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42500985293",
-  "minimum_total": 5891,
+  "source_commit": "da02d89a9dd71faba291bb664b8b972b16d37406",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42507062590",
+  "minimum_total": 5893,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -817,6 +817,11 @@
     },
     {
       "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "AuditAppend_RequiresOwnExclusiveTwoKeyLock_AndDuplicateReceiptKeepsOwner",
+      "case": "AuditAppend_RequiresOwnExclusiveTwoKeyLock_AndDuplicateReceiptKeepsOwner"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
       "method": "AuditFailure_RollsBackRelease_AndAuditSurvivesNextLease",
       "case": "AuditFailure_RollsBackRelease_AndAuditSurvivesNextLease"
     },
@@ -859,6 +864,11 @@
       "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
       "method": "DifferentResolvedSchema_CannotReleaseInspectedOwner",
       "case": "DifferentResolvedSchema_CannotReleaseInspectedOwner"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "FreshProcesses_ApplyExplicitTimestampMode_AndMainReturns78ForBothDetectionFailures",
+      "case": "FreshProcesses_ApplyExplicitTimestampMode_AndMainReturns78ForBothDetectionFailures"
     },
     {
       "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
