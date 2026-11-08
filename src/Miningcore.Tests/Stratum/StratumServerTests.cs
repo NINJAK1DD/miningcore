@@ -752,7 +752,9 @@ public class StratumServerTests
                 Assert.NotNull(presentedCertificate);
                 using var presentedCertificate2 = X509CertificateLoader.LoadCertificate(
                     presentedCertificate.GetRawCertData());
-                Assert.Equal(certificate.Thumbprint, presentedCertificate2.Thumbprint);
+                Assert.True(certificate.Thumbprint == presentedCertificate2.Thumbprint,
+                    $"Expected {certificate.Subject} / {certificate.Issuer} / {certificate.Thumbprint}; " +
+                    $"presented {presentedCertificate2.Subject} / {presentedCertificate2.Issuer} / {presentedCertificate2.Thumbprint}");
             }
 
             await server.WaitForNoConnectionsAsync(TestTimeout);

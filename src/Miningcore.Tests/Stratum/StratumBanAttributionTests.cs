@@ -251,10 +251,14 @@ public partial class StratumAdmissionTests
     [InlineData(true, true)]
     public async Task LateClientBan_RejectsNextRequest_WhileHealthyClientAndOtherPoolContinue(bool proxy, bool tls)
     {
-        await using var lab = new BanLab(proxy, tls);
+        // Windows cannot route a loopback-bound client to a non-loopback listener.
+        // Keep the same-listener isolation check on platforms that support that route.
+        var separateLoopbackListener = !proxy && OperatingSystem.IsWindows();
+        await using var lab = new BanLab(proxy, tls, loopbackListener: separateLoopbackListener);
         await using var other = new BanLab(false, tls);
         using var client = await BanSession.Connect(lab);
-        using var healthy = await BanSession.Connect(lab, source: proxy ? lab.Address : IPAddress.Loopback);
+        using var healthy = await BanSession.Connect(lab, source: proxy ? lab.Address : IPAddress.Loopback,
+            port: separateLoopbackListener ? 1 : 0);
         var identity = proxy ? IPAddress.Parse("192.0.2.211") : lab.Address;
         if(proxy)
         {
@@ -551,7 +555,8 @@ public partial class StratumAdmissionTests
 
         internal BanLab(bool proxy, bool tls, bool mandatory = true, bool tlsAuto = false,
             bool enableUntrustedProxy = false, IBanManager bans = null, StratumAdmissionConfig config = null,
-            ILogger log = null, ClusterConfig cluster = null, PoolEndpoint endpointConfig = null)
+            ILogger log = null, ClusterConfig cluster = null, PoolEndpoint endpointConfig = null,
+            bool loopbackListener = false)
         {
             Tls = tls;
             if(tls)
@@ -571,7 +576,8 @@ public partial class StratumAdmissionTests
                 ? new TcpProxyProtocolConfig { Enable = true, Mandatory = mandatory,
                     ProxyAddresses = new[] { proxy ? Address.ToString() : "192.0.2.254" } } : null,
                 tlsCertificate: certificatePath, tlsAuto: tlsAuto, bans: bans, listenAddress: Address, log: log,
-                cluster: cluster, endpointConfig: endpointConfig);
+                cluster: cluster, endpointConfig: endpointConfig,
+                secondaryListenAddress: loopbackListener ? IPAddress.Loopback : null);
         }
 
         public async ValueTask DisposeAsync()
@@ -594,12 +600,12 @@ public partial class StratumAdmissionTests
         private Stream stream;
         private StreamReader reader;
 
-        internal static async Task<BanSession> Connect(BanLab lab, IPAddress source = null)
+        internal static async Task<BanSession> Connect(BanLab lab, IPAddress source = null, int port = 0)
         {
             var result = new BanSession();
             try
             {
-                result.client = await lab.Server.Connect(source: source ?? lab.Address);
+                result.client = await lab.Server.Connect(port, source: source ?? lab.Address);
                 result.stream = result.client.GetStream();
                 if(lab.Tls)
                 {
