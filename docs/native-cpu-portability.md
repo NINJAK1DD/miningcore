@@ -1,5 +1,25 @@
 # Linux native CPU portability
 
+## Blake3 key contract
+
+The managed Blake3 wrapper accepts null or an empty key for unkeyed hashing,
+and exactly 32 bytes for keyed hashing. Other lengths throw `ArgumentException`
+before native code runs. Digest calls validate a stable key reference again,
+including values supplied through a subclass's protected setter.
+
+The native `blake3_export` ABI remains void and independently enforces the same
+length contract. A positive length requires a non-null pointer and exactly 32
+bytes. Invalid native calls terminate with `SIGABRT` before key access; they do
+not return zero, unchanged output or another plausible proof hash. Native callers
+must validate before calling. Valid inputs retain their existing hashes and ABI.
+
+The CPU-portability gate tests the actual shared-library export with valid keyed
+and unkeyed known answers. Invalid calls run in isolated child processes, with
+short key buffers ending at an inaccessible memory page. The gate requires
+`SIGABRT`, rejects access faults or successful returns, and disables core dumps.
+This hardens a pre-existing interface weakness; current mining call sites already
+supply valid 32-byte keys, and no miner-controlled invalid-key route is established.
+
 ## Floating-point environment at native library load
 
 The CryptoNote shared-library link uses link flags only, with `-s` explicitly in
