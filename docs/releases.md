@@ -33,6 +33,8 @@ selecting the `blake3` hasher also require the capability before hasher activati
 Bitcoin-family managers resolve all six hasher slots before daemon configuration,
 including nested and optional compositions, and attach the current pool ID to
 cached capability failures from shared templates.
+The check runs in the shared Bitcoin-template base, covering Handshake, Nexa,
+Satoshicash and Progpow as well as Bitcoin and merged-mining managers.
 The bundled Windows DLL does not provide this export: affected Windows pools now
 fail at startup instead of failing when shares or candidates require Blake3.
 Deploy a supported, source-built Linux runtime for these pools; this change does

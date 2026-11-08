@@ -661,6 +661,8 @@ Custom templates selecting the `blake3` hasher, including nested hash compositio
 the same capability before activation.
 Bitcoin-family configuration resolves all six template hasher slots before daemon setup,
 with the current pool ID attached to capability errors even when templates are shared.
+This shared check also covers Handshake, Nexa, Satoshicash and Progpow managers;
+non-Bitcoin templates such as Equihash retain their existing configuration path.
 Startup vectors cover block/chunk boundaries and
 wide SIMD batches with keyed and unkeyed inputs up to 16,385 bytes. Restart after replacing
 the native runtime; capabilities are cached for the process lifetime.

@@ -524,22 +524,6 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         coin = pc.Template.As<BitcoinTemplate>();
-        try
-        {
-            // Resolve even optional/nested hash compositions before base.Configure
-            // can configure daemons. Shared templates cache Lazy failures, so attach
-            // the current pool's identity here instead of caching it in the factory.
-            _ = coin.MerkleTreeHasherValue;
-            _ = coin.CoinbaseHasherValue;
-            _ = coin.HeaderHasherValue;
-            _ = coin.ShareHasherValue;
-            _ = coin.BlockHasherValue;
-            _ = coin.PoSBlockHasherValue;
-        }
-        catch(TrustedPoolStartupException ex)
-        {
-            throw new TrustedPoolStartupException(ex.Message, pc.Id, ex.OriginalFailure ?? ex);
-        }
         base.Configure(pc, cc);
 
         directCoinbasePayoutEnabled = BitcoinPoolConfigPolicy
