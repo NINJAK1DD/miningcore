@@ -729,58 +729,27 @@ jobs:
         }
         .\build\windows-x64\Miningcore.exe --version
 
-    - name: Test Windows share recovery safety
+    # Broad coverage: resource discovery, lifecycle mocks and socket
+    # fixtures can fail on Windows even when the selected native smoke tests pass.
+    - name: Test complete Windows suite
+      id: windows_full_suite
+      # Previous complete run took about 5.5 minutes; leave room for a clean build.
+      timeout-minutes: 15
       run: >-
         dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
         --no-restore
-        --configuration Release
-        --framework net10.0
-        --filter "FullyQualifiedName~Miningcore.Tests.Mining.ShareRecorderTests|FullyQualifiedName~Miningcore.Tests.Mining.ShareRecoveryPathOwnershipTests|FullyQualifiedName~Miningcore.Tests.ProgramPoolTemplateTests"
+        --configuration Release --framework net10.0
+        --logger "trx;LogFileName=windows-full.trx"
+        --results-directory build/ci-tests
 
-    - name: Test Windows log rotation
-      run: >-
-        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
-        --no-restore
-        --configuration Release
-        --framework net10.0
-        --filter "FullyQualifiedName~Miningcore.Tests.ProgramLoggingTests"
+    - name: Validate and report Windows suite evidence
+      run: python scripts/release/test-windows-suite-evidence.py --self-test build/ci-tests/windows-full.trx
 
-    - name: Test Windows Stratum diagnostic boundary
-      run: >-
-        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
-        --no-restore
-        --configuration Release
-        --framework net10.0
-        --filter "FullyQualifiedName~Miningcore.Tests.Stratum.StratumDiagnosticTests"
-
-    - name: Test Windows daemon TLS rejection
-      run: >-
-        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
-        --no-restore
-        --configuration Release
-        --framework net10.0
-        --filter "FullyQualifiedName~Miningcore.Tests.Rpc.RpcTlsTests.PlatformRejectsUntrustedDaemonCertificate"
-
-    - name: Verify SMTP TLS transport on Windows
-      run: >-
-        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
-        --no-restore
-        --configuration Release
-        --framework net10.0
-        --filter "FullyQualifiedName~Miningcore.Tests.Notifications.SmtpTransportTests"
-
-    - name: Test Windows Stratum listener lifecycle
-      run: >-
-        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
-        --no-restore
-        --configuration Release
-        --framework net10.0
-        --filter "(FullyQualifiedName~Miningcore.Tests.Stratum.StratumConnectionTests|FullyQualifiedName~Miningcore.Tests.Stratum.StratumListenerReservationCoordinatorTests|FullyQualifiedName~Miningcore.Tests.StratumListenerConfigurationTests|FullyQualifiedName~Miningcore.Tests.Stratum.StratumServerTests|FullyQualifiedName~Miningcore.Tests.Stratum.StratumListenerPortabilityTests)&FullyQualifiedName!~RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake"
-
-    - name: Smoke-test Windows SCCPow runtime
-      run: >-
-        dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
-        --no-restore
-        --configuration Release
-        --framework net10.0
-        --filter "FullyQualifiedName~Miningcore.Tests.Native.SccPowTests"
+    - name: Preserve Windows test results
+      if: ${{ always() && steps.windows_full_suite.outcome != 'skipped' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: windows-test-results
+        path: build/ci-tests/windows-full.trx
+        if-no-files-found: warn
+        retention-days: 30
