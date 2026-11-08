@@ -743,7 +743,7 @@ jobs:
         --results-directory build/ci-tests
 
     - name: Validate and report Windows suite evidence
-      run: python scripts/release/test-windows-suite-evidence.py --self-test --max-skipped 176 build/ci-tests/windows-full.trx
+      run: python scripts/release/test-windows-suite-evidence.py --self-test build/ci-tests/windows-full.trx
 
     - name: Preserve Windows test results
       if: ${{ always() && steps.windows_full_suite.outcome != 'skipped' }}

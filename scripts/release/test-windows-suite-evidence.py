@@ -9,9 +9,11 @@ import html
 import io
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ET
 
 NS = "{http://microsoft.com/schemas/VisualStudio/TeamTest/2010}"
@@ -25,36 +27,8 @@ def case_identity(case):
     return identity
 
 
-def validate(root, max_skipped, baseline):
-    minimum = baseline["minimum_total"]
-    if type(minimum) is not int or minimum < 1 or max_skipped < 0:
-        raise ValueError("Positive discovery minimum and nonnegative skip ceiling are required")
-    required = collections.Counter(map(case_identity, baseline["required_passes"]))
-    expected_skips = collections.Counter(map(case_identity, baseline["expected_skips"]))
-    if not required or any(count != 1 for count in required.values()) or required.keys() & expected_skips.keys():
-        raise ValueError("Required cases must be nonempty, unique and disjoint from expected skips")
-    if expected_skips.total() > max_skipped:
-        raise ValueError("Expected skip baseline exceeds the reviewed ceiling")
+def read_observed(root):
     results = root.findall(NS + "Results/" + NS + "UnitTestResult")
-    if not results:
-        raise ValueError("Nonempty test results are required")
-    counts = collections.Counter(item.get("outcome") for item in results)
-    if set(counts) - {"Passed", "NotExecuted"} or not counts["Passed"]:
-        raise ValueError(f"Unsuccessful or unknown test outcomes: {dict(counts)}")
-    summary = root.find(NS + "ResultSummary")
-    counters = summary.find(NS + "Counters") if summary is not None else None
-    if summary is None or summary.get("outcome") != "Completed" or counters is None:
-        raise ValueError("Missing or unsuccessful TRX summary")
-    for key, expected in {"total": len(results), "passed": counts["Passed"],
-                          "executed": counts["Passed"], "failed": 0}.items():
-        if int(counters.get(key, "-1")) != expected:
-            raise ValueError(f"TRX counter mismatch: {key}")
-    if len(results) < minimum:
-        raise ValueError(f"Windows test coverage decreased: {len(results)} discovered; minimum {minimum}")
-    # VSTest leaves notExecuted=0 for xUnit skips; count the individual results.
-    if counts["NotExecuted"] > max_skipped:
-        raise ValueError(f"Skipped {counts['NotExecuted']} tests; reviewed ceiling is {max_skipped}")
-
     definitions = {}
     for definition in root.findall(NS + "TestDefinitions/" + NS + "UnitTest"):
         test_id = definition.get("id")
@@ -72,7 +46,39 @@ def validate(root, max_skipped, baseline):
         executions.add(execution)
         identity = case_identity({"class": method.get("className"), "method": method.get("name"),
                                   "case": result.get("testName")})
+        if result.get("outcome") not in observed:
+            raise ValueError("Unsuccessful or unknown test outcome")
         observed[result.get("outcome")][identity] += 1
+    return observed
+
+
+def validate(root, baseline):
+    minimum = baseline["minimum_total"]
+    if type(minimum) is not int or minimum < 1:
+        raise ValueError("Positive discovery minimum is required")
+    required = collections.Counter(map(case_identity, baseline["required_passes"]))
+    expected_skips = collections.Counter(map(case_identity, baseline["expected_skips"]))
+    if not required or any(count != 1 for count in required.values()) or required.keys() & expected_skips.keys():
+        raise ValueError("Required cases must be nonempty, unique and disjoint from expected skips")
+    results = root.findall(NS + "Results/" + NS + "UnitTestResult")
+    if not results:
+        raise ValueError("Nonempty test results are required")
+    counts = collections.Counter(item.get("outcome") for item in results)
+    if set(counts) - {"Passed", "NotExecuted"} or not counts["Passed"]:
+        raise ValueError(f"Unsuccessful or unknown test outcomes: {dict(counts)}")
+    summary = root.find(NS + "ResultSummary")
+    counters = summary.find(NS + "Counters") if summary is not None else None
+    if summary is None or summary.get("outcome") != "Completed" or counters is None:
+        raise ValueError("Missing or unsuccessful TRX summary")
+    for key, expected in {"total": len(results), "passed": counts["Passed"],
+                          "executed": counts["Passed"], "failed": 0}.items():
+        if int(counters.get(key, "-1")) != expected:
+            raise ValueError(f"TRX counter mismatch: {key}")
+    if len(results) < minimum:
+        raise ValueError(f"Windows test coverage decreased: {len(results)} discovered; minimum {minimum}")
+    # VSTest leaves notExecuted=0 for xUnit skips; count the individual results.
+
+    observed = read_observed(root)
     for identity in required:
         if observed["Passed"][identity] != 1:
             raise ValueError(f"Required regression case missing, repeated or not passed: {identity!r}")
@@ -81,8 +87,8 @@ def validate(root, max_skipped, baseline):
         raise ValueError(f"Skipped case baseline changed; added: {dict(skipped - expected_skips)!r}; "
                          f"removed: {dict(expected_skips - skipped)!r}")
     text = (f"Windows suite: {len(results)} total (minimum {minimum}), {counts['Passed']} passed, "
-            f"{counts['NotExecuted']} skipped (ceiling {max_skipped}).\n\n"
-            f"All {required.total()} required regression cases passed; exact skipped-case baseline matched.\n\n")
+            f"{counts['NotExecuted']} skipped.\n\n"
+            f"All {sum(required.values())} required regression cases passed; exact skipped-case baseline matched.\n\n")
     # Class + method + case avoid conflating identical display names from different tests.
     names = [f"{cls}.{method}: {case}" for (cls, method, case), count in sorted(skipped.items())
              for _ in range(count)]
@@ -90,21 +96,64 @@ def validate(root, max_skipped, baseline):
         html.escape("\n".join(names)) + "</pre>\n</details>\n"
 
 
-def report(path, max_skipped, baseline_path):
+def report(path, baseline_path):
     with open(baseline_path, encoding="utf-8") as source:
         baseline = json.load(source)
-    return validate(ET.parse(path).getroot(), max_skipped, baseline)
+    return validate(ET.parse(path).getroot(), baseline)
+
+
+def refresh_baseline(root, baseline, source_commit, source_run):
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", source_commit or ""):
+        raise ValueError("Source commit must be a full 40-character Git SHA")
+    if not re.fullmatch(r"https://github.com/NINJAK1DD/miningcore/actions/runs/[1-9][0-9]*", source_run or ""):
+        raise ValueError("Source run must be a Miningcore GitHub Actions run URL")
+    # Refresh only the skip inventory. Never silently drop required cases or lower
+    # the discovery floor to bless an incomplete run, even during regeneration.
+    candidate = copy.deepcopy(baseline)
+    skipped = read_observed(root)["NotExecuted"]
+    candidate["expected_skips"] = [dict(zip(("class", "method", "case"), identity))
+                                   for identity, count in sorted(skipped.items()) for _ in range(count)]
+    validate(root, candidate)
+    candidate["minimum_total"] = len(root.findall(NS + "Results/" + NS + "UnitTestResult"))
+    candidate["source_commit"] = source_commit.lower()
+    candidate["source_run"] = source_run
+    return candidate
+
+
+def write_baseline(trx_path, baseline_path, output_path, source_commit, source_run):
+    output_path = Path(output_path)
+    if output_path.resolve() == Path(trx_path).resolve():
+        raise ValueError("Baseline output must not overwrite the TRX evidence")
+    with open(baseline_path, encoding="utf-8") as source:
+        baseline = json.load(source)
+    candidate = refresh_baseline(ET.parse(trx_path).getroot(), baseline, source_commit, source_run)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=output_path.parent,
+                                         prefix=output_path.name + ".", suffix=".tmp", delete=False) as target:
+            temporary = Path(target.name)
+            json.dump(candidate, target, indent=2)
+            target.write("\n")
+        os.replace(temporary, output_path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trx", nargs="?")
-    parser.add_argument("--max-skipped", type=int)
     parser.add_argument("--baseline", type=Path, default=BASELINE)
+    parser.add_argument("--write-baseline", type=Path, metavar="OUTPUT",
+                        help="Refresh skips and discovery minimum from a successful TRX; preserve required passes")
+    parser.add_argument("--source-commit", help="Full Git commit SHA that produced the TRX")
+    parser.add_argument("--source-run", help="GitHub Actions run URL that produced the TRX")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
-    if args.trx and args.max_skipped is None:
-        parser.error("--max-skipped is required when validating a TRX")
+    if args.write_baseline and not (args.trx and args.source_commit and args.source_run):
+        parser.error("--write-baseline requires a TRX, --source-commit and --source-run")
+    if not args.write_baseline and (args.source_commit or args.source_run):
+        parser.error("Provenance options require --write-baseline")
     if not args.trx and not args.self_test:
         parser.error("TRX path is required")
     return args
@@ -137,7 +186,7 @@ class EvidenceTests(unittest.TestCase):
         return root
 
     def check(self, root=None):
-        return validate(self.fixture() if root is None else root, 1, self.baseline)
+        return validate(self.fixture() if root is None else root, self.baseline)
 
     def test_success_and_escaping(self):
         self.assertIn("3 total (minimum 3), 2 passed, 1 skipped", self.check())
@@ -190,15 +239,13 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.check(root)
 
-    def test_skip_ceiling_and_baseline_validation(self):
-        with self.assertRaisesRegex(ValueError, "ceiling"):
-            validate(self.fixture(), 0, self.baseline)
+    def test_baseline_validation(self):
         for field, value in (("minimum_total", 0), ("required_passes", []),
                              ("required_passes", [self.cases[0]] * 2),
                              ("required_passes", [self.cases[2]])):
             baseline = {**self.baseline, field: value}
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
-                validate(self.fixture(), 1, baseline)
+                validate(self.fixture(), baseline)
 
     def test_missing_and_duplicate_execution_or_definition_rejected(self):
         for change in ("missing-definition", "duplicate-definition", "missing-execution", "duplicate-execution", "empty-class"):
@@ -218,19 +265,88 @@ class EvidenceTests(unittest.TestCase):
             path = Path(directory) / "suite.trx"
             baseline = Path(directory) / "baseline.json"
             baseline.write_text(json.dumps(self.baseline), encoding="utf-8")
-            with self.assertRaises(FileNotFoundError): report(path, 1, baseline)
+            with self.assertRaises(FileNotFoundError): report(path, baseline)
             path.write_text("<invalid", encoding="utf-8")
-            with self.assertRaises(ET.ParseError): report(path, 1, baseline)
+            with self.assertRaises(ET.ParseError): report(path, baseline)
             ET.ElementTree(self.fixture()).write(path)
-            self.assertIn("3 total", report(path, 1, baseline))
+            self.assertIn("3 total", report(path, baseline))
             baseline.write_text("{invalid", encoding="utf-8")
-            with self.assertRaises(json.JSONDecodeError): report(path, 1, baseline)
+            with self.assertRaises(json.JSONDecodeError): report(path, baseline)
 
-    def test_ceiling_is_required_for_cli_validation(self):
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            parse_args(["suite.trx"])
-        self.assertEqual(1, parse_args(["--max-skipped", "1", "suite.trx"]).max_skipped)
+    def test_cli_requires_complete_provenance_for_updates(self):
+        for argv in (["--write-baseline", "out.json"],
+                     ["suite.trx", "--write-baseline", "out.json"],
+                     ["suite.trx", "--source-commit", "a" * 40],
+                     ["suite.trx", "--max-skipped", "1"]):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parse_args(argv)
+        self.assertEqual("suite.trx", parse_args(["suite.trx"]).trx)
         self.assertTrue(parse_args(["--self-test"]).self_test)
+
+    def refresh(self, root, baseline=None):
+        return refresh_baseline(root, self.baseline if baseline is None else baseline, "a" * 40,
+                                "https://github.com/NINJAK1DD/miningcore/actions/runs/1")
+
+    def test_refresh_preserves_required_cases_and_increases_discovery_floor(self):
+        original = copy.deepcopy(self.baseline)
+        root = self.fixture(self.cases + [{"class": "New", "method": "Test", "case": "Test"}],
+                            ["Passed", "Passed", "NotExecuted", "Passed"])
+        refreshed = self.refresh(root)
+        self.assertEqual(original, self.baseline)
+        self.assertEqual(original["required_passes"], refreshed["required_passes"])
+        self.assertEqual(4, refreshed["minimum_total"])
+        self.assertEqual("a" * 40, refreshed["source_commit"])
+        self.assertIn("4 total", validate(root, refreshed))
+        self.assertEqual(refreshed, self.refresh(root, refreshed))
+
+    def test_refresh_explicitly_updates_added_and_removed_skips(self):
+        for outcomes in (["Passed", "NotExecuted", "NotExecuted"], ["Passed", "Passed", "Passed"]):
+            root = self.fixture(outcomes=outcomes)
+            refreshed = self.refresh(root)
+            self.assertEqual(outcomes.count("NotExecuted"), len(refreshed["expected_skips"]))
+            validate(root, refreshed)
+
+    def test_refresh_cannot_bless_lost_required_cases_or_failed_or_incomplete_evidence(self):
+        missing_required = copy.deepcopy(self.cases)
+        missing_required[0]["class"] = "DifferentClass"
+        roots = [self.fixture(self.cases[:1], ["Passed"]), self.fixture(missing_required),
+                 self.fixture(outcomes=["NotExecuted", "Passed", "Passed"]),
+                 self.fixture(outcomes=["Passed", "Failed", "NotExecuted"])]
+        inconsistent = self.fixture()
+        inconsistent.find(NS + "ResultSummary/" + NS + "Counters").set("total", "1")
+        roots.append(inconsistent)
+        for root in roots:
+            with self.subTest(xml=ET.tostring(root)), self.assertRaises(ValueError):
+                self.refresh(root)
+
+    def test_refresh_requires_valid_provenance(self):
+        for commit, run in (("short", "https://github.com/NINJAK1DD/miningcore/actions/runs/1"),
+                            ("a" * 40, "https://example.com/run/1"), ("a" * 40, "")):
+            with self.subTest(commit=commit, run=run), self.assertRaises(ValueError):
+                refresh_baseline(self.fixture(), self.baseline, commit, run)
+
+    def test_baseline_write_is_atomic_and_never_overwrites_trx(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trx = Path(directory) / "suite.trx"
+            baseline = Path(directory) / "baseline.json"
+            baseline.write_text(json.dumps(self.baseline), encoding="utf-8")
+            ET.ElementTree(self.fixture()).write(trx)
+            arguments = (trx, baseline, baseline, "a" * 40,
+                         "https://github.com/NINJAK1DD/miningcore/actions/runs/1")
+            before = baseline.read_bytes()
+            with mock.patch("os.replace", side_effect=OSError("injected write failure")), self.assertRaises(OSError):
+                write_baseline(*arguments)
+            self.assertEqual(before, baseline.read_bytes())
+            self.assertEqual({trx, baseline}, set(Path(directory).iterdir()))
+            with self.assertRaisesRegex(ValueError, "overwrite the TRX"):
+                write_baseline(trx, baseline, trx, arguments[-2], arguments[-1])
+            ET.ElementTree(self.fixture(outcomes=["NotExecuted", "Passed", "Passed"])).write(trx)
+            with self.assertRaises(ValueError):
+                write_baseline(*arguments)
+            self.assertEqual(before, baseline.read_bytes())
+            ET.ElementTree(self.fixture()).write(trx)
+            write_baseline(*arguments)
+            self.assertIn("3 total", report(trx, baseline))
 
 
 if __name__ == "__main__":
@@ -239,8 +355,11 @@ if __name__ == "__main__":
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(EvidenceTests)
         if not unittest.TextTestRunner().run(suite).wasSuccessful():
             raise SystemExit(1)
-    if args.trx:
-        output = report(args.trx, args.max_skipped, args.baseline)
+    if args.write_baseline:
+        write_baseline(args.trx, args.baseline, args.write_baseline, args.source_commit, args.source_run)
+        print(f"Wrote {args.write_baseline}; inspect the diff before committing the baseline update.")
+    elif args.trx:
+        output = report(args.trx, args.baseline)
         print(output)
         if os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:

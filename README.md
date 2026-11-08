@@ -658,17 +658,42 @@ with `MININGCORE_WINDOWS_PLATFORM_TOOLSET`; setting it forces a native rebuild s
 toolset is actually exercised. Release CI remains pinned to v143.
 
 The Windows CI job runs the complete test suite and validates a reviewed discovery minimum,
-passing executions of all 22 original regression cases, and the exact skipped-case identities
-in [the Windows evidence baseline](scripts/release/windows-suite-baseline.json), in addition to
-the explicit skip ceiling. Legitimate test removals, renames or skip changes require a reviewed
-baseline update; new passing tests are allowed. The baseline records its source commit and CI run.
+passing executions of all 22 original regression cases plus five fixture/STARTTLS guard cases,
+and the exact skipped-case identities in
+[the Windows evidence baseline](scripts/release/windows-suite-baseline.json).
+The skip inventory is the single source of truth; no separate count ceiling needs updating.
+Legitimate test removals, renames or skip changes require a reviewed baseline update;
+new passing tests are allowed. The baseline records its source commit and CI run.
 CI reports skipped cases and retains TRX results for 30 days.
-This workflow check does not itself configure branch-protection requirements.
+The repository's [Dev ruleset](https://github.com/NINJAK1DD/miningcore/rules/18480685) separately
+requires the `Build Windows x64` check from GitHub Actions before merging into `dev`.
 With the .NET SDK and Visual Studio C++ workload described above installed, run locally with:
 
 ```powershell
 dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --configuration Release --logger "trx;LogFileName=windows-full.trx" --results-directory build/ci-tests
 ```
+
+Validate a downloaded Windows TRX with Python 3 (standard library only):
+
+```powershell
+python scripts/release/test-windows-suite-evidence.py --self-test build/ci-tests/windows-full.trx
+```
+
+For an intentional baseline change, download the complete successful Windows TRX and refresh
+the baseline with its full source commit and Actions run URL. For example, using the checked-in
+baseline's source run:
+
+```powershell
+python scripts/release/test-windows-suite-evidence.py build/ci-tests/windows-full.trx --write-baseline scripts/release/windows-suite-baseline.json --source-commit d5a64505ddb6571290248b37ff80da3beeb7960f --source-run https://github.com/NINJAK1DD/miningcore/actions/runs/42476001430
+git diff -- scripts/release/windows-suite-baseline.json
+```
+
+Use the commit and URL that actually produced your downloaded TRX. The helper records this
+provenance, refreshes skipped identities, and raises the discovery minimum to the observed count.
+It refuses failed or incomplete evidence, a lower discovery count, or missing/skipped required
+cases. It preserves the required-case list and writes atomically. Inspect the diff before committing;
+intentional required-case renames or removals still need a separate explicit edit. CI never
+regenerates or automatically accepts the baseline.
 
 TLS fixtures generate their own certificates and require the exact server identity or their
 private test root. Run them in a clean Windows VM or a test environment whose loopback traffic
