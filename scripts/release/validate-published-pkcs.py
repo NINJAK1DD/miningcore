@@ -11,7 +11,7 @@ PACKAGE = "System.Security.Cryptography.Pkcs"
 ASSEMBLY = PACKAGE + ".dll"
 
 
-def validate(publish_dir: Path, project: Path) -> str:
+def validate(publish_dir: Path, project: Path) -> tuple[str, str]:
     versions = [node.get("Version") for node in ET.parse(project).iter("PackageReference")
                 if node.get("Include") == PACKAGE]
     if len(versions) != 1 or not re.fullmatch(r"10\.0\.\d+", versions[0] or ""):
@@ -24,10 +24,22 @@ def validate(publish_dir: Path, project: Path) -> str:
     entry = f"{PACKAGE}/{version}"
     libraries = manifest["libraries"]
     entries = [key for key in libraries if key.startswith(PACKAGE + "/")]
-    if entries != [entry] or libraries[entry].get("type") != "package":
-        raise ValueError(f"published libraries must resolve exactly {entry}")
     target = manifest["targets"][manifest["runtimeTarget"]["name"]]
     target_entries = [key for key in target if key.startswith(PACKAGE + "/")]
+    if not entries and not target_entries:
+        # .NET 10 can prune this package when the ASP.NET shared framework supplies it.
+        # Require that framework explicitly; the runtime smoke must then verify the
+        # actual assembly selected by the host, rather than accepting absence as proof.
+        config = json.loads((publish_dir / "Miningcore.runtimeconfig.json").read_text(encoding="utf-8"))
+        frameworks = config["runtimeOptions"].get("frameworks", [])
+        if not any(item.get("name") == "Microsoft.AspNetCore.App" and
+                   re.fullmatch(r"10\.0\.\d+", item.get("version", "")) for item in frameworks):
+            raise ValueError("PKCS absent from manifest without an ASP.NET 10 shared framework")
+        if (publish_dir / ASSEMBLY).exists():
+            raise ValueError("untracked PKCS DLL present despite framework-only manifest")
+        return version, "framework"
+    if entries != [entry] or libraries[entry].get("type") != "package":
+        raise ValueError(f"published libraries must resolve exactly {entry}")
     if target_entries != [entry]:
         raise ValueError(f"active runtime target must resolve exactly {entry}")
     runtime = target[entry].get("runtime", {})
@@ -35,7 +47,7 @@ def validate(publish_dir: Path, project: Path) -> str:
         raise ValueError(f"active runtime target has no {ASSEMBLY} runtime asset")
     if not (publish_dir / ASSEMBLY).is_file():
         raise ValueError(f"published assembly is missing: {ASSEMBLY}")
-    return entry
+    return version, "package"
 
 
 def main() -> int:
@@ -43,11 +55,12 @@ def main() -> int:
         print(f"Usage: {sys.argv[0]} <publish-directory> <Miningcore.csproj>", file=sys.stderr)
         return 2
     try:
-        entry = validate(Path(sys.argv[1]), Path(sys.argv[2]))
+        version, source = validate(Path(sys.argv[1]), Path(sys.argv[2]))
     except (OSError, ValueError, KeyError, TypeError, AttributeError, ET.ParseError) as error:
         print(f"Published PKCS validation failed: {error}", file=sys.stderr)
         return 1
-    print(f"Published PKCS dependency verified: {entry}")
+    print(f"Published PKCS manifest verified: {source} binding; reference {PACKAGE}/{version}", file=sys.stderr)
+    print(version, source)
     return 0
 
 

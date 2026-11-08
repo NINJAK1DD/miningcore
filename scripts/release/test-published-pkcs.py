@@ -87,6 +87,39 @@ class PublishedPkcsTests(unittest.TestCase):
         self.manifest = {"runtimeTarget": None, "libraries": {self.entry: {"type": "package"}}}
         self.run_gate(1, "validation failed")
 
+    def framework_manifest(self):
+        self.manifest["libraries"].clear()
+        self.manifest["targets"][self.target].clear()
+        (self.root / ASSEMBLY).unlink()
+        self.config = {"runtimeOptions": {"frameworks": [
+            {"name": "Microsoft.NETCore.App", "version": "10.0.0"},
+            {"name": "Microsoft.AspNetCore.App", "version": "10.0.0"}]}}
+        self.write_config()
+
+    def write_config(self):
+        (self.root / "Miningcore.runtimeconfig.json").write_text(json.dumps(self.config), encoding="utf-8")
+
+    def test_framework_pruned_package(self):
+        self.framework_manifest()
+        self.run_gate(message="10.0.14 framework")
+
+    def test_pruned_without_aspnet_framework(self):
+        self.framework_manifest()
+        self.config["runtimeOptions"]["frameworks"].pop()
+        self.write_config()
+        self.run_gate(1, "without an ASP.NET 10")
+
+    def test_pruned_with_untracked_dll(self):
+        self.framework_manifest()
+        (self.root / ASSEMBLY).touch()
+        self.run_gate(1, "untracked PKCS DLL")
+
+    def test_pruned_with_wrong_framework_band(self):
+        self.framework_manifest()
+        self.config["runtimeOptions"]["frameworks"][1]["version"] = "9.0.0"
+        self.write_config()
+        self.run_gate(1, "without an ASP.NET 10")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,7 +33,8 @@ require_file "$publish_dir/BouncyCastle.Cryptography.dll"
 require_file "$publish_dir/BouncyCastle.Crypto.dll"
 require_file "$dependency_manifest"
 
-python3 "$script_dir/validate-published-pkcs.py" "$publish_dir" "$miningcore_project"
+pkcs_binding="$(python3 "$script_dir/validate-published-pkcs.py" "$publish_dir" "$miningcore_project")"
+read -r pkcs_version pkcs_source <<< "$pkcs_binding"
 
 # Inventory alone does not prove which runtime the application selects. The smoke
 # below also reports and checks the runtime chosen with Miningcore's runtimeconfig.
@@ -65,4 +66,4 @@ cp "$smoke_build/Miningcore.ManagedDependencySmoke.dll" "$smoke_runtime/"
 dotnet exec \
   --depsfile "$smoke_runtime/Miningcore.deps.json" \
   --runtimeconfig "$smoke_runtime/Miningcore.runtimeconfig.json" \
-  "$smoke_runtime/Miningcore.ManagedDependencySmoke.dll"
+  "$smoke_runtime/Miningcore.ManagedDependencySmoke.dll" "$pkcs_version" "$pkcs_source"

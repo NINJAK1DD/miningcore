@@ -78,10 +78,15 @@ After a normal framework-dependent release publish, run the existing release gat
 bash scripts/release/validate-managed-dependencies.sh publish
 ```
 
-The gate checks the exact PKCS version from `Miningcore.csproj` in both the published
-`Miningcore.deps.json` library inventory and its active runtime target, and requires the runtime
-asset and DLL to be present. It follows future servicing reference updates without embedding a
-second current-version pin. It also rejects a reference below the 10.0.13 security floor.
+For an application-local PKCS package, the gate checks the exact version from `Miningcore.csproj`
+in both the published `Miningcore.deps.json` library inventory and its active runtime target, and
+requires the runtime asset and DLL. .NET 10 can instead prune PKCS from that manifest because
+`Microsoft.AspNetCore.App` supplies it. In that case the gate requires the ASP.NET 10 framework
+in `Miningcore.runtimeconfig.json` and rejects an untracked local PKCS DLL. Manifest checks alone
+are insufficient: the smoke then loads PKCS under Miningcore's manifest and runtime configuration,
+reports its informational version and location, and verifies either the exact application-local
+package or a shared-framework copy at least as new as the reviewed reference. It follows future
+servicing updates without a second current-version pin and rejects references below 10.0.13.
 
 The gate prints `dotnet --list-runtimes`, then runs the dependency smoke under Miningcore's own
 published runtime configuration and dependency manifest. The smoke reports the selected .NET
