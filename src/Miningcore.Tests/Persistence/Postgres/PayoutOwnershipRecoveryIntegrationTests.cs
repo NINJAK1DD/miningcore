@@ -351,6 +351,9 @@ public class PayoutOwnershipRecoveryIntegrationTests
             var db = new Database();
             if(schema != null) db.Schema = schema;
             connectionString ??= Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES");
+            // Every fixture creates a distinct search_path/database pool key. Do not
+            // retain idle connectors after dropping its schema in a shared CI server.
+            connectionString = new NpgsqlConnectionStringBuilder(connectionString) { Pooling = false }.ConnectionString;
             db.ConnectionString = connectionString;
             db.Connection = new NpgsqlConnection(connectionString);
             await db.Connection.OpenAsync();
