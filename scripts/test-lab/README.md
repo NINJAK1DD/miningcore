@@ -4,9 +4,9 @@ The documented local lab is WSL2 `Ubuntu` (Ubuntu 26.04.1), running as the ordin
 `ubuntu` user. Keep Linux source and build outputs separate from Windows outputs.
 The lab has .NET SDK 10.0.114/runtime 10.0.14, native build prerequisites (including
 Rust/Cargo), and Bitcoin Core 31.1, Litecoin Core 0.21.5.8 and Dogecoin Core 1.14.9
-at `/opt/miningcore-test-lab/bin/{bitcoind,litecoind,dogecoind}`. PostgreSQL's isolated
-accounting cluster listens on loopback port 55432 with database/user
-`miningcore_tests`/`miningcore` and test-only password `miningcore-test`.
+at `/opt/miningcore-test-lab/bin/{bitcoind,litecoind,dogecoind}`. PostgreSQL server
+binaries must be installed under `/usr/lib/postgresql/*/bin` (or selected with
+`MININGCORE_TEST_POSTGRES_BIN`).
 
 ## Run the suite
 
@@ -23,11 +23,20 @@ source. For a PR, validate a clean exported commit/tree in a separate Linux chec
 instead so unrelated local edits cannot affect the results. Run `scripts/test-lab/run-tests.sh`
 from that checkout; the runner locates its own repository root.
 
-The runner restores with the repository's NuGet audit policy, forces a non-incremental
+The runner restores serially with the repository's NuGet audit policy, forces a non-incremental
 managed/native build, audits warnings and runs the complete .NET suite with real
 coin-daemon and PostgreSQL fixtures enabled. PostgreSQL TLS fixtures cannot run as
 root. Results are in `build/test-lab/build.log` and `build/test-lab/ubuntu-test-lab.trx`.
 Pass ordinary `dotnet test` options after the script path when focused checks are needed.
+
+By default, `with-postgres.sh` creates a disposable PostgreSQL cluster on a random
+loopback port and removes it after the command finishes. Its test-only `miningcore`
+administrator is required by role-management and accounting-migration fixtures;
+the shared lab database remains unchanged. To use an existing **disposable test**
+database instead, set `MININGCORE_TEST_POSTGRES` to an administrator connection.
+Never use a production database. For a test-only rerun of an unchanged build, the
+wrapper can execute `dotnet test ... --no-build --no-restore` with the same daemon
+environment variables exported by `run-tests.sh`.
 
 The forced rebuild prevents `PreserveNewest` from retaining stale `coins.json`, schema
 or example configuration after syncing older source timestamps. Do not remove it when
