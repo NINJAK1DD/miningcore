@@ -1,8 +1,9 @@
 # Dependency security
 
-Miningcore restores the complete transitive package graph with `NuGetAuditMode=all`.
-`TreatWarningsAsErrors=true` makes every reported severity (`NU1901` through `NU1904`) fail restore;
-high and critical findings are also explicitly included in `WarningsAsErrors`.
+Miningcore restores the complete transitive package graph with `NuGetAuditMode=all`. High and critical
+findings (`NU1903` and `NU1904`) fail the build. Low and moderate findings (`NU1901` and `NU1902`) remain
+visible as warnings so a newly published advisory cannot unexpectedly prevent every local build and
+release while it is being assessed.
 
 Run the same audit explicitly with:
 
@@ -15,16 +16,6 @@ record the affected code path, deployment exposure, compensating controls, owner
 in the pull request or a tracking issue. A narrowly scoped `NuGetAuditSuppress` for the advisory URL may
 be used only with that written risk acceptance; do not disable NuGet auditing or globally suppress the
 `NU190x` warning family.
-
-## PKCS servicing override
-
-Miningcore pins `System.Security.Cryptography.Pkcs` to 10.0.14. Keep this explicit
-servicing reference so an older transitive minimum cannot select an affected package.
-No audit suppression or severity downgrade is required. The fixes for
-[CVE-2026-70162](https://github.com/dotnet/announcements/issues/454) and
-[CVE-2026-84008](https://github.com/dotnet/announcements/issues/468) first shipped in
-10.0.13; this update retains them on the next servicing release. Verify the complete
-dependency graph before removing the override, and keep the deployed .NET runtime patched.
 
 ## AutoMapper 16 licence decision
 
