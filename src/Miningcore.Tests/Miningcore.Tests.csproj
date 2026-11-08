@@ -65,7 +65,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Fixtures/Beam/gpu-beamhash3.json" />
-    <EmbeddedResource Include="Fixtures/Pearl/*" />
+    <!-- Binary fixture names contain .bin, which Windows recognizes as a culture. -->
+    <EmbeddedResource Include="Fixtures/Pearl/*" WithCulture="false" />
     <None Include="../../README.md" Link="README.md">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
@@ -106,6 +107,22 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <!-- Generate an independent source inventory so new fixtures are automatically checked
+       for accidental culture inference, omission or movement to satellite assemblies. -->
+  <Target Name="GeneratePearlFixtureInventory" BeforeTargets="AssignTargetPaths">
+    <ItemGroup>
+      <PearlFixtureInput Include="Fixtures/Pearl/*" />
+    </ItemGroup>
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <WriteLinesToFile File="$(IntermediateOutputPath)PearlFixtureInventory.txt"
+                      Lines="@(PearlFixtureInput->'%(Filename)%(Extension)')"
+                      Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <EmbeddedResource Include="$(IntermediateOutputPath)PearlFixtureInventory.txt"
+                        LogicalName="Miningcore.Tests.PearlFixtureInventory" WithCulture="false" />
+    </ItemGroup>
+  </Target>
 
   <!-- Do not let a previous source-built runtime mask the explicit managed-only opt-out. -->
   <ItemGroup>

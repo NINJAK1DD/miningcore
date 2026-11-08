@@ -21,11 +21,16 @@ using NSubstitute;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Miningcore.Tests.Notifications;
 
 public class SmtpTransportTests
 {
+    private readonly ITestOutputHelper output;
+
+    public SmtpTransportTests(ITestOutputHelper output) => this.output = output;
+
     [Theory]
     [InlineData("startTls", 587, SecureSocketOptions.StartTls)]
     [InlineData("startTls", 25, SecureSocketOptions.StartTls)]
@@ -623,9 +628,11 @@ public class SmtpTransportTests
         await writer.WriteLineAsync("220 Ready to start TLS");
     }
 
-    private static RemoteCertificateValidationCallback TrustOnly(X509Certificate2 root) =>
+    private RemoteCertificateValidationCallback TrustOnly(X509Certificate2 root) =>
         (_, certificate, _, errors) =>
         {
+            output.WriteLine($"TLS fixture trusts only '{root.Subject}'; presented subject='{certificate?.Subject}', " +
+                $"issuer='{certificate?.Issuer}', platform errors={errors}");
             if(certificate == null ||
                 (errors & ~SslPolicyErrors.RemoteCertificateChainErrors) != 0)
                 return false;
