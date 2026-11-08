@@ -650,13 +650,6 @@ build-windows.bat
 
 The published files are written to `build`.
 
-For managed-only development on a machine without the C++ workload, `dotnet build` and unrelated
-tests may use `-p:BuildOdoCryptWindows=false`. That development-only opt-out omits Odocrypt from the
-output: Odocrypt tests and runtime use will fail, and Windows publish always requires the verified
-source build. For local toolchain-compatibility testing, an installed alternative can be selected
-with `MININGCORE_WINDOWS_PLATFORM_TOOLSET`; setting it forces a native rebuild so the selected
-toolset is actually exercised. Release CI remains pinned to v143.
-
 Pools that depend on native Blake3 validate its export and unkeyed/keyed known-answer hashes
 before configuring their daemons. This covers Alephium, Xelis, and the Kaspa variants AIX, CAS,
 HTN, KLS, CSS, NTL, NXL, PUG, PYI and WALA, including Pyrin's post-fork dependency. Xelis also
@@ -664,6 +657,13 @@ requires its v1 and v2 proof hash self-tests. The bundled Windows `libmultihash.
 provide these exports, so these pools refuse startup with a targeted diagnostic. A passing
 managed lifecycle test does not certify a Windows native runtime. Use a supported source-built
 Linux runtime for these pools; there is no configuration bypass for the startup checks.
+
+For managed-only development on a machine without the C++ workload, `dotnet build` and unrelated
+tests may use `-p:BuildOdoCryptWindows=false`. That development-only opt-out omits Odocrypt from the
+output: Odocrypt tests and runtime use will fail, and Windows publish always requires the verified
+source build. For local toolchain-compatibility testing, an installed alternative can be selected
+with `MININGCORE_WINDOWS_PLATFORM_TOOLSET`; setting it forces a native rebuild so the selected
+toolset is actually exercised. Release CI remains pinned to v143.
 
 ### Docker Engine
 
