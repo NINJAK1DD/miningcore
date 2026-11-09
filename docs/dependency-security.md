@@ -1,9 +1,15 @@
 # Dependency security
 
-Miningcore restores the complete transitive package graph with `NuGetAuditMode=all`. High and critical
-findings (`NU1903` and `NU1904`) fail the build. Low and moderate findings (`NU1901` and `NU1902`) remain
-visible as warnings so a newly published advisory cannot unexpectedly prevent every local build and
-release while it is being assessed.
+Miningcore restores the complete transitive package graph with `NuGetAuditMode=all` and an explicit
+`NuGetAuditLevel=low`. With `TreatWarningsAsErrors=true`, every audit finding (`NU1901` through
+`NU1904`) fails restore. `NU1903` and `NU1904` are also listed in `WarningsAsErrors`, so high and
+critical findings remain fatal even if a local build sets `TreatWarningsAsErrors=false`.
+
+Miningcore adopts this stricter policy. It supersedes the earlier decision to leave low and moderate
+findings as warnings. Enabling compiler warnings as errors in
+[PR #104](https://github.com/NINJAK1DD/miningcore/pull/104) also made these audit findings fatal.
+A newly published advisory of any severity blocks builds and releases until the dependency is
+upgraded or a scoped, written risk acceptance is recorded as described below.
 
 Run the same audit explicitly with:
 
@@ -16,6 +22,60 @@ record the affected code path, deployment exposure, compensating controls, owner
 in the pull request or a tracking issue. A narrowly scoped `NuGetAuditSuppress` for the advisory URL may
 be used only with that written risk acceptance; do not disable NuGet auditing or globally suppress the
 `NU190x` warning family.
+
+## PKCS servicing override
+
+Miningcore references `System.Security.Cryptography.Pkcs` directly to keep normal dependency
+resolution at or above 10.0.13, the first .NET 10 package with the fixes for
+[CVE-2026-70162](https://github.com/dotnet/announcements/issues/454) and
+[CVE-2026-84008](https://github.com/dotnet/announcements/issues/468).
+No audit suppression or severity downgrade is required.
+
+For this policy, the **servicing baseline** is the highest stable `10.0.x` version among the
+`Microsoft.Extensions.*` references in [`Miningcore.csproj`](../src/Miningcore/Miningcore.csproj),
+which also holds the reviewed PKCS minimum version. NuGet's plain `Version` value is an
+[inclusive minimum](https://learn.microsoft.com/en-us/nuget/concepts/package-versioning#version-ranges),
+so verify the resolved package and loaded assembly rather than assuming an exact version. For
+removal decisions, calculate the baseline from the removal PR's base revision.
+
+NuGet normally selects the
+[lowest applicable version and gives direct references precedence][nuget-resolution];
+if a transitive requirement exceeds the selected direct PKCS version,
+[NU1605][nuget-downgrade] fails Miningcore's normal restore.
+
+[nuget-resolution]:
+  https://learn.microsoft.com/en-us/nuget/concepts/dependency-resolution#dependency-resolution-rules
+[nuget-downgrade]:
+  https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+
+[Dependabot](../.github/dependabot.yml) groups monthly patch version updates for these packages and
+PKCS in `dotnet-servicing` and ignores their major-version updates. Patch updates remain eligible.
+
+For update PRs:
+
+- Keep PKCS at or above the baseline and the 10.0.13 security floor. Check grouped, manual and
+  security updates against Microsoft's current advisories too; this maintenance convention does
+  not establish the latest secure PKCS or runtime version.
+- If no stable PKCS `10.0.x` release meets the baseline, retain the highest available stable
+  `10.0.x` release, never below 10.0.13 or the already-reviewed minimum. Record dated Microsoft/NuGet
+  release-availability evidence and recheck at the next dependency update. This exception cannot
+  authorize reference removal or bypass vulnerability auditing.
+- Moving to a new .NET major version requires updating this policy, its baseline definition,
+  the Dependabot rules and runtime evidence requirements together in the same migration PR.
+
+For removal PRs:
+
+- Require restore and a complete vulnerable-package audit to show every transitive path resolves
+  PKCS at or above both 10.0.13 and the baseline without the reference. Record the base revision,
+  calculated baseline and resolved package version; the CVE fix floor alone cannot justify a
+  servicing downgrade.
+- Record the loaded PKCS assembly's informational version and path, and the selected .NET and
+  ASP.NET shared-framework versions under the published application's dependency manifest and
+  runtime configuration.
+
+Miningcore publishes framework-dependent, so PKCS can load from `Microsoft.AspNetCore.App` instead
+of the package copy; the package version alone does not establish which assembly runs. Keep the
+deployed shared frameworks patched.
 
 ## AutoMapper 16 licence decision
 
