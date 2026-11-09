@@ -28,6 +28,8 @@ command -v qemu-x86_64 >/dev/null || {
   echo 'qemu-user is required (apt-get install qemu-user)' >&2
   exit 1
 }
+echo "Testing Blake3 key contract with QEMU $cpu"
+timeout 60 qemu-x86_64 -cpu "$cpu" "$work_dir/blake3-key-contract" "$library_dir/libmultihash.so"
 g++ -std=c++11 -O2 -fno-inline -fPIC -shared -march=x86-64 -Wall -Wextra -Werror \
   -I "$repository_root/src/Native/libdero/include" \
   "$repository_root/src/Native/libdero/include/highwayhash/instruction_sets.cc" \

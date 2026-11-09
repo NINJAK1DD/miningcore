@@ -3,20 +3,32 @@
 ## Blake3 key contract
 
 The managed Blake3 wrapper accepts null or an empty key for unkeyed hashing,
-and exactly 32 bytes for keyed hashing. Other lengths throw `ArgumentException`
-before native code runs. Digest calls validate a stable key reference again,
-including values supplied through a subclass's protected setter.
+and exactly 32 bytes for keyed hashing. Other constructor key lengths throw
+`ArgumentException`. Digest calls validate a stable key reference again, including
+values supplied through the compatibility-preserved protected setter; invalid
+object state throws `InvalidOperationException` before native code runs.
 
 The native `blake3_export` ABI remains void and independently enforces the same
 length contract. A positive length requires a non-null pointer and exactly 32
 bytes. Invalid native calls terminate with `SIGABRT` before key access; they do
 not return zero, unchanged output or another plausible proof hash. Native callers
 must validate before calling. Valid inputs retain their existing hashes and ABI.
+An internal unmanaged caller violating this contract terminates the entire host
+process, including all pools it hosts; this is an availability cost of rejecting
+invalid proof output through the legacy void ABI. Managed callers reject invalid
+keys without terminating the process. Native consumers must not rely on cleanup
+handlers or buffered logs running after an abort.
+
+The guarded harness is Linux-specific. On Windows, [MSVC CRT abort](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/abort?view=msvc-170)
+may invoke Windows Error Reporting or terminate with exit code 3, rather than the
+POSIX signal status checked here. These tests do not certify native Windows
+termination behavior; managed key validation is tested on both platforms.
 
 The CPU-portability gate tests the actual shared-library export with valid keyed
 and unkeyed known answers. Invalid calls run in isolated child processes, with
 short key buffers ending at an inaccessible memory page. The gate requires
 `SIGABRT`, rejects access faults or successful returns, and disables core dumps.
+The same harness runs on the host and under the configured constrained QEMU CPU.
 This hardens a pre-existing interface weakness; current mining call sites already
 supply valid 32-byte keys, and no miner-controlled invalid-key route is established.
 
