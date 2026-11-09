@@ -10,6 +10,18 @@ internal static class RuntimeDependencyGuard
     internal static readonly Version RuntimeMinimum = ReadMinimum("MiningcoreRuntimeMinimum");
     internal static readonly Version PkcsSecurityMinimum = ReadMinimum("MiningcorePkcsSecurityMinimum");
 
+    internal static Version ReviewedPkcsMinimum
+    {
+        get
+        {
+            var values = Assembly.Load("Miningcore").GetCustomAttributes<AssemblyMetadataAttribute>()
+                .Where(x => x.Key == "MiningcoreReviewedPkcsMinimum").ToArray();
+            if(values.Length != 1 || !Version.TryParse(values[0].Value, out var version))
+                throw new InvalidOperationException("Reviewed PKCS policy is missing or invalid; reinstall the complete reviewed Miningcore release");
+            return version;
+        }
+    }
+
     private static Version ReadMinimum(string name)
     {
         using var stream = typeof(RuntimeDependencyGuard).Assembly.GetManifestResourceStream(
@@ -48,6 +60,7 @@ internal static class RuntimeDependencyGuard
         output.WriteLine($"Selected Microsoft.AspNetCore.App: {InformationalVersion(aspnet)} at {aspnet.Location}");
         var pkcs = Assembly.Load("System.Security.Cryptography.Pkcs");
         RequireVersion("PKCS", InformationalVersion(pkcs), PkcsSecurityMinimum);
+        RequireVersion("PKCS", InformationalVersion(pkcs), ReviewedPkcsMinimum);
         output.WriteLine($"Selected PKCS: {InformationalVersion(pkcs)} at {pkcs.Location}");
         return pkcs;
     }

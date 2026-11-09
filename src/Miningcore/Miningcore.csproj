@@ -1,5 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <Import Project="RuntimeDependencyPolicy.props" />
+    <Target Name="EmbedReviewedPkcsMinimum" BeforeTargets="GetAssemblyAttributes">
+        <ItemGroup>
+            <_ReviewedPkcsReference Include="@(PackageReference)"
+                                    Condition="'%(PackageReference.Identity)' == 'System.Security.Cryptography.Pkcs'" />
+        </ItemGroup>
+        <Error Condition="'@(_ReviewedPkcsReference->Count())' != '1'"
+               Text="Expected one reviewed PKCS package reference for startup validation." />
+        <ItemGroup>
+            <AssemblyMetadata Include="MiningcoreReviewedPkcsMinimum"
+                              Value="@(_ReviewedPkcsReference->'%(Version)')" />
+        </ItemGroup>
+    </Target>
     <PropertyGroup>
         <OutputType>Exe</OutputType>
         <TargetFramework>net10.0</TargetFramework>

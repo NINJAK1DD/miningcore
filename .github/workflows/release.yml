@@ -666,18 +666,18 @@ jobs:
           --no-build
           --output publish
 
-      # Install an old runtime only for isolated negative fixtures, never for publishing.
+      # Extract old binaries outside DOTNET_ROOT; never alter the publishing SDK/host.
       - name: Install old ASP.NET negative-test fixture
         if: matrix.ubuntu == '26.04'
-        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-        with:
-          dotnet-version: '10.0.402'
+        run: >-
+          python3 scripts/release/install-runtime-fixture.py
+          "$RUNNER_TEMP/old-dotnet-fixture" --rid linux-x64
 
       - name: Reject old frameworks and verify actual PKCS binding variants
         if: matrix.ubuntu == '26.04'
         run: |
           python3 scripts/release/test-managed-runtime.py publish \
-            --old-aspnet "$DOTNET_ROOT/shared/Microsoft.AspNetCore.App/10.0.13"
+              --old-aspnet "$RUNNER_TEMP/old-dotnet-fixture/shared/Microsoft.AspNetCore.App/10.0.13"
 
       - name: Validate published runtime
         shell: bash

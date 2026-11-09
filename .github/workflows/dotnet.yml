@@ -744,6 +744,14 @@ jobs:
         python scripts/release/run-managed-dependency-smoke.py build/windows-x64
         if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    - name: Reject old Windows frameworks and PKCS at startup
+      shell: pwsh
+      run: |
+        python scripts/release/install-runtime-fixture.py "$env:RUNNER_TEMP/old-dotnet-fixture" --rid win-x64
+        if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        python scripts/release/test-managed-runtime.py build/windows-x64 --old-aspnet "$env:RUNNER_TEMP/old-dotnet-fixture/shared/Microsoft.AspNetCore.App/10.0.13"
+        if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     # Broad coverage: resource discovery, lifecycle mocks and socket
     # fixtures can fail on Windows even when the selected native smoke tests pass.
     - name: Test complete Windows suite

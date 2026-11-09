@@ -5,7 +5,9 @@ import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
+import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -47,4 +49,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ET.ParseError) as error:
+        print(f"Published PKCS validation failed: {error}", file=sys.stderr)
+        sys.exit(1)
+    except subprocess.CalledProcessError as error:
+        print(f"Managed dependency validation failed: command exited {error.returncode}", file=sys.stderr)
+        sys.exit(1)

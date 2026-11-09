@@ -58,8 +58,11 @@ def main():
         selected = next(line.split(" at ", 1)[1] for line in output.splitlines()
                         if line.startswith("Selected Microsoft.AspNetCore.App:"))
         current_aspnet = Path(selected).parent
+        current_core = Path(next(line.split(" at ", 1)[1] for line in output.splitlines()
+                                 if line.startswith("Selected Microsoft.NETCore.App:")))
         manifest = json.loads(deps.read_text())
         original_manifest = deps.read_text()
+        original_config = config.read_text()
 
         def package_fixture(package_version, dll):
             entry = PKCS + "/" + package_version
@@ -90,7 +93,7 @@ def main():
         isolated.mkdir()
         shutil.copy2(dotnet, isolated / dotnet.name)
         shutil.copytree(dotnet.parent / "host", isolated / "host")
-        shutil.copytree(dotnet.parent / "shared/Microsoft.NETCore.App", isolated / "shared/Microsoft.NETCore.App")
+        shutil.copytree(current_core, isolated / "shared/Microsoft.NETCore.App" / current_core.name)
         local_framework = isolated / "shared/Microsoft.AspNetCore.App" / current_aspnet.name
         shutil.copytree(current_aspnet, local_framework)
         shutil.copyfile(old / (PKCS + ".dll"), local_framework / (PKCS + ".dll"))
@@ -113,6 +116,13 @@ def main():
         # A newer framework may legitimately replace an older app copy.
         package_fixture("10.0.13", old / (PKCS + ".dll"))
         run(command(source="package", reference="10.0.13"), 0, str(current_aspnet))
+
+        # Serviced Core/ASP.NET markers cannot hide PKCS below the embedded reviewed
+        # package minimum. Both the smoke and normal Main must reject it.
+        run(command(host=isolated / dotnet.name, source="package", reference="10.0.13"),
+            1, f"PKCS 10.0.13 requires {version}", env)
+        run([isolated / dotnet.name, runtime / "Miningcore.dll", "--version"],
+            1, f"PKCS 10.0.13 requires {version}", env)
 
         # Isolate host selection: Core stays serviced, but ASP.NET is genuinely old.
         shutil.rmtree(isolated / "shared/Microsoft.AspNetCore.App")
@@ -141,6 +151,27 @@ def main():
         run(command(host=isolated / dotnet.name), 1, "Microsoft.NETCore.App 10.0.13 requires", env)
         run([isolated / dotnet.name, runtime / "Miningcore.dll", "--version"], 1,
             "Runtime dependency validation failed", env)
+
+        # An explicit offline diagnostic config may relax the host floor, but only
+        # read-only incident verification can proceed; no latch/state is written.
+        offline = runtime / "offline.json"
+        state = root / "incident-state"
+        offline.write_text(json.dumps({"pools": [], "shareRecoveryStateDirectory": str(state)}))
+        output = run([isolated / dotnet.name, runtime / "Miningcore.dll",
+                      "--verify-share-recovery-state", "-c", offline], 0, "RESULT: no incidents found", env)
+        if "WARNING: This runtime is not accepted" not in output or state.exists():
+            raise AssertionError("Offline verification must warn and leave state untouched")
+
+        # A damaged embedded policy gives an actionable installation error at Main.
+        config.write_text(original_config)
+        application = runtime / "Miningcore.dll"
+        binary = application.read_bytes()
+        resource = b"Miningcore.RuntimeDependencyPolicy.props\0"
+        if binary.count(resource) != 1:
+            raise AssertionError("Expected exactly one embedded runtime-policy resource name")
+        application.write_bytes(binary.replace(resource, b"Miningcore.RuntimeDependencyPolicy.broke\0"))
+        run([dotnet, application, "--version"], 1,
+            "Runtime dependency policy could not be loaded. Reinstall the complete reviewed Miningcore release")
         print("Real runtime tests passed: package binding, newer framework, host floor and startup guard")
 
 

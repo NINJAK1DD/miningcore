@@ -6,6 +6,16 @@
     <TargetLatestRuntimePatch>true</TargetLatestRuntimePatch>
     <RuntimeFrameworkVersion>$(MiningcoreRuntimeMinimum)</RuntimeFrameworkVersion>
   </PropertyGroup>
+  <!-- ASP.NET is transitive through Grpc.AspNetCore. Set its known runtime versions
+       before SDK resolution without making it direct and changing NuGet pruning. -->
+  <Target Name="ApplyMiningcoreAspNetRuntimeMinimum" BeforeTargets="ProcessFrameworkReferences">
+    <ItemGroup>
+      <KnownFrameworkReference Update="Microsoft.AspNetCore.App"
+          Condition="'%(KnownFrameworkReference.TargetFramework)' == 'net10.0'"
+          DefaultRuntimeFrameworkVersion="$(MiningcoreRuntimeMinimum)"
+          LatestRuntimeFrameworkVersion="$(MiningcoreRuntimeMinimum)" />
+    </ItemGroup>
+  </Target>
   <ItemGroup>
     <EmbeddedResource Include="$(MSBuildThisFileDirectory)RuntimeDependencyPolicy.props"
                       LogicalName="Miningcore.RuntimeDependencyPolicy.props" />

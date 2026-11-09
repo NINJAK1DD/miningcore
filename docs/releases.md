@@ -34,6 +34,12 @@ lowers the runtimeconfig requirements. A direct PKCS package reference alone doe
 that its DLL is shipped or selected: SDK publish conflict resolution can use the shared framework.
 See [published dependency and runtime acceptance](dependency-security.md#published-dependency-and-runtime-acceptance)
 for the release, Windows and container checks and production verification steps.
+Startup also enforces the reviewed PKCS package minimum embedded at build time. Read-only
+share-recovery verification can warn and proceed on an older host using the documented offline
+procedure; normal services and incident acknowledgement still refuse that runtime. See
+[distribution lag and deployment](dependency-security.md#deployment-when-distribution-packages-lag)
+for the isolated-runtime alternative, maintenance window and rollback requirements, and
+[offline incident diagnostics](dependency-security.md#read-only-incident-diagnostics-on-an-older-host).
 
 ### Blake2b argument and keyed-runtime validation
 
@@ -1908,6 +1914,11 @@ sudo apt-get install -y \
   libsodium23 \
   libzmq3-dev
 ```
+
+Confirm that both installed shared frameworks meet the release's runtime floor before activation.
+If the configured Ubuntu feed lags, follow the supported
+[wait-or-private-runtime procedure](dependency-security.md#deployment-when-distribution-packages-lag);
+do not mix .NET APT feeds or lower the release's runtime requirements.
 
 `libsodium23` and the versioned Boost/GMP packages are direct runtime-provider declarations.
 `libzmq3-dev` is a deliberate exception: the vendored `ZeroMQ.dll` imports `libzmq`, so Linux needs

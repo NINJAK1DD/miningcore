@@ -629,6 +629,9 @@ These scripts install the .NET 10 SDK and publish the `net10.0` application. Ubu
 use Canonical's native .NET 10 packages without Microsoft's APT feed or the Ubuntu 22.04
 `dotnet/backports` PPA. GitHub Actions
 ([workflow source](.github/workflows/dotnet.yml)) is the authoritative automated build-and-test path.
+Before activation, verify both shared frameworks meet the release's runtime floor. If Canonical's
+packages lag, use the documented [wait-or-private-runtime deployment procedure](docs/dependency-security.md#deployment-when-distribution-packages-lag)
+without mixing .NET APT feeds.
 Interactive builds retain .NET's concise progress and elapsed-time display; a separate private
 MSBuild log is audited and removed when the helper exits, while warnings remain visible and fatal.
 The standard `MSBUILDTERMINALLOGGER=off` environment setting remains available for accessibility,

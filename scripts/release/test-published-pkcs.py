@@ -167,6 +167,30 @@ class PublishedPkcsTests(unittest.TestCase):
             '<PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.15" /></ItemGroup>'))
         self.run_gate(1, "servicing baseline")
 
+    def test_baseline_ignores_other_bands_and_prereleases(self):
+        for version in ("9.0.99", "10.1.0", "11.0.0", "10.0.99-preview.1"):
+            with self.subTest(version=version):
+                original = self.project.read_text()
+                self.project.write_text(original.replace('</ItemGroup>',
+                    '<PackageReference Include="Microsoft.Extensions.Configuration.Json" '
+                    f'Version="{version}" /></ItemGroup>'))
+                self.run_gate()
+                self.project.write_text(original)
+
+    def test_baseline_requires_at_least_one_eligible_reference(self):
+        self.project.write_text(self.project.read_text().replace(
+            'Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14"',
+            'Include="Microsoft.Extensions.Caching.Memory" Version="10.1.0"'))
+        self.run_gate(1, "baseline")
+
+    def test_wrapper_reports_invalid_manifest_without_traceback(self):
+        (self.root / "Miningcore.deps.json").write_text('{broken')
+        result = subprocess.run([sys.executable, str(SCRIPT.with_name("run-managed-dependency-smoke.py")),
+                                 str(self.root)], capture_output=True, text=True, check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("Published PKCS validation failed:", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

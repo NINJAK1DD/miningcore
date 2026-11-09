@@ -53,7 +53,8 @@ def validate(publish_dir: Path, project: Path) -> tuple[str, str]:
     if stable_version(version) < security_floor:
         raise ValueError("PKCS reference is below the security floor")
     extensions = [stable_version(node.get("Version")) for node in ET.parse(project).iter("PackageReference")
-                  if (node.get("Include") or "").startswith("Microsoft.Extensions.")]
+                  if (node.get("Include") or "").startswith("Microsoft.Extensions.") and
+                  re.fullmatch(r"10\.0\.\d+", node.get("Version") or "")]
     if not extensions:
         raise ValueError("no explicit Microsoft.Extensions servicing baseline")
     if stable_version(version) < max(extensions):

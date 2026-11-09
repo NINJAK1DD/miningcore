@@ -150,12 +150,17 @@ package pruning. Framework-only output must declare an ASP.NET minimum at least 
 with no untracked local DLL. Both framework minima must meet the runtime policy.
 
 [`RuntimeDependencyPolicy.props`](../src/Miningcore/RuntimeDependencyPolicy.props) is the common
-source of the .NET/ASP.NET servicing floor and PKCS security floor. Publishing uses
-`TargetLatestRuntimePatch` and an explicit `RuntimeFrameworkVersion`; the gate checks the emitted
+source of the .NET/ASP.NET servicing floor and PKCS security floor. Publishing sets
+`RuntimeFrameworkVersion` for Core and the known ASP.NET runtime versions before SDK resolution,
+so both minima come from that policy rather than the installed SDK's default. ASP.NET remains a
+transitive framework reference, preserving NuGet's package-pruning behavior. The gate checks the emitted
 runtimeconfig, not just these build properties. The host refuses older frameworks. Normal
 Miningcore startup also checks the selected Core runtime, an actual ASP.NET shared-framework
 assembly and PKCS before opening connections, including when runtimeconfig settings were changed.
-Configuration-dump diagnostics remain offline and do not start mining services.
+The reviewed PKCS minimum is embedded from the package reference at build time; startup enforces
+it as well as the security floor. A missing or damaged policy requires reinstalling the complete
+reviewed release. Configuration dumps and read-only share-recovery verification remain offline;
+see the diagnostic procedure below when the host itself refuses the shipped runtimeconfig.
 
 The smoke prints both selected framework versions/locations and PKCS's informational version and
 location under Miningcore's published manifest/runtimeconfig. Package mode accepts the exact
@@ -163,6 +168,8 @@ application copy or an equal-or-newer copy from the selected ASP.NET framework. 
 requires that selected framework's copy. Installed-runtime inventories are additional diagnostics,
 not proof of selection. The same checks run against Windows publishing and inside both source and
 packaged container images, as their normal unprivileged user. NBitcoin.Zcash binding is also tested.
+Linux and Windows negative tests use hash-verified 10.0.13 runtime archives in separate disposable
+directories. They never install an older SDK into the publishing toolchain or change its `PATH`.
 
 Run the portable gate on Windows with:
 
@@ -170,9 +177,69 @@ Run the portable gate on Windows with:
 python scripts/release/run-managed-dependency-smoke.py build/windows-x64
 ```
 
-Before deployment, keep both shared frameworks patched to the latest supported .NET 10 servicing
-release, at least the common policy floor, and restart the service. CI validates its own hosts and
-built images; verify the production service's installation, `DOTNET_ROOT` and roll-forward settings
-as well. These checks supplement the complete NuGet audit; they do not replace it.
+### Deployment when distribution packages lag
+
+Keep both shared frameworks patched to the latest supported .NET 10 servicing release, at least
+the common policy floor. On 9 November 2026, the Ubuntu 24.04 and 26.04 source-build CI logs and
+the Ubuntu 26.04 lab confirmed Canonical Core and ASP.NET packages at 10.0.14. That is validation
+of those snapshots, not a promise about every mirror or future servicing update. Check the actual
+installation and configured package source before rollout:
+
+```console
+apt-cache policy dotnet-runtime-10.0 aspnetcore-runtime-10.0
+/usr/bin/dotnet --list-runtimes
+```
+
+If Canonical's candidate is below the required floor, defer the Miningcore upgrade until it catches
+up, or install Microsoft's supported ASP.NET Core runtime archive into a separate, root-owned
+versioned directory, following the [official manual installation instructions][manual-dotnet].
+Verify the archive's SHA-512 against Microsoft's release metadata and install the native runtime
+prerequisites from the existing Ubuntu guide. The ASP.NET runtime archive includes Core. Do not mix
+Microsoft and Canonical .NET APT feeds or overwrite `/usr/lib/dotnet`. Maintain and patch a private
+installation explicitly; APT will not update it.
+
+For example, after installing and validating the selected release at `/opt/dotnet-miningcore`,
+use `sudo systemctl edit miningcore` to select that host explicitly (retain your actual application
+and configuration paths):
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/opt/dotnet-miningcore/dotnet /opt/miningcore/Miningcore.dll -c /etc/miningcore/config.json
+Environment=DOTNET_ROOT=/opt/dotnet-miningcore
+```
+
+Schedule a maintenance window. Before stopping the service, preserve its complete tested release,
+unit/drop-ins and configuration, and rehearse rollback with a supported patched runtime. Run the
+published dependency smoke using the intended host in `PATH`; inspect `systemctl cat miningcore`
+and the service account's effective `DOTNET_ROOT`, `DOTNET_ROOT_X64` and roll-forward settings
+privately (environment files may contain secrets). Shell runtime inventories alone do not prove
+service selection. Stop Miningcore cleanly before replacing files, reload the unit with
+`sudo systemctl daemon-reload`, then start it and verify successful startup under that host.
+If acceptance fails, restore the tested application and unit configuration; do not lower the
+runtime floor or return to an affected runtime to force startup. These checks supplement the
+complete NuGet audit; they do not replace it.
+
+[manual-dotnet]: https://learn.microsoft.com/en-us/dotnet/core/install/linux-scripted-manual
+
+### Read-only incident diagnostics on an older host
+
+`--verify-share-recovery-state` may run on an older .NET 10 runtime with a warning. It only inspects
+incident evidence; it neither starts services nor acknowledges/clears the fatal latch. The shipped
+runtimeconfig still rejects old frameworks before managed code runs. Prefer installing the serviced
+runtime. When incident triage must precede that maintenance, make a **separate temporary copy** of
+`Miningcore.runtimeconfig.json`, set both framework versions in that copy to the installed .NET 10
+patch shown by `dotnet --list-runtimes`, and invoke only the read-only command:
+
+```console
+dotnet exec --runtimeconfig /tmp/miningcore-offline.runtimeconfig.json \
+  /opt/miningcore/Miningcore.dll --verify-share-recovery-state -c /etc/miningcore/config.json
+```
+
+Use the same state-directory setting and file access as the service, preserve the command's exit
+status and all incident files, then remove the temporary runtimeconfig. Do not edit the shipped
+file or the service command. Normal startup and incident acknowledgement remain subject to the
+runtime guard even if an alternate runtimeconfig is supplied. Configuration-dump diagnostics also
+remain offline; this procedure does not declare the older runtime safe for service operation.
 
 Baseline source: [Microsoft .NET 10.0.14 servicing release](https://github.com/dotnet/core/blob/main/release-notes/10.0/10.0.14/10.0.14.md).
