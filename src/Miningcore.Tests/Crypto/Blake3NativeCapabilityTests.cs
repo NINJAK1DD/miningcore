@@ -123,7 +123,7 @@ public class Blake3NativeCapabilityTests : TestBase
             // native dataset just to inspect the pre-fork Karlsen hash composition.
             foreach(var height in symbol == "PYI" ? new[] { 0UL, ulong.MaxValue } : new[] { 0UL })
             {
-                var manager = new KaspaProbe { Blake3CapabilityProbe = () => true };
+                var manager = new KaspaProbe { Blake2bKeyedCapabilityProbe = () => true, Blake3CapabilityProbe = () => true };
                 manager.Configure(Pool(new KaspaCoinTemplate { Symbol = symbol }), new ClusterConfig());
                 typeof(KaspaJobManager).GetField("network", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(manager, "mainnet");
                 var job = (KaspaJob) typeof(KaspaJobManager).GetMethod("CreateJob", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -266,7 +266,7 @@ public class Blake3NativeCapabilityTests : TestBase
         foreach(var available in new[] { false, true })
         {
             var calls = 0;
-            var manager = new KaspaProbe { Blake3CapabilityProbe = () => { calls++; return available; } };
+            var manager = new KaspaProbe { Blake2bKeyedCapabilityProbe = () => true, Blake3CapabilityProbe = () => { calls++; return available; } };
             var pool = Pool(new KaspaCoinTemplate { Symbol = symbol });
             var required = KaspaJobManager.RequiresBlake3(symbol);
             if(available || !required) manager.Configure(pool, new ClusterConfig());
@@ -321,7 +321,7 @@ public class Blake3NativeCapabilityTests : TestBase
     public void KaspaChecksOnlyDependentFamiliesBeforeConfiguringDaemons(string symbol, bool required)
     {
         Assert.Equal(required, KaspaJobManager.RequiresBlake3(symbol));
-        var manager = new KaspaProbe();
+        var manager = new KaspaProbe { Blake2bKeyedCapabilityProbe = () => true };
         var pool = Pool(new KaspaCoinTemplate { Symbol = symbol });
         var allowed = !required || Blake3NativeCapability.IsAvailable();
         if(allowed)

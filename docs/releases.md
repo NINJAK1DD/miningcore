@@ -24,6 +24,27 @@ for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
 ## Upcoming v0.4.0-rc.2
 
+### Blake2b argument and keyed-runtime validation
+
+Blake2b now rejects oversized keys and unsupported output sizes in managed code.
+The source-built Linux export aborts on native errors instead of returning
+unwritten output as a hash. The bundled Windows DLL is unchanged; the native
+abort-on-error guarantee does not apply to that binary. Its source-built
+replacement is tracked in [issue #276](https://github.com/NINJAK1DD/miningcore/issues/276).
+
+Kaspa-family pools requiring keyed Blake2b now check the runtime before daemon
+configuration and report the affected pool ID on failure. This includes KAS and
+SPR, which could otherwise retry initial jobs indefinitely. The legacy Windows
+DLL ignores keys: earlier KAS/SPR operation on it computed the wrong header hash,
+so locally accepted shares were not evidence of correct network work. Block
+rejection follows from that code-path analysis; it was not tested against a live
+node using the legacy DLL. Use a runtime that passes the keyed capability tests.
+
+Digest retains its own guard, throwing `InvalidOperationException` for an
+unsupported keyed runtime. Unkeyed hashing is unchanged.
+A malformed direct unmanaged call to the patched Linux export can terminate all pools in the host;
+see the [Blake2b argument contract](native-cpu-portability.md#blake2b-argument-contract).
+
 ### Native Blake3 startup validation
 
 Alephium, Xelis and the AIX/CAS/HTN/KLS/CSS/NTL/NXL/PUG/PYI/WALA Kaspa variants

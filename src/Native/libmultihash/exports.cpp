@@ -15,6 +15,7 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN 
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
+#include <stdlib.h>
 #include "allium.h"
 #include "bcrypt.h"
 #include "keccak.h"
@@ -243,7 +244,11 @@ extern "C" MODULE_API void blake2s_export(const char* input, char* output, uint3
 
 extern "C" MODULE_API void blake2b_export(const char* input, char* output, uint32_t input_len, uint32_t output_len, const char* key, uint32_t key_len)
 {
-    blake2b(output, output_len == -1 ? BLAKE2B_OUTBYTES : output_len, input, input_len, key_len == 0 ? NULL : key, key_len);
+    // A failed native call leaves output unwritten. The legacy void ABI cannot
+    // return an error; never allow stale bytes to masquerade as a proof hash.
+    if(blake2b(output, output_len == -1 ? BLAKE2B_OUTBYTES : output_len, input, input_len,
+        key_len == 0 ? NULL : key, key_len) != 0)
+        abort();
 }
 
 extern "C" MODULE_API void blake3_export(const char* input, char* output, uint32_t input_length, const char* key, uint32_t key_len)
