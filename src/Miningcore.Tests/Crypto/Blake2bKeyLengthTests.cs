@@ -4,7 +4,6 @@ using System.Text;
 using System.Runtime.InteropServices;
 using Miningcore.Crypto.Hashing;
 using Miningcore.Crypto.Hashing.Algorithms;
-using Miningcore.Mining;
 using Xunit;
 
 namespace Miningcore.Tests.Crypto;
@@ -60,7 +59,7 @@ public class Blake2bKeyLengthTests
             if(!available)
             {
                 var output = Enumerable.Repeat((byte) 0xa5, 32).ToArray();
-                Assert.Throws<TrustedPoolStartupException>(() => new Blake2b(key).Digest(new byte[] { 0, 1, 2 }, output));
+                Assert.Throws<InvalidOperationException>(() => new Blake2b(key).Digest(new byte[] { 0, 1, 2 }, output));
                 Assert.All(output, value => Assert.Equal((byte) 0xa5, value));
                 return;
             }
@@ -105,19 +104,22 @@ public class Blake2bKeyLengthTests
     [InlineData("wrong", false)]
     [InlineData("unwritten", false)]
     [InlineData("missing", false)]
+    [InlineData("wrong-64", false)]
     public void KeyedCapabilityRejectsBrokenNativeImplementations(string mode, bool expected)
     {
-        Assert.Equal(expected, Blake2bNativeCapability.IsKeyedAvailable(input =>
+        Assert.Equal(expected, Blake2bNativeCapability.IsKeyedAvailable((input, outputLength) =>
         {
             if(mode == "missing") throw new EntryPointNotFoundException();
-            if(mode == "unwritten") return new byte[32];
+            if(mode == "unwritten") return new byte[outputLength];
             if(mode == "ignores-key") return Convert.FromHexString(input.Length == 0
                 ? "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8"
                 : "3d8c3d594928271f44aad7a04b177154806867bcf918e1549c0bc16f9da2b09b");
-            var output = Convert.FromHexString(input.Length == 0
+            var output = Convert.FromHexString(outputLength == 64
+                ? "f8cd56827a7d04c63f128a77cdb9567f1b7341249c5806c260f146d08176bb03cd7214274fb9802a6d67767aa9addd5ae2c52cf27cb62eea5511d20fe9ad73ed"
+                : input.Length == 0
                 ? "a80b6aa20f20b15ebabe2b1949527f78a257594a732e774de637d85e6973a768"
                 : "6f97f3b44764fcce84e8570a2c84ae99e68f4d2178ed826f04d7c20d051e3636");
-            if(mode == "wrong" && input.Length > 0) output[0] ^= 1;
+            if((mode == "wrong" && input.Length > 0) || (mode == "wrong-64" && outputLength == 64)) output[0] ^= 1;
             return output;
         }));
     }
@@ -125,12 +127,25 @@ public class Blake2bKeyLengthTests
     [Fact]
     public void SubclassCannotBypassKeyedRuntimeGuard()
     {
-        if(Blake2bNativeCapability.IsKeyedAvailable()) return;
-        var hasher = new MutableHasher();
+        var calls = 0;
+        var hasher = new MutableHasher { KeyedCapabilityProbe = () => { calls++; return false; } };
         hasher.ReplaceKey(Encoding.ASCII.GetBytes("BlockHash"));
         var output = Enumerable.Repeat((byte) 0xa5, 32).ToArray();
-        Assert.Throws<TrustedPoolStartupException>(() => hasher.Digest(new byte[] { 0, 1, 2 }, output));
+        Assert.Throws<InvalidOperationException>(() => hasher.Digest(new byte[] { 0, 1, 2 }, output));
         Assert.All(output, value => Assert.Equal((byte) 0xa5, value));
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public void UnkeyedHashingDoesNotRequireKeyedCapability()
+    {
+        foreach(var key in new[] { null, Array.Empty<byte>() })
+        {
+            var hasher = new Blake2b(key) { KeyedCapabilityProbe = () => throw new Exception("must not probe unkeyed hashing") };
+            var output = new byte[32];
+            hasher.Digest(new byte[] { 0, 1, 2 }, output);
+            Assert.Equal(Convert.FromHexString("3d8c3d594928271f44aad7a04b177154806867bcf918e1549c0bc16f9da2b09b"), output);
+        }
     }
 
     [Theory]

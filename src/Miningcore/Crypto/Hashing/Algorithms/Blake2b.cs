@@ -7,6 +7,8 @@ namespace Miningcore.Crypto.Hashing.Algorithms;
 public unsafe class Blake2b : IHashAlgorithm
 {
     public byte[] dataKey { get; protected set; } = null;
+
+    internal Func<bool> KeyedCapabilityProbe { get; init; } = Blake2bNativeCapability.IsKeyedAvailable;
     
     public Blake2b(byte[] dataKey = null)
     {
@@ -23,8 +25,8 @@ public unsafe class Blake2b : IHashAlgorithm
         var keyData = dataKey;
         if(keyData is { Length: > 64 })
             throw new InvalidOperationException("Blake2b key state must contain at most 64 bytes");
-        if(keyData is { Length: > 0 })
-            Blake2bNativeCapability.EnsureKeyedAvailable();
+        if(keyData is { Length: > 0 } && !KeyedCapabilityProbe())
+            throw new InvalidOperationException(Blake2bNativeCapability.Requirement);
 
         fixed (byte* input = data)
         {

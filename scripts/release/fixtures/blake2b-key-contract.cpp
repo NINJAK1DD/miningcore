@@ -18,7 +18,7 @@ static void require(bool condition, const char* message)
 
 static void check_hash(Hash hash, const char* key, uint32_t length, uint32_t output_length, const char* expected)
 {
-    unsigned char output[64];
+    unsigned char output[80]; // Canary also protects the maximum 64-byte output.
     std::memset(output, 0xa5, sizeof(output));
     hash("\0\1\2", reinterpret_cast<char*>(output), 3, output_length, key, length);
     const size_t size = output_length == UINT32_MAX ? 64 : output_length;
@@ -69,6 +69,15 @@ int main(int argc, char** argv)
     const char* full = "40a374727302d9a4769c17b5f409ff32f58aa24ff122d7603e4fda1509e919d4107a52c57570a6d94e50967aea573b11f86f473f537565c66f7039830a85d186";
     check_hash(hash, nullptr, 0, 64, full);
     check_hash(hash, nullptr, 0, UINT32_MAX, full); // Preserve the existing default-size sentinel.
+    // Independent hashlib.blake2b vectors for native-only and intermediate sizes.
+    check_hash(hash, nullptr, 0, 1, "a6");
+    check_hash(hash, "BlockHash", 9, 1, "4a");
+    check_hash(hash, nullptr, 0, 31, "22a7ba6021a49f9bdab11150e264ec41eadd133ae481faedacca6942fad22f");
+    check_hash(hash, "BlockHash", 9, 31, "9f8147db70300bf7dc7449222b766efa9a919b8a60ab35d3e0de100691c470");
+    check_hash(hash, nullptr, 0, 33, "cba85ebc1ed7305fb68a19adfa409b5b813f1500cfdea38856486027102d67f007");
+    check_hash(hash, "BlockHash", 9, 33, "57cb04abfa0486888ab43c8d8c8973f1c808590ee57f99582954ef0e9ebcf0ab6a");
+    check_hash(hash, nullptr, 0, 63, "90392b28668537eb22c741f22e2d85f38bb9b8d640a2920c325bcdbada4fa80a845b264a64c651d64a3369de2c2575799cbd2dfb45328a4b738015511ee900");
+    check_hash(hash, "BlockHash", 9, 63, "5ede1b3078bfd9839d455e55e4e07afa370bdace055c1a36fd43b29f664b18ea3c9d5ffd3cf548a8bf788dc488ae58127d03312ea59318ef423afc132e95c2");
     expect_rejection(hash, memory + page, 65, 32);
     expect_rejection(hash, memory + page, UINT32_MAX, 32);
     expect_rejection(hash, nullptr, 1, 32);

@@ -429,21 +429,32 @@ The managed wrapper accepts null/empty keys or 1–64 key bytes, with output siz
 `InvalidOperationException`. Digest validates, pins and measures one captured key
 reference, preserving the protected setter without a pointer/length race.
 
-Keyed digests also require cached keyed known-answer self-tests. The checked-in
+Keyed digests also require cached keyed known-answer self-tests for both 32- and
+64-byte output. The checked-in
 legacy Windows `libmultihash.dll` ignores Blake2b keys; managed keyed hashing now
 throws before writing output on that runtime. Unkeyed hashing remains available.
 Use a source-built native runtime passing these tests for keyed algorithms.
-This is a digest-time capability guard, not a new pool startup preflight.
+Kaspa-family pools that use keyed Blake2b reject an unsupported runtime in
+`Configure`, before daemon setup or listener activation, with their own pool ID.
+This includes KAS/SPR and the default/custom-symbol path, plus PYI's pre-fork
+dependency. CAS, HTN and WALA do not require keyed Blake2b; their separate Blake3
+preflight still applies. The digest-time guard remains a backstop and throws
+`InvalidOperationException` rather than a pool startup exception.
 
-The legacy void `blake2b_export` now checks the underlying function's return value.
+In the supported source-built Linux runtime, the legacy void `blake2b_export`
+now checks the underlying function's return value.
 Any error aborts the process instead of returning stale output bytes as a digest.
 Valid native output sizes (1–64 bytes) and the default-size sentinel are preserved.
 An unmanaged contract violation can terminate every pool in the host process;
 callers must validate arguments before invoking the export. Linux reports
-`SIGABRT`; Windows CRT termination differs and is not certified by the Linux harness.
+`SIGABRT`. The shipped Windows DLL is unchanged and does **not** contain this
+native error-handling fix; direct unmanaged calls to it remain outside this
+guarantee. Windows source-built packaging and subprocess validation are tracked
+in [issue #276](https://github.com/NINJAK1DD/miningcore/issues/276).
 
 `test-blake2b-key-contract.sh` tests the actual export in source and release CI.
-It checks independent keyed/unkeyed vectors and output boundaries; isolated child
+It checks independent keyed/unkeyed vectors at output sizes 1, 31, 32, 33, 63 and
+64, plus the default sentinel, with output canaries; isolated child
 processes must abort for invalid key/pointer, input and output arguments. Core dumps
 are disabled. The local unfixed-code negative control returns successfully and is
 rejected by this harness. Current mining callers supply valid keys; no
