@@ -33,8 +33,10 @@ No audit suppression or severity downgrade is required.
 
 For this policy, the **servicing baseline** is the highest stable `10.0.x` version among the
 `Microsoft.Extensions.*` references in [`Miningcore.csproj`](../src/Miningcore/Miningcore.csproj),
-which also holds the exact PKCS pin. For removal decisions, calculate it from the removal PR's
-base revision.
+which also holds the reviewed PKCS minimum version. NuGet's plain `Version` value is an
+[inclusive minimum](https://learn.microsoft.com/en-us/nuget/concepts/package-versioning#version-ranges),
+so verify the resolved package and loaded assembly rather than assuming an exact version. For
+removal decisions, calculate the baseline from the removal PR's base revision.
 
 [Dependabot](../.github/dependabot.yml) groups monthly patch version updates for these packages and
 PKCS in `dotnet-servicing` and ignores their major-version updates. Patch updates remain eligible.
@@ -45,11 +47,11 @@ For update PRs:
   security updates against Microsoft's current advisories too; this maintenance convention does
   not establish the latest secure PKCS or runtime version.
 - If no stable PKCS `10.0.x` release meets the baseline, retain the highest available stable
-  `10.0.x` release, never below 10.0.13 or the already-reviewed pin. Record dated Microsoft/NuGet
+  `10.0.x` release, never below 10.0.13 or the already-reviewed minimum. Record dated Microsoft/NuGet
   release-availability evidence and recheck at the next dependency update. This exception cannot
   authorize reference removal or bypass vulnerability auditing.
 - Moving to a new .NET major version requires updating this policy, its baseline definition,
-  the Dependabot rules and runtime checks together in the same migration PR.
+  the Dependabot rules and runtime evidence requirements together in the same migration PR.
 
 For removal PRs:
 
