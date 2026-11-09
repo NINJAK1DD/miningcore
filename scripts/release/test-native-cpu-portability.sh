@@ -15,11 +15,21 @@ repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work_dir=$(mktemp -d)
 trap 'rm -rf -- "$work_dir"' EXIT
 ulimit -c 0
+export LD_LIBRARY_PATH="$library_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# Exercise the exported key contract against the actual library, with short keys
+# ending at a protected page. Each invalid call runs in an isolated child process.
+g++ -std=c++11 -O2 -march=x86-64 -Wall -Wextra -Werror \
+  "$repository_root/scripts/release/fixtures/blake3-key-contract.cpp" \
+  -ldl -o "$work_dir/blake3-key-contract"
+timeout 30 "$work_dir/blake3-key-contract" "$library_dir/libmultihash.so"
 
 command -v qemu-x86_64 >/dev/null || {
   echo 'qemu-user is required (apt-get install qemu-user)' >&2
   exit 1
 }
+echo "Testing Blake3 key contract with QEMU $cpu"
+timeout 60 qemu-x86_64 -cpu "$cpu" "$work_dir/blake3-key-contract" "$library_dir/libmultihash.so"
 g++ -std=c++11 -O2 -fno-inline -fPIC -shared -march=x86-64 -Wall -Wextra -Werror \
   -I "$repository_root/src/Native/libdero/include" \
   "$repository_root/src/Native/libdero/include/highwayhash/instruction_sets.cc" \
@@ -69,7 +79,6 @@ C
   fi
 fi
 
-export LD_LIBRARY_PATH="$library_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 echo 'Testing native runner CPU'
 timeout 300 "$work_dir/probe" "$library_dir" | tee "$work_dir/native.log"
 echo "Testing CPU portability with QEMU $cpu (no AVX-512)"
