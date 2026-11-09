@@ -24,6 +24,15 @@ for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
 ## Upcoming v0.4.0-rc.2
 
+### Blake2b argument and keyed-runtime validation
+
+Blake2b now rejects oversized keys and unsupported output sizes in managed code,
+and aborts on native errors instead of returning unwritten output as a hash.
+Keyed digests require a known-answer capability check: the legacy Windows native
+library ignores keys and is now rejected for keyed hashing. Unkeyed hashing is
+unchanged. A malformed direct unmanaged call can terminate all pools in the host;
+see the [Blake2b argument contract](native-cpu-portability.md#blake2b-argument-contract).
+
 ### Native Blake3 startup validation
 
 Alephium, Xelis and the AIX/CAS/HTN/KLS/CSS/NTL/NXL/PUG/PYI/WALA Kaspa variants
