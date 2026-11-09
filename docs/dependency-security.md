@@ -32,32 +32,38 @@ resolution at or above 10.0.13, the first .NET 10 package with the fixes for
 No audit suppression or severity downgrade is required.
 
 For this policy, the **servicing baseline** is the highest stable `10.0.x` version among the
-`Microsoft.Extensions.*` package references in
-[`Miningcore.csproj`](../src/Miningcore/Miningcore.csproj). For removal decisions, calculate it from
-the removal PR's base revision. Keep the explicit PKCS reference at or above this baseline; the same
-project file holds its exact version.
+`Microsoft.Extensions.*` references in [`Miningcore.csproj`](../src/Miningcore/Miningcore.csproj),
+which also holds the exact PKCS pin. For removal decisions, calculate it from the removal PR's
+base revision.
 
 [Dependabot](../.github/dependabot.yml) groups monthly patch version updates for these packages and
-PKCS in `dotnet-servicing` so available updates can be reviewed together. Check grouped, manual and
-security updates against the baseline and Microsoft's current security advisories; this project
-maintenance convention does not establish the latest security-patched PKCS or runtime version.
+PKCS in `dotnet-servicing` and ignores their major-version updates. Patch updates remain eligible.
 
-If no stable PKCS `10.0.x` release meets the baseline, retain the explicit reference at the highest
-available stable `10.0.x` release, never below 10.0.13 or the already-reviewed PKCS pin. Record dated
-Microsoft/NuGet release-availability evidence in the update PR and recheck it at the next dependency
-update. This limited exception does not permit removing the reference or bypassing vulnerability
-auditing; the removal requirements below remain unchanged.
+For update PRs:
 
-Remove the reference only after restore and a complete vulnerable-package audit show every
-transitive path resolves PKCS at or above both 10.0.13 and that servicing baseline without it.
-Record the base revision, calculated baseline and resolved PKCS package version in the removal PR;
-meeting the fix floor for these two CVEs alone does not justify a servicing downgrade.
+- Keep PKCS at or above the baseline and the 10.0.13 security floor. Check grouped, manual and
+  security updates against Microsoft's current advisories too; this maintenance convention does
+  not establish the latest secure PKCS or runtime version.
+- If no stable PKCS `10.0.x` release meets the baseline, retain the highest available stable
+  `10.0.x` release, never below 10.0.13 or the already-reviewed pin. Record dated Microsoft/NuGet
+  release-availability evidence and recheck at the next dependency update. This exception cannot
+  authorize reference removal or bypass vulnerability auditing.
+- Moving to a new .NET major version requires updating this policy, its baseline definition,
+  the Dependabot rules and runtime checks together in the same migration PR.
 
-Also record the loaded PKCS assembly's informational version and path, and the selected .NET and
-ASP.NET shared-framework versions. Miningcore publishes framework-dependent, so it can load PKCS
-from `Microsoft.AspNetCore.App` instead of the package copy; the package version alone does not
-establish which assembly runs. Collect this evidence under the published application's dependency
-manifest and runtime configuration, and keep the deployed shared frameworks patched.
+For removal PRs:
+
+- Require restore and a complete vulnerable-package audit to show every transitive path resolves
+  PKCS at or above both 10.0.13 and the baseline without the reference. Record the base revision,
+  calculated baseline and resolved package version; the CVE fix floor alone cannot justify a
+  servicing downgrade.
+- Record the loaded PKCS assembly's informational version and path, and the selected .NET and
+  ASP.NET shared-framework versions under the published application's dependency manifest and
+  runtime configuration.
+
+Miningcore publishes framework-dependent, so PKCS can load from `Microsoft.AspNetCore.App` instead
+of the package copy; the package version alone does not establish which assembly runs. Keep the
+deployed shared frameworks patched.
 
 ## AutoMapper 16 licence decision
 

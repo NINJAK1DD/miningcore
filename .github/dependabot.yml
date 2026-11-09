@@ -20,6 +20,11 @@ updates:
         - "Microsoft.Extensions.*"
         - "System.Security.Cryptography.Pkcs"
       update-types: ["patch"]
+  ignore:
+    - dependency-name: "Microsoft.Extensions.*"
+      update-types: ["version-update:semver-major"]
+    - dependency-name: "System.Security.Cryptography.Pkcs"
+      update-types: ["version-update:semver-major"]
   commit-message:
     prefix: "chore(deps)"
   open-pull-requests-limit: 10
