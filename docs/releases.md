@@ -24,6 +24,17 @@ for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
 ## Upcoming v0.4.0-rc.2
 
+### Selected .NET and PKCS runtime requirements
+
+New framework-dependent publishes declare serviced runtime minima and refuse hosts below
+the shared policy floor (currently .NET and ASP.NET Core 10.0.14). Install both serviced
+frameworks before upgrading Miningcore; a distribution package may lag behind this floor.
+Normal startup checks the actual Core runtime, ASP.NET assembly and PKCS even if an operator
+lowers the runtimeconfig requirements. A direct PKCS package reference alone does not guarantee
+that its DLL is shipped or selected: SDK publish conflict resolution can use the shared framework.
+See [published dependency and runtime acceptance](dependency-security.md#published-dependency-and-runtime-acceptance)
+for the release, Windows and container checks and production verification steps.
+
 ### Native Blake3 startup validation
 
 Alephium, Xelis and the AIX/CAS/HTN/KLS/CSS/NTL/NXL/PUG/PYI/WALA Kaspa variants

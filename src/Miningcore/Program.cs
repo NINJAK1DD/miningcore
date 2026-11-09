@@ -176,6 +176,15 @@ public class Program : ProcessStatusBackgroundService
 
         return await RunStartupBoundaryAsync(async () =>
         {
+            try
+            {
+                RuntimeDependencyGuard.Validate(TextWriter.Null);
+            }
+            catch(Exception ex) when(ex is InvalidOperationException or System.IO.FileNotFoundException or System.IO.FileLoadException)
+            {
+                throw new PoolStartupException($"Runtime dependency validation failed: {ex.Message}. Update both .NET and ASP.NET Core and restart Miningcore.");
+            }
+
             AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
 
             var app = ParseCommandLine(args);

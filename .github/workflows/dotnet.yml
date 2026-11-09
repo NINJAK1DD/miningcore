@@ -732,6 +732,14 @@ jobs:
         }
         .\build\windows-x64\Miningcore.exe --version
 
+    - name: Verify published Windows dependencies and selected runtimes
+      shell: pwsh
+      run: |
+        python scripts/release/test-published-pkcs.py
+        if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        python scripts/release/run-managed-dependency-smoke.py build/windows-x64
+        if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     # Broad coverage: resource discovery, lifecycle mocks and socket
     # fixtures can fail on Windows even when the selected native smoke tests pass.
     - name: Test complete Windows suite

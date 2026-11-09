@@ -21,6 +21,7 @@ class PublishedPkcsTests(unittest.TestCase):
         self.project = self.root / "Miningcore.csproj"
         self.project.write_text(
             f'<Project><ItemGroup><PackageReference Include="{PACKAGE}" Version="10.0.14" />'
+            '<PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14" />'
             '</ItemGroup></Project>', encoding="utf-8")
         self.entry = PACKAGE + "/10.0.14"
         self.target = ".NETCoreApp,Version=v10.0/linux-x64"
@@ -29,6 +30,10 @@ class PublishedPkcsTests(unittest.TestCase):
             "targets": {self.target: {self.entry: {"runtime": {f"lib/net10.0/{ASSEMBLY}": {}}}}},
             "libraries": {self.entry: {"type": "package"}},
         }
+        self.config = {"runtimeOptions": {"frameworks": [
+            {"name": "Microsoft.NETCore.App", "version": "10.0.14"},
+            {"name": "Microsoft.AspNetCore.App", "version": "10.0.14"}]}}
+        self.write_config()
         (self.root / ASSEMBLY).touch()
 
     def run_gate(self, expected=0, message="verified"):
@@ -92,33 +97,75 @@ class PublishedPkcsTests(unittest.TestCase):
         self.manifest["targets"][self.target].clear()
         (self.root / ASSEMBLY).unlink()
         self.config = {"runtimeOptions": {"frameworks": [
-            {"name": "Microsoft.NETCore.App", "version": "10.0.0"},
-            {"name": "Microsoft.AspNetCore.App", "version": "10.0.0"}]}}
+            {"name": "Microsoft.NETCore.App", "version": "10.0.14"},
+            {"name": "Microsoft.AspNetCore.App", "version": "10.0.14"}]}}
         self.write_config()
 
     def write_config(self):
         (self.root / "Miningcore.runtimeconfig.json").write_text(json.dumps(self.config), encoding="utf-8")
 
-    def test_framework_pruned_package(self):
+    def test_framework_supplied_package(self):
         self.framework_manifest()
         self.run_gate(message="10.0.14 framework")
 
-    def test_pruned_without_aspnet_framework(self):
+    def test_framework_without_aspnet_framework(self):
         self.framework_manifest()
         self.config["runtimeOptions"]["frameworks"].pop()
         self.write_config()
         self.run_gate(1, "without an ASP.NET 10")
 
-    def test_pruned_with_untracked_dll(self):
+    def test_framework_with_untracked_dll(self):
         self.framework_manifest()
         (self.root / ASSEMBLY).touch()
         self.run_gate(1, "untracked PKCS DLL")
 
-    def test_pruned_with_wrong_framework_band(self):
+    def test_framework_with_wrong_framework_band(self):
         self.framework_manifest()
         self.config["runtimeOptions"]["frameworks"][1]["version"] = "9.0.0"
         self.write_config()
-        self.run_gate(1, "without an ASP.NET 10")
+        self.run_gate(1, "explicit stable")
+
+    def test_below_servicing_baseline_in_both_modes(self):
+        for mode in ("package", "framework"):
+            with self.subTest(mode=mode):
+                if mode == "framework":
+                    self.framework_manifest()
+                self.project.write_text(self.project.read_text().replace(
+                    'Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14"',
+                    'Include="Microsoft.Extensions.Caching.Memory" Version="10.0.15"'))
+                self.run_gate(1, "servicing baseline")
+
+    def test_framework_config_below_pkcs_reference(self):
+        self.framework_manifest()
+        self.project.write_text(self.project.read_text().replace("10.0.14", "10.0.15"))
+        self.run_gate(1, "below the PKCS reference")
+
+    def test_old_runtime_floors_in_both_modes(self):
+        for mode in ("package", "framework"):
+            if mode == "framework":
+                self.framework_manifest()
+            for index in (0, 1):
+                with self.subTest(mode=mode, index=index):
+                    self.config["runtimeOptions"]["frameworks"][index]["version"] = "10.0.13"
+                    self.write_config()
+                    self.run_gate(1, "runtime policy floor")
+                    self.config["runtimeOptions"]["frameworks"][index]["version"] = "10.0.14"
+
+    def test_singular_aspnet_framework(self):
+        self.framework_manifest()
+        self.config["runtimeOptions"] = {"framework": self.config["runtimeOptions"]["frameworks"][1]}
+        self.write_config()
+        self.run_gate()
+
+    def test_ambiguous_frameworks_rejected(self):
+        self.config["runtimeOptions"]["framework"] = self.config["runtimeOptions"]["frameworks"][0]
+        self.write_config()
+        self.run_gate(1, "both framework and frameworks")
+
+    def test_highest_extensions_version_wins(self):
+        self.project.write_text(self.project.read_text().replace('</ItemGroup>',
+            '<PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.15" /></ItemGroup>'))
+        self.run_gate(1, "servicing baseline")
 
 
 if __name__ == "__main__":

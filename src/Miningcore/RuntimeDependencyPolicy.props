@@ -1,0 +1,13 @@
+<Project>
+  <!-- Shared by publishing, the startup guard and the release validator. -->
+  <PropertyGroup>
+    <MiningcoreRuntimeMinimum>10.0.14</MiningcoreRuntimeMinimum>
+    <MiningcorePkcsSecurityMinimum>10.0.13</MiningcorePkcsSecurityMinimum>
+    <TargetLatestRuntimePatch>true</TargetLatestRuntimePatch>
+    <RuntimeFrameworkVersion>$(MiningcoreRuntimeMinimum)</RuntimeFrameworkVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)RuntimeDependencyPolicy.props"
+                      LogicalName="Miningcore.RuntimeDependencyPolicy.props" />
+  </ItemGroup>
+</Project>

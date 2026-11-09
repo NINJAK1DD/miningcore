@@ -138,28 +138,41 @@ After a normal framework-dependent release publish, run the existing release gat
 bash scripts/release/validate-managed-dependencies.sh publish
 ```
 
-For an application-local PKCS package, the gate checks the exact version from `Miningcore.csproj`
-in both the published `Miningcore.deps.json` library inventory and its active runtime target, and
-requires the runtime asset and DLL. .NET 10 can instead prune PKCS from that manifest because
-`Microsoft.AspNetCore.App` supplies it. In that case the gate requires the ASP.NET 10 framework
-in `Miningcore.runtimeconfig.json` and rejects an untracked local PKCS DLL. Manifest checks alone
-are insufficient: the smoke then loads PKCS under Miningcore's manifest and runtime configuration,
-reports its informational version and location, and verifies either the exact application-local
-package or a shared-framework copy at least as new as the reviewed reference. It follows future
-servicing updates without a second current-version pin and rejects references below 10.0.13.
+The gate compares the direct PKCS reference with the highest stable `10.0.x`
+`Microsoft.Extensions.*` reference and the security floor. A patched validation host cannot
+compensate for a project reference below that baseline. An unavailable-release exception requires
+an explicit review of the gate alongside the dated policy evidence; it is not a CLI bypass.
 
-The gate prints `dotnet --list-runtimes`, then runs the dependency smoke under Miningcore's own
-published runtime configuration and dependency manifest. The smoke reports the selected .NET
-runtime version and location and requires .NET 10.0.14 or a later .NET 10 servicing release.
-The SDK used to compile the application and an inventory of installed runtimes alone do not
-establish which runtime executes it. CI's explicitly selected SDK is serviced to 10.0.403 in all
-three workflows; Ubuntu distribution-SDK lanes retain their independently checked package baseline.
+For application-local PKCS, the gate requires the reviewed version in both the manifest library
+inventory and active runtime target, its runtime asset and DLL. SDK publish conflict resolution
+can instead omit that asset in favor of `Microsoft.AspNetCore.App`; this is distinct from NuGet
+package pruning. Framework-only output must declare an ASP.NET minimum at least as high as PKCS,
+with no untracked local DLL. Both framework minima must meet the runtime policy.
 
-Before deployment, check `dotnet --list-runtimes` using the service's configured .NET installation
-and environment. Keep both `Microsoft.NETCore.App` and `Microsoft.AspNetCore.App` patched to the
-latest supported .NET 10 servicing release (at least 10.0.14 for this acceptance baseline), and
-restart the service after patching. A passing CI smoke records the CI host's selection, not the
-production service's selection; check any service-specific `DOTNET_ROOT` and roll-forward settings.
-These checks supplement the complete NuGet audit; they do not replace it.
+[`RuntimeDependencyPolicy.props`](../src/Miningcore/RuntimeDependencyPolicy.props) is the common
+source of the .NET/ASP.NET servicing floor and PKCS security floor. Publishing uses
+`TargetLatestRuntimePatch` and an explicit `RuntimeFrameworkVersion`; the gate checks the emitted
+runtimeconfig, not just these build properties. The host refuses older frameworks. Normal
+Miningcore startup also checks the selected Core runtime, an actual ASP.NET shared-framework
+assembly and PKCS before opening connections, including when runtimeconfig settings were changed.
+Configuration-dump diagnostics remain offline and do not start mining services.
+
+The smoke prints both selected framework versions/locations and PKCS's informational version and
+location under Miningcore's published manifest/runtimeconfig. Package mode accepts the exact
+application copy or an equal-or-newer copy from the selected ASP.NET framework. Framework mode
+requires that selected framework's copy. Installed-runtime inventories are additional diagnostics,
+not proof of selection. The same checks run against Windows publishing and inside both source and
+packaged container images, as their normal unprivileged user. NBitcoin.Zcash binding is also tested.
+
+Run the portable gate on Windows with:
+
+```console
+python scripts/release/run-managed-dependency-smoke.py build/windows-x64
+```
+
+Before deployment, keep both shared frameworks patched to the latest supported .NET 10 servicing
+release, at least the common policy floor, and restart the service. CI validates its own hosts and
+built images; verify the production service's installation, `DOTNET_ROOT` and roll-forward settings
+as well. These checks supplement the complete NuGet audit; they do not replace it.
 
 Baseline source: [Microsoft .NET 10.0.14 servicing release](https://github.com/dotnet/core/blob/main/release-notes/10.0/10.0.14/10.0.14.md).
