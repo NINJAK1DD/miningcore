@@ -95,7 +95,8 @@
         <PackageReference Include="MailKit" Version="4.18.2" />
         <!-- Security floor: Pkcs >= 10.0.13 (CVE-2026-84008, CVE-2026-70162). Tracks the
              current 10.0.x servicing band; remove only when restore/audit shows every
-             transitive path meets the floor without it. See docs/dependency-security.md. -->
+             transitive path meets the floor and the then-current servicing baseline
+             without it. See docs/dependency-security.md. -->
         <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
         <PackageReference Include="McMaster.Extensions.CommandLineUtils" Version="5.1.0" />
         <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14" />

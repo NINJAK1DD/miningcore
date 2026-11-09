@@ -32,7 +32,10 @@ resolution at or above 10.0.13, the first .NET 10 package with the fixes for
 The reference follows the current 10.0.x servicing release;
 [`Miningcore.csproj`](../src/Miningcore/Miningcore.csproj) holds the exact version.
 Remove it only after restore and a complete vulnerable-package audit show every transitive path
-resolves 10.0.13 or later without it. No audit suppression or severity downgrade is required.
+resolves 10.0.13 or later without it and still meets the project's then-current servicing baseline.
+Record that baseline and the resolved package and loaded assembly/runtime versions in the removal PR;
+meeting the fix floor for these two CVEs alone does not justify a servicing downgrade.
+No audit suppression or severity downgrade is required.
 Miningcore publishes framework-dependent, so also keep the deployed .NET runtime patched.
 
 ## AutoMapper 16 licence decision
