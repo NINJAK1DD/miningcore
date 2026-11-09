@@ -5,10 +5,11 @@ Miningcore restores the complete transitive package graph with `NuGetAuditMode=a
 `NU1904`) fails restore. `NU1903` and `NU1904` are also listed in `WarningsAsErrors`, so high and
 critical findings remain fatal even if a local build sets `TreatWarningsAsErrors=false`.
 
-Miningcore now explicitly adopts this stricter policy. It supersedes the earlier decision to leave
-low and moderate findings as warnings: enabling compiler warnings as errors also made these audit
-findings fatal. A newly published advisory of any severity blocks builds and releases until the
-dependency is upgraded or a scoped, written risk acceptance is recorded as described below.
+Miningcore adopts this stricter policy. It supersedes the earlier decision to leave low and moderate
+findings as warnings. Enabling compiler warnings as errors in
+[PR #104](https://github.com/NINJAK1DD/miningcore/pull/104) also made these audit findings fatal.
+A newly published advisory of any severity blocks builds and releases until the dependency is
+upgraded or a scoped, written risk acceptance is recorded as described below.
 
 Run the same audit explicitly with:
 
