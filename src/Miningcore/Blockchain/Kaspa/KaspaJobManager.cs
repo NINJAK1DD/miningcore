@@ -835,11 +835,19 @@ public class KaspaJobManager : JobManagerBase<KaspaJob>
 
     internal Func<bool> Blake3CapabilityProbe { get; init; } = Blake3NativeCapability.IsAvailable;
 
+    // The default job and every variant except these three use keyed Blake2b.
+    // PYI needs it before its fork, so require both capabilities at startup.
+    internal static bool RequiresKeyedBlake2b(string symbol) => symbol is not ("CAS" or "HTN" or "WALA");
+
+    internal Func<bool> Blake2bKeyedCapabilityProbe { get; init; } = Blake2bNativeCapability.IsKeyedAvailable;
+
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
         coin = pc.Template.As<KaspaCoinTemplate>();
         if(RequiresBlake3(coin.Symbol))
             Blake3NativeCapability.EnsureAvailable(pc.Id, Blake3CapabilityProbe);
+        if(RequiresKeyedBlake2b(coin.Symbol))
+            Blake2bNativeCapability.EnsureKeyedAvailable(pc.Id, Blake2bKeyedCapabilityProbe);
 
         extraPoolConfig = pc.Extra.SafeExtensionDataAs<KaspaPoolConfigExtra>();
         extraPoolPaymentProcessingConfig = pc.PaymentProcessing.Extra.SafeExtensionDataAs<KaspaPaymentProcessingConfigExtra>();

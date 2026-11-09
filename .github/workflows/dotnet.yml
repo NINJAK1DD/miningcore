@@ -146,6 +146,7 @@ jobs:
         scripts/release/test-native-load-fenv-regressions.sh
         scripts/release/test-linux-native-symbol-contracts.sh
         scripts/release/test-native-cpu-portability.sh
+        scripts/release/test-blake2b-key-contract.sh
         scripts/release/test-randomx-cpu-os-state.sh
         scripts/release/test-linux-package-targets.sh
         scripts/release/test-msbuild-warning-file-logger.sh
@@ -425,7 +426,9 @@ jobs:
     - name: Test native CPU portability
       if: runner.os == 'Linux'
       shell: bash
-      run: bash scripts/release/test-native-cpu-portability.sh src/Miningcore/bin/Debug/net10.0 --avx2-userspace
+      run: |
+        bash scripts/release/test-native-cpu-portability.sh src/Miningcore/bin/Debug/net10.0 --avx2-userspace
+        bash scripts/release/test-blake2b-key-contract.sh src/Miningcore/bin/Debug/net10.0
 
     - name: Test native load floating-point state
       if: runner.os == 'Linux'
@@ -579,6 +582,7 @@ jobs:
         sudo apt-get -o Acquire::Retries=3 update
         sudo apt-get -o Acquire::Retries=3 install -y qemu-user
         bash scripts/release/test-native-cpu-portability.sh "$GITHUB_WORKSPACE/build/ubuntu-24.04"
+        bash scripts/release/test-blake2b-key-contract.sh "$GITHUB_WORKSPACE/build/ubuntu-24.04"
         bash scripts/release/test-randomx-cpu-os-state.sh "${TMPDIR:-/tmp}"
 
   build-windows:
@@ -646,7 +650,7 @@ jobs:
       run: |
         dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj `
           --no-build --no-restore --configuration Release --framework net10.0 `
-          --filter "FullyQualifiedName~Blake3NativeCapabilityTests|FullyQualifiedName~BitcoinTemplateStartupTests|FullyQualifiedName~XelisLifecycleTests.NativeCapability|FullyQualifiedName~RpcCompatibilityTests|FullyQualifiedName~PoolFamilyAssignmentTests.Xelis"
+          --filter "FullyQualifiedName~Blake3NativeCapabilityTests|FullyQualifiedName~Blake2bKeyLengthTests|FullyQualifiedName~Blake2bStartupTests|FullyQualifiedName~BitcoinTemplateStartupTests|FullyQualifiedName~XelisLifecycleTests.NativeCapability|FullyQualifiedName~RpcCompatibilityTests|FullyQualifiedName~PoolFamilyAssignmentTests.Xelis"
 
     - name: Test Windows Odocrypt toolset override boundary
       shell: pwsh
