@@ -29,14 +29,24 @@ Miningcore references `System.Security.Cryptography.Pkcs` directly to keep norma
 resolution at or above 10.0.13, the first .NET 10 package with the fixes for
 [CVE-2026-70162](https://github.com/dotnet/announcements/issues/454) and
 [CVE-2026-84008](https://github.com/dotnet/announcements/issues/468).
-The reference follows the current 10.0.x servicing release;
-[`Miningcore.csproj`](../src/Miningcore/Miningcore.csproj) holds the exact version.
-Remove it only after restore and a complete vulnerable-package audit show every transitive path
-resolves 10.0.13 or later without it and still meets the project's then-current servicing baseline.
-Record that baseline and the resolved package and loaded assembly/runtime versions in the removal PR;
-meeting the fix floor for these two CVEs alone does not justify a servicing downgrade.
 No audit suppression or severity downgrade is required.
-Miningcore publishes framework-dependent, so also keep the deployed .NET runtime patched.
+
+For this policy, the **servicing baseline** is the highest stable `10.0.x` version among the
+`Microsoft.Extensions.*` package references in
+[`Miningcore.csproj`](../src/Miningcore/Miningcore.csproj) on the removal PR's base revision.
+If those references differ, use the highest patch version. Keep the explicit PKCS reference at or
+above this baseline; the same project file holds its exact version.
+
+Remove the reference only after restore and a complete vulnerable-package audit show every
+transitive path resolves PKCS at or above both 10.0.13 and that servicing baseline without it.
+Record the base revision, calculated baseline and resolved PKCS package version in the removal PR;
+meeting the fix floor for these two CVEs alone does not justify a servicing downgrade.
+
+Also record the loaded PKCS assembly's informational version and path, and the selected .NET and
+ASP.NET shared-framework versions. Miningcore publishes framework-dependent, so it can load PKCS
+from `Microsoft.AspNetCore.App` instead of the package copy; the package version alone does not
+establish which assembly runs. Collect this evidence under the published application's dependency
+manifest and runtime configuration, and keep the deployed shared frameworks patched.
 
 ## AutoMapper 16 licence decision
 
