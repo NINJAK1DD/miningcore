@@ -1,5 +1,33 @@
 # Linux native CPU portability
 
+## Blake2b argument contract
+
+The managed wrapper accepts null/empty keys or 1–64 key bytes, with output sizes
+32–64 bytes. Oversized constructor keys and unsupported output sizes throw
+`ArgumentException`; invalid key state supplied by a subclass throws
+`InvalidOperationException`. Digest validates, pins and measures one captured key
+reference, preserving the protected setter without a pointer/length race.
+
+Keyed digests also require cached keyed known-answer self-tests. The checked-in
+legacy Windows `libmultihash.dll` ignores Blake2b keys; managed keyed hashing now
+throws before writing output on that runtime. Unkeyed hashing remains available.
+Use a source-built native runtime passing these tests for keyed algorithms.
+This is a digest-time capability guard, not a new pool startup preflight.
+
+The legacy void `blake2b_export` now checks the underlying function's return value.
+Any error aborts the process instead of returning stale output bytes as a digest.
+Valid native output sizes (1–64 bytes) and the default-size sentinel are preserved.
+An unmanaged contract violation can terminate every pool in the host process;
+callers must validate arguments before invoking the export. Linux reports
+`SIGABRT`; Windows CRT termination differs and is not certified by the Linux harness.
+
+`test-blake2b-key-contract.sh` tests the actual export in source and release CI.
+It checks independent keyed/unkeyed vectors and output boundaries; isolated child
+processes must abort for invalid key/pointer, input and output arguments. Core dumps
+are disabled. The local unfixed-code negative control returns successfully and is
+rejected by this harness. Current mining callers supply valid keys; no
+miner-controlled invalid-key route has been established.
+
 ## Floating-point environment at native library load
 
 The CryptoNote shared-library link uses link flags only, with `-s` explicitly in
