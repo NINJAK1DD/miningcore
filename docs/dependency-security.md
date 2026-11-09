@@ -33,9 +33,20 @@ No audit suppression or severity downgrade is required.
 
 For this policy, the **servicing baseline** is the highest stable `10.0.x` version among the
 `Microsoft.Extensions.*` package references in
-[`Miningcore.csproj`](../src/Miningcore/Miningcore.csproj) on the removal PR's base revision.
-If those references differ, use the highest patch version. Keep the explicit PKCS reference at or
-above this baseline; the same project file holds its exact version.
+[`Miningcore.csproj`](../src/Miningcore/Miningcore.csproj). For removal decisions, calculate it from
+the removal PR's base revision. Keep the explicit PKCS reference at or above this baseline; the same
+project file holds its exact version.
+
+[Dependabot](../.github/dependabot.yml) groups monthly patch version updates for these packages and
+PKCS in `dotnet-servicing` so available updates can be reviewed together. Check grouped, manual and
+security updates against the baseline and Microsoft's current security advisories; this project
+maintenance convention does not establish the latest security-patched PKCS or runtime version.
+
+If no stable PKCS `10.0.x` release meets the baseline, retain the explicit reference at the highest
+available stable `10.0.x` release, never below 10.0.13 or the already-reviewed PKCS pin. Record dated
+Microsoft/NuGet release-availability evidence in the update PR and recheck it at the next dependency
+update. This limited exception does not permit removing the reference or bypassing vulnerability
+auditing; the removal requirements below remain unchanged.
 
 Remove the reference only after restore and a complete vulnerable-package audit show every
 transitive path resolves PKCS at or above both 10.0.13 and that servicing baseline without it.
