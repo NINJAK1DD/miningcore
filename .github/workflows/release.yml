@@ -622,6 +622,7 @@ jobs:
           python3 -O scripts/release/test-native-cpu-policy.py --self-test
           python3 scripts/release/test-native-cpu-policy.py
           bash scripts/release/test-native-cpu-portability.sh src/Miningcore/bin/Release/net10.0
+          bash scripts/release/test-blake2b-key-contract.sh src/Miningcore/bin/Release/net10.0
 
       - name: Test RandomX CPU and OS dispatch
         shell: bash
