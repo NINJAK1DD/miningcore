@@ -38,6 +38,10 @@ which also holds the reviewed PKCS minimum version. NuGet's plain `Version` valu
 so verify the resolved package and loaded assembly rather than assuming an exact version. For
 removal decisions, calculate the baseline from the removal PR's base revision.
 
+NuGet normally selects the [lowest applicable version and gives direct references precedence](https://learn.microsoft.com/en-us/nuget/concepts/dependency-resolution#dependency-resolution-rules);
+if a transitive requirement exceeds the selected direct PKCS version,
+[NU1605](https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605) fails Miningcore's normal restore.
+
 [Dependabot](../.github/dependabot.yml) groups monthly patch version updates for these packages and
 PKCS in `dotnet-servicing` and ignores their major-version updates. Patch updates remain eligible.
 
