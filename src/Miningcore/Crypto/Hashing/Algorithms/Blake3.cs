@@ -16,9 +16,11 @@ public unsafe class Blake3IHash : IHashAlgorithm
 
     private static void ValidateKey(byte[] key)
     {
-        if(key is { Length: not (0 or 32) })
+        if(!IsValidKeyLength(key))
             throw new ArgumentException("Blake3 keys must be empty (unkeyed) or exactly 32 bytes", nameof(dataKey));
     }
+
+    private static bool IsValidKeyLength(byte[] key) => key is null or { Length: 0 or 32 };
 
     public void Digest(ReadOnlySpan<byte> data, Span<byte> result, params object[] extra)
     {
@@ -27,7 +29,7 @@ public unsafe class Blake3IHash : IHashAlgorithm
         // The protected setter is retained for compatibility. Revalidate its value,
         // then pin and measure the same array even if a subclass replaces the property.
         var keyData = dataKey;
-        if(keyData is { Length: not (0 or 32) })
+        if(!IsValidKeyLength(keyData))
             throw new InvalidOperationException("Blake3 key state must be empty (unkeyed) or exactly 32 bytes");
 
         fixed (byte* input = data)
