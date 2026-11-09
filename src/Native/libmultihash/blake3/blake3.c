@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "blake3.h"
@@ -629,6 +630,12 @@ void blake3_hash(const char *input, char *output, size_t input_len)
 
 void blake3(const char *input, char *output, size_t input_len, const char *context, size_t context_len)
 {
+    // The legacy void ABI cannot report an invalid key. Fail before reading it,
+    // rather than reading beyond a short buffer or returning a plausible hash.
+    // Managed callers validate first; direct native callers must honor this contract.
+    if(context_len != 0 && (context_len != BLAKE3_KEY_LEN || context == NULL))
+        abort();
+
     // Initialize the hasher.
     blake3_hasher hasher;
     
