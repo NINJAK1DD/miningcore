@@ -187,8 +187,10 @@ class BuildPolicyTests(unittest.TestCase):
         project = HERE.parents[1] / "src/Miningcore/Miningcore.csproj"
         for setting in ("SelfContained", "PublishSelfContained"):
             with self.subTest(setting=setting):
+                # Supply a valid RID so SDK missing-RID validation cannot mask our policy error.
                 result = subprocess.run(["dotnet", "msbuild", str(project), "-nologo",
-                                         "-t:ProcessFrameworkReferences", f"-p:{setting}=true"],
+                                         "-t:ProcessFrameworkReferences", "-p:RuntimeIdentifier=linux-x64",
+                                         f"-p:{setting}=true"],
                                         capture_output=True, text=True, timeout=60)
                 self.assertNotEqual(0, result.returncode)
                 self.assertIn("framework-dependent publishing only", result.stdout + result.stderr)
