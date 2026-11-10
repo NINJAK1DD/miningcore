@@ -56,6 +56,12 @@ For update PRs:
 - Keep PKCS at or above the baseline and the 10.0.13 security floor. Check grouped, manual and
   security updates against Microsoft's current advisories too; this maintenance convention does
   not establish the latest secure PKCS or runtime version.
+- Review `MiningcoreRuntimeMinimum` in
+  [`RuntimeDependencyPolicy.props`](../src/Miningcore/RuntimeDependencyPolicy.props) with every
+  servicing update. Framework-only PKCS needs that floor at least as high as the reviewed PKCS
+  reference; Dependabot's package group does not update this property. Raise it when needed,
+  then rebuild and validate both deployment frameworks. Maintainers must recheck Microsoft's
+  runtime advisories before each release; the static floor is not an automatic security feed.
 - If no stable PKCS `10.0.x` release meets the baseline, retain the highest available stable
   `10.0.x` release, never below 10.0.13 or the already-reviewed minimum. Record dated Microsoft/NuGet
   release-availability evidence and recheck at the next dependency update. This exception cannot
@@ -168,8 +174,13 @@ application copy or an equal-or-newer copy from the selected ASP.NET framework. 
 requires that selected framework's copy. Installed-runtime inventories are additional diagnostics,
 not proof of selection. The same checks run against Windows publishing and inside both source and
 packaged container images, as their normal unprivileged user. NBitcoin.Zcash binding is also tested.
+Reported versions and locations do not authenticate binaries. Continue verifying release provenance,
+published checksums and installation permissions independently of the runtime guard.
 Linux and Windows negative tests use hash-verified 10.0.13 runtime archives in separate disposable
 directories. They never install an older SDK into the publishing toolchain or change its `PATH`.
+Transient download failures receive at most three attempts with 2- and 4-second backoff;
+checksum mismatches and permanent HTTP failures stop immediately. Windows CI explicitly selects
+Python 3.13 rather than relying on the runner's default Python.
 
 Run the portable gate on Windows with:
 
@@ -209,13 +220,15 @@ ExecStart=/opt/dotnet-miningcore/dotnet /opt/miningcore/Miningcore.dll -c /etc/m
 Environment=DOTNET_ROOT=/opt/dotnet-miningcore
 ```
 
-Schedule a maintenance window. Before stopping the service, preserve its complete tested release,
+Schedule a maintenance window. Confirm the release comes from the approved commit and verify its
+published checksums. Before stopping the service, preserve its complete tested release,
 unit/drop-ins and configuration, and rehearse rollback with a supported patched runtime. Run the
 published dependency smoke using the intended host in `PATH`; inspect `systemctl cat miningcore`
 and the service account's effective `DOTNET_ROOT`, `DOTNET_ROOT_X64` and roll-forward settings
 privately (environment files may contain secrets). Shell runtime inventories alone do not prove
 service selection. Stop Miningcore cleanly before replacing files, reload the unit with
-`sudo systemctl daemon-reload`, then start it and verify successful startup under that host.
+`sudo systemctl daemon-reload`, then start it and verify successful startup under that host,
+Stratum listeners, daemon connections and payment-processing health.
 If acceptance fails, restore the tested application and unit configuration; do not lower the
 runtime floor or return to an affected runtime to force startup. These checks supplement the
 complete NuGet audit; they do not replace it.
@@ -241,5 +254,7 @@ status and all incident files, then remove the temporary runtimeconfig. Do not e
 file or the service command. Normal startup and incident acknowledgement remain subject to the
 runtime guard even if an alternate runtimeconfig is supplied. Configuration-dump diagnostics also
 remain offline; this procedure does not declare the older runtime safe for service operation.
+Keep this exception read-only: future commands that modify evidence, acknowledge incidents,
+submit payments or start services must remain inside the enforced runtime boundary.
 
 Baseline source: [Microsoft .NET 10.0.14 servicing release](https://github.com/dotnet/core/blob/main/release-notes/10.0/10.0.14/10.0.14.md).

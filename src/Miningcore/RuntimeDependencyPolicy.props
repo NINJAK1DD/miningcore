@@ -3,7 +3,6 @@
   <PropertyGroup>
     <MiningcoreRuntimeMinimum>10.0.14</MiningcoreRuntimeMinimum>
     <MiningcorePkcsSecurityMinimum>10.0.13</MiningcorePkcsSecurityMinimum>
-    <TargetLatestRuntimePatch>true</TargetLatestRuntimePatch>
     <RuntimeFrameworkVersion>$(MiningcoreRuntimeMinimum)</RuntimeFrameworkVersion>
   </PropertyGroup>
   <!-- ASP.NET is transitive through Grpc.AspNetCore. Set its known runtime versions

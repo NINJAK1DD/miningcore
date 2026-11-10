@@ -7,9 +7,14 @@
         </ItemGroup>
         <Error Condition="'@(_ReviewedPkcsReference->Count())' != '1'"
                Text="Expected one reviewed PKCS package reference for startup validation." />
+        <PropertyGroup>
+            <_ReviewedPkcsVersion>@(_ReviewedPkcsReference->'%(Version)')</_ReviewedPkcsVersion>
+        </PropertyGroup>
+        <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(_ReviewedPkcsVersion)', '\A10[.]0[.][0-9]+\z'))"
+               Text="The reviewed PKCS PackageReference must use a plain stable 10.0.N version; ranges, floating versions and prereleases cannot be embedded as the startup minimum." />
         <ItemGroup>
             <AssemblyMetadata Include="MiningcoreReviewedPkcsMinimum"
-                              Value="@(_ReviewedPkcsReference->'%(Version)')" />
+                              Value="$(_ReviewedPkcsVersion)" />
         </ItemGroup>
     </Target>
     <PropertyGroup>

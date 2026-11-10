@@ -72,7 +72,9 @@ def validate(publish_dir: Path, project: Path) -> tuple[str, str]:
     if not entries and not target_entries:
         # SDK publish conflict resolution may omit the package in favor of ASP.NET.
         if frameworks["Microsoft.AspNetCore.App"] < stable_version(version):
-            raise ValueError("ASP.NET runtimeconfig minimum is below the PKCS reference")
+            raise ValueError("ASP.NET runtimeconfig minimum is below the PKCS reference; review and raise "
+                             "MiningcoreRuntimeMinimum in src/Miningcore/RuntimeDependencyPolicy.props, "
+                             "then rebuild and validate both deployment frameworks")
         if (publish_dir / ASSEMBLY).exists():
             raise ValueError("untracked PKCS DLL present despite framework-only manifest")
         return version, "framework"

@@ -669,9 +669,9 @@ jobs:
       # Extract old binaries outside DOTNET_ROOT; never alter the publishing SDK/host.
       - name: Install old ASP.NET negative-test fixture
         if: matrix.ubuntu == '26.04'
-        run: >-
-          python3 scripts/release/install-runtime-fixture.py
-          "$RUNNER_TEMP/old-dotnet-fixture" --rid linux-x64
+        run: |
+          python3 scripts/release/test-runtime-policy.py
+          python3 scripts/release/install-runtime-fixture.py "$RUNNER_TEMP/old-dotnet-fixture" --rid linux-x64
 
       - name: Reject old frameworks and verify actual PKCS binding variants
         if: matrix.ubuntu == '26.04'

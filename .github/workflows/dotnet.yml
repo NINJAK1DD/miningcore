@@ -604,6 +604,11 @@ jobs:
       with:
         dotnet-version: ${{ env.CI_DOTNET_SDK }}
 
+    - name: Setup Python for Windows release validation
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: '3.13'
+
     - name: Test PowerShell configuration diagnostic snapshot helper on Windows
       shell: pwsh
       run: python scripts/release/test-config-diagnostics-snapshot.py PowerShellSnapshotHelperTests -v
@@ -747,6 +752,8 @@ jobs:
     - name: Reject old Windows frameworks and PKCS at startup
       shell: pwsh
       run: |
+        python scripts/release/test-runtime-policy.py
+        if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         python scripts/release/install-runtime-fixture.py "$env:RUNNER_TEMP/old-dotnet-fixture" --rid win-x64
         if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         python scripts/release/test-managed-runtime.py build/windows-x64 --old-aspnet "$env:RUNNER_TEMP/old-dotnet-fixture/shared/Microsoft.AspNetCore.App/10.0.13"

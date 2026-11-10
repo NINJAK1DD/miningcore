@@ -138,7 +138,7 @@ class PublishedPkcsTests(unittest.TestCase):
     def test_framework_config_below_pkcs_reference(self):
         self.framework_manifest()
         self.project.write_text(self.project.read_text().replace("10.0.14", "10.0.15"))
-        self.run_gate(1, "below the PKCS reference")
+        self.run_gate(1, "MiningcoreRuntimeMinimum in src/Miningcore/RuntimeDependencyPolicy.props")
 
     def test_old_runtime_floors_in_both_modes(self):
         for mode in ("package", "framework"):
