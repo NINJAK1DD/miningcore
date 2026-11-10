@@ -33,6 +33,10 @@ require_file "$publish_dir/BouncyCastle.Cryptography.dll"
 require_file "$publish_dir/BouncyCastle.Crypto.dll"
 require_file "$dependency_manifest"
 
+# Inventory alone does not prove which runtime the application selects. The smoke
+# below also reports and checks the runtime chosen with Miningcore's runtimeconfig.
+dotnet --list-runtimes
+
 expected_version="$(sed -nE \
   's/.*PackageReference Include="Portable.BouncyCastle" Version="([^"]+)".*/\1/p' \
   "$miningcore_project")"
@@ -43,20 +47,4 @@ expected_entry="\"Portable.BouncyCastle/$expected_version\""
 grep -Fq "$expected_entry" "$dependency_manifest" || fail \
   "$dependency_manifest does not contain $expected_entry"
 
-smoke_output="$(mktemp -d)"
-smoke_build="$smoke_output/build"
-smoke_runtime="$smoke_output/runtime"
-trap 'rm -rf -- "$smoke_output"' EXIT
-
-mkdir -p "$smoke_runtime"
-cp -a "$publish_dir/." "$smoke_runtime/"
-
-dotnet build "$script_dir/managed-dependency-smoke/Miningcore.ManagedDependencySmoke.csproj" \
-  --configuration Release \
-  --output "$smoke_build" \
-  -p:MiningcorePublishDir="$publish_dir"
-cp "$smoke_build/Miningcore.ManagedDependencySmoke.dll" "$smoke_runtime/"
-dotnet exec \
-  --depsfile "$smoke_runtime/Miningcore.deps.json" \
-  --runtimeconfig "$smoke_runtime/Miningcore.runtimeconfig.json" \
-  "$smoke_runtime/Miningcore.ManagedDependencySmoke.dll"
+python3 "$script_dir/run-managed-dependency-smoke.py" "$publish_dir"

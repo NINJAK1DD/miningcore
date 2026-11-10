@@ -1,0 +1,28 @@
+<Project>
+  <!-- Shared by publishing, the startup guard and the release validator. -->
+  <PropertyGroup>
+    <MiningcoreRuntimeMinimum>10.0.15</MiningcoreRuntimeMinimum>
+    <MiningcorePkcsSecurityMinimum>10.0.13</MiningcorePkcsSecurityMinimum>
+    <MiningcorePrivateSdkMinimum>10.0.404</MiningcorePrivateSdkMinimum>
+    <RuntimeFrameworkVersion>$(MiningcoreRuntimeMinimum)</RuntimeFrameworkVersion>
+  </PropertyGroup>
+  <!-- These versions are deployment minima, not a bundled-runtime selection policy. -->
+  <Target Name="RequireMiningcoreFrameworkDependent" BeforeTargets="ProcessFrameworkReferences;PrepareForPublish">
+    <Error Condition="'$(SelfContained)' == 'true' Or '$(PublishSelfContained)' == 'true'"
+           Text="Miningcore supports framework-dependent publishing only. Self-contained publishing requires a separately reviewed bundled-runtime servicing policy." />
+  </Target>
+  <!-- ASP.NET is transitive through Grpc.AspNetCore. Set its known runtime versions
+       before SDK resolution without making it direct and changing NuGet pruning. -->
+  <Target Name="ApplyMiningcoreAspNetRuntimeMinimum" BeforeTargets="ProcessFrameworkReferences">
+    <ItemGroup>
+      <KnownFrameworkReference Update="Microsoft.AspNetCore.App"
+          Condition="'%(KnownFrameworkReference.TargetFramework)' == 'net10.0'"
+          DefaultRuntimeFrameworkVersion="$(MiningcoreRuntimeMinimum)"
+          LatestRuntimeFrameworkVersion="$(MiningcoreRuntimeMinimum)" />
+    </ItemGroup>
+  </Target>
+  <ItemGroup>
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)RuntimeDependencyPolicy.props"
+                      LogicalName="Miningcore.RuntimeDependencyPolicy.props" />
+  </ItemGroup>
+</Project>

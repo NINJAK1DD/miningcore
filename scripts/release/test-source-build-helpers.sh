@@ -129,6 +129,13 @@ set -eu
 printf 'dotnet %s\n' "$*" >> "$MININGCORE_HELPER_TEST_TRACE"
 
 case "${1:-}" in
+  --version)
+    printf '%s\n' "${MININGCORE_HELPER_SDK_VERSION:-10.0.404}"
+    ;;
+  --list-runtimes)
+    printf 'Microsoft.NETCore.App %s [/usr/lib/dotnet/shared/Microsoft.NETCore.App]\n' "${MININGCORE_HELPER_CORE_VERSION:-10.0.15}"
+    printf 'Microsoft.AspNetCore.App %s [/usr/lib/dotnet/shared/Microsoft.AspNetCore.App]\n' "${MININGCORE_HELPER_ASPNET_VERSION:-10.0.15}"
+    ;;
   --list-sdks)
     printf '%s\n' '10.0.100 [/usr/lib/dotnet/sdk]'
     ;;
@@ -195,7 +202,7 @@ set -eu
 
 test "${1:-}" = -f
 test -n "${2:-}"
-printf '%s\n' /usr/lib/dotnet/dotnet
+printf '%s\n' "${MININGCORE_HELPER_PRIVATE_HOST:-/usr/lib/dotnet/dotnet}"
 SH
 
 cat > "$work_dir/bin/dpkg-query" <<'SH'
@@ -205,6 +212,9 @@ set -eu
 case "$*" in
   '-S /usr/lib/dotnet/dotnet')
     printf '%s\n' 'dotnet-host-10.0: /usr/lib/dotnet/dotnet'
+    ;;
+  '-S '*)
+    exit "${MININGCORE_HELPER_PACKAGE_STATUS:-1}"
     ;;
   *'${Status}'*'dotnet-sdk-10.0')
     printf '%s\n' 'install ok installed'
@@ -220,6 +230,85 @@ esac
 SH
 
 chmod +x "$work_dir/bin/"*
+
+# Exercise the actual preflight with isolated host inventories, including the
+# deliberate private-SDK selection used while Canonical servicing packages lag.
+check_sdk() {
+  local expected=$1
+  shift
+  local status=0
+  env PATH="$work_dir/bin:$PATH" MININGCORE_HELPER_TEST_TRACE="$work_dir/sdk-trace" \
+    "$@" bash "$repository_root/scripts/release/verify-ubuntu-dotnet-sdk.sh" \
+    > "$work_dir/sdk-output" 2>&1 || status=$?
+  if [[ "$status" -ne "$expected" ]]; then
+    cat "$work_dir/sdk-output" >&2
+    echo "SDK preflight returned $status; expected $expected" >&2
+    exit 1
+  fi
+}
+
+check_sdk 0
+check_sdk 0 MININGCORE_HELPER_CORE_VERSION=10.0.16 MININGCORE_HELPER_ASPNET_VERSION=10.0.16
+for setting in MININGCORE_HELPER_CORE_VERSION MININGCORE_HELPER_ASPNET_VERSION; do
+  for version in 10.0.14 9.0.99 11.0.0 10.0.15-preview.1; do
+    check_sdk 78 "$setting=$version"
+    grep -Fq 'Wait for serviced Canonical packages' "$work_dir/sdk-output"
+  done
+done
+check_sdk 1 MININGCORE_HELPER_PRIVATE_HOST="$work_dir/bin/dotnet"
+check_sdk 1 MININGCORE_PRIVATE_DOTNET_ROOT=/usr/lib/dotnet
+check_sdk 0 MININGCORE_HELPER_PRIVATE_HOST="$work_dir/bin/dotnet" \
+  MININGCORE_PRIVATE_DOTNET_ROOT="$work_dir/bin"
+check_sdk 78 MININGCORE_HELPER_PRIVATE_HOST="$work_dir/bin/dotnet" \
+  MININGCORE_PRIVATE_DOTNET_ROOT="$work_dir/bin" MININGCORE_HELPER_ASPNET_VERSION=10.0.14
+check_sdk 1 MININGCORE_HELPER_PRIVATE_HOST="$work_dir/bin/dotnet" \
+  MININGCORE_PRIVATE_DOTNET_ROOT="$work_dir/bin" MININGCORE_HELPER_SDK_VERSION=11.0.100
+
+for version in 10.0.115 10.0.403 10.0.9 10.0.405-preview.1; do
+  check_sdk 1 MININGCORE_HELPER_PRIVATE_HOST="$work_dir/bin/dotnet" \
+    MININGCORE_PRIVATE_DOTNET_ROOT="$work_dir/bin" MININGCORE_HELPER_SDK_VERSION="$version"
+done
+check_sdk 0 MININGCORE_HELPER_PRIVATE_HOST="$work_dir/bin/dotnet" \
+  MININGCORE_PRIVATE_DOTNET_ROOT="$work_dir/bin" MININGCORE_HELPER_SDK_VERSION=10.0.405
+for package_status in 0 2; do
+  check_sdk 1 MININGCORE_HELPER_PRIVATE_HOST="$work_dir/bin/dotnet" \
+    MININGCORE_PRIVATE_DOTNET_ROOT="$work_dir/bin" MININGCORE_HELPER_PACKAGE_STATUS="$package_status"
+done
+
+# Run the real sentinel with a disposable verifier, never the machine's packages.
+# Inherited private selection must be removed before checking the default route.
+sentinel_dir="$work_dir/sentinel"
+mkdir -p "$sentinel_dir"
+cp "$repository_root/scripts/release/check-canonical-servicing.sh" "$sentinel_dir/"
+cat > "$sentinel_dir/verify-ubuntu-dotnet-sdk.sh" <<'SH'
+#!/bin/bash
+set -eu
+test -z "${MININGCORE_PRIVATE_DOTNET_ROOT:-}${DOTNET_ROOT:-}${DOTNET_ROOT_X64:-}${DOTNET_HOST_PATH:-}${DOTNET_ROLL_FORWARD:-}"
+test "$PATH" = /usr/bin:/bin
+echo "${MININGCORE_SENTINEL_TEST_MESSAGE:-}"
+exit "$MININGCORE_SENTINEL_TEST_STATUS"
+SH
+for status in 0 1 78; do
+  result=0
+  MININGCORE_PRIVATE_DOTNET_ROOT=ignored DOTNET_ROOT=ignored DOTNET_ROOT_X64=ignored \
+    DOTNET_HOST_PATH=ignored DOTNET_ROLL_FORWARD=ignored \
+    MININGCORE_SENTINEL_TEST_STATUS="$status" \
+    MININGCORE_SENTINEL_TEST_MESSAGE='Wait for serviced Canonical packages' \
+    bash "$sentinel_dir/check-canonical-servicing.sh" > "$work_dir/sentinel-output" 2>&1 || result=$?
+  if [[ "$status" -eq 78 ]]; then
+    test "$result" -eq 0
+  else
+    test "$result" -ne 0
+  fi
+  if [[ "$status" -eq 0 ]]; then
+    grep -Fq 'Canonical caught up' "$work_dir/sentinel-output"
+  fi
+done
+if MININGCORE_SENTINEL_TEST_STATUS=78 MININGCORE_SENTINEL_TEST_MESSAGE=unexpected \
+    bash "$sentinel_dir/check-canonical-servicing.sh" > "$work_dir/sentinel-output" 2>&1; then
+  echo 'Sentinel accepted an unclassified configuration failure' >&2
+  exit 1
+fi
 
 unstubbed_trace="$work_dir/unstubbed-trace"
 unstubbed_state="$work_dir/unstubbed-state"
@@ -323,6 +412,8 @@ for helper in "${helpers[@]}"; do
     "$sandbox/scripts/release/run-warning-audited-dotnet.sh"
   cp "$repository_root/scripts/release/verify-ubuntu-dotnet-sdk.sh" \
     "$sandbox/scripts/release/verify-ubuntu-dotnet-sdk.sh"
+  cp "$repository_root/src/Miningcore/RuntimeDependencyPolicy.props" \
+    "$sandbox/src/Miningcore/RuntimeDependencyPolicy.props"
 
   bash -n "$sandbox/$helper"
 
