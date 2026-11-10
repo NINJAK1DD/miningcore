@@ -177,23 +177,20 @@ public class Program : ProcessStatusBackgroundService
         return await RunStartupBoundaryAsync(async () =>
         {
             AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
-
             var app = ParseCommandLine(args);
-
-            if(versionOption.HasValue())
-            {
-                app.ShowVersion();
-                return;
-            }
-
-            if(generateSchemaOption.HasValue())
-            {
-                GenerateJsonConfigSchema();
-                return;
-            }
 
             if(verifyShareRecoveryStateOption.HasValue())
             {
+                // This read-only incident command never starts services or acknowledges incidents.
+                try
+                {
+                    RuntimeDependencyGuard.Validate(TextWriter.Null);
+                }
+                catch(Exception ex) when(ex is InvalidOperationException or TypeInitializationException or
+                    System.IO.FileNotFoundException or System.IO.FileLoadException)
+                {
+                    Console.Error.WriteLine("WARNING: This runtime is not accepted for Miningcore services; continuing read-only share-recovery verification only.");
+                }
                 clusterConfig = configFileOption.HasValue()
                     ? ReadConfig(configFileOption.Value(), true)
                     : new ClusterConfig();
@@ -205,6 +202,31 @@ public class Program : ProcessStatusBackgroundService
                     processStatus.MarkFailed(
                         ProcessExitCodes.UnreconciledShareDurabilityLoss);
 
+                return;
+            }
+
+            try
+            {
+                RuntimeDependencyGuard.Validate(TextWriter.Null);
+            }
+            catch(TypeInitializationException)
+            {
+                throw new PoolStartupException("Runtime dependency policy could not be loaded. Reinstall the complete reviewed Miningcore release before starting services.");
+            }
+            catch(Exception ex) when(ex is InvalidOperationException or System.IO.FileNotFoundException or System.IO.FileLoadException)
+            {
+                throw new PoolStartupException($"Runtime dependency validation failed: {ex.Message}. Update both .NET and ASP.NET Core and restart Miningcore.");
+            }
+
+            if(versionOption.HasValue())
+            {
+                app.ShowVersion();
+                return;
+            }
+
+            if(generateSchemaOption.HasValue())
+            {
+                GenerateJsonConfigSchema();
                 return;
             }
 

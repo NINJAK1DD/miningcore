@@ -138,6 +138,8 @@ exit "${INSTALL_STATUS:-0}"
         scripts.mkdir(parents=True, exist_ok=True)
         for name in ('run-warning-audited-dotnet.sh', 'audit-source-build-warnings.sh', 'assert-warning-free-build.sh'):
             shutil.copyfile(SCRIPTS / name, scripts / name)
+        (scripts / 'run-managed-dependency-smoke.py').write_text(
+            "import pathlib, sys\npathlib.Path(sys.argv[3]).mkdir(parents=True)\n")
         app = self.root / 'build/Miningcore.dll'
         app.parent.mkdir(exist_ok=True)
         app.write_bytes(b'audited-application')
@@ -184,7 +186,7 @@ if args[0] == 'publish':
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         evidence = json.loads((self.root / 'probes/build-evidence.json').read_text())
         self.assertTrue(evidence['complete'])
-        self.assertEqual(4, len(evidence['phases']))
+        self.assertEqual(5, len(evidence['phases']))
         self.assertTrue(all(phase['status'] == 0 for phase in evidence['phases']))
         self.assertLess((self.root / 'probes/build-evidence.json').stat().st_size, 4096)
         self.assertNotIn('TEST_TRACE', json.dumps(evidence))

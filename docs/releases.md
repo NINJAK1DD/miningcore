@@ -24,6 +24,37 @@ for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
 ## Upcoming v0.4.0-rc.2
 
+> **Upgrade .NET before installing RC.2.** Normal Miningcore startup now requires both
+> .NET and ASP.NET Core **10.0.15 or later in .NET 10**. Canonical's 10.0.14 packages do not meet
+> this requirement. The packaged service uses `/usr/bin/dotnet`; installing a private SDK for a
+> build does not change that service. Verify the service's selected host and published dependency
+> smoke before upgrading, or defer deployment. See the
+> [distribution-lag procedure](dependency-security.md#deployment-when-distribution-packages-lag)
+> for a separate serviced runtime and the required systemd override.
+
+### Selected .NET and PKCS runtime requirements
+
+New framework-dependent publishes declare serviced runtime minima and refuse hosts below
+the shared policy floor (currently .NET and ASP.NET Core 10.0.15, from Microsoft's
+10 November 2026 security servicing release). Install both serviced
+frameworks before upgrading Miningcore; a distribution package may lag behind this floor.
+Normal startup checks the actual Core runtime, ASP.NET assembly and PKCS even if an operator
+lowers the runtimeconfig requirements. A direct PKCS package reference alone does not guarantee
+that its DLL is shipped or selected: SDK publish conflict resolution can use the shared framework.
+See [published dependency and runtime acceptance](dependency-security.md#published-dependency-and-runtime-acceptance)
+for the release, Windows and container checks and production verification steps.
+Startup also enforces the reviewed PKCS package minimum embedded at build time. Read-only
+share-recovery verification can warn and proceed on an older host using the documented offline
+procedure; normal services and incident acknowledgement still refuse that runtime. See
+[distribution lag and deployment](dependency-security.md#deployment-when-distribution-packages-lag)
+for the isolated-runtime alternative, maintenance window and rollback requirements, and
+[offline incident diagnostics](dependency-security.md#read-only-incident-diagnostics-on-an-older-host).
+
+Self-contained builds and publishes are now explicitly rejected. Deploy the framework-dependent
+application with serviced .NET and ASP.NET Core shared runtimes. The policy versions are minimums
+for those shared runtimes; bundling a runtime requires a separately reviewed servicing policy and
+release validation.
+
 ### Blake2b argument and keyed-runtime validation
 
 Blake2b now rejects oversized keys and unsupported output sizes in managed code.
@@ -1897,6 +1928,11 @@ sudo apt-get install -y \
   libsodium23 \
   libzmq3-dev
 ```
+
+Confirm that both installed shared frameworks meet the release's runtime floor before activation.
+If the configured Ubuntu feed lags, follow the supported
+[wait-or-private-runtime procedure](dependency-security.md#deployment-when-distribution-packages-lag);
+do not mix .NET APT feeds or lower the release's runtime requirements.
 
 `libsodium23` and the versioned Boost/GMP packages are direct runtime-provider declarations.
 `libzmq3-dev` is a deliberate exception: the vendored `ZeroMQ.dll` imports `libzmq`, so Linux needs
