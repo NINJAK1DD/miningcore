@@ -4,9 +4,13 @@ import copy
 import hashlib
 import importlib.util
 import io
+import http.client
 from pathlib import Path
 import subprocess
+import ssl
+import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -70,6 +74,52 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(1, self.opener.call_count)
         self.sleep.assert_not_called()
 
+    def test_tls_http_protocol_and_io_failures_during_body_are_retried(self):
+        for error in (ssl.SSLError("TLS read failed"), http.client.BadStatusLine("invalid status"),
+                      OSError("I/O failure"), http.client.RemoteDisconnected("closed")):
+            with self.subTest(error=type(error).__name__):
+                class Interrupted(io.BytesIO):
+                    def read(self, size=-1):
+                        raise error
+                self.opener.reset_mock()
+                self.opener.side_effect = [Interrupted(), io.BytesIO(b"verified archive")]
+                self.download()
+                self.assertEqual(2, self.opener.call_count)
+
+    def test_size_limit_stops_unbounded_body_without_retry_or_excess_disk_use(self):
+        self.opener.return_value = io.BytesIO(b"x" * 65)
+        with patch.object(fixture, "MAX_ARCHIVE_BYTES", 64):
+            with self.assertRaisesRegex(ValueError, "archive limit"):
+                self.download()
+        self.assertLessEqual(self.archive.stat().st_size, 64)
+        self.assertEqual(1, self.opener.call_count)
+        self.sleep.assert_not_called()
+
+
+class WorkerTests(unittest.TestCase):
+    def test_total_deadline_terminates_a_stalled_worker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            worker = Path(temporary) / "stalled.py"
+            worker.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+            start = time.monotonic()
+            with patch.object(fixture, "__file__", str(worker)), \
+                    patch.object(fixture, "DOWNLOAD_DEADLINE_SECONDS", 0.2):
+                with self.assertRaisesRegex(ValueError, "total download deadline"):
+                    fixture.run_download_worker(Path(temporary) / "archive.zip", "win-x64")
+            self.assertLess(time.monotonic() - start, 10)
+
+    def test_worker_timeout_or_failure_never_reaches_extraction(self):
+        for error in (subprocess.TimeoutExpired("worker", 300), subprocess.CalledProcessError(1, "worker")):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as temporary:
+                destination = Path(temporary) / "fixture"
+                with patch.object(sys, "argv", ["installer", str(destination), "--rid", "win-x64"]), \
+                        patch.object(fixture.subprocess, "run", side_effect=error), \
+                        patch.object(fixture.zipfile, "ZipFile") as extract:
+                    with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                        fixture.main()
+                    extract.assert_not_called()
+                    self.assertFalse(destination.exists())
+
 
 class BuildPolicyTests(unittest.TestCase):
     def invoke(self, versions):
@@ -106,6 +156,32 @@ class BuildPolicyTests(unittest.TestCase):
             result = self.invoke(versions)
             self.assertNotEqual(0, result.returncode)
             self.assertIn("Expected one reviewed PKCS", result.stdout + result.stderr)
+
+    def test_actual_sdk_rejects_self_contained_configuration(self):
+        project = HERE.parents[1] / "src/Miningcore/Miningcore.csproj"
+        for setting in ("SelfContained", "PublishSelfContained"):
+            with self.subTest(setting=setting):
+                result = subprocess.run(["dotnet", "msbuild", str(project), "-nologo",
+                                         "-t:ProcessFrameworkReferences", f"-p:{setting}=true"],
+                                        capture_output=True, text=True, timeout=60)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("framework-dependent publishing only", result.stdout + result.stderr)
+
+    def test_publish_guard_also_runs_without_build(self):
+        policy = HERE.parents[1] / "src/Miningcore/RuntimeDependencyPolicy.props"
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "publish.proj"
+            project = ET.Element("Project")
+            ET.SubElement(project, "Import", Project=str(policy))
+            ET.SubElement(project, "Target", Name="PrepareForPublish")
+            ET.ElementTree(project).write(path, encoding="utf-8")
+            for value in ("true", "false"):
+                result = subprocess.run(["dotnet", "msbuild", str(path), "-nologo",
+                                         "-t:PrepareForPublish", f"-p:SelfContained={value}"],
+                                        capture_output=True, text=True, timeout=60)
+                self.assertEqual(value == "false", result.returncode == 0, result.stdout + result.stderr)
+                if value == "true":
+                    self.assertIn("framework-dependent publishing only", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

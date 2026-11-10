@@ -3,8 +3,10 @@
 import argparse
 import hashlib
 import http.client
+import os
 from pathlib import Path
-import shutil
+import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -19,6 +21,8 @@ FIXTURES = {
     "linux-x64": ("tar.gz", "7b20d4164f097e1cf616d8174b6a64be100e6f30dc4e028b16e551e8b0c86dff0ef424bb4bf52d1ff0ecca38e102d3fa80814e06cb85a32d6eee4c3b99764f79"),
     "win-x64": ("zip", "cf71f882366ea544beda44c812a7b26bc571fb3f0c5102249e615b9ee953fe5c2c5ee9198cda55f499ad55284bac7748abe35dd4478e528b94b71bc09d9403af"),
 }
+MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
+DOWNLOAD_DEADLINE_SECONDS = 300
 
 
 def download_verified(url, archive, expected):
@@ -26,11 +30,18 @@ def download_verified(url, archive, expected):
         try:
             # Opening with wb discards a partial response before every retry.
             with urllib.request.urlopen(url, timeout=120) as response, archive.open("wb") as output:
-                shutil.copyfileobj(response, output)
+                size = 0
+                while chunk := response.read(min(64 * 1024, MAX_ARCHIVE_BYTES - size + 1)):
+                    size += len(chunk)
+                    if size > MAX_ARCHIVE_BYTES:
+                        raise ValueError("Runtime fixture exceeds the 128 MiB archive limit")
+                    output.write(chunk)
             break
-        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead) as error:
-            if isinstance(error, urllib.error.HTTPError) and error.code not in (408, 429, 500, 502, 503, 504):
-                raise
+        except (OSError, http.client.HTTPException) as error:
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+                if error.code not in (408, 429, 500, 502, 503, 504):
+                    raise
             if attempt == 2:
                 raise
             delay = 2 ** (attempt + 1)
@@ -43,10 +54,23 @@ def download_verified(url, archive, expected):
         raise ValueError("Runtime fixture SHA-512 does not match Microsoft release metadata")
 
 
+def run_download_worker(archive, rid):
+    # A separate process makes the deadline effective even during DNS, TLS, or a
+    # slow response body. subprocess.run kills and waits for it before cleanup.
+    try:
+        subprocess.run([sys.executable, str(Path(__file__).resolve()), str(archive),
+                        "--rid", rid, "--download-only"], check=True,
+                       timeout=DOWNLOAD_DEADLINE_SECONDS,
+                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    except subprocess.TimeoutExpired:
+        raise ValueError("Runtime fixture exceeded the 300-second total download deadline") from None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("destination", type=Path)
     parser.add_argument("--rid", choices=FIXTURES, required=True)
+    parser.add_argument("--download-only", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     destination = args.destination.resolve()
     if destination.exists():
@@ -54,9 +78,12 @@ def main():
     extension, expected = FIXTURES[args.rid]
     url = ("https://builds.dotnet.microsoft.com/dotnet/aspnetcore/Runtime/10.0.13/"
            f"aspnetcore-runtime-10.0.13-{args.rid}.{extension}")
+    if args.download_only:
+        download_verified(url, destination, expected)
+        return
     with tempfile.TemporaryDirectory(prefix="runtime-fixture-download-") as temporary:
         archive = Path(temporary) / ("runtime." + extension)
-        download_verified(url, archive, expected)
+        run_download_worker(archive, args.rid)
         destination.mkdir(parents=True)
         if extension == "zip":
             with zipfile.ZipFile(archive) as package:
@@ -74,4 +101,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, http.client.HTTPException, ValueError, subprocess.CalledProcessError) as error:
+        print(f"Runtime fixture installation failed: {error}", file=sys.stderr)
+        sys.exit(1)

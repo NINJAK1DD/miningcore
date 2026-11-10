@@ -167,6 +167,9 @@ The reviewed PKCS minimum is embedded from the package reference at build time; 
 it as well as the security floor. A missing or damaged policy requires reinstalling the complete
 reviewed release. Configuration dumps and read-only share-recovery verification remain offline;
 see the diagnostic procedure below when the host itself refuses the shipped runtimeconfig.
+Self-contained builds and publishes are explicitly rejected: these policy values are deployment
+minima, not approval to bundle that runtime patch. Supporting self-contained artifacts requires a
+separate bundled-runtime servicing policy and release validation.
 
 The smoke prints both selected framework versions/locations and PKCS's informational version and
 location under Miningcore's published manifest/runtimeconfig. Package mode accepts the exact
@@ -178,8 +181,11 @@ Reported versions and locations do not authenticate binaries. Continue verifying
 published checksums and installation permissions independently of the runtime guard.
 Linux and Windows negative tests use hash-verified 10.0.13 runtime archives in separate disposable
 directories. They never install an older SDK into the publishing toolchain or change its `PATH`.
-Transient download failures receive at most three attempts with 2- and 4-second backoff;
-checksum mismatches and permanent HTTP failures stop immediately. Windows CI explicitly selects
+Network, TLS, HTTP-protocol and I/O failures receive at most three attempts with 2- and 4-second
+backoff. Checksum mismatches, archive-size violations and permanent HTTP failures stop immediately.
+Each archive is capped at 128 MiB. A separate download worker has a 300-second total deadline
+covering all attempts, backoff and checksum verification; it is terminated before cleanup on timeout,
+and extraction cannot begin unless it succeeds. Windows CI explicitly selects
 Python 3.13 rather than relying on the runner's default Python.
 
 Run the portable gate on Windows with:

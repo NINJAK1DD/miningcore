@@ -5,6 +5,11 @@
     <MiningcorePkcsSecurityMinimum>10.0.13</MiningcorePkcsSecurityMinimum>
     <RuntimeFrameworkVersion>$(MiningcoreRuntimeMinimum)</RuntimeFrameworkVersion>
   </PropertyGroup>
+  <!-- These versions are deployment minima, not a bundled-runtime selection policy. -->
+  <Target Name="RequireMiningcoreFrameworkDependent" BeforeTargets="ProcessFrameworkReferences;PrepareForPublish">
+    <Error Condition="'$(SelfContained)' == 'true' Or '$(PublishSelfContained)' == 'true'"
+           Text="Miningcore supports framework-dependent publishing only. Self-contained publishing requires a separately reviewed bundled-runtime servicing policy." />
+  </Target>
   <!-- ASP.NET is transitive through Grpc.AspNetCore. Set its known runtime versions
        before SDK resolution without making it direct and changing NuGet pruning. -->
   <Target Name="ApplyMiningcoreAspNetRuntimeMinimum" BeforeTargets="ProcessFrameworkReferences">
