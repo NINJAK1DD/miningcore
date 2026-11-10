@@ -41,7 +41,7 @@ public class RecoveryLoggingTests
             rule.Targets.Add(capture);
         }
         using var factory = new LogFactory(config);
-        var audit = factory.GetLogger(typeof(PayoutOwnershipRecovery).FullName);
+        var audit = factory.GetLogger(typeof(PostgresPayoutOwnershipRecovery).FullName);
         audit.Warn("release receipt");
         audit.Error("audit failure");
         factory.GetLogger("OtherCategory").Info("ordinary info");
@@ -62,6 +62,6 @@ public class RecoveryLoggingTests
             Level = level, EnableConsoleLog = true,
         }, false, null);
         Assert.DoesNotContain(config.LoggingRules, rule =>
-            rule.NameMatches(typeof(PayoutOwnershipRecovery).FullName) && rule.IsLoggingEnabledForLevel(LogLevel.Warn));
+            rule.NameMatches(typeof(PostgresPayoutOwnershipRecovery).FullName) && rule.IsLoggingEnabledForLevel(LogLevel.Warn));
     }
 }

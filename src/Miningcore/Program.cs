@@ -2206,7 +2206,7 @@ public class Program : ProcessStatusBackgroundService
         // the ordinary console rule from emitting the same audit event a second time.
         if(recoveryMode)
             config.AddRule(NLog.LogLevel.Warn, NLog.LogLevel.Fatal, target,
-                typeof(PayoutOwnershipRecovery).FullName, true);
+                typeof(PostgresPayoutOwnershipRecovery).FullName, true);
     }
 
     internal static FileTarget CreateFileTarget(string targetName, Layout fileName, string layout)
