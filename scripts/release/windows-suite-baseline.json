@@ -1,7 +1,7 @@
 {
-  "source_commit": "60e17c394cd9174887fcb79fe202c132e97db7ad",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42512584069",
-  "minimum_total": 5905,
+  "source_commit": "926bc7dcb66d7ab9c6bf8b5dc72d03e1116e6c62",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42915640679",
+  "minimum_total": 6092,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -137,6 +137,61 @@
       "class": "Miningcore.Tests.Stratum.StratumServerTests",
       "method": "RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake",
       "case": "RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"error\", colors: False)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"error\", colors: True)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"fatal\", colors: False)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"fatal\", colors: True)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"info\", colors: False)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"info\", colors: True)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"off\", colors: False)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"off\", colors: True)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "ServiceModeRetainsConfiguredAuditThreshold",
+      "case": "ServiceModeRetainsConfiguredAuditThreshold(level: \"error\")"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "ServiceModeRetainsConfiguredAuditThreshold",
+      "case": "ServiceModeRetainsConfiguredAuditThreshold(level: \"fatal\")"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "ServiceModeRetainsConfiguredAuditThreshold",
+      "case": "ServiceModeRetainsConfiguredAuditThreshold(level: \"off\")"
     }
   ],
   "expected_skips": [

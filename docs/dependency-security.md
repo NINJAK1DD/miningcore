@@ -163,6 +163,9 @@ transitive framework reference, preserving NuGet's package-pruning behavior. The
 runtimeconfig, not just these build properties. The host refuses older frameworks. Normal
 Miningcore startup also checks the selected Core runtime, an actual ASP.NET shared-framework
 assembly and PKCS before opening connections, including when runtimeconfig settings were changed.
+If this guard rejects the runtime or cannot load its policy, Miningcore exits with
+operator-required status 78. The packaged service will not restart automatically; repair the
+installation before restarting. This also applies to standalone payout ownership recovery.
 The reviewed PKCS minimum is embedded from the package reference at build time; startup enforces
 it as well as the security floor. A missing or damaged policy requires reinstalling the complete
 reviewed release. Configuration dumps and read-only share-recovery verification remain offline;
