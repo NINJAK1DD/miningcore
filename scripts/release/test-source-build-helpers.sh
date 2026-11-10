@@ -129,6 +129,13 @@ set -eu
 printf 'dotnet %s\n' "$*" >> "$MININGCORE_HELPER_TEST_TRACE"
 
 case "${1:-}" in
+  --version)
+    printf '%s\n' "${MININGCORE_HELPER_SDK_VERSION:-10.0.404}"
+    ;;
+  --list-runtimes)
+    printf 'Microsoft.NETCore.App %s [/usr/lib/dotnet/shared/Microsoft.NETCore.App]\n' "${MININGCORE_HELPER_CORE_VERSION:-10.0.15}"
+    printf 'Microsoft.AspNetCore.App %s [/usr/lib/dotnet/shared/Microsoft.AspNetCore.App]\n' "${MININGCORE_HELPER_ASPNET_VERSION:-10.0.15}"
+    ;;
   --list-sdks)
     printf '%s\n' '10.0.100 [/usr/lib/dotnet/sdk]'
     ;;
@@ -195,7 +202,7 @@ set -eu
 
 test "${1:-}" = -f
 test -n "${2:-}"
-printf '%s\n' /usr/lib/dotnet/dotnet
+printf '%s\n' "${MININGCORE_HELPER_PRIVATE_HOST:-/usr/lib/dotnet/dotnet}"
 SH
 
 cat > "$work_dir/bin/dpkg-query" <<'SH'
@@ -220,6 +227,39 @@ esac
 SH
 
 chmod +x "$work_dir/bin/"*
+
+# Exercise the actual preflight with isolated host inventories, including the
+# deliberate private-SDK selection used while Canonical servicing packages lag.
+check_sdk() {
+  local expected=$1
+  shift
+  local status=0
+  env PATH="$work_dir/bin:$PATH" MININGCORE_HELPER_TEST_TRACE="$work_dir/sdk-trace" \
+    "$@" bash "$repository_root/scripts/release/verify-ubuntu-dotnet-sdk.sh" \
+    > "$work_dir/sdk-output" 2>&1 || status=$?
+  if [[ "$status" -ne "$expected" ]]; then
+    cat "$work_dir/sdk-output" >&2
+    echo "SDK preflight returned $status; expected $expected" >&2
+    exit 1
+  fi
+}
+
+check_sdk 0
+check_sdk 0 MININGCORE_HELPER_CORE_VERSION=10.0.16 MININGCORE_HELPER_ASPNET_VERSION=10.0.16
+for setting in MININGCORE_HELPER_CORE_VERSION MININGCORE_HELPER_ASPNET_VERSION; do
+  for version in 10.0.14 9.0.99 11.0.0 10.0.15-preview.1; do
+    check_sdk 1 "$setting=$version"
+    grep -Fq 'Wait for serviced Canonical packages' "$work_dir/sdk-output"
+  done
+done
+check_sdk 1 MININGCORE_HELPER_PRIVATE_HOST="$work_dir/bin/dotnet"
+check_sdk 1 MININGCORE_PRIVATE_DOTNET_ROOT=/usr/lib/dotnet
+check_sdk 0 MININGCORE_HELPER_PRIVATE_HOST="$work_dir/bin/dotnet" \
+  MININGCORE_PRIVATE_DOTNET_ROOT="$work_dir/bin"
+check_sdk 1 MININGCORE_HELPER_PRIVATE_HOST="$work_dir/bin/dotnet" \
+  MININGCORE_PRIVATE_DOTNET_ROOT="$work_dir/bin" MININGCORE_HELPER_ASPNET_VERSION=10.0.14
+check_sdk 1 MININGCORE_HELPER_PRIVATE_HOST="$work_dir/bin/dotnet" \
+  MININGCORE_PRIVATE_DOTNET_ROOT="$work_dir/bin" MININGCORE_HELPER_SDK_VERSION=11.0.100
 
 unstubbed_trace="$work_dir/unstubbed-trace"
 unstubbed_state="$work_dir/unstubbed-state"
@@ -323,6 +363,8 @@ for helper in "${helpers[@]}"; do
     "$sandbox/scripts/release/run-warning-audited-dotnet.sh"
   cp "$repository_root/scripts/release/verify-ubuntu-dotnet-sdk.sh" \
     "$sandbox/scripts/release/verify-ubuntu-dotnet-sdk.sh"
+  cp "$repository_root/src/Miningcore/RuntimeDependencyPolicy.props" \
+    "$sandbox/src/Miningcore/RuntimeDependencyPolicy.props"
 
   bash -n "$sandbox/$helper"
 

@@ -626,8 +626,10 @@ ls build/Miningcore
 ```
 
 These scripts install the .NET 10 SDK and publish the `net10.0` application. Ubuntu 24.04 and 26.04
-use Canonical's native .NET 10 packages without Microsoft's APT feed or the Ubuntu 22.04
-`dotnet/backports` PPA. GitHub Actions
+use Canonical's native .NET 10 packages by default, without Microsoft's APT feed or the Ubuntu 22.04
+`dotnet/backports` PPA. Both frameworks must meet the policy floor before building; the documented
+explicit private SDK selection supports source builds while Canonical servicing packages lag.
+GitHub Actions
 ([workflow source](.github/workflows/dotnet.yml)) is the authoritative automated build-and-test path.
 Before activation, verify both shared frameworks meet the release's runtime floor. If Canonical's
 packages lag, use the documented [wait-or-private-runtime deployment procedure](docs/dependency-security.md#deployment-when-distribution-packages-lag)

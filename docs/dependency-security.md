@@ -223,6 +223,27 @@ prerequisites from the existing Ubuntu guide. The ASP.NET runtime archive includ
 Microsoft and Canonical .NET APT feeds or overwrite `/usr/lib/dotnet`. Maintain and patch a private
 installation explicitly; APT will not update it.
 
+For source builds, the Ubuntu 24.04/26.04 helpers also check both framework inventories before
+restore, so an old Canonical SDK fails with this guidance instead of an unavailable app-host package.
+If building during a distribution servicing gap, install and verify the official **SDK** archive in
+a separate directory (the runtime archive alone cannot build). Select it explicitly, for example:
+
+```bash
+export DOTNET_ROOT=/opt/dotnet-miningcore-sdk
+export DOTNET_ROOT_X64="$DOTNET_ROOT"
+export PATH="$DOTNET_ROOT:$PATH"
+export MININGCORE_PRIVATE_DOTNET_ROOT="$DOTNET_ROOT"
+./build-ubuntu-26.04.sh "$PWD/build/ubuntu-26.04"
+```
+
+The private SDK must be stable .NET 10, selected in `PATH`, separate from `/usr/lib/dotnet`, and
+include both frameworks at or above the policy floor. This explicit selection does not authenticate
+the archive; verify Microsoft's SHA-512 first. Native packages still come from Canonical, and no
+Microsoft APT feed is added. CI currently tests this private-SDK route on both Ubuntu source-build
+targets because Canonical's 10 November packages still provide 10.0.14. It does not claim that those
+Canonical runtimes pass the new floor. The published runtime and binding checks remain mandatory;
+use the selected host for all subsequent validation and service activation.
+
 For example, after installing and validating the selected release at `/opt/dotnet-miningcore`,
 use `sudo systemctl edit miningcore` to select that host explicitly (retain your actual application
 and configuration paths):
