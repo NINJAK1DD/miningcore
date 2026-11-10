@@ -27,6 +27,11 @@ for the SIGILL investigation, runtime-dispatch policy and regression checks.
 Include these operator steps in the next candidate's deployment checklist (including RC.2 if this
 change ships there). Normal upgrades must preserve ownership markers and financial records.
 
+Standalone recovery enforces the same patched runtime policy as normal startup. Runtime-policy
+failures now exit with operator-required status 78 so the packaged service does not restart-loop
+until the installation is repaired. Recovery audit warnings always reach the standalone console,
+including when the copied service logging threshold is `error`, `fatal` or `off`.
+
 ### Guided recovery migration matrix
 
 | Existing deployment | Before enabling the new guided release |

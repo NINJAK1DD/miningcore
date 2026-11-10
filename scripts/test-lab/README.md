@@ -2,7 +2,14 @@
 
 The documented local lab is WSL2 `Ubuntu` (Ubuntu 26.04.1), running as the ordinary
 `ubuntu` user. Keep Linux source and build outputs separate from Windows outputs.
-The lab has .NET SDK 10.0.114/runtime 10.0.14, native build prerequisites (including
+The system installation has .NET SDK 10.0.114/runtime 10.0.14, which is below the current
+runtime policy. Before running this revision, select a verified private SDK 10.0.404 or
+later with both .NET and ASP.NET Core 10.0.15 or later in .NET 10, following
+[the private SDK procedure](../../docs/dependency-security.md). Set
+`MININGCORE_PRIVATE_DOTNET_ROOT` to that installation and put it first in `PATH` for
+both build and live-test commands; retain the same `PATH` when invoking the root helper.
+The helper checks the real CLI's runtime policy before creating temporary resources and
+uses the selected host for its systemd units too. The lab has native build prerequisites (including
 Rust/Cargo), and Bitcoin Core 31.1, Litecoin Core 0.21.5.8 and Dogecoin Core 1.14.9
 at `/opt/miningcore-test-lab/bin/{bitcoind,litecoind,dogecoind}`. PostgreSQL server
 binaries must be installed under `/usr/lib/postgresql/*/bin` (or selected with
@@ -89,6 +96,9 @@ database logins that application release is denied while restricted recovery rec
 It also rejects audit DML/column-write grants, schema CREATE, administrative attributes, role
 memberships and append-function ownership. A real terminal check verifies that a restricted login
 keeps protection and receives dedicated-identity guidance before any menu or confirmations.
+The managed-PostgreSQL migration check uses a real non-superuser administrator login,
+proves the index creation fails without inherited owner privileges, applies the documented
+grant direction, and verifies that the application cannot drop administrator-owned audit storage.
 
 The automated restore drill uses two databases within one disposable cluster. Before production
 RC.2 deployment, also complete the [cross-cluster acceptance rehearsal](../../docs/database.md#cross-cluster-release-acceptance)

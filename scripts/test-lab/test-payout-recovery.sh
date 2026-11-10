@@ -7,6 +7,9 @@ test_host="$repo/src/Miningcore.Tests.ProcessHost/bin/Debug/net10.0/Miningcore.T
 app="$repo/src/Miningcore/bin/Debug/net10.0/Miningcore.dll"
 test -f "$test_host"
 test -f "$app"
+dotnet_host=$(readlink -f "$(command -v dotnet)")
+# Fail before allocating lab resources if this host cannot pass the real startup guard.
+"$dotnet_host" "$app" --version
 sudo -n true
 pg_bins=(/usr/lib/postgresql/*/bin/initdb)
 pg_bin=$(dirname "${pg_bins[-1]}")
@@ -83,7 +86,7 @@ sudo -u "$PGUSER" env -i PYTHONUNBUFFERED=1 PATH="$PATH" HOME="$(getent passwd "
 
 psql -X -v ON_ERROR_STOP=1 -f "$repo/src/Miningcore/Persistence/Postgres/Scripts/add_payout_recovery_audit.sql" >/dev/null
 audit_schema=$(psql -X -Atc "SELECT 'miningcore_audit_' || 'payout_manager_ownership'::regclass::oid::text")
-test "$(psql -X -Atc "SELECT count(*) FROM $audit_schema.payout_manager_recovery_events")" -eq 2
+test "$(psql -X -Atc "SELECT count(*) FROM $audit_schema.payout_manager_recovery_events")" -eq 5
 echo 'PASS: reapplying the audit migration preserves recorded releases'
 
 sudo -u "$PGUSER" env -i PATH="$pg_bin:$PATH" PGHOST="$PGHOST" PGPORT="$PGPORT" \
@@ -95,6 +98,10 @@ sudo -u "$PGUSER" env -i PATH="$pg_bin:$PATH" PGHOST="$PGHOST" PGPORT="$PGPORT" 
   PGUSER="$PGUSER" PGDATABASE="$PGDATABASE" PGPASSFILE="$scratch/admin.pgpass" \
   python3 "$repo/scripts/test-lab/test-payout-recovery-permissions.py" "$test_host" "$scratch" \
   "$repo/src/Miningcore/Persistence/Postgres/Scripts/add_payout_recovery_audit.sql"
+
+sudo -u "$PGUSER" env -i PATH="$pg_bin:$PATH" PGHOST="$PGHOST" PGPORT="$PGPORT" \
+  PGUSER="$PGUSER" PGDATABASE="$PGDATABASE" PGPASSFILE="$scratch/admin.pgpass" \
+  python3 "$repo/scripts/test-lab/test-payout-recovery-managed-postgres.py" "$scratch"
 
 printf '%s\n' "MININGCORE_TEST_POSTGRES=Host=127.0.0.1;Port=$PGPORT;Username=miningcore;Password=$app_password;Database=postgres" >"$scratch/pool.env"
 # Use the documented actual-unit drop-in dependencies against this isolated database.
@@ -109,7 +116,7 @@ TimeoutStopSec=90
 WorkingDirectory=$repo
 EnvironmentFile=$scratch/pool.env
 NoNewPrivileges=true
-ExecStart=/usr/bin/dotnet $test_host payout-lease - $scratch/ready
+ExecStart="$dotnet_host" $test_host payout-lease - $scratch/ready
 EOF
 sudo install -m 0644 "$scratch/$pool_unit" "/run/systemd/system/$pool_unit"
 sudo systemctl daemon-reload
@@ -159,7 +166,7 @@ NoNewPrivileges=true
 Restart=on-failure
 RestartSec=200ms
 RestartPreventExitStatus=74 78
-ExecStart=/usr/bin/dotnet $test_host exit-once $scratch/restarts $status
+ExecStart="$dotnet_host" $test_host exit-once $scratch/restarts $status
 EOF
   sudo install -m 0644 "$scratch/$restart_unit" "/run/systemd/system/$restart_unit"
   sudo systemctl daemon-reload

@@ -217,10 +217,12 @@ public class Program : ProcessStatusBackgroundService
             }
             catch(TypeInitializationException)
             {
+                (processStatus ??= new ProcessStatus()).MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
                 throw new PoolStartupException("Runtime dependency policy could not be loaded. Reinstall the complete reviewed Miningcore release before starting services.");
             }
             catch(Exception ex) when(ex is InvalidOperationException or System.IO.FileNotFoundException or System.IO.FileLoadException)
             {
+                (processStatus ??= new ProcessStatus()).MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
                 throw new PoolStartupException($"Runtime dependency validation failed: {ex.Message}. Update both .NET and ASP.NET Core and restart Miningcore.");
             }
 
@@ -2150,6 +2152,7 @@ public class Program : ProcessStatusBackgroundService
                     ConsoleOutputColor.DarkRed, ConsoleOutputColor.White));
 
                     loggingConfig.AddTarget(target);
+                    AddRecoveryAuditConsoleRule(loggingConfig, target, recoveryMode);
                     // This wildcard route must continue to include dedicated
                     // startup categories such as PaymentExtraDiagnostics.
                     loggingConfig.AddRule(level, NLog.LogLevel.Fatal, target);
@@ -2163,6 +2166,7 @@ public class Program : ProcessStatusBackgroundService
                     };
 
                     loggingConfig.AddTarget(target);
+                    AddRecoveryAuditConsoleRule(loggingConfig, target, recoveryMode);
                     // This wildcard route must continue to include dedicated
                     // startup categories such as PaymentExtraDiagnostics.
                     loggingConfig.AddRule(level, NLog.LogLevel.Fatal, target);
@@ -2193,6 +2197,16 @@ public class Program : ProcessStatusBackgroundService
         }
 
         return loggingConfig;
+    }
+
+    private static void AddRecoveryAuditConsoleRule(LoggingConfiguration config,
+        Target target, bool recoveryMode)
+    {
+        // A copied service threshold must not hide the release receipt. Final prevents
+        // the ordinary console rule from emitting the same audit event a second time.
+        if(recoveryMode)
+            config.AddRule(NLog.LogLevel.Warn, NLog.LogLevel.Fatal, target,
+                typeof(PayoutOwnershipRecovery).FullName, true);
     }
 
     internal static FileTarget CreateFileTarget(string targetName, Layout fileName, string layout)

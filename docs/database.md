@@ -732,6 +732,40 @@ with no direct INSERT, UPDATE, DELETE, TRUNCATE or schema CREATE. Fresh `created
 The separate schema protects history even when `miningcore` owns the database and therefore owns
 `public` through `pg_database_owner` (PostgreSQL 15+).
 
+#### Managed PostgreSQL without a superuser
+
+Use a separate non-superuser migration administrator (for example `dbadmin`) on RDS,
+Cloud SQL or similar services. The first migration statement creates an index on the
+application-owned `payment_batches`, so database `CREATE` alone is insufficient. A role
+administrator with the necessary grant authority must grant the migration administrator
+inherited membership in the application owner, **never the reverse direction**:
+
+<!-- BEGIN MANAGED RECOVERY GRANTS -->
+```sql
+GRANT miningcore TO dbadmin WITH INHERIT TRUE; -- PostgreSQL 16+
+GRANT CREATE ON DATABASE miningcore TO dbadmin;
+```
+<!-- END MANAGED RECOVERY GRANTS -->
+
+For PostgreSQL 15, use `GRANT miningcore TO dbadmin` and ensure `dbadmin` has the
+`INHERIT` role attribute. Provider administrators still need authority to grant these
+privileges; `CREATEROLE` alone does not imply every grant is permitted. Connect directly
+as `dbadmin`, retain the ownership schema's search path, and run the same migration with
+`ON_ERROR_STOP=1`. Do not switch the session to `miningcore`: the migration resets `ROLE`
+and uses `session_user` as the protected audit owner. Keep that separate owner for future
+migration reruns. The application must never inherit or be able to assume `dbadmin`.
+
+After success, revoke membership and database `CREATE` if they were granted solely for
+this migration (`REVOKE miningcore FROM dbadmin` and
+`REVOKE CREATE ON DATABASE miningcore FROM dbadmin`). Preserve any pre-existing grants
+needed for administration. Confirm that the audit schema/table/function remain owned by
+`dbadmin`, the application cannot drop that schema, and reapply and verify the
+[dedicated recovery permissions](#dedicated-recovery-identity-and-permissions).
+PostgreSQL documents [role inheritance and membership](https://www.postgresql.org/docs/16/role-membership.html)
+and the [grant options](https://www.postgresql.org/docs/16/sql-grant.html).
+
+#### Running the assistant
+
 Reapplying the migration moves an earlier ownership-schema audit table into the protected schema
 without changing its event UUIDs. If both locations contain audit tables, it stops for administrator
 reconciliation. It also rejects an incompatible existing history index instead of silently accepting
@@ -752,6 +786,10 @@ sudo -u miningcore /usr/bin/dotnet /opt/miningcore/Miningcore.dll \
 It starts no mining, API or wallet services and exits after recovery. Substitute the actual paths
 for custom layouts. Preserve PostgreSQL environment settings (such as `PGSSLROOTCERT`) and
 certificate access. Do not change database roles to bypass a permission failure.
+Standalone recovery requires the same patched runtime as the service: .NET and ASP.NET Core
+10.0.15 or later in .NET 10, with the release's reviewed PKCS dependency. Runtime-policy
+failure returns operator-required status 78 before any database connection; only the separate
+read-only share-recovery verification command has a warning-only exemption.
 
 The assistant displays the database, role, endpoint, ownership schema/relation identity, previous
 host/PID, acquisition time and owner token/generation. Option **2** refreshes these details and
@@ -785,7 +823,9 @@ Release reacquires the advisory lock and checks the exact token/generation, data
 and pinned ownership table. It inserts the complete previous owner, release time, releasing host/PID
 and incident reference through the protected append function into the audit table **in the same transaction** as clearing
 ownership. Audit insertion failure rolls the release back. The terminal reports the audit event UUID;
-standalone mode also configures normal logging. Balances, payments, batches and generation are unchanged.
+standalone mode always sends warning-level recovery audit events to the console, even with
+`error`, `fatal` or `off` configured for ordinary service logging, and never opens service log
+files. Balances, payments, batches and generation are unchanged.
 
 Audit rows survive later lease acquisition. UPDATE, DELETE and TRUNCATE are rejected, and the
 application role is not granted those privileges and cannot drop the administrator-owned audit

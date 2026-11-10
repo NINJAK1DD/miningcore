@@ -236,3 +236,20 @@ result = subprocess.run(command, input="", capture_output=True, text=True, timeo
 assert result.returncode == 78, result.stdout + result.stderr
 assert "Unable to determine the PostgreSQL timestamp type" in result.stdout + result.stderr
 print("PASS: indeterminate timestamp schema exits 78 from Main without restarting")
+
+for level in ("error", "fatal", "off"):
+    recovery = {"persistence": normal["persistence"], "pools": [], "logging": {
+        "level": level, "enableConsoleLog": False, "enableConsoleColors": False}}
+    recovery["persistence"]["postgres"]["enableLegacyTimestamps"] = False
+    config.write_text(json.dumps(recovery))
+    command = ["dotnet", app, "-c", str(config), "--recover-payout-ownership"]
+    owner = seed()
+    output = terminal([
+        ("Choice [1]:", "3\n"), ("Type STOPPED", "STOPPED\n"),
+        ("Type CHECKED", "CHECKED\n"), ("Incident reference", f"lab-logging-{level}\n"),
+        (f"type RELEASE {owner}:", f"RELEASE {owner}\n"),
+    ], 0)
+    assert output.count("Operator released payout ownership generation 7") == 1, output
+    assert sql("SELECT owner_id IS NULL FROM payout_manager_ownership") == "t"
+    assert sql(f"SELECT count(*) FROM {audit_table} WHERE owner_id='{owner}' AND incident_reference='lab-logging-{level}'") == "1"
+    print(f"PASS: standalone {level} logging emits exactly one audit receipt with durable evidence")
