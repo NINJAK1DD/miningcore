@@ -52,6 +52,7 @@ run_miningcore() {
 
 run_miningcore --version
 run_miningcore --help > /dev/null
+python3 "$script_dir/run-managed-dependency-smoke.py" "$publish_dir"
 
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT

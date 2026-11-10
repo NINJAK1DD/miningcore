@@ -18,7 +18,7 @@ on:
 
 # Advance this published servicing SDK in all three workflows together.
 env:
-  CI_DOTNET_SDK: '10.0.402'
+  CI_DOTNET_SDK: '10.0.404'
 
 jobs:
   build:
@@ -92,6 +92,9 @@ jobs:
     - name: Validate documentation links
       shell: bash
       run: python3 scripts/release/test-doc-links.py
+
+    - name: Test published PKCS dependency validation
+      run: python3 scripts/release/test-published-pkcs.py
 
     - name: Test Knots source cache and failure diagnostics offline
       run: |
@@ -554,11 +557,25 @@ jobs:
         test "$VERSION_ID" = "${{ matrix.ubuntu }}"
         test "$(uname -m)" = x86_64
 
-    - name: Build with Canonical packages
+    # Canonical's runtime can lag a new Microsoft security release. Keep native
+    # packages on Ubuntu's feed and validate the documented separate SDK route.
+    - name: Setup reviewed private SDK for source builds
+      uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+      env:
+        DOTNET_INSTALL_DIR: ${{ runner.temp }}/miningcore-dotnet
+      with:
+        dotnet-version: ${{ env.CI_DOTNET_SDK }}
+
+    - name: Build with Canonical dependencies and reviewed private SDK
       shell: bash
-      run: >-
-        ./build-ubuntu-${{ matrix.ubuntu }}.sh
-        "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
+      run: |
+        export MININGCORE_PRIVATE_DOTNET_ROOT="$DOTNET_ROOT"
+        ./build-ubuntu-${{ matrix.ubuntu }}.sh \
+          "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
+
+    - name: Detect Canonical servicing catch-up
+      shell: bash
+      run: bash scripts/release/check-canonical-servicing.sh
 
     - name: Validate published native libraries and runtime paths
       shell: bash
@@ -600,6 +617,11 @@ jobs:
       uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
       with:
         dotnet-version: ${{ env.CI_DOTNET_SDK }}
+
+    - name: Setup Python for Windows release validation
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: '3.13'
 
     - name: Test PowerShell configuration diagnostic snapshot helper on Windows
       shell: pwsh
@@ -732,6 +754,24 @@ jobs:
           throw 'Published Windows build is missing the source-built Odocrypt runtime'
         }
         .\build\windows-x64\Miningcore.exe --version
+
+    - name: Verify published Windows dependencies and selected runtimes
+      shell: pwsh
+      run: |
+        python scripts/release/test-published-pkcs.py
+        if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        python scripts/release/run-managed-dependency-smoke.py build/windows-x64
+        if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Reject old Windows frameworks and PKCS at startup
+      shell: pwsh
+      run: |
+        python scripts/release/test-runtime-policy.py
+        if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        python scripts/release/install-runtime-fixture.py "$env:RUNNER_TEMP/old-dotnet-fixture" --rid win-x64
+        if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        python scripts/release/test-managed-runtime.py build/windows-x64 --old-aspnet "$env:RUNNER_TEMP/old-dotnet-fixture/shared/Microsoft.AspNetCore.App/10.0.14"
+        if($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     # Broad coverage: resource discovery, lifecycle mocks and socket
     # fixtures can fail on Windows even when the selected native smoke tests pass.

@@ -1,4 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
+    <Import Project="RuntimeDependencyPolicy.props" />
+    <Target Name="EmbedReviewedPkcsMinimum" BeforeTargets="GetAssemblyAttributes">
+        <ItemGroup>
+            <_ReviewedPkcsReference Include="@(PackageReference)"
+                                    Condition="'%(PackageReference.Identity)' == 'System.Security.Cryptography.Pkcs'" />
+        </ItemGroup>
+        <Error Condition="'@(_ReviewedPkcsReference->Count())' != '1'"
+               Text="Expected one reviewed PKCS package reference for startup validation." />
+        <PropertyGroup>
+            <_ReviewedPkcsVersion>@(_ReviewedPkcsReference->'%(Version)')</_ReviewedPkcsVersion>
+        </PropertyGroup>
+        <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(_ReviewedPkcsVersion)', '\A10[.]0[.][0-9]+\z'))"
+               Text="The reviewed PKCS PackageReference must use a plain stable 10.0.N version; ranges, floating versions and prereleases cannot be embedded as the startup minimum." />
+        <ItemGroup>
+            <AssemblyMetadata Include="MiningcoreReviewedPkcsMinimum"
+                              Value="$(_ReviewedPkcsVersion)" />
+        </ItemGroup>
+    </Target>
     <PropertyGroup>
         <OutputType>Exe</OutputType>
         <TargetFramework>net10.0</TargetFramework>
@@ -97,11 +115,11 @@
              Follow the servicing-baseline policy in docs/dependency-security.md;
              remove only when restore/audit shows every transitive path meets both
              the floor and that baseline without this reference. -->
-        <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
+        <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.15" />
         <PackageReference Include="McMaster.Extensions.CommandLineUtils" Version="5.1.0" />
-        <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14" />
-        <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.14" />
-        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.14" />
+        <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.15" />
+        <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.15" />
+        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.15" />
         <PackageReference Include="NBitcoin" Version="10.0.19" />
         <PackageReference Include="NBitcoin.Altcoins" Version="3.0.28" />
         <PackageReference Include="NBitcoin.Zcash" Version="3.0.0" />

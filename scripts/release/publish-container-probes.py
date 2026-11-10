@@ -41,10 +41,10 @@ def publish(root, application, output):
         with tempfile.TemporaryDirectory(prefix='container-probe-audit-') as temporary:
             audit = root / 'scripts/release/run-warning-audited-dotnet.sh'
 
-            def run(name, arguments, audited=False):
+            def run(name, arguments, audited=False, interpreter="dotnet"):
                 log = Path(temporary) / (name + '.log')
                 log.touch()
-                command = ['bash', str(audit), str(log), *arguments] if audited else ['dotnet', *arguments]
+                command = ['bash', str(audit), str(log), *arguments] if audited else [interpreter, *arguments]
                 started = time.monotonic()
                 remaining = deadline - started
                 if remaining <= 0:
@@ -73,6 +73,9 @@ def publish(root, application, output):
             run('publish-zeromq-probe', ['publish', 'scripts/release/fixtures/zeromq-runtime-probe/ZeroMqRuntimeProbe.csproj',
                                        *options, '--output', str(output / 'zeromq-runtime-probe')], True)
             reject_probe_natives(output)
+            run('prepare-managed-dependency-probe', [str(root / 'scripts/release/run-managed-dependency-smoke.py'),
+                str(application), '--prepare', str(output / 'managed-dependency-smoke')], interpreter=sys.executable)
+            reject_probe_natives(output)
             evidence['complete'] = True
     except subprocess.CalledProcessError as error:
         result = error.returncode
@@ -80,7 +83,7 @@ def publish(root, application, output):
         print('Container probe validation failed: ' + str(error), file=sys.stderr)
         result = 70
     finally:
-        # Fixed schema and four phases; never serialize environment or tool output.
+        # Fixed schema and five phases; never serialize environment or tool output.
         (output / 'build-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n', encoding='utf-8')
     return result
 
