@@ -193,7 +193,7 @@ public class Program : ProcessStatusBackgroundService
                     RuntimeDependencyGuard.Validate(TextWriter.Null);
                 }
                 catch(Exception ex) when(ex is InvalidOperationException or TypeInitializationException or
-                    System.IO.FileNotFoundException or System.IO.FileLoadException)
+                    System.IO.FileNotFoundException or System.IO.FileLoadException or BadImageFormatException)
                 {
                     Console.Error.WriteLine("WARNING: This runtime is not accepted for Miningcore services; continuing read-only share-recovery verification only.");
                 }
@@ -220,7 +220,7 @@ public class Program : ProcessStatusBackgroundService
                 (processStatus ??= new ProcessStatus()).MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
                 throw new PoolStartupException("Runtime dependency policy could not be loaded. Reinstall the complete reviewed Miningcore release before starting services.");
             }
-            catch(Exception ex) when(ex is InvalidOperationException or System.IO.FileNotFoundException or System.IO.FileLoadException)
+            catch(Exception ex) when(ex is InvalidOperationException or System.IO.FileNotFoundException or System.IO.FileLoadException or BadImageFormatException)
             {
                 (processStatus ??= new ProcessStatus()).MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
                 throw new PoolStartupException($"Runtime dependency validation failed: {ex.Message}. Update both .NET and ASP.NET Core and restart Miningcore.");
@@ -308,7 +308,18 @@ public class Program : ProcessStatusBackgroundService
             if(!isShareRecoveryMode && ShouldOfferPayoutRecovery(clusterConfig,
                    HasInteractiveTerminal(), noPayoutRecoveryPromptOption.HasValue()))
             {
-                var recoveryExitCode = await RecoverPayoutOwnershipAsync(clusterConfig, true);
+                int recoveryExitCode;
+                // Temporarily use the same console-only audit guarantee as standalone recovery.
+                // Restore service logging even when the assistant refuses or throws.
+                try
+                {
+                    ConfigureLogging(recoveryMode: true);
+                    recoveryExitCode = await RecoverPayoutOwnershipAsync(clusterConfig, true);
+                }
+                finally
+                {
+                    ConfigureLogging();
+                }
                 if(recoveryExitCode != 0)
                 {
                     processStatus = new ProcessStatus();

@@ -99,6 +99,11 @@ keeps protection and receives dedicated-identity guidance before any menu or con
 The managed-PostgreSQL migration check uses a real non-superuser administrator login,
 proves the index creation fails without inherited owner privileges, applies the documented
 grant direction, and verifies that the application cannot drop administrator-owned audit storage.
+It reruns the migration twice after revoking both temporary grants, verifies the index identity
+is preserved, and rejects malformed or missing indexes without changing audit history.
+Foreground recovery also runs with console logging disabled and restrictive service thresholds:
+the audit receipt remains visible during recovery and the service console settings are restored
+before normal startup continues.
 
 The automated restore drill uses two databases within one disposable cluster. Before production
 RC.2 deployment, also complete the [cross-cluster acceptance rehearsal](../../docs/database.md#cross-cluster-release-acceptance)

@@ -114,6 +114,25 @@ def main():
         env.pop("DOTNET_ROLL_FORWARD", None)
         run(command(host=isolated / dotnet.name, source="package"), 0,
             str(runtime / (PKCS + ".dll")), env)
+        # A malformed managed image is an installation repair, not a retryable failure.
+        # Corrupt both candidates so host conflict resolution cannot select a valid copy.
+        images = [runtime / (PKCS + ".dll"), local_framework / (PKCS + ".dll")]
+        originals = [image.read_bytes() for image in images]
+        try:
+            for image in images:
+                image.write_bytes(b"invalid managed PE image")
+            for option in ("--version", "--recover-payout-ownership", "--acknowledge-share-recovery-state"):
+                run([isolated / dotnet.name, runtime / "Miningcore.dll", option, "-c", root / "missing.json"],
+                    78, "Runtime dependency validation failed", env)
+            diagnostic = root / "bad-image-diagnostic.json"
+            diagnostic.write_text(json.dumps({"pools": [], "shareRecoveryStateDirectory": str(root / "bad-image-state")}))
+            output = run([isolated / dotnet.name, runtime / "Miningcore.dll",
+                          "--verify-share-recovery-state", "-c", diagnostic], 0, "RESULT: no incidents found", env)
+            if "WARNING: This runtime is not accepted" not in output or (root / "bad-image-state").exists():
+                raise AssertionError("Malformed dependency diagnostic must warn and remain read-only")
+        finally:
+            for image, original in zip(images, originals):
+                image.write_bytes(original)
         # A newer framework may legitimately replace an older app copy.
         package_fixture("10.0.14", old / (PKCS + ".dll"))
         run(command(source="package", reference="10.0.14"), 0, str(current_aspnet))

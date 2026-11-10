@@ -761,6 +761,12 @@ this migration (`REVOKE miningcore FROM dbadmin` and
 needed for administration. Confirm that the audit schema/table/function remain owned by
 `dbadmin`, the application cannot drop that schema, and reapply and verify the
 [dedicated recovery permissions](#dedicated-recovery-identity-and-permissions).
+Later reruns by that same audit owner do not require those temporary grants when the
+history index and protected audit schema already exist. The migration validates the existing
+index's complete required shape without recreating it. A missing index, a new ownership schema
+or a restore that needs new audit storage requires the temporary grants again; an incompatible
+index still stops migration for administrator inspection. Revoke newly temporary grants after
+successful repair and reapply the dedicated recovery permissions after every rerun.
 PostgreSQL documents [role inheritance and membership](https://www.postgresql.org/docs/16/role-membership.html)
 and the [grant options](https://www.postgresql.org/docs/16/sql-grant.html).
 
@@ -823,9 +829,10 @@ Release reacquires the advisory lock and checks the exact token/generation, data
 and pinned ownership table. It inserts the complete previous owner, release time, releasing host/PID
 and incident reference through the protected append function into the audit table **in the same transaction** as clearing
 ownership. Audit insertion failure rolls the release back. The terminal reports the audit event UUID;
-standalone mode always sends warning-level recovery audit events to the console, even with
+standalone mode and the normal foreground recovery prompt always send warning-level recovery audit events to the console, even with
 `error`, `fatal` or `off` configured for ordinary service logging, and never opens service log
-files. Balances, payments, batches and generation are unchanged.
+files during recovery. Foreground startup restores the configured service logging after the
+assistant returns or fails. Balances, payments, batches and generation are unchanged.
 
 Audit rows survive later lease acquisition. UPDATE, DELETE and TRUNCATE are rejected, and the
 application role is not granted those privileges and cannot drop the administrator-owned audit

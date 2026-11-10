@@ -460,8 +460,6 @@ COMMIT;
 -- Existing owner markers, payments and audit event identities are preserved.
 BEGIN;
 SET LOCAL ROLE NONE;
-CREATE INDEX IF NOT EXISTS idx_payment_batches_recovery_created
-    ON payment_batches(created DESC, poolid, transactionconfirmationdata);
 DO $migration$
 DECLARE
     ownership oid := 'payout_manager_ownership'::regclass;
@@ -482,6 +480,11 @@ BEGIN
        OR app_role<>admin_role AND pg_has_role(app_role, admin_role, 'MEMBER') THEN
         RAISE EXCEPTION 'Run as a separate administrator whose role is not inherited by the application';
     END IF;
+    -- CREATE INDEX IF NOT EXISTS still requires table ownership when the index exists.
+    -- Reruns by the audit owner must work after temporary application membership is revoked.
+    IF to_regclass(format('%I.idx_payment_batches_recovery_created', ownership_schema)) IS NULL THEN
+        EXECUTE format('CREATE INDEX idx_payment_batches_recovery_created ON %I.payment_batches(created DESC, poolid, transactionconfirmationdata)', ownership_schema);
+    END IF;
     IF NOT EXISTS (
         SELECT FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_am a ON a.oid=c.relam
         WHERE i.indexrelid=to_regclass(format('%I.idx_payment_batches_recovery_created', ownership_schema))
@@ -497,7 +500,9 @@ BEGIN
     IF EXISTS(SELECT FROM pg_namespace WHERE nspname=audit_schema AND nspowner<>(SELECT oid FROM pg_roles WHERE rolname=admin_role)) THEN
         RAISE EXCEPTION 'Existing audit schema must be owned by this separate administrator';
     END IF;
-    EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION %I',audit_schema,admin_role);
+    IF NOT EXISTS(SELECT FROM pg_namespace WHERE nspname=audit_schema) THEN
+        EXECUTE format('CREATE SCHEMA %I AUTHORIZATION %I',audit_schema,admin_role);
+    END IF;
     -- Never adopt an application-created lookalike into a SECURITY DEFINER write path.
     IF EXISTS(SELECT FROM pg_class c WHERE c.oid IN (
             to_regclass(format('%I.payout_manager_recovery_events',ownership_schema)),

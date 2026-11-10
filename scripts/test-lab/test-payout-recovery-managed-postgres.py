@@ -53,6 +53,20 @@ try:
     assert "must be owner" in sql(f"DROP SCHEMA {audit} CASCADE", app_env, False)
     assert sql(f"SELECT count(*) FROM {audit}.payout_manager_recovery_events", app_env) == "0"
     print("PASS: documented non-superuser migration grants preserve administrator-owned audit isolation")
+    index = sql("SELECT 'idx_payment_batches_recovery_created'::regclass::oid")
+    for _ in range(2):
+        sql(migration, admin_env)
+        assert sql("SELECT 'idx_payment_batches_recovery_created'::regclass::oid") == index
+        assert sql(f"SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='{audit}'") == administrator
+    assert sql(f"SELECT pg_has_role('{administrator}','miningcore','MEMBER')") == "f"
+    assert sql(f"SELECT has_database_privilege('{administrator}',current_database(),'CREATE')") == "f"
+    print("PASS: non-superuser migration reruns twice after temporary membership and database CREATE are revoked")
+    sql("DROP INDEX idx_payment_batches_recovery_created; CREATE INDEX idx_payment_batches_recovery_created ON payment_batches(poolid)")
+    assert "Invalid idx_payment_batches_recovery_created" in sql(migration, admin_env, False)
+    sql("DROP INDEX idx_payment_batches_recovery_created")
+    assert "must be owner of table payment_batches" in sql(migration, admin_env, False)
+    assert sql(f"SELECT count(*) FROM {audit}.payout_manager_recovery_events", app_env) == "0"
+    print("PASS: restricted reruns reject malformed or missing indexes without altering audit history")
 finally:
     sql(f"DROP DATABASE {database} WITH (FORCE)", target=os.environ["PGDATABASE"])
     sql(f"DROP ROLE IF EXISTS {administrator}", target=os.environ["PGDATABASE"])

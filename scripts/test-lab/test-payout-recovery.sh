@@ -86,7 +86,7 @@ sudo -u "$PGUSER" env -i PYTHONUNBUFFERED=1 PATH="$PATH" HOME="$(getent passwd "
 
 psql -X -v ON_ERROR_STOP=1 -f "$repo/src/Miningcore/Persistence/Postgres/Scripts/add_payout_recovery_audit.sql" >/dev/null
 audit_schema=$(psql -X -Atc "SELECT 'miningcore_audit_' || 'payout_manager_ownership'::regclass::oid::text")
-test "$(psql -X -Atc "SELECT count(*) FROM $audit_schema.payout_manager_recovery_events")" -eq 5
+test "$(psql -X -Atc "SELECT count(*) FROM $audit_schema.payout_manager_recovery_events")" -eq 9
 echo 'PASS: reapplying the audit migration preserves recorded releases'
 
 sudo -u "$PGUSER" env -i PATH="$pg_bin:$PATH" PGHOST="$PGHOST" PGPORT="$PGPORT" \

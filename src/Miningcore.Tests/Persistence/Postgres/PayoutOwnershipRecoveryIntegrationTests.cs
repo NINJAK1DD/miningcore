@@ -384,6 +384,61 @@ public class PayoutOwnershipRecoveryIntegrationTests
     }
 
     [PostgresIntegrationFact]
+    public async Task Migration_NonSuperuserRerunsWithoutTemporaryOwnerMembershipOrDatabaseCreate()
+    {
+        await using var db = await Database.CreateAsync();
+        var application = "recovery_app_" + Guid.NewGuid().ToString("N");
+        var administrator = "recovery_admin_" + Guid.NewGuid().ToString("N");
+        var password = Guid.NewGuid().ToString("N");
+        var database = new NpgsqlCommandBuilder().QuoteIdentifier(db.Connection.Database);
+        var migration = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_payout_recovery_audit.sql"));
+        try
+        {
+            await db.Connection.ExecuteAsync($@"
+                CREATE ROLE {application} NOLOGIN;
+                CREATE ROLE {administrator} LOGIN PASSWORD '{password}' INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+                ALTER TABLE payment_batches OWNER TO {application};
+                ALTER TABLE payout_manager_ownership OWNER TO {application};
+                GRANT USAGE ON SCHEMA ""{db.Schema}"" TO {application}, {administrator};
+                GRANT {application} TO {administrator};
+                GRANT CREATE ON DATABASE {database} TO {administrator};
+                DROP SCHEMA {db.AuditSchema} CASCADE;
+                DROP INDEX idx_payment_batches_recovery_created;");
+            await using var connection = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(db.ConnectionString)
+            {
+                Username = administrator, Password = password, Pooling = false,
+                SearchPath = $"\"{db.Schema}\",public",
+            }.ConnectionString);
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(migration);
+            var receipt = Guid.NewGuid();
+            await connection.ExecuteAsync($@"INSERT INTO {db.AuditSchema}.payout_manager_recovery_events
+                SELECT @receipt,current_database(),current_user,'{db.Schema}',
+                    'payout_manager_ownership'::regclass::oid,owner_id,generation,owner_host,owner_process_id,
+                    acquired,now(),'test',1,'rerun-retention' FROM payout_manager_ownership", new { receipt });
+            await db.Connection.ExecuteAsync($"REVOKE {application} FROM {administrator}; REVOKE CREATE ON DATABASE {database} FROM {administrator}");
+            var index = await connection.ExecuteScalarAsync<long>("SELECT 'idx_payment_batches_recovery_created'::regclass::oid::bigint");
+            for(var i = 0; i < 2; i++)
+                await connection.ExecuteAsync(migration);
+            Assert.False(await connection.ExecuteScalarAsync<bool>("SELECT has_database_privilege(current_user,current_database(),'CREATE')"));
+            Assert.False(await connection.ExecuteScalarAsync<bool>("SELECT pg_has_role(current_user,@application,'MEMBER')", new { application }));
+            Assert.Equal(index, await connection.ExecuteScalarAsync<long>("SELECT 'idx_payment_batches_recovery_created'::regclass::oid::bigint"));
+            Assert.Equal(receipt, await connection.ExecuteScalarAsync<Guid>($"SELECT event_id FROM {db.AuditSchema}.payout_manager_recovery_events"));
+            Assert.Equal(db.Owner, await db.OwnerAsync());
+            Assert.Equal(administrator, await connection.ExecuteScalarAsync<string>("SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname=@audit", new { audit = db.AuditSchema }));
+            await db.Connection.ExecuteAsync("DROP INDEX idx_payment_batches_recovery_created; CREATE INDEX idx_payment_batches_recovery_created ON payment_batches(poolid)");
+            var error = await Assert.ThrowsAsync<PostgresException>(() => connection.ExecuteAsync(migration));
+            Assert.Contains("Invalid idx_payment_batches_recovery_created", error.MessageText);
+            await connection.ExecuteAsync("ROLLBACK");
+            Assert.Equal(receipt, await connection.ExecuteScalarAsync<Guid>($"SELECT event_id FROM {db.AuditSchema}.payout_manager_recovery_events"));
+        }
+        finally
+        {
+            await db.Connection.ExecuteAsync($"DROP OWNED BY {administrator}, {application} CASCADE; DROP ROLE {administrator}, {application}");
+        }
+    }
+
+    [PostgresIntegrationFact]
     public async Task Migration_RejectsWrongIndex_AndPreservesLegacyAuditReceipts()
     {
         await using var db = await Database.CreateAsync();

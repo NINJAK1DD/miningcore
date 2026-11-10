@@ -253,3 +253,19 @@ for level in ("error", "fatal", "off"):
     assert sql("SELECT owner_id IS NULL FROM payout_manager_ownership") == "t"
     assert sql(f"SELECT count(*) FROM {audit_table} WHERE owner_id='{owner}' AND incident_reference='lab-logging-{level}'") == "1"
     print(f"PASS: standalone {level} logging emits exactly one audit receipt with durable evidence")
+
+for level in ("info", "error", "fatal", "off"):
+    normal["logging"] = {"level": level, "enableConsoleLog": False, "enableConsoleColors": False}
+    config.write_text(json.dumps(normal))
+    command = ["dotnet", app, "-c", str(config)]
+    owner = seed()
+    output = terminal([
+        ("Choice [1]:", "3\n"), ("Type STOPPED", "STOPPED\n"),
+        ("Type CHECKED", "CHECKED\n"), ("Incident reference", f"lab-foreground-{level}\n"),
+        (f"type RELEASE {owner}:", f"RELEASE {owner}\n"),
+    ], 1)  # The intentionally incomplete normal-startup schema still fails after recovery.
+    assert output.count("Operator released payout ownership generation 7") == 1, output
+    assert "[I] [Core] Runtime " not in output, output  # Disabled service console must be restored.
+    assert sql("SELECT owner_id IS NULL FROM payout_manager_ownership") == "t"
+    assert sql(f"SELECT count(*) FROM {audit_table} WHERE owner_id='{owner}' AND incident_reference='lab-foreground-{level}'") == "1"
+    print(f"PASS: foreground {level} recovery emits one audit receipt and restores disabled service console")
