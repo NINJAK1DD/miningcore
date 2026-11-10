@@ -400,6 +400,7 @@ public class PayoutOwnershipRecoveryIntegrationTests
                 ALTER TABLE payment_batches OWNER TO {application};
                 ALTER TABLE payout_manager_ownership OWNER TO {application};
                 GRANT USAGE ON SCHEMA ""{db.Schema}"" TO {application}, {administrator};
+                GRANT CREATE ON SCHEMA ""{db.Schema}"" TO {application};
                 GRANT {application} TO {administrator};
                 GRANT CREATE ON DATABASE {database} TO {administrator};
                 DROP SCHEMA {db.AuditSchema} CASCADE;

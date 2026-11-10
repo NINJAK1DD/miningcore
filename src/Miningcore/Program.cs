@@ -211,20 +211,8 @@ public class Program : ProcessStatusBackgroundService
                 return;
             }
 
-            try
-            {
-                RuntimeDependencyGuard.Validate(TextWriter.Null);
-            }
-            catch(TypeInitializationException)
-            {
-                (processStatus ??= new ProcessStatus()).MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
-                throw new PoolStartupException("Runtime dependency policy could not be loaded. Reinstall the complete reviewed Miningcore release before starting services.");
-            }
-            catch(Exception ex) when(ex is InvalidOperationException or System.IO.FileNotFoundException or System.IO.FileLoadException or BadImageFormatException)
-            {
-                (processStatus ??= new ProcessStatus()).MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
-                throw new PoolStartupException($"Runtime dependency validation failed: {ex.Message}. Update both .NET and ASP.NET Core and restart Miningcore.");
-            }
+            processStatus = new ProcessStatus();
+            ValidateRuntimeDependencies(processStatus, () => RuntimeDependencyGuard.Validate(TextWriter.Null));
 
             if(versionOption.HasValue())
             {
@@ -1069,6 +1057,25 @@ public class Program : ProcessStatusBackgroundService
     internal static bool ListenAddressesOverlap(IPAddress first,
         IPAddress second) =>
         ListenerAddressUtils.Overlaps(first, second);
+
+    internal static void ValidateRuntimeDependencies(IProcessStatus processStatus, Action validate)
+    {
+        try
+        {
+            validate();
+        }
+        catch(TypeInitializationException)
+        {
+            processStatus.MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
+            throw new PoolStartupException("Runtime dependency policy could not be loaded. Reinstall the complete reviewed Miningcore release before starting services.");
+        }
+        catch(Exception ex) when(ex is InvalidOperationException or System.IO.FileNotFoundException or
+            System.IO.FileLoadException or BadImageFormatException)
+        {
+            processStatus.MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
+            throw new PoolStartupException($"Runtime dependency validation failed: {ex.Message}. Update both .NET and ASP.NET Core and restart Miningcore.");
+        }
+    }
 
     internal static async Task<int> RunStartupBoundaryAsync(Func<Task> run,
         Func<Exception, Task> reportFailure, Func<int> getExitCode = null)

@@ -750,6 +750,10 @@ GRANT CREATE ON DATABASE miningcore TO dbadmin;
 For PostgreSQL 15, use `GRANT miningcore TO dbadmin` and ensure `dbadmin` has the
 `INHERIT` role attribute. Provider administrators still need authority to grant these
 privileges; `CREATEROLE` alone does not imply every grant is permitted. Connect directly
+as the migration administrator with `USAGE` on the ownership schema. Initial index creation
+also needs `CREATE` on that schema; the default database-owning application role already has
+it on `public`. For a custom schema, arrange that privilege explicitly during installation
+and revoke any temporary direct grant after migration. Connect
 as `dbadmin`, retain the ownership schema's search path, and run the same migration with
 `ON_ERROR_STOP=1`. Do not switch the session to `miningcore`: the migration resets `ROLE`
 and uses `session_user` as the protected audit owner. Keep that separate owner for future
