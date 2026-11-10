@@ -24,6 +24,14 @@ for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
 ## Upcoming v0.4.0-rc.2
 
+> **Upgrade .NET before installing RC.2.** Normal Miningcore startup now requires both
+> .NET and ASP.NET Core **10.0.15 or later in .NET 10**. Canonical's 10.0.14 packages do not meet
+> this requirement. The packaged service uses `/usr/bin/dotnet`; installing a private SDK for a
+> build does not change that service. Verify the service's selected host and published dependency
+> smoke before upgrading, or defer deployment. See the
+> [distribution-lag procedure](dependency-security.md#deployment-when-distribution-packages-lag)
+> for a separate serviced runtime and the required systemd override.
+
 ### Selected .NET and PKCS runtime requirements
 
 New framework-dependent publishes declare serviced runtime minima and refuse hosts below

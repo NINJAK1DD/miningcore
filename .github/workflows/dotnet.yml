@@ -561,6 +561,8 @@ jobs:
     # packages on Ubuntu's feed and validate the documented separate SDK route.
     - name: Setup reviewed private SDK for source builds
       uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+      env:
+        DOTNET_INSTALL_DIR: ${{ runner.temp }}/miningcore-dotnet
       with:
         dotnet-version: ${{ env.CI_DOTNET_SDK }}
 
@@ -570,6 +572,10 @@ jobs:
         export MININGCORE_PRIVATE_DOTNET_ROOT="$DOTNET_ROOT"
         ./build-ubuntu-${{ matrix.ubuntu }}.sh \
           "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
+
+    - name: Detect Canonical servicing catch-up
+      shell: bash
+      run: bash scripts/release/check-canonical-servicing.sh
 
     - name: Validate published native libraries and runtime paths
       shell: bash

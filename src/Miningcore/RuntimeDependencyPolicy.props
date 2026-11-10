@@ -3,6 +3,7 @@
   <PropertyGroup>
     <MiningcoreRuntimeMinimum>10.0.15</MiningcoreRuntimeMinimum>
     <MiningcorePkcsSecurityMinimum>10.0.13</MiningcorePkcsSecurityMinimum>
+    <MiningcorePrivateSdkMinimum>10.0.404</MiningcorePrivateSdkMinimum>
     <RuntimeFrameworkVersion>$(MiningcoreRuntimeMinimum)</RuntimeFrameworkVersion>
   </PropertyGroup>
   <!-- These versions are deployment minima, not a bundled-runtime selection policy. -->

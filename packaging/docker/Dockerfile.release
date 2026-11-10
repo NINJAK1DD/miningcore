@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.15-resolute
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.15-resolute@sha256:b5e72aa3bc183d98a0fc5739c583201a4b97bdbaadcb9dcd1b69d428a8bd172b
 
 # ZeroMQ.dll imports the unversioned libzmq name. Keep libzmq3-dev because it
 # supplies libzmq.so; libzmq5 supplies only the versioned libzmq.so.5 object.

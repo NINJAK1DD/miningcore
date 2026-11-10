@@ -9,6 +9,18 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def serviced_image(docker, family, minimum, stage=None):
+    if not re.fullmatch(r'10\.0\.[0-9]+', minimum):
+        raise ValueError('Expected a stable .NET 10 policy minimum')
+    suffix = ' AS ' + re.escape(stage) if stage else ''
+    matches = re.findall(r'^FROM (mcr\.microsoft\.com/dotnet/' + family +
+                         r':(10\.0\.[0-9]+)-resolute@sha256:[0-9a-f]{64})' + suffix + r'$',
+                         docker, re.M)
+    if len(matches) != 1 or int(matches[0][1].split('.')[-1]) < int(minimum.split('.')[-1]):
+        raise ValueError('Expected one digest-pinned .NET 10 image at or above the reviewed minimum')
+    return matches[0]
+
+
 class WorkflowPolicyTests(unittest.TestCase):
     def test_container_servicing_tags_match_reviewed_policy(self):
         policy = ET.parse(ROOT / 'src/Miningcore/RuntimeDependencyPolicy.props')
@@ -17,10 +29,38 @@ class WorkflowPolicyTests(unittest.TestCase):
         sdk = workflow['env']['CI_DOTNET_SDK']
         source = (ROOT / 'Dockerfile').read_text()
         packaged = (ROOT / 'packaging/docker/Dockerfile.release').read_text()
-        self.assertIn(f'FROM mcr.microsoft.com/dotnet/sdk:{sdk}-resolute AS build-dependencies\n', source)
-        runtime = f'FROM mcr.microsoft.com/dotnet/aspnet:{minimum}-resolute'
-        self.assertIn(runtime + ' AS runtime-dependencies\n', source)
-        self.assertTrue(packaged.startswith(runtime + '\n'))
+        private_minimum = policy.findtext('./PropertyGroup/MiningcorePrivateSdkMinimum')
+        self.assertEqual(sdk, serviced_image(source, 'sdk', private_minimum, 'build-dependencies')[1])
+        runtime = serviced_image(source, 'aspnet', minimum, 'runtime-dependencies')
+        self.assertEqual(runtime, serviced_image(packaged, 'aspnet', minimum))
+
+    def test_runtime_image_can_advance_without_raising_host_floor(self):
+        for version in ('10.0.15', '10.0.16'):
+            with self.subTest(version=version):
+                image = f'FROM mcr.microsoft.com/dotnet/aspnet:{version}-resolute@sha256:' + 'a' * 64
+                self.assertEqual(version, serviced_image(image, 'aspnet', '10.0.15')[1])
+        for version in ('10.0.14', '10.0.9', '10.0.16-preview.1', '11.0.0'):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                serviced_image(f'FROM mcr.microsoft.com/dotnet/aspnet:{version}-resolute@sha256:' + 'a' * 64,
+                               'aspnet', '10.0.15')
+        for suffix in ('', '@sha256:short', '@sha256:' + 'z' * 64):
+            with self.subTest(suffix=suffix), self.assertRaises(ValueError):
+                serviced_image('FROM mcr.microsoft.com/dotnet/aspnet:10.0.15-resolute' + suffix,
+                               'aspnet', '10.0.15')
+
+    def test_private_source_lanes_monitor_canonical_and_keep_runtime_validation(self):
+        workflow = yaml.load((ROOT / '.github/workflows/dotnet.yml').read_text(), Loader=yaml.BaseLoader)
+        job = next(job for job in workflow['jobs'].values()
+                   if job.get('name') == 'Build Ubuntu ${{ matrix.ubuntu }} source')
+        steps = job['steps']
+        setup = next(step for step in steps if step['name'] == 'Setup reviewed private SDK for source builds')
+        self.assertEqual('${{ runner.temp }}/miningcore-dotnet', setup['env']['DOTNET_INSTALL_DIR'])
+        sentinel = next(step for step in steps if 'check-canonical-servicing.sh' in step.get('run', ''))
+        self.assertNotIn('if', sentinel)
+        self.assertNotIn('continue-on-error', sentinel)
+        self.assertTrue(any('test-ubuntu-source-build.sh' in step.get('run', '') for step in steps))
+        self.assertIn('run-managed-dependency-smoke',
+                      (ROOT / 'scripts/release/test-ubuntu-source-build.sh').read_text())
 
     def test_required_source_check_runs_for_every_dev_pull_request(self):
         workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)

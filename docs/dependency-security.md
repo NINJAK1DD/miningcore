@@ -203,11 +203,23 @@ python scripts/release/run-managed-dependency-smoke.py build/windows-x64
 Keep both shared frameworks patched to the latest supported .NET 10 servicing release, at least
 the common policy floor, raised to 10.0.15 for Microsoft's 10 November 2026 security servicing
 release. CI selects SDK 10.0.404, and the reviewed PKCS and Microsoft.Extensions references are
-10.0.15. Both container Dockerfiles use the explicit serviced runtime tag, and the source image
-uses the matching SDK tag: the floating `10.0-resolute` alias still served 10.0.14 during the
-10 November rollout. Update these tags with the policy/CI SDK at each servicing review; the
-container policy test enforces agreement. These are version tags, not immutable digests; continue
-checking the actual loaded versions and recording resolved image provenance.
+10.0.15. Both container Dockerfiles use reviewed version tags with immutable manifest-list
+SHA-256 digests from Microsoft's registry. The source SDK tag matches the CI SDK; the runtime
+tag may advance independently to any stable `10.0.x` at or above the host minimum. Advancing a
+container patch does not by itself require raising every operator's host minimum. Both runtime
+image references must agree. The floating `10.0-resolute` alias still served 10.0.14 during the
+10 November rollout, so it is not used to select the reviewed base.
+
+Dependabot checks both Dockerfile directories weekly for patch and digest updates, grouping the
+same image across directories. New .NET major/minor lines require deliberate policy review.
+Review these PRs promptly: immutable bases do not absorb later servicing or OS-image changes on
+rebuild. For a manual update, inspect the intended version tag with
+`docker buildx imagetools inspect mcr.microsoft.com/dotnet/aspnet:10.0.15-resolute` (substitute the
+reviewed version, or the SDK image), and record its top-level `Digest` after verifying the registry
+and release. Update the `tag@sha256:...` references together and rerun the container policy and
+actual-runtime checks. SDK image updates also require the matching CI SDK selection; review the
+private SDK minimum separately. Digests prevent retargeting after review, but do not establish
+that the original image is trustworthy. Keep actual-runtime validation and provenance checks.
 The PKCS-specific CVE floor remains 10.0.13; it does not replace the newer servicing
 requirement. On 9 November 2026, the Ubuntu 24.04 and 26.04 source-build CI logs and
 the Ubuntu 26.04 lab confirmed Canonical Core and ASP.NET packages at 10.0.14. That is validation
@@ -241,13 +253,27 @@ export MININGCORE_PRIVATE_DOTNET_ROOT="$DOTNET_ROOT"
 ./build-ubuntu-26.04.sh "$PWD/build/ubuntu-26.04"
 ```
 
-The private SDK must be stable .NET 10, selected in `PATH`, separate from `/usr/lib/dotnet`, and
-include both frameworks at or above the policy floor. This explicit selection does not authenticate
+The private SDK must be stable .NET 10 at or above `MiningcorePrivateSdkMinimum` in the shared
+policy (currently 10.0.404), selected in `PATH`, and separate from `/usr/lib/dotnet`. Its resolved
+host must not be owned by any dpkg package; a Microsoft APT installation under `/usr/share/dotnet`
+is not a private archive installation. Package-query errors fail closed. Both frameworks must also
+meet the runtime floor. Canonical's separately maintained SDK feature band remains supported by
+the default route's package-provenance and framework checks; its version is not compared with
+Microsoft's `10.0.4xx` feature band. The helpers install the current Canonical SDK candidate first.
+This explicit selection does not authenticate
 the archive; verify Microsoft's SHA-512 first. Native packages still come from Canonical, and no
 Microsoft APT feed is added. CI currently tests this private-SDK route on both Ubuntu source-build
 targets because Canonical's 10 November packages still provide 10.0.14. It does not claim that those
-Canonical runtimes pass the new floor. The published runtime and binding checks remain mandatory;
-use the selected host for all subsequent validation and service activation.
+Canonical runtimes pass the new floor. Each source lane also checks the Canonical host with the
+private selection removed. Only the specific under-serviced-framework refusal passes this sentinel;
+unexpected provenance or tooling failures fail CI. Once Canonical catches up, the sentinel fails
+with instructions to restore that lane's Canonical build and remove the temporary sentinel call.
+Keep the private-route regression tests when switching back.
+
+An installed-runtime inventory is only a build preflight. Both source lanes still run the published
+dependency smoke and normal startup guard against the actual selected host, as do the archive,
+Windows and container checks. Never replace these with a successful inventory check. Use the
+selected host for all subsequent validation and service activation.
 
 For example, after installing and validating the selected release at `/opt/dotnet-miningcore`,
 use `sudo systemctl edit miningcore` to select that host explicitly (retain your actual application

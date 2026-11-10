@@ -1,5 +1,23 @@
 version: 2
 updates:
+- package-ecosystem: docker
+  directories: ["/", "/packaging/docker"]
+  target-branch: dev
+  schedule:
+    interval: weekly
+  allow:
+    - dependency-name: "mcr.microsoft.com/dotnet/sdk"
+    - dependency-name: "mcr.microsoft.com/dotnet/aspnet"
+  groups:
+    dotnet-images:
+      patterns: ["mcr.microsoft.com/dotnet/*"]
+      group-by: dependency-name
+  ignore:
+    - dependency-name: "mcr.microsoft.com/dotnet/*"
+      update-types: ["version-update:semver-major", "version-update:semver-minor"]
+  commit-message:
+    prefix: "chore(container)"
+  open-pull-requests-limit: 5
 - package-ecosystem: github-actions
   directory: "/"
   schedule:
