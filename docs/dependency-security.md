@@ -212,13 +212,24 @@ image references must agree. The floating `10.0-resolute` alias still served 10.
 
 Dependabot checks both Dockerfile directories weekly for patch and digest updates, grouping the
 same image across directories. New .NET major/minor lines require deliberate policy review.
+Its Docker dependency names omit the registry: the allow rules use `dotnet/sdk` and
+`dotnet/aspnet`, and the group and ignore rules use `dotnet/*`. Fully qualified MCR names do not
+match the current updater ([upstream matching issue][dependabot-docker-names]). The container
+policy test checks these selectors against both Dockerfiles. After activating this configuration,
+check the first hosted Dependabot update log for discovery of both names and both runtime-image
+locations; the local selector test does not verify the hosted updater. If a grouped PR cannot rebase
+with `unknown group` ([upstream rebase issue][dependabot-docker-rebase]), recreate the update or
+apply it manually from current `dev`, keeping both runtime references aligned and all gates enabled.
 Review these PRs promptly: immutable bases do not absorb later servicing or OS-image changes on
 rebuild. For a manual update, inspect the intended version tag with
 `docker buildx imagetools inspect mcr.microsoft.com/dotnet/aspnet:10.0.15-resolute` (substitute the
 reviewed version, or the SDK image), and record its top-level `Digest` after verifying the registry
 and release. Update the `tag@sha256:...` references together and rerun the container policy and
-actual-runtime checks. SDK image updates also require the matching CI SDK selection; review the
-private SDK minimum separately. Digests prevent retargeting after review, but do not establish
+actual-runtime checks. SDK image updates also require matching `CI_DOTNET_SDK` values in
+`.github/workflows/dotnet.yml`, `.github/workflows/release.yml` and
+`.github/workflows/stratum-portability.yml`. Dependabot does not edit those variables, so SDK-image
+PRs will fail the coordination gate until a maintainer updates all three; review the private SDK
+minimum separately. Digests prevent retargeting after review, but do not establish
 that the original image is trustworthy. Keep actual-runtime validation and provenance checks.
 The PKCS-specific CVE floor remains 10.0.13; it does not replace the newer servicing
 requirement. On 9 November 2026, the Ubuntu 24.04 and 26.04 source-build CI logs and
@@ -268,7 +279,12 @@ Canonical runtimes pass the new floor. Each source lane also checks the Canonica
 private selection removed. Only the specific under-serviced-framework refusal passes this sentinel;
 unexpected provenance or tooling failures fail CI. Once Canonical catches up, the sentinel fails
 with instructions to restore that lane's Canonical build and remove the temporary sentinel call.
+This deliberately makes open PRs fail on the affected lane when its Canonical packages catch up;
+restore that lane promptly instead of suppressing the failure or lowering the runtime floor.
 Keep the private-route regression tests when switching back.
+
+[dependabot-docker-names]: https://github.com/dependabot/dependabot-core/issues/16574
+[dependabot-docker-rebase]: https://github.com/dependabot/dependabot-core/issues/14780
 
 An installed-runtime inventory is only a build preflight. Both source lanes still run the published
 dependency smoke and normal startup guard against the actual selected host, as do the archive,

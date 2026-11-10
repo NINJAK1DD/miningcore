@@ -6,14 +6,14 @@ updates:
   schedule:
     interval: weekly
   allow:
-    - dependency-name: "mcr.microsoft.com/dotnet/sdk"
-    - dependency-name: "mcr.microsoft.com/dotnet/aspnet"
+    - dependency-name: "dotnet/sdk"
+    - dependency-name: "dotnet/aspnet"
   groups:
     dotnet-images:
-      patterns: ["mcr.microsoft.com/dotnet/*"]
+      patterns: ["dotnet/*"]
       group-by: dependency-name
   ignore:
-    - dependency-name: "mcr.microsoft.com/dotnet/*"
+    - dependency-name: "dotnet/*"
       update-types: ["version-update:semver-major", "version-update:semver-minor"]
   commit-message:
     prefix: "chore(container)"

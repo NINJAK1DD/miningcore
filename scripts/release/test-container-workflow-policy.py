@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
 """Guard source-container cache, deadlines, provenance and Docker stage boundaries."""
 from pathlib import Path
+from fnmatch import fnmatchcase
 import re
 import unittest
 import xml.etree.ElementTree as ET
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+SDK_WORKFLOWS = ('dotnet.yml', 'release.yml', 'stratum-portability.yml')
+
+
+def require_coordinated_sdk(versions, image_version):
+    if set(versions) != set(SDK_WORKFLOWS) or any(version != image_version for version in versions.values()):
+        paths = ', '.join('.github/workflows/' + name for name in SDK_WORKFLOWS)
+        raise ValueError(f'SDK image {image_version} and CI_DOTNET_SDK must advance together. '
+                         f'Update CI_DOTNET_SDK in all three files: {paths}. '
+                         f'Dependabot updates the Dockerfile, not these workflow variables. Found: {versions}')
 
 
 def serviced_image(docker, family, minimum, stage=None):
@@ -25,14 +35,58 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_container_servicing_tags_match_reviewed_policy(self):
         policy = ET.parse(ROOT / 'src/Miningcore/RuntimeDependencyPolicy.props')
         minimum = policy.findtext('./PropertyGroup/MiningcoreRuntimeMinimum')
-        workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
-        sdk = workflow['env']['CI_DOTNET_SDK']
+        versions = {name: yaml.load((ROOT / '.github/workflows' / name).read_text(),
+                                   Loader=yaml.BaseLoader).get('env', {}).get('CI_DOTNET_SDK')
+                    for name in SDK_WORKFLOWS}
         source = (ROOT / 'Dockerfile').read_text()
         packaged = (ROOT / 'packaging/docker/Dockerfile.release').read_text()
         private_minimum = policy.findtext('./PropertyGroup/MiningcorePrivateSdkMinimum')
-        self.assertEqual(sdk, serviced_image(source, 'sdk', private_minimum, 'build-dependencies')[1])
+        require_coordinated_sdk(versions, serviced_image(source, 'sdk', private_minimum, 'build-dependencies')[1])
         runtime = serviced_image(source, 'aspnet', minimum, 'runtime-dependencies')
         self.assertEqual(runtime, serviced_image(packaged, 'aspnet', minimum))
+
+    def test_sdk_drift_names_every_workflow_to_update(self):
+        current = dict.fromkeys(SDK_WORKFLOWS, '10.0.404')
+        require_coordinated_sdk(current, '10.0.404')
+        cases = [(current, '10.0.405')]
+        for name in SDK_WORKFLOWS:
+            cases.extend([(dict(current, **{name: '10.0.405'}), '10.0.404'),
+                          (dict(current, **{name: None}), '10.0.404')])
+        for versions, image in cases:
+            with self.subTest(versions=versions, image=image):
+                with self.assertRaises(ValueError) as failure:
+                    require_coordinated_sdk(versions, image)
+                for name in SDK_WORKFLOWS:
+                    self.assertIn('.github/workflows/' + name, str(failure.exception))
+
+    def test_dependabot_matches_both_dockerfiles_with_hostless_names(self):
+        # Dependabot stores registry separately from name (upstream issue #16574).
+        # This checks our selectors against these manifests, not the hosted updater.
+        config = yaml.safe_load((ROOT / '.github/dependabot.yml').read_text())
+        docker = next(item for item in config['updates'] if item['package-ecosystem'] == 'docker')
+        group = docker['groups']['dotnet-images']
+        self.assertEqual('dependency-name', group['group-by'])
+        self.assertEqual('weekly', docker['schedule']['interval'])
+        self.assertEqual('dev', docker['target-branch'])
+        discovered = set()
+        for relative in ('Dockerfile', 'packaging/docker/Dockerfile.release'):
+            path = Path(relative)
+            directory = '/' if path.parent == Path('.') else '/' + path.parent.as_posix()
+            self.assertIn(directory, docker['directories'])
+            names = re.findall(r'^FROM mcr\.microsoft\.com/(dotnet/[^: ]+):',
+                               (ROOT / relative).read_text(), re.M)
+            self.assertTrue(names, relative)
+            for name in names:
+                with self.subTest(file=relative, dependency=name):
+                    discovered.add((relative, name))
+                    self.assertTrue(any(fnmatchcase(name, item['dependency-name']) for item in docker['allow']),
+                                    f'Dependabot allow rules exclude {name}; omit the registry hostname')
+                    self.assertTrue(any(fnmatchcase(name, pattern) for pattern in group['patterns']))
+                    ignored = {kind for item in docker['ignore'] if fnmatchcase(name, item['dependency-name'])
+                               for kind in item.get('update-types', [])}
+                    self.assertEqual({'version-update:semver-major', 'version-update:semver-minor'}, ignored)
+        self.assertEqual({('Dockerfile', 'dotnet/sdk'), ('Dockerfile', 'dotnet/aspnet'),
+                          ('packaging/docker/Dockerfile.release', 'dotnet/aspnet')}, discovered)
 
     def test_runtime_image_can_advance_without_raising_host_floor(self):
         for version in ('10.0.15', '10.0.16'):
