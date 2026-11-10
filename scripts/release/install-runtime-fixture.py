@@ -27,26 +27,31 @@ DOWNLOAD_DEADLINE_SECONDS = 300
 
 def download_verified(url, archive, expected):
     for attempt in range(3):
-        try:
-            # Opening with wb discards a partial response before every retry.
-            with urllib.request.urlopen(url, timeout=120) as response, archive.open("wb") as output:
-                size = 0
-                while chunk := response.read(min(64 * 1024, MAX_ARCHIVE_BYTES - size + 1)):
-                    size += len(chunk)
-                    if size > MAX_ARCHIVE_BYTES:
-                        raise ValueError("Runtime fixture exceeds the 128 MiB archive limit")
-                    output.write(chunk)
-            break
-        except (OSError, http.client.HTTPException) as error:
-            if isinstance(error, urllib.error.HTTPError):
-                error.close()
-                if error.code not in (408, 429, 500, 502, 503, 504):
+        # File open and close/flush failures are outside the network retry boundary.
+        # Opening with wb discards a partial response before every retry.
+        with archive.open("wb") as output:
+            try:
+                with urllib.request.urlopen(url, timeout=120) as response:
+                    size = 0
+                    while chunk := response.read(min(64 * 1024, MAX_ARCHIVE_BYTES - size + 1)):
+                        size += len(chunk)
+                        if size > MAX_ARCHIVE_BYTES:
+                            raise ValueError("Runtime fixture exceeds the 128 MiB archive limit")
+                        try:
+                            output.write(chunk)
+                        except OSError as error:
+                            raise ValueError(f"Unable to write runtime fixture archive: {error}") from error
+                break
+            except (OSError, http.client.HTTPException) as error:
+                if isinstance(error, urllib.error.HTTPError):
+                    error.close()
+                    if error.code not in (408, 429, 500, 502, 503, 504):
+                        raise
+                if attempt == 2:
                     raise
-            if attempt == 2:
-                raise
-            delay = 2 ** (attempt + 1)
-            print(f"Runtime fixture download interrupted; retrying in {delay}s ({attempt + 2}/3)", flush=True)
-            time.sleep(delay)
+        delay = 2 ** (attempt + 1)
+        print(f"Runtime fixture download interrupted; retrying in {delay}s ({attempt + 2}/3)", flush=True)
+        time.sleep(delay)
     # Integrity failures are final: never retry or extract an unverified archive.
     with archive.open("rb") as content:
         actual = hashlib.file_digest(content, "sha512").hexdigest()

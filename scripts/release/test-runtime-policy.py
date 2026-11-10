@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline download-failure and real MSBuild policy regressions (requires the .NET SDK)."""
 import copy
+import errno
 import hashlib
 import importlib.util
 import io
@@ -92,6 +93,31 @@ class DownloadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "archive limit"):
                 self.download()
         self.assertLessEqual(self.archive.stat().st_size, 64)
+        self.assertEqual(1, self.opener.call_count)
+        self.sleep.assert_not_called()
+
+    def test_local_open_failure_stops_before_network_access(self):
+        with patch.object(Path, "open", side_effect=PermissionError("archive is not writable")):
+            with self.assertRaises(PermissionError):
+                self.download()
+        self.opener.assert_not_called()
+        self.sleep.assert_not_called()
+
+    def test_local_write_failure_is_not_retried(self):
+        self.opener.return_value = io.BytesIO(b"verified archive")
+        with patch.object(Path, "open") as local_open:
+            local_open.return_value.__enter__.return_value.write.side_effect = OSError(errno.ENOSPC, "disk full")
+            with self.assertRaisesRegex(ValueError, "Unable to write runtime fixture archive"):
+                self.download()
+        self.assertEqual(1, self.opener.call_count)
+        self.sleep.assert_not_called()
+
+    def test_local_close_or_flush_failure_is_not_retried(self):
+        self.opener.return_value = io.BytesIO(b"verified archive")
+        with patch.object(Path, "open") as local_open:
+            local_open.return_value.__exit__.side_effect = OSError(errno.ENOSPC, "flush failed")
+            with self.assertRaisesRegex(OSError, "flush failed"):
+                self.download()
         self.assertEqual(1, self.opener.call_count)
         self.sleep.assert_not_called()
 

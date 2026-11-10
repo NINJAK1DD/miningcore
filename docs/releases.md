@@ -41,6 +41,11 @@ procedure; normal services and incident acknowledgement still refuse that runtim
 for the isolated-runtime alternative, maintenance window and rollback requirements, and
 [offline incident diagnostics](dependency-security.md#read-only-incident-diagnostics-on-an-older-host).
 
+Self-contained builds and publishes are now explicitly rejected. Deploy the framework-dependent
+application with serviced .NET and ASP.NET Core shared runtimes. The policy versions are minimums
+for those shared runtimes; bundling a runtime requires a separately reviewed servicing policy and
+release validation.
+
 ### Blake2b argument and keyed-runtime validation
 
 Blake2b now rejects oversized keys and unsupported output sizes in managed code.

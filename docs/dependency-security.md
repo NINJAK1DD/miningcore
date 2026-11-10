@@ -181,12 +181,16 @@ Reported versions and locations do not authenticate binaries. Continue verifying
 published checksums and installation permissions independently of the runtime guard.
 Linux and Windows negative tests use hash-verified 10.0.13 runtime archives in separate disposable
 directories. They never install an older SDK into the publishing toolchain or change its `PATH`.
-Network, TLS, HTTP-protocol and I/O failures receive at most three attempts with 2- and 4-second
-backoff. Checksum mismatches, archive-size violations and permanent HTTP failures stop immediately.
+Network, TLS, HTTP-protocol and response-read failures receive at most three attempts with 2- and
+4-second backoff. Local archive open, write and flush failures stop immediately, as do checksum
+mismatches, archive-size violations and permanent HTTP failures.
 Each archive is capped at 128 MiB. A separate download worker has a 300-second total deadline
 covering all attempts, backoff and checksum verification; it is terminated before cleanup on timeout,
 and extraction cannot begin unless it succeeds. Windows CI explicitly selects
 Python 3.13 rather than relying on the runner's default Python.
+An unavailable pinned archive fails CI; the test is never silently skipped. If upstream availability
+becomes a recurring problem, maintainers can review a controlled mirror that preserves the exact
+archive hashes, transfer limits and mandatory validation before enabling it.
 
 Run the portable gate on Windows with:
 
