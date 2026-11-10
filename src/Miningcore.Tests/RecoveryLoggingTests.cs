@@ -40,7 +40,7 @@ public class RecoveryLoggingTests
             rule.Targets.Remove(console);
             rule.Targets.Add(capture);
         }
-        using var factory = new LogFactory(config);
+        using var factory = new LogFactory { Configuration = config };
         var audit = factory.GetLogger(typeof(PostgresPayoutOwnershipRecovery).FullName);
         audit.Warn("release receipt");
         audit.Error("audit failure");
