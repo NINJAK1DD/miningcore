@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0-resolute AS build-dependencies
+FROM mcr.microsoft.com/dotnet/sdk:10.0.404-resolute AS build-dependencies
 ARG MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=1800
 WORKDIR /app
 ENV DOTNET_CLI_UI_LANGUAGE=en \
@@ -31,7 +31,7 @@ RUN python3 scripts/release/publish-container-probes.py /app /app/build /contain
 FROM scratch AS runtime-probes
 COPY --from=runtime-probes-build /container-runtime-probes/ /
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-resolute AS runtime-dependencies
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.15-resolute AS runtime-dependencies
 ARG MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=1800
 WORKDIR /app
 # ZeroMQ.dll imports the unversioned libzmq name. Keep libzmq3-dev because it

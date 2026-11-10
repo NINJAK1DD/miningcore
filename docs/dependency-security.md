@@ -203,7 +203,12 @@ python scripts/release/run-managed-dependency-smoke.py build/windows-x64
 Keep both shared frameworks patched to the latest supported .NET 10 servicing release, at least
 the common policy floor, raised to 10.0.15 for Microsoft's 10 November 2026 security servicing
 release. CI selects SDK 10.0.404, and the reviewed PKCS and Microsoft.Extensions references are
-10.0.15. The PKCS-specific CVE floor remains 10.0.13; it does not replace the newer servicing
+10.0.15. Both container Dockerfiles use the explicit serviced runtime tag, and the source image
+uses the matching SDK tag: the floating `10.0-resolute` alias still served 10.0.14 during the
+10 November rollout. Update these tags with the policy/CI SDK at each servicing review; the
+container policy test enforces agreement. These are version tags, not immutable digests; continue
+checking the actual loaded versions and recording resolved image provenance.
+The PKCS-specific CVE floor remains 10.0.13; it does not replace the newer servicing
 requirement. On 9 November 2026, the Ubuntu 24.04 and 26.04 source-build CI logs and
 the Ubuntu 26.04 lab confirmed Canonical Core and ASP.NET packages at 10.0.14. That is validation
 of those snapshots, not a promise about every mirror or future servicing update. Check the actual

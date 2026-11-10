@@ -3,12 +3,25 @@
 from pathlib import Path
 import re
 import unittest
+import xml.etree.ElementTree as ET
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkflowPolicyTests(unittest.TestCase):
+    def test_container_servicing_tags_match_reviewed_policy(self):
+        policy = ET.parse(ROOT / 'src/Miningcore/RuntimeDependencyPolicy.props')
+        minimum = policy.findtext('./PropertyGroup/MiningcoreRuntimeMinimum')
+        workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
+        sdk = workflow['env']['CI_DOTNET_SDK']
+        source = (ROOT / 'Dockerfile').read_text()
+        packaged = (ROOT / 'packaging/docker/Dockerfile.release').read_text()
+        self.assertIn(f'FROM mcr.microsoft.com/dotnet/sdk:{sdk}-resolute AS build-dependencies\n', source)
+        runtime = f'FROM mcr.microsoft.com/dotnet/aspnet:{minimum}-resolute'
+        self.assertIn(runtime + ' AS runtime-dependencies\n', source)
+        self.assertTrue(packaged.startswith(runtime + '\n'))
+
     def test_required_source_check_runs_for_every_dev_pull_request(self):
         workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
         trigger = workflow['on']['pull_request']
