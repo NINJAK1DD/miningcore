@@ -1,7 +1,7 @@
 <Project>
   <!-- Shared by publishing, the startup guard and the release validator. -->
   <PropertyGroup>
-    <MiningcoreRuntimeMinimum>10.0.14</MiningcoreRuntimeMinimum>
+    <MiningcoreRuntimeMinimum>10.0.15</MiningcoreRuntimeMinimum>
     <MiningcorePkcsSecurityMinimum>10.0.13</MiningcorePkcsSecurityMinimum>
     <RuntimeFrameworkVersion>$(MiningcoreRuntimeMinimum)</RuntimeFrameworkVersion>
   </PropertyGroup>

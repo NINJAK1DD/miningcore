@@ -20,10 +20,10 @@ class PublishedPkcsTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.project = self.root / "Miningcore.csproj"
         self.project.write_text(
-            f'<Project><ItemGroup><PackageReference Include="{PACKAGE}" Version="10.0.14" />'
-            '<PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14" />'
+            f'<Project><ItemGroup><PackageReference Include="{PACKAGE}" Version="10.0.15" />'
+            '<PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.15" />'
             '</ItemGroup></Project>', encoding="utf-8")
-        self.entry = PACKAGE + "/10.0.14"
+        self.entry = PACKAGE + "/10.0.15"
         self.target = ".NETCoreApp,Version=v10.0/linux-x64"
         self.manifest = {
             "runtimeTarget": {"name": self.target},
@@ -31,8 +31,8 @@ class PublishedPkcsTests(unittest.TestCase):
             "libraries": {self.entry: {"type": "package"}},
         }
         self.config = {"runtimeOptions": {"frameworks": [
-            {"name": "Microsoft.NETCore.App", "version": "10.0.14"},
-            {"name": "Microsoft.AspNetCore.App", "version": "10.0.14"}]}}
+            {"name": "Microsoft.NETCore.App", "version": "10.0.15"},
+            {"name": "Microsoft.AspNetCore.App", "version": "10.0.15"}]}}
         self.write_config()
         (self.root / ASSEMBLY).touch()
 
@@ -47,12 +47,12 @@ class PublishedPkcsTests(unittest.TestCase):
         self.run_gate()
 
     def test_future_servicing_reference(self):
-        self.project.write_text(self.project.read_text().replace("10.0.14", "10.0.15"), encoding="utf-8")
-        self.manifest = json.loads(json.dumps(self.manifest).replace("10.0.14", "10.0.15"))
-        self.run_gate(message=PACKAGE + "/10.0.15")
+        self.project.write_text(self.project.read_text().replace("10.0.15", "10.0.16"), encoding="utf-8")
+        self.manifest = json.loads(json.dumps(self.manifest).replace("10.0.15", "10.0.16"))
+        self.run_gate(message=PACKAGE + "/10.0.16")
 
     def test_wrong_resolved_version(self):
-        self.manifest = json.loads(json.dumps(self.manifest).replace("10.0.14", "10.0.13"))
+        self.manifest = json.loads(json.dumps(self.manifest).replace("10.0.15", "10.0.14"))
         self.run_gate(1, "must resolve exactly")
 
     def test_duplicate_resolved_version(self):
@@ -81,11 +81,11 @@ class PublishedPkcsTests(unittest.TestCase):
         self.run_gate(1, "assembly is missing")
 
     def test_vulnerable_reference(self):
-        self.project.write_text(self.project.read_text().replace("10.0.14", "10.0.12"), encoding="utf-8")
+        self.project.write_text(self.project.read_text().replace("10.0.15", "10.0.12"), encoding="utf-8")
         self.run_gate(1, "security floor")
 
     def test_floating_reference(self):
-        self.project.write_text(self.project.read_text().replace("10.0.14", "10.0.*"), encoding="utf-8")
+        self.project.write_text(self.project.read_text().replace("10.0.15", "10.0.*"), encoding="utf-8")
         self.run_gate(1, "explicit stable")
 
     def test_invalid_manifest(self):
@@ -97,8 +97,8 @@ class PublishedPkcsTests(unittest.TestCase):
         self.manifest["targets"][self.target].clear()
         (self.root / ASSEMBLY).unlink()
         self.config = {"runtimeOptions": {"frameworks": [
-            {"name": "Microsoft.NETCore.App", "version": "10.0.14"},
-            {"name": "Microsoft.AspNetCore.App", "version": "10.0.14"}]}}
+            {"name": "Microsoft.NETCore.App", "version": "10.0.15"},
+            {"name": "Microsoft.AspNetCore.App", "version": "10.0.15"}]}}
         self.write_config()
 
     def write_config(self):
@@ -106,7 +106,7 @@ class PublishedPkcsTests(unittest.TestCase):
 
     def test_framework_supplied_package(self):
         self.framework_manifest()
-        self.run_gate(message="10.0.14 framework")
+        self.run_gate(message="10.0.15 framework")
 
     def test_framework_without_aspnet_framework(self):
         self.framework_manifest()
@@ -131,13 +131,13 @@ class PublishedPkcsTests(unittest.TestCase):
                 if mode == "framework":
                     self.framework_manifest()
                 self.project.write_text(self.project.read_text().replace(
-                    'Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14"',
-                    'Include="Microsoft.Extensions.Caching.Memory" Version="10.0.15"'))
+                    'Include="Microsoft.Extensions.Caching.Memory" Version="10.0.15"',
+                    'Include="Microsoft.Extensions.Caching.Memory" Version="10.0.16"'))
                 self.run_gate(1, "servicing baseline")
 
     def test_framework_config_below_pkcs_reference(self):
         self.framework_manifest()
-        self.project.write_text(self.project.read_text().replace("10.0.14", "10.0.15"))
+        self.project.write_text(self.project.read_text().replace("10.0.15", "10.0.16"))
         self.run_gate(1, "MiningcoreRuntimeMinimum in src/Miningcore/RuntimeDependencyPolicy.props")
 
     def test_old_runtime_floors_in_both_modes(self):
@@ -146,10 +146,10 @@ class PublishedPkcsTests(unittest.TestCase):
                 self.framework_manifest()
             for index in (0, 1):
                 with self.subTest(mode=mode, index=index):
-                    self.config["runtimeOptions"]["frameworks"][index]["version"] = "10.0.13"
+                    self.config["runtimeOptions"]["frameworks"][index]["version"] = "10.0.14"
                     self.write_config()
                     self.run_gate(1, "runtime policy floor")
-                    self.config["runtimeOptions"]["frameworks"][index]["version"] = "10.0.14"
+                    self.config["runtimeOptions"]["frameworks"][index]["version"] = "10.0.15"
 
     def test_singular_aspnet_framework(self):
         self.framework_manifest()
@@ -164,7 +164,7 @@ class PublishedPkcsTests(unittest.TestCase):
 
     def test_highest_extensions_version_wins(self):
         self.project.write_text(self.project.read_text().replace('</ItemGroup>',
-            '<PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.15" /></ItemGroup>'))
+            '<PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.16" /></ItemGroup>'))
         self.run_gate(1, "servicing baseline")
 
     def test_baseline_ignores_other_bands_and_prereleases(self):
@@ -179,7 +179,7 @@ class PublishedPkcsTests(unittest.TestCase):
 
     def test_baseline_requires_at_least_one_eligible_reference(self):
         self.project.write_text(self.project.read_text().replace(
-            'Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14"',
+            'Include="Microsoft.Extensions.Caching.Memory" Version="10.0.15"',
             'Include="Microsoft.Extensions.Caching.Memory" Version="10.1.0"'))
         self.run_gate(1, "baseline")
 

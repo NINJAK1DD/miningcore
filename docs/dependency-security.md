@@ -179,7 +179,7 @@ not proof of selection. The same checks run against Windows publishing and insid
 packaged container images, as their normal unprivileged user. NBitcoin.Zcash binding is also tested.
 Reported versions and locations do not authenticate binaries. Continue verifying release provenance,
 published checksums and installation permissions independently of the runtime guard.
-Linux and Windows negative tests use hash-verified 10.0.13 runtime archives in separate disposable
+Linux and Windows negative tests use hash-verified 10.0.14 runtime archives in separate disposable
 directories. They never install an older SDK into the publishing toolchain or change its `PATH`.
 Network, TLS, HTTP-protocol and response-read failures receive at most three attempts with 2- and
 4-second backoff. Local archive open, write and flush failures stop immediately, as do checksum
@@ -201,10 +201,14 @@ python scripts/release/run-managed-dependency-smoke.py build/windows-x64
 ### Deployment when distribution packages lag
 
 Keep both shared frameworks patched to the latest supported .NET 10 servicing release, at least
-the common policy floor. On 9 November 2026, the Ubuntu 24.04 and 26.04 source-build CI logs and
+the common policy floor, raised to 10.0.15 for Microsoft's 10 November 2026 security servicing
+release. CI selects SDK 10.0.404, and the reviewed PKCS and Microsoft.Extensions references are
+10.0.15. The PKCS-specific CVE floor remains 10.0.13; it does not replace the newer servicing
+requirement. On 9 November 2026, the Ubuntu 24.04 and 26.04 source-build CI logs and
 the Ubuntu 26.04 lab confirmed Canonical Core and ASP.NET packages at 10.0.14. That is validation
 of those snapshots, not a promise about every mirror or future servicing update. Check the actual
-installation and configured package source before rollout:
+installation and configured package source before rollout. Those 10.0.14 snapshots no longer
+meet the current floor:
 
 ```console
 apt-cache policy dotnet-runtime-10.0 aspnetcore-runtime-10.0
@@ -267,4 +271,13 @@ remain offline; this procedure does not declare the older runtime safe for servi
 Keep this exception read-only: future commands that modify evidence, acknowledge incidents,
 submit payments or start services must remain inside the enforced runtime boundary.
 
-Baseline source: [Microsoft .NET 10.0.14 servicing release](https://github.com/dotnet/core/blob/main/release-notes/10.0/10.0.14/10.0.14.md).
+Baseline source: [Microsoft .NET 10.0.15 servicing release][november-servicing], published
+10 November 2026. Assess package-specific advisories as well as the shared frameworks: a runtime
+update cannot fix an affected `System.Formats.Cbor` NuGet dependency (CVE-2026-118747).
+Check every restored project and the published dependency manifest; update CBOR separately if
+present, and retain the complete transitive vulnerable-package audit as release evidence.
+The 10 November 2026 restore with SDK 10.0.404 found no `System.Formats.Cbor` in the resolved
+graphs of Miningcore, Miningcore.Tests or Miningcore.Tests.ProcessHost; their complete transitive
+NuGet audits reported no vulnerable packages. Recheck this evidence whenever dependencies change.
+
+[november-servicing]: https://github.com/dotnet/core/blob/main/release-notes/10.0/10.0.15/10.0.15.md

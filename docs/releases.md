@@ -27,7 +27,8 @@ for the SIGILL investigation, runtime-dispatch policy and regression checks.
 ### Selected .NET and PKCS runtime requirements
 
 New framework-dependent publishes declare serviced runtime minima and refuse hosts below
-the shared policy floor (currently .NET and ASP.NET Core 10.0.14). Install both serviced
+the shared policy floor (currently .NET and ASP.NET Core 10.0.15, from Microsoft's
+10 November 2026 security servicing release). Install both serviced
 frameworks before upgrading Miningcore; a distribution package may lag behind this floor.
 Normal startup checks the actual Core runtime, ASP.NET assembly and PKCS even if an operator
 lowers the runtimeconfig requirements. A direct PKCS package reference alone does not guarantee

@@ -18,8 +18,8 @@ import zipfile
 # binaries are negative fixtures, not deployment or build prerequisites.
 # https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json
 FIXTURES = {
-    "linux-x64": ("tar.gz", "7b20d4164f097e1cf616d8174b6a64be100e6f30dc4e028b16e551e8b0c86dff0ef424bb4bf52d1ff0ecca38e102d3fa80814e06cb85a32d6eee4c3b99764f79"),
-    "win-x64": ("zip", "cf71f882366ea544beda44c812a7b26bc571fb3f0c5102249e615b9ee953fe5c2c5ee9198cda55f499ad55284bac7748abe35dd4478e528b94b71bc09d9403af"),
+    "linux-x64": ("tar.gz", "dd024fd2616926a555b75cbf7a836f6dce998199f0596d9d75676dca2b9d59c8ee8673c6ac23473c0f1a4bdd59eb5cd02fe9ab097eeaf2dd8c8bd117c85e7031"),
+    "win-x64": ("zip", "f26712cbc7a0c3de6c78c78d2ec80f5a96e3da97f3ce67e964a66bc2d8638cf02f67113c28be5431b2739b29732d918bc3210064b52c845fe914e56fcd058acb"),
 }
 MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
 DOWNLOAD_DEADLINE_SECONDS = 300
@@ -81,8 +81,8 @@ def main():
     if destination.exists():
         parser.error("fixture destination must not already exist")
     extension, expected = FIXTURES[args.rid]
-    url = ("https://builds.dotnet.microsoft.com/dotnet/aspnetcore/Runtime/10.0.13/"
-           f"aspnetcore-runtime-10.0.13-{args.rid}.{extension}")
+    url = ("https://builds.dotnet.microsoft.com/dotnet/aspnetcore/Runtime/10.0.14/"
+           f"aspnetcore-runtime-10.0.14-{args.rid}.{extension}")
     if args.download_only:
         download_verified(url, destination, expected)
         return
@@ -100,7 +100,7 @@ def main():
             with tarfile.open(archive) as package:
                 package.extractall(destination, filter="data")
     for framework in ("Microsoft.NETCore.App", "Microsoft.AspNetCore.App"):
-        if not (destination / "shared" / framework / "10.0.13").is_dir():
+        if not (destination / "shared" / framework / "10.0.14").is_dir():
             raise ValueError(f"Runtime fixture is missing {framework}")
     print(f"Isolated negative runtime fixture: {destination}; build toolchain and PATH unchanged")
 

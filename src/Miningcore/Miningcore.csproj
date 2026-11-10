@@ -115,11 +115,11 @@
              Follow the servicing-baseline policy in docs/dependency-security.md;
              remove only when restore/audit shows every transitive path meets both
              the floor and that baseline without this reference. -->
-        <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
+        <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.15" />
         <PackageReference Include="McMaster.Extensions.CommandLineUtils" Version="5.1.0" />
-        <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.14" />
-        <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.14" />
-        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.14" />
+        <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.15" />
+        <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.15" />
+        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.15" />
         <PackageReference Include="NBitcoin" Version="10.0.19" />
         <PackageReference Include="NBitcoin.Altcoins" Version="3.0.28" />
         <PackageReference Include="NBitcoin.Zcash" Version="3.0.0" />

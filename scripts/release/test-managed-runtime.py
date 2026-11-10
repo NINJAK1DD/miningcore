@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real-host binding and old-framework rejection tests; never runs mining services.
 
-Requires installed ASP.NET 10.0.13 as a negative fixture, plus the serviced host.
+Requires installed ASP.NET 10.0.14 as a negative fixture, plus the serviced host.
 Only temporary copies/links are changed. The older framework is never deployed.
 """
 import argparse
@@ -34,8 +34,8 @@ def main():
     args = parser.parse_args()
     app = args.application.resolve()
     old = args.old_aspnet.resolve()
-    if old.name != "10.0.13" or not (old / (PKCS + ".dll")).is_file():
-        raise ValueError("Expected the real ASP.NET 10.0.13 negative fixture")
+    if old.name != "10.0.14" or not (old / (PKCS + ".dll")).is_file():
+        raise ValueError("Expected the real ASP.NET 10.0.14 negative fixture")
     dotnet = Path(shutil.which("dotnet")).resolve()
     spec = importlib.util.spec_from_file_location("smoke", HERE / "run-managed-dependency-smoke.py")
     smoke = importlib.util.module_from_spec(spec)
@@ -88,7 +88,7 @@ def main():
         run(command(source="package"), 0, "PKCS binding accepted: package")
         # Equal framework assets can win host conflict resolution too. To exercise
         # actual app-local loading, make a disposable framework with its PKCS asset
-        # at 10.0.13; Core and the ASP.NET marker remain the real serviced binaries.
+        # at 10.0.14; Core and the ASP.NET marker remain the real serviced binaries.
         isolated = root / "dotnet"
         isolated.mkdir()
         shutil.copy2(dotnet, isolated / dotnet.name)
@@ -114,19 +114,19 @@ def main():
         run(command(host=isolated / dotnet.name, source="package"), 0,
             str(runtime / (PKCS + ".dll")), env)
         # A newer framework may legitimately replace an older app copy.
-        package_fixture("10.0.13", old / (PKCS + ".dll"))
-        run(command(source="package", reference="10.0.13"), 0, str(current_aspnet))
+        package_fixture("10.0.14", old / (PKCS + ".dll"))
+        run(command(source="package", reference="10.0.14"), 0, str(current_aspnet))
 
         # Serviced Core/ASP.NET markers cannot hide PKCS below the embedded reviewed
         # package minimum. Both the smoke and normal Main must reject it.
-        run(command(host=isolated / dotnet.name, source="package", reference="10.0.13"),
-            1, f"PKCS 10.0.13 requires {version}", env)
+        run(command(host=isolated / dotnet.name, source="package", reference="10.0.14"),
+            1, f"PKCS 10.0.14 requires {version}", env)
         run([isolated / dotnet.name, runtime / "Miningcore.dll", "--version"],
-            1, f"PKCS 10.0.13 requires {version}", env)
+            1, f"PKCS 10.0.14 requires {version}", env)
 
         # Isolate host selection: Core stays serviced, but ASP.NET is genuinely old.
         shutil.rmtree(isolated / "shared/Microsoft.AspNetCore.App")
-        shutil.copytree(old, isolated / "shared/Microsoft.AspNetCore.App/10.0.13")
+        shutil.copytree(old, isolated / "shared/Microsoft.AspNetCore.App/10.0.14")
         env = dict(os.environ, DOTNET_ROOT=str(isolated), DOTNET_MULTILEVEL_LOOKUP="0")
         env.pop("DOTNET_ROLL_FORWARD", None)
         deps.write_text(original_manifest)
@@ -137,18 +137,18 @@ def main():
         options = json.loads(config.read_text())
         for framework in options["runtimeOptions"]["frameworks"]:
             if framework["name"] == "Microsoft.AspNetCore.App":
-                framework["version"] = "10.0.13"
+                framework["version"] = "10.0.14"
         config.write_text(json.dumps(options))
-        run(command(host=isolated / dotnet.name), 1, "Microsoft.AspNetCore.App 10.0.13 requires", env)
+        run(command(host=isolated / dotnet.name), 1, "Microsoft.AspNetCore.App 10.0.14 requires", env)
         run([isolated / dotnet.name, runtime / "Miningcore.dll", "--version"], 1,
             "Runtime dependency validation failed", env)
-        old_core = old.parents[1] / "Microsoft.NETCore.App/10.0.13"
+        old_core = old.parents[1] / "Microsoft.NETCore.App/10.0.14"
         shutil.rmtree(isolated / "shared/Microsoft.NETCore.App")
-        shutil.copytree(old_core, isolated / "shared/Microsoft.NETCore.App/10.0.13")
+        shutil.copytree(old_core, isolated / "shared/Microsoft.NETCore.App/10.0.14")
         for framework in options["runtimeOptions"]["frameworks"]:
-            framework["version"] = "10.0.13"
+            framework["version"] = "10.0.14"
         config.write_text(json.dumps(options))
-        run(command(host=isolated / dotnet.name), 1, "Microsoft.NETCore.App 10.0.13 requires", env)
+        run(command(host=isolated / dotnet.name), 1, "Microsoft.NETCore.App 10.0.14 requires", env)
         run([isolated / dotnet.name, runtime / "Miningcore.dll", "--version"], 1,
             "Runtime dependency validation failed", env)
 
