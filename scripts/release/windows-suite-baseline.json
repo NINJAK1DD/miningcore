@@ -1,7 +1,7 @@
 {
-  "source_commit": "926bc7dcb66d7ab9c6bf8b5dc72d03e1116e6c62",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42915640679",
-  "minimum_total": 6092,
+  "source_commit": "5f17faeaa8309342fa9f92e6110ed0928cf2743f",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42926822543",
+  "minimum_total": 6097,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -192,6 +192,26 @@
       "class": "Miningcore.Tests.RecoveryLoggingTests",
       "method": "ServiceModeRetainsConfiguredAuditThreshold",
       "case": "ServiceModeRetainsConfiguredAuditThreshold(level: \"off\")"
+    },
+    {
+      "class": "Miningcore.Tests.Util.RuntimeDependencyGuardTests",
+      "method": "BadManagedImageRequiresOperatorWithoutMaskingDurabilityLoss",
+      "case": "BadManagedImageRequiresOperatorWithoutMaskingDurabilityLoss(previous: 0, expected: 78)"
+    },
+    {
+      "class": "Miningcore.Tests.Util.RuntimeDependencyGuardTests",
+      "method": "BadManagedImageRequiresOperatorWithoutMaskingDurabilityLoss",
+      "case": "BadManagedImageRequiresOperatorWithoutMaskingDurabilityLoss(previous: 1, expected: 78)"
+    },
+    {
+      "class": "Miningcore.Tests.Util.RuntimeDependencyGuardTests",
+      "method": "BadManagedImageRequiresOperatorWithoutMaskingDurabilityLoss",
+      "case": "BadManagedImageRequiresOperatorWithoutMaskingDurabilityLoss(previous: 74, expected: 74)"
+    },
+    {
+      "class": "Miningcore.Tests.Util.RuntimeDependencyGuardTests",
+      "method": "RuntimeBoundaryDoesNotReclassifyUnexpectedFailures",
+      "case": "RuntimeBoundaryDoesNotReclassifyUnexpectedFailures"
     }
   ],
   "expected_skips": [
@@ -949,6 +969,11 @@
       "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
       "method": "LostGuardSession_RemainsBlockedUntilExplicitRecovery",
       "case": "LostGuardSession_RemainsBlockedUntilExplicitRecovery"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "Migration_NonSuperuserRerunsWithoutTemporaryOwnerMembershipOrDatabaseCreate",
+      "case": "Migration_NonSuperuserRerunsWithoutTemporaryOwnerMembershipOrDatabaseCreate"
     },
     {
       "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",

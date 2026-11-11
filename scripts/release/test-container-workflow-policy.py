@@ -102,16 +102,21 @@ class WorkflowPolicyTests(unittest.TestCase):
                 serviced_image('FROM mcr.microsoft.com/dotnet/aspnet:10.0.15-resolute' + suffix,
                                'aspnet', '10.0.15')
 
-    def test_private_source_lanes_monitor_canonical_and_keep_runtime_validation(self):
+    def test_canonical_source_lanes_select_packaged_host_and_keep_runtime_validation(self):
         workflow = yaml.load((ROOT / '.github/workflows/dotnet.yml').read_text(), Loader=yaml.BaseLoader)
         job = next(job for job in workflow['jobs'].values()
                    if job.get('name') == 'Build Ubuntu ${{ matrix.ubuntu }} source')
         steps = job['steps']
-        setup = next(step for step in steps if step['name'] == 'Setup reviewed private SDK for source builds')
-        self.assertEqual('${{ runner.temp }}/miningcore-dotnet', setup['env']['DOTNET_INSTALL_DIR'])
-        sentinel = next(step for step in steps if 'check-canonical-servicing.sh' in step.get('run', ''))
-        self.assertNotIn('if', sentinel)
-        self.assertNotIn('continue-on-error', sentinel)
+        self.assertEqual('/usr/lib/dotnet', job['env']['DOTNET_ROOT'])
+        self.assertEqual('/usr/lib/dotnet', job['env']['DOTNET_ROOT_X64'])
+        self.assertFalse(any('actions/setup-dotnet@' in step.get('uses', '') for step in steps))
+        self.assertFalse(any('check-canonical-servicing.sh' in step.get('run', '') for step in steps))
+        build = next(step for step in steps if step['name'] == 'Build with Canonical SDK and dependencies')
+        self.assertIn('unset MININGCORE_PRIVATE_DOTNET_ROOT DOTNET_HOST_PATH DOTNET_ROLL_FORWARD', build['run'])
+        self.assertIn('export PATH="/usr/bin:$PATH"', build['run'])
+        self.assertIn('echo "/usr/bin" >> "$GITHUB_PATH"', build['run'])
+        self.assertNotIn('if', build)
+        self.assertNotIn('continue-on-error', build)
         self.assertTrue(any('test-ubuntu-source-build.sh' in step.get('run', '') for step in steps))
         self.assertIn('run-managed-dependency-smoke',
                       (ROOT / 'scripts/release/test-ubuntu-source-build.sh').read_text())

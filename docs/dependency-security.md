@@ -276,15 +276,14 @@ the default route's package-provenance and framework checks; its version is not 
 Microsoft's `10.0.4xx` feature band. The helpers install the current Canonical SDK candidate first.
 This explicit selection does not authenticate
 the archive; verify Microsoft's SHA-512 first. Native packages still come from Canonical, and no
-Microsoft APT feed is added. CI currently tests this private-SDK route on both Ubuntu source-build
-targets because Canonical's 10 November packages still provide 10.0.14. It does not claim that those
-Canonical runtimes pass the new floor. Each source lane also checks the Canonical host with the
-private selection removed. Only the specific under-serviced-framework refusal passes this sentinel;
-unexpected provenance or tooling failures fail CI. Once Canonical catches up, the sentinel fails
-with instructions to restore that lane's Canonical build and remove the temporary sentinel call.
-This deliberately makes open PRs fail on the affected lane when its Canonical packages catch up;
-restore that lane promptly instead of suppressing the failure or lowering the runtime floor.
-Keep the private-route regression tests when switching back.
+Microsoft APT feed is added. On 11 November, the source-lane servicing checks confirmed Canonical
+SDK 10.0.115 with Core/ASP.NET 10.0.15 on both Ubuntu 24.04 and 26.04. Both lanes now use the
+Canonical host and packages again, with the same provenance checks, runtime floors and published
+binding smoke. Private-route helper regressions remain covered. If a later security update again
+requires the explicit private route, enable `check-canonical-servicing.sh` while that route is
+temporary: only the specific under-serviced-framework refusal passes its sentinel; unexpected
+failures or Canonical catch-up fail CI. Restore the Canonical lane when it catches up rather than
+suppressing that failure or lowering the runtime floor.
 
 [dependabot-docker-names]: https://github.com/dependabot/dependabot-core/issues/16574
 [dependabot-docker-rebase]: https://github.com/dependabot/dependabot-core/issues/14780
