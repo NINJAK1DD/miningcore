@@ -277,13 +277,14 @@ This explicit selection does not authenticate
 the archive; verify Microsoft's SHA-512 first. Native packages still come from Canonical, and no
 Microsoft APT feed is added. On 11 November 2026, the source-lane servicing checks confirmed Canonical
 SDK 10.0.115 with Core/ASP.NET 10.0.15 on both Ubuntu 24.04 and 26.04. Both lanes now use the
-Canonical host and packages, available in `noble-security` and `resolute-security`, respectively, with the
-same package checks, runtime floors and published binding smoke. Prepending `/usr/bin` also
-selects Ubuntu's APT CMake/native toolchain ahead of runner-local tools. A separate apphost launch
+Canonical host and packages, available in `noble-security` and `resolute-security`, respectively,
+with the same package checks, runtime floors and published binding smoke. Prepending `/usr/bin`
+also selects Ubuntu's APT CMake/native toolchain ahead of runner-local tools. A later step verifies
+that ordering and the resolved SDK and native tool paths. A separate apphost launch
 clears `DOTNET_ROOT` and `DOTNET_ROOT_X64` and checks Ubuntu's registered installation files,
 including the architecture-specific override when present. This exercises the operator's unaided
 `./Miningcore` launch in addition to the pinned-runtime checks. See Microsoft's
-[runtime discovery guidance](https://learn.microsoft.com/en-us/dotnet/core/runtime-discovery/troubleshoot-app-launch).
+[runtime discovery guidance][runtime-discovery].
 
 The package checks verify path, dpkg ownership and Ubuntu maintainer metadata; the maintainer
 field alone is not proof of Canonical origin. Use trusted, authenticated Ubuntu APT sources and
@@ -298,7 +299,8 @@ The optional Ubuntu 24.04/26.04 jobs install the reviewed Microsoft SDK in a sep
 select its host and both root variables, then run the source build, published runtime/native checks
 and native known-answer tests. The private root is first in `PATH`, immediately followed by
 `/usr/bin` so both routes use Ubuntu's APT native toolchain. A later step verifies the persisted
-ordering and resolved `dotnet`, `cmake` and `c++` paths. These jobs do not replace either required Canonical source lane.
+ordering and resolved `dotnet`, `cmake` and `c++` paths. These jobs do not replace either required
+Canonical source lane.
 They deliberately omit the catch-up sentinel: Canonical availability is expected in this exercise.
 
 If a future servicing gap requires temporarily switching the default source lanes to a private SDK,
@@ -323,6 +325,8 @@ make the following coordinated change in one PR:
 Restore the complete Canonical selection and unaided launch check when the sentinel reports
 catch-up. Do not suppress that failure or lower the runtime floor.
 
+[runtime-discovery]:
+  https://learn.microsoft.com/en-us/dotnet/core/runtime-discovery/troubleshoot-app-launch
 [dependabot-docker-names]: https://github.com/dependabot/dependabot-core/issues/16574
 [dependabot-docker-rebase]: https://github.com/dependabot/dependabot-core/issues/14780
 

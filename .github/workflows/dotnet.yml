@@ -582,6 +582,17 @@ jobs:
         ./build-ubuntu-${{ matrix.ubuntu }}.sh \
           "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
 
+    - name: Verify persisted Canonical SDK and native toolchain selection
+      shell: bash
+      run: |
+        set -euo pipefail
+        printf 'PATH=%s\n' "$PATH"
+        test "${PATH#/usr/bin:}" != "$PATH"
+        test "$(readlink -f "$(command -v dotnet)")" = /usr/lib/dotnet/dotnet
+        test "$(command -v cmake)" = /usr/bin/cmake
+        test "$(command -v c++)" = /usr/bin/c++
+        command -v dotnet cmake c++
+
     - name: Validate unaided apphost discovery
       shell: bash
       run: >-

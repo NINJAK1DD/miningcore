@@ -120,7 +120,16 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn('export PATH="/usr/bin:$PATH"', build['run'])
         self.assertIn('echo "/usr/bin" >> "$GITHUB_PATH"', build['run'])
         self.assertIn('./build-ubuntu-${{ matrix.ubuntu }}.sh', build['run'])
+        selection = next(step for step in steps
+                         if step['name'] == 'Verify persisted Canonical SDK and native toolchain selection')
+        self.assertLess(steps.index(build), steps.index(selection))
+        for token in ('test "${PATH#/usr/bin:}" != "$PATH"',
+                      'test "$(readlink -f "$(command -v dotnet)")" = /usr/lib/dotnet/dotnet',
+                      'test "$(command -v cmake)" = /usr/bin/cmake',
+                      'test "$(command -v c++)" = /usr/bin/c++'):
+            self.assertIn(token, selection['run'])
         discovery = next(step for step in steps if step['name'] == 'Validate unaided apphost discovery')
+        self.assertLess(steps.index(selection), steps.index(discovery))
         self.assertIn('bash scripts/release/test-ubuntu-apphost-discovery.sh', discovery['run'])
         discovery_script = (ROOT / 'scripts/release/test-ubuntu-apphost-discovery.sh').read_text()
         for token in ('/etc/dotnet', 'install_location_x64',
@@ -130,7 +139,7 @@ class WorkflowPolicyTests(unittest.TestCase):
                         if 'test-apphost-discovery-fixtures.py' in step.get('run', ''))
         self.assertNotIn('if', fixtures)
         self.assertNotIn('continue-on-error', fixtures)
-        self.require_source_validation(steps, build, discovery)
+        self.require_source_validation(steps, build, selection, discovery)
         self.assertIn('run-managed-dependency-smoke',
                       (ROOT / 'scripts/release/test-ubuntu-source-build.sh').read_text())
 
