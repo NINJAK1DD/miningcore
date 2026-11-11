@@ -236,6 +236,11 @@ public class AdminApiController : ApiControllerBase
     private void ValidatePaymentProcessingToggle(IEnumerable<IMiningPool> targetPools,
         bool enable)
     {
+        if(clusterConfig.PaymentProcessing?.Paused == true)
+            throw new ApiException(
+                "The payout processor is paused for this process; changing payment processing requires a controlled restart",
+                HttpStatusCode.Conflict);
+
         var protectedPool = targetPools
             .Select(pool =>
             {

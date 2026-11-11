@@ -532,7 +532,8 @@ public class Program : ProcessStatusBackgroundService
 
         // Payment processing
         ConfigurePaymentProcessingHostedService(services, clusterConfig);
-        if(clusterConfig.PaymentProcessing?.Paused == true)
+        services.AddHostedService<PayoutPauseMonitor>();
+        if(IsPaymentProcessorPaused(clusterConfig))
             logger.Warn("Payment processing is paused: wallet payouts, block reconciliation and payout retention are suspended; mining-side accounting remains enabled");
         else if(!ShouldRunPaymentProcessor(clusterConfig))
             logger.Info("Payment processing is not enabled");
@@ -1493,6 +1494,10 @@ public class Program : ProcessStatusBackgroundService
 
         var document = JObject.Parse(generator.Generate(typeof(ClusterConfig)).ToString());
         PostgresConnectionPolicy.AddSchemaRules(document);
+        var paymentSchema = document.SelectToken("definitions.ClusterPaymentProcessingConfig") as JObject ??
+            throw new InvalidOperationException("Generated schema is missing cluster payment processing");
+        // Unknown future safety controls must fail closed on rollback to this binary.
+        paymentSchema["additionalProperties"] = false;
         Miningcore.Blockchain.Pearl.PearlPoolConfig.AddSchemaRules(document);
         var activationSchema = document.SelectToken(
             "definitions.PoolPaymentProcessingConfig.properties.ppsBinary64Activation") as JObject ??
@@ -2786,6 +2791,9 @@ public class Program : ProcessStatusBackgroundService
 
     internal static bool ShouldRunPaymentProcessor(ClusterConfig config) =>
         HasPaymentProcessorConfiguration(config) && !config.PaymentProcessing.Paused;
+
+    internal static bool IsPaymentProcessorPaused(ClusterConfig config) =>
+        HasPaymentProcessorConfiguration(config) && config.PaymentProcessing.Paused;
 
     private static bool HasPaymentProcessorConfiguration(ClusterConfig config)
     {

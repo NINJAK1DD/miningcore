@@ -124,7 +124,10 @@ public class PayoutManager : ProcessStatusBackgroundService
 
         // Defense in depth: a registration mistake must not acquire ownership or broadcast.
         if(clusterConfig.PaymentProcessing.Paused)
+        {
+            ProcessStatus.MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
             throw new TrustedPoolStartupException("Cannot start the payout manager while cluster paymentProcessing.paused=true");
+        }
 
         if(!await payoutLease.TryAcquireAsync(ct))
         {

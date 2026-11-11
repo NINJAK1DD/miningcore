@@ -64,6 +64,19 @@ public class ConfigurationContractTests
         finally { File.Delete(path); }
     }
 
+    [Fact]
+    public void ClusterPaymentSchema_RejectsUnknownSafetyControls()
+    {
+        var document = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.example.json")));
+        document["paymentProcessing"]["futurePauseControl"] = true;
+        var path = WriteTemporaryConfig(document);
+        try { Assert.Throws<PoolStartupException>(() => Program.ReadConfig(path)); }
+        finally { File.Delete(path); }
+        var schema = Program.GenerateJsonConfigSchemaDocument();
+        Assert.False(schema.SelectToken("definitions.ClusterPaymentProcessingConfig.additionalProperties").Value<bool>());
+        Assert.False(schema.SelectToken("definitions.ClusterPaymentProcessingConfig.properties.paused.default").Value<bool>());
+    }
+
     private const string MissingExamplesDirectoryMarker =
         "<missing-examples-directory>";
 

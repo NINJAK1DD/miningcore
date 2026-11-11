@@ -1,5 +1,12 @@
 # Upgrade from v0.3.0 to v0.4.0-rc.1
 
+> **Payout-pause compatibility warning:** RC.1 ignores `paymentProcessing.paused` and may pay
+> wallets even when it is true. Keep RC.1 stopped during full payout recovery. Before restarting
+> on RC.2, stop every payout-capable node and run the exact-binary
+> [pre-start check](database.md#restart-only-payout-pause). Never roll back a paused configuration
+> to RC.1. RC.2 rejects unknown cluster payment-processing fields; fix typos before startup.
+
+
 This guide covers the first v0.4.0 release candidate. It is a staging candidate,
 not the v0.4.0 stable release. Confirm that its release assets have been published
 before using download commands; preparing a release branch does not publish them.

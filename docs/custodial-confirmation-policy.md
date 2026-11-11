@@ -27,7 +27,9 @@ For shared-family pools that process payments, nonpositive effective thresholds
 throw `PoolStartupException` during main pool startup, after templates are assigned
 and before Stratum listeners are reserved. Both cluster and pool payment processing
 must be enabled: Stratum-only/share-relay nodes do not use this payout policy.
-Validation uses the same `ShouldRunPaymentProcessor` gate as service startup. A
+Validation uses `HasPaymentProcessorConfiguration`, so a configured processor still validates
+confirmation settings while `paymentProcessing.paused=true`. Service startup separately uses
+`ShouldRunPaymentProcessor` and does not register the paused processor. A
 share-relay sender without PostgreSQL therefore ignores an unused threshold even
 when payment flags remain enabled in its shared configuration; a relay with
 PostgreSQL and enabled payments still validates it.

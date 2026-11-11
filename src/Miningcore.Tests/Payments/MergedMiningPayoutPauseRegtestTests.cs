@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
+using System.Reactive.Disposables;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -84,10 +86,25 @@ public partial class MergedMiningPayoutRegtestTests
             Program.ValidateConfig(cluster, recoveryMode: false);
             Program.AssignPoolTemplates(cluster.Pools, ModuleInitializer.CoinTemplates);
             var clock = new StandardClock();
+            var pausedPools = new List<PoolConfig>();
 
             // SOLO proves ordinary-share and beneficiary preservation; mixed PPS/PROP proves liabilities.
             foreach(var scheme in new[] { PayoutScheme.SOLO, PayoutScheme.PPS })
             {
+                // Preserve each accounting contract through resume instead of changing schemes
+                // under an existing backlog. Each pair has separate pool IDs and beneficiaries.
+                cluster.Pools = json["pools"].ToObject<PoolConfig[]>(serializer);
+                Program.AssignPoolTemplates(cluster.Pools, ModuleInitializer.CoinTemplates);
+                foreach(var pool in cluster.Pools)
+                {
+                    pool.Id += "-" + scheme;
+                    pool.RewardRecipients = Array.Empty<RewardRecipient>();
+                    pool.PaymentProcessing.MinimumPayment = 0.0001m;
+                    pool.PaymentProcessing.Extra = new Dictionary<string, object> { ["minersPayTxFees"] = false };
+                }
+                var merged = (JObject) cluster.Pools[0].Extra["mergedMining"];
+                merged["auxPoolId"] = cluster.Pools[1].Id;
+                pausedPools.AddRange(cluster.Pools);
                 cluster.Pools[0].PaymentProcessing.PayoutScheme = scheme;
                 cluster.Pools[1].PaymentProcessing.PayoutScheme = scheme == PayoutScheme.SOLO ? PayoutScheme.SOLO : PayoutScheme.PROP;
                 Program.ValidateMergedMiningDeployment(cluster, requireAssignedTemplates: true);
@@ -106,7 +123,7 @@ public partial class MergedMiningPayoutRegtestTests
                     await recorder.PersistBlockCandidateAsync(share);
                     lock(committedCandidates) committedCandidates.Add(share);
                 });
-                var pendingShares = new List<Task>();
+                var pendingShares = new ConcurrentQueue<Task>();
                 using var subscription = bus.Listen<Share>().Subscribe(share =>
                 {
                     // This fixture drives the job manager without a TCP transport. Supply the
@@ -115,10 +132,12 @@ public partial class MergedMiningPayoutRegtestTests
                     if(share.PairedShare != null)
                         share.PairedShare.IpAddress ??= share.IpAddress;
                     var persisted = recorder.PersistSharesAsync(new[] { share });
-                    pendingShares.Add(persisted);
+                    pendingShares.Enqueue(persisted);
                     share.SetPersistenceAdmission(persisted);
                 });
                 using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+                // Job managers have no IDisposable API; cancel their lifetime before subscriptions leave scope.
+                using var stopManager = Disposable.Create(cancellation.Cancel);
                 var manager = new MergedMiningBitcoinJobManager(ModuleInitializer.Container, clock, bus,
                     new BitcoinExtraNonceProvider("pause-regtest", null), candidateRecorder);
                 manager.Configure(cluster.Pools[0], cluster);
@@ -145,7 +164,7 @@ public partial class MergedMiningPayoutRegtestTests
                         ltcAddress + ".pause", job.JobId, extraNonce2,
                         job.BlockTemplate.CurTime.ToString("x8"), nonce.ToString("x8"),
                     }, cancellation.Token);
-                    await Task.WhenAll(pendingShares);
+                    await Task.WhenAll(pendingShares.ToArray());
                     if(committedCandidates.Any(x => x.PoolId == cluster.Pools[0].Id) &&
                        committedCandidates.Any(x => x.PoolId == cluster.Pools[1].Id))
                         break;
@@ -175,6 +194,7 @@ public partial class MergedMiningPayoutRegtestTests
             Assert.DoesNotContain(await litecoin.RpcAsync("listtransactions", true, "*", 1000), x => x["category"]?.Value<string>() == "send");
             Assert.DoesNotContain(await dogecoin.RpcAsync("listtransactions", true, "*", 1000), x => x["category"]?.Value<string>() == "send");
 
+            cluster.Pools = pausedPools.ToArray();
             cluster.PaymentProcessing.Paused = false;
             Assert.True(Program.ShouldRunPaymentProcessor(cluster));
             await using(var stale = new PostgresPayoutManagerLease(database))
@@ -190,6 +210,7 @@ public partial class MergedMiningPayoutRegtestTests
 
                 // Repeat the real startup path with the pause lifted and valid payout ownership.
                 using var resumedLifetime = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                using var stopResumedManager = Disposable.Create(resumedLifetime.Cancel);
                 var resumedManager = new MergedMiningBitcoinJobManager(ModuleInitializer.Container, clock,
                     new MessageBus(), new BitcoinExtraNonceProvider("resumed-regtest", null),
                     Substitute.For<IBlockCandidateRecorder>());
@@ -201,10 +222,11 @@ public partial class MergedMiningPayoutRegtestTests
                 Assert.NotNull(resumedManager.GetJobForStratum());
                 await resumedLifetime.CancelAsync();
             }
+            await AssertResumedWalletLifecycleAsync(cluster, database, connection, litecoin, dogecoin);
         }
         finally
         {
-            await connection.ExecuteAsync("ROLLBACK; SET search_path TO public");
+            await connection.ExecuteAsync("SET search_path TO public");
             await connection.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
             Directory.Delete(directory, true);
         }

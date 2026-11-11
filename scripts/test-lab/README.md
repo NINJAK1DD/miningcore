@@ -17,6 +17,18 @@ binaries must be installed under `/usr/lib/postgresql/*/bin` (or selected with
 
 ## Run the suite
 
+### Persistent Windows native toolchain
+
+The Windows lab also has Visual Studio 2022 with the persistent MSVC v143 x64/x86
+component (`Microsoft.VisualStudio.Component.VC.Tools.x86.x64`) and Windows 11 SDK
+26100 installed. The 11 November 2026 installation provides MSVC 14.44.35207.
+The Odocrypt build helper discovers it through `vswhere`; no per-session toolset
+override or `BuildOdoCryptWindows=false` is needed. Preserve these components when
+servicing Visual Studio. Use the normal Windows build to verify native compilation,
+then the repository's Odocrypt tests to verify loading and hash vectors.
+
+### Ubuntu managed and live fixtures
+
 Validate an exact committed revision in a separate Linux checkout. From the source
 checkout in PowerShell, export a bundle (including Git history for GitVersion):
 

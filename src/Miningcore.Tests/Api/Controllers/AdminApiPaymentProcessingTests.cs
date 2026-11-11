@@ -15,6 +15,36 @@ namespace Miningcore.Tests.Api.Controllers;
 
 public class AdminApiPaymentProcessingTests
 {
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public void PausedProcess_RejectsEveryToggleWithoutMutatingPools(bool bulk, bool enable)
+    {
+        var pools = new[] { Pool("pps", PayoutScheme.PPS, true), Pool("ordinary", PayoutScheme.PPLNS, true) };
+        var controller = CreateController(new ClusterConfig
+        {
+            PaymentProcessing = new() { Enabled = true, Paused = true }, Pools = pools,
+        });
+        foreach(var pool in pools)
+        {
+            var error = Assert.Throws<ApiException>(() =>
+            {
+                if(bulk)
+                {
+                    if(enable) controller.EnablePoolsPaymentProcessing();
+                    else controller.DisablePoolsPaymentProcessing();
+                }
+                else if(enable) controller.EnablePoolPaymentProcessing(pool.Id);
+                else controller.DisablePoolPaymentProcessing(pool.Id);
+            });
+            Assert.Equal(409, error.ResponseStatusCode);
+            Assert.Contains("controlled restart", error.Message);
+            Assert.All(pools, x => Assert.True(x.PaymentProcessing.Enabled));
+        }
+    }
+
     [Fact]
     public void BulkEnable_RejectsPpsWithoutClusterSchedulerBeforeMutatingAnyPool()
     {
@@ -160,14 +190,19 @@ public class AdminApiPaymentProcessingTests
     private static AdminApiController CreateController(bool clusterPaymentEnabled,
         params PoolConfig[] poolConfigs)
     {
-        var clusterConfig = new ClusterConfig
+        return CreateController(new ClusterConfig
         {
             PaymentProcessing = new ClusterPaymentProcessingConfig
             {
                 Enabled = clusterPaymentEnabled,
             },
             Pools = poolConfigs,
-        };
+        });
+    }
+
+    private static AdminApiController CreateController(ClusterConfig clusterConfig)
+    {
+        var poolConfigs = clusterConfig.Pools;
         var pools = new ConcurrentDictionary<string, IMiningPool>();
         foreach(var config in poolConfigs)
         {

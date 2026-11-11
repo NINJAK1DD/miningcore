@@ -257,7 +257,8 @@
           "type": "integer"
         },
         "paused": {
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "shareAccountingPruneBatchSize": {
           "type": "integer",
@@ -267,7 +268,8 @@
           "type": "integer",
           "default": 30
         }
-      }
+      },
+      "additionalProperties": false
     },
     "DaemonEndpointConfig": {
       "type": [

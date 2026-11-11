@@ -109,6 +109,8 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
 
     public override void Configure(PoolConfig pc, ClusterConfig cc)
     {
+        // Validate the shared contract before template casts or daemon setup.
+        auxiliaryPoolConfig = MergedMiningPayoutPolicy.Validate(pc, cc, requireAssignedTemplates: true);
         parentCoin = pc.Template.As<BitcoinTemplate>();
         base.Configure(pc, cc);
 
@@ -116,7 +118,6 @@ public class MergedMiningBitcoinJobManager : BitcoinJobManager
         if(!MergedMiningEnabled)
             return;
 
-        auxiliaryPoolConfig = MergedMiningPayoutPolicy.Validate(pc, cc, requireAssignedTemplates: true);
         auxiliaryCoin = (BitcoinTemplate) auxiliaryPoolConfig.Template;
         usesPairedAccounting = pc.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO ||
             auxiliaryPoolConfig.PaymentProcessing.PayoutScheme != PayoutScheme.SOLO;

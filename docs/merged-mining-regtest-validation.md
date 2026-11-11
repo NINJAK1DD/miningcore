@@ -50,9 +50,12 @@ durable payout ownership, stale-owner refusal, exclusive ownership after explici
 job publication after the pause is lifted.
 
 The fixture invokes the job manager directly and supplies the transport IP metadata normally
-provided by Stratum. It is not a TCP Stratum or physical-miner test, and it does not execute a
-resumed wallet-payment cycle. Existing payout uncertainty, duplicate-payment, lease, relay and
-recovery-journal regressions cover those separate invariants. A configuration matrix also runs all
+provided by Stratum. It is not a TCP Stratum or physical-miner test. The resumed lifecycle uses
+separate pool IDs for each accounting pair, matures the real candidates and starts the actual hosted
+payout manager. It checks reward/liability conservation, wallet transaction IDs and repeated cycles
+without duplicate sends. An injected lost reply after a real wallet broadcast must retain both the
+unsettled balance and payout ownership, and a replacement manager must refuse startup. This does
+not automatically reconcile an ambiguous payment; an operator still needs wallet evidence. A configuration matrix also runs all
 16 supported payout pairs through deployment validation and real manager configuration in direct,
 relay sender and receiver/recorder modes.
 
@@ -62,10 +65,6 @@ To repeat the live gate, provide `MININGCORE_TEST_LITECOIND`, `MININGCORE_TEST_D
 ```console
 dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --filter FullyQualifiedName~PausedExample_RealStartupMiningPersistenceAndOwnershipRecovery
 ```
-
-An independent read-only security/accounting review found no blocking defect. Its correction to
-the old disabled-payment startup diagnostic was applied. That review inspected code and tests;
-test execution was performed separately in the lab.
 
 ## Results
 

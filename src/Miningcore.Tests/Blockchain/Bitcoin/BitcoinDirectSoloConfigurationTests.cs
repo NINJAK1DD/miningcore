@@ -18,6 +18,25 @@ namespace Miningcore.Tests.Blockchain.Bitcoin;
 public class BitcoinDirectSoloConfigurationTests
 {
     [Fact]
+    public void PausedMixedCluster_PreservesDirectCoinbaseRewardsAndAccounting()
+    {
+        var config = Program.ReadConfig(Path.Combine(AppContext.BaseDirectory,
+            "examples", "litecoin_dogecoin_merged_mining_pool.json"));
+        ModuleInitializer.Initialize();
+        Program.AssignPoolTemplates(config.Pools, ModuleInitializer.CoinTemplates);
+        var btc = CreateConfig().Pools[0];
+        config.Pools = [.. config.Pools, btc];
+        config.PaymentProcessing.Paused = true;
+        Program.ValidateMergedMiningDeployment(config, requireAssignedTemplates: true);
+        Program.ValidateBitcoinDirectSoloDeployment(config, requireAssignedTemplates: true);
+        Assert.False(Program.ShouldRunPaymentProcessor(config));
+        Assert.True(Program.RequiresBitcoinDirectSoloPersistence(config));
+        Assert.True(BitcoinPoolConfigPolicy.ResolveSoloCoinbasePayout(btc,
+            btc.Extra.SafeExtensionDataAs<BitcoinPoolConfigExtra>()));
+        Assert.All(config.Pools, pool => Assert.True(pool.PaymentProcessing.Enabled));
+    }
+
+    [Fact]
     public void CanonicalBitcoinSolo_DefaultsOnAndRequiresSchema()
     {
         var config = CreateConfig();

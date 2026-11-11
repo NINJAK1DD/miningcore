@@ -1,5 +1,22 @@
 # Installing a prebuilt Miningcore release
 
+## RC.2 payout pause: deployment and rollback warning
+
+**RC.1 ignores `paymentProcessing.paused` and can resume wallet payouts with that flag present.**
+Before starting any paused service, stop and inventory every wallet-capable process, verify the
+exact selected binary and configuration with the [pre-start check](database.md#restart-only-payout-pause),
+and retain the incident record. Do not roll back a paused configuration to RC.1. This release
+rejects unknown cluster `paymentProcessing` fields so future controls cannot silently disappear
+on rollback to this version. Correct unknown or misspelled fields before upgrading.
+
+The pause stops this process's wallet payout manager, reconciliation and retention; it does not
+stop another node or direct Bitcoin SOLO coinbase rewards. Keep mining stopped if all on-chain
+rewards must stop. Payment-toggle API calls return 409 while paused; resuming requires a controlled
+restart. `miningcore_payout_processor_paused` and five-minute console/log warnings expose a
+configured local processor that remains paused. Automatic ownership-recovery prompts are suppressed;
+the explicit recovery command remains available, subject to its existing runtime and ownership checks.
+
+
 GitHub Releases provide two tested, framework-dependent Linux x64 builds: a primary **Ubuntu 26.04**
 archive and a separately compiled **Ubuntu 22.04 compatibility** archive. The release container is
 built from the Ubuntu 26.04 archive. Each archive saves compilation time, but still requires the
