@@ -202,8 +202,13 @@ identifiers before sharing; retain the original privately.
   reconciliation and must never be imported.
 - **The recovery journal contains records.** Preserve the source and use the manifested one-shot
   importer. Follow [recovery-journal import](database.md#inspect-and-import-a-recovery-journal).
-- **Another payout manager owns the database.** Prove the previous process and PostgreSQL backend
-  are dead, then inspect uncertain payments. Follow [ownership recovery](database.md#recover-payout-manager-ownership-safely).
+- **Exit status `78` / PostgreSQL timestamp configuration required:** verify the current schema,
+  explicitly set `persistence.postgres.enableLegacyTimestamps`, then reset the failed service and
+  restart. See [timestamp compatibility](configuration.md#postgresql-timestamp-compatibility).
+- **Exit status `78` / retained payout owner without a live lock.** Use the
+  [guided ownership recovery assistant](database.md#guided-payout-ownership-recovery). It requires
+  confirmation that the previous instance is stopped and wallet reconciliation is complete.
+  A live payout lock returns retryable status `1`; stop the overlapping instance cleanly.
 - **Wallet reports `Insufficient funds` code `-6`.** Check confirmed inputs, fee ownership and
   fallback mode; do not manufacture a payment. See [fee reserve readiness](operations.md#fee-reserve-and-balance-readiness).
 - **Wallet response or payout identity is uncertain.** Assume the request may have succeeded and

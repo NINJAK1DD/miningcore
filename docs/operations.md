@@ -350,8 +350,17 @@ procedure for incidents that can affect accounting or availability.
   [share-recovery fatal-state reconciliation](database.md#reconcile-fatal-share-recovery-state).
 - **Recovery journal contains records:** preserve the source and use the
   [manifested one-shot importer](database.md#inspect-and-import-a-recovery-journal).
-- **Another payout manager owns the database:** prove the old process and backend are dead, then
-  follow [payout ownership recovery](database.md#recover-payout-manager-ownership-safely).
+- **Exit status `78` / PostgreSQL timestamp configuration required:** verify the current schema,
+  explicitly set `persistence.postgres.enableLegacyTimestamps`, then reset the failed service and
+  restart. See [timestamp compatibility](configuration.md#postgresql-timestamp-compatibility).
+- **Repeated exit status `1` / live payout lock:** a brief instance overlap can retry normally.
+  Alert on a sustained restart loop, identify the intended active instance, and investigate
+  duplicate service/container scheduling. Do not clear ownership while another instance holds
+  the lock. Preserve its logs and wallet evidence before changing deployment state.
+- **Exit status `78` / retained payout owner without a live lock:** use the
+  [guided payout recovery assistant](database.md#guided-payout-ownership-recovery) after stopping
+  the previous instance and reconciling wallet history.
+  A live payout lock returns retryable status `1`; stop the overlapping instance cleanly.
 - **`sendmany` returns code `-6`:** inspect confirmed inputs, fee ownership and fallback mode; see
   [fee reserve readiness](#fee-reserve-and-balance-readiness).
 - **Auxiliary template update fails:** confirm recovery and inspect DOGE sync, load, RPC pressure
