@@ -834,9 +834,17 @@ and pinned ownership table. It inserts the complete previous owner, release time
 and incident reference through the protected append function into the audit table **in the same transaction** as clearing
 ownership. Audit insertion failure rolls the release back. The terminal reports the audit event UUID;
 standalone mode and the normal foreground recovery prompt always send warning-level recovery audit events to the console, even with
-`error`, `fatal` or `off` configured for ordinary service logging, and never opens service log
-files during recovery. Foreground startup restores the configured service logging after the
+`error`, `fatal` or `off` configured for ordinary service logging. Both disable service log-file
+targets during recovery. Foreground startup restores the configured service logging after the
 assistant returns or fails. Balances, payments, batches and generation are unchanged.
+
+**The protected database audit receipt is the durable recovery record.** A release through the
+foreground startup prompt is not written to `miningcore.log`, API logs or per-pool log files,
+even when their configured level would normally accept the warning. Central collection of those
+files alone therefore does not capture recovery releases. Preserve the terminal receipt (or its
+captured console/journal entry) in the incident record and include the protected audit rows in
+your central audit-retention and backup procedures. A missing service-log line does not mean
+ownership was not released; verify the displayed receipt UUID against the audit table.
 
 Audit rows survive later lease acquisition. UPDATE, DELETE and TRUNCATE are rejected, and the
 application role is not granted those privileges and cannot drop the administrator-owned audit

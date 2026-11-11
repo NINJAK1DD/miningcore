@@ -32,7 +32,11 @@ failures now exit with operator-required status 78 so the packaged service does 
 until the installation is repaired, including malformed managed dependencies detected by the guard.
 Recovery audit warnings always reach the standalone or foreground recovery console, including
 when the copied service logging threshold is `error`, `fatal` or `off`. Foreground startup restores
-the configured service logging after recovery. An audit owner can rerun the migration after
+the configured service logging after recovery. Both recovery paths disable service log-file targets:
+the release line does not appear in `miningcore.log`. Preserve the console receipt and retain the
+protected database audit row as the durable record; central service-file collection alone is
+insufficient. See [recovery evidence retention](database.md#guided-payout-ownership-recovery).
+An audit owner can rerun the migration after
 temporary application membership and database `CREATE` have been revoked when the required
 index and protected schema already exist; malformed indexes still fail validation.
 
