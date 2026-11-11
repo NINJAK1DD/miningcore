@@ -536,6 +536,9 @@ jobs:
     # be hidden by success on the primary lane.
     runs-on: ubuntu-${{ matrix.ubuntu }}
     timeout-minutes: 45
+    env:
+      DOTNET_ROOT: /usr/lib/dotnet
+      DOTNET_ROOT_X64: /usr/lib/dotnet
     strategy:
       fail-fast: false
       matrix:
@@ -557,25 +560,16 @@ jobs:
         test "$VERSION_ID" = "${{ matrix.ubuntu }}"
         test "$(uname -m)" = x86_64
 
-    # Canonical's runtime can lag a new Microsoft security release. Keep native
-    # packages on Ubuntu's feed and validate the documented separate SDK route.
-    - name: Setup reviewed private SDK for source builds
-      uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-      env:
-        DOTNET_INSTALL_DIR: ${{ runner.temp }}/miningcore-dotnet
-      with:
-        dotnet-version: ${{ env.CI_DOTNET_SDK }}
-
-    - name: Build with Canonical dependencies and reviewed private SDK
+    # Canonical now supplies both 10.0.15 frameworks. Exercise the default operator
+    # route, retaining package provenance, runtime floors and published binding checks.
+    - name: Build with Canonical SDK and dependencies
       shell: bash
       run: |
-        export MININGCORE_PRIVATE_DOTNET_ROOT="$DOTNET_ROOT"
+        unset MININGCORE_PRIVATE_DOTNET_ROOT DOTNET_HOST_PATH DOTNET_ROLL_FORWARD
+        export PATH="/usr/bin:$PATH"
+        echo "/usr/bin" >> "$GITHUB_PATH"
         ./build-ubuntu-${{ matrix.ubuntu }}.sh \
           "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
-
-    - name: Detect Canonical servicing catch-up
-      shell: bash
-      run: bash scripts/release/check-canonical-servicing.sh
 
     - name: Validate published native libraries and runtime paths
       shell: bash
