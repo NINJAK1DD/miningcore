@@ -276,9 +276,10 @@ Microsoft's `10.0.4xx` feature band. The helpers install the current Canonical S
 This explicit selection does not authenticate
 the archive; verify Microsoft's SHA-512 first. Native packages still come from Canonical, and no
 Microsoft APT feed is added. On 11 November 2026, the source-lane servicing checks confirmed
-Canonical SDK 10.0.115 with Core/ASP.NET 10.0.15 on both Ubuntu 24.04 and 26.04. Both lanes now use the
-Canonical host and packages, available in `noble-security` and `resolute-security`, respectively,
-with the same package checks, runtime floors and published binding smoke. Prepending `/usr/bin`
+Canonical SDK 10.0.115 with Core/ASP.NET 10.0.15 on both Ubuntu 24.04 and 26.04.
+Both lanes now use the Canonical host and packages, available in `noble-security`
+and `resolute-security`, respectively, with the same package checks, runtime floors
+and published binding smoke. Prepending `/usr/bin`
 also selects Ubuntu's APT CMake/native toolchain ahead of runner-local tools. A later step verifies
 that ordering and the resolved SDK and native tool paths. A separate apphost launch
 clears `DOTNET_ROOT` and `DOTNET_ROOT_X64` and checks Ubuntu's registered installation files,
