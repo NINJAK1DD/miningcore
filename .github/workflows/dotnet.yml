@@ -11,6 +11,11 @@ on:
         required: false
         type: boolean
         default: false
+      private_source_builds:
+        description: 'Also build Ubuntu 24.04/26.04 with the reviewed private Microsoft SDK'
+        required: false
+        type: boolean
+        default: false
   push:
     branches: [ master, dev, ravencoin-rollback ]
   pull_request:
@@ -560,8 +565,8 @@ jobs:
         test "$VERSION_ID" = "${{ matrix.ubuntu }}"
         test "$(uname -m)" = x86_64
 
-    # Canonical now supplies both 10.0.15 frameworks. Exercise the default operator
-    # route, retaining package provenance, runtime floors and published binding checks.
+    # Build with Canonical's serviced packages; preflight enforces the policy floor.
+    # /usr/bin also selects APT's CMake/native toolchain ahead of runner-local tools.
     - name: Build with Canonical SDK and dependencies
       shell: bash
       run: |
@@ -570,6 +575,22 @@ jobs:
         echo "/usr/bin" >> "$GITHUB_PATH"
         ./build-ubuntu-${{ matrix.ubuntu }}.sh \
           "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
+
+    - name: Validate unaided apphost discovery
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Ubuntu registers its runtime here. The architecture-specific file takes
+        # precedence when present, so validate it too before launching unpinned.
+        cat /etc/dotnet/install_location
+        test "$(cat /etc/dotnet/install_location)" = /usr/lib/dotnet
+        if [ -e /etc/dotnet/install_location_x64 ]; then
+          cat /etc/dotnet/install_location_x64
+          test "$(cat /etc/dotnet/install_location_x64)" = /usr/lib/dotnet
+        fi
+        env -u DOTNET_ROOT -u DOTNET_ROOT_X64 -u DOTNET_HOST_PATH -u DOTNET_ROLL_FORWARD \
+          LD_LIBRARY_PATH="$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}" \
+          "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}/Miningcore" --version
 
     - name: Validate published native libraries and runtime paths
       shell: bash
@@ -595,6 +616,57 @@ jobs:
         bash scripts/release/test-native-cpu-portability.sh "$GITHUB_WORKSPACE/build/ubuntu-24.04"
         bash scripts/release/test-blake2b-key-contract.sh "$GITHUB_WORKSPACE/build/ubuntu-24.04"
         bash scripts/release/test-randomx-cpu-os-state.sh "${TMPDIR:-/tmp}"
+
+  build-private-ubuntu-source:
+    name: Build Ubuntu ${{ matrix.ubuntu }} private source
+    if: github.event_name == 'workflow_dispatch' && inputs.private_source_builds
+    runs-on: ubuntu-${{ matrix.ubuntu }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: [ '24.04', '26.04' ]
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+
+    - name: Setup reviewed private SDK for source builds
+      uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+      env:
+        DOTNET_INSTALL_DIR: ${{ runner.temp }}/miningcore-dotnet
+      with:
+        dotnet-version: ${{ env.CI_DOTNET_SDK }}
+
+    - name: Build with private SDK and Canonical native dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        . /etc/os-release
+        test "$ID" = ubuntu
+        test "$VERSION_ID" = "${{ matrix.ubuntu }}"
+        test "$(uname -m)" = x86_64
+        unset DOTNET_HOST_PATH DOTNET_ROLL_FORWARD
+        export DOTNET_ROOT_X64="$DOTNET_ROOT"
+        echo "DOTNET_ROOT_X64=$DOTNET_ROOT" >> "$GITHUB_ENV"
+        export MININGCORE_PRIVATE_DOTNET_ROOT="$DOTNET_ROOT"
+        ./build-ubuntu-${{ matrix.ubuntu }}.sh \
+          "$GITHUB_WORKSPACE/build/private-ubuntu-${{ matrix.ubuntu }}"
+
+    - name: Validate published native libraries and runtime paths
+      shell: bash
+      run: >-
+        bash scripts/release/test-ubuntu-source-build.sh
+        "$GITHUB_WORKSPACE/build/private-ubuntu-${{ matrix.ubuntu }}"
+        "${{ matrix.ubuntu }}"
+
+    - name: Run native known-answer tests
+      shell: bash
+      run: >-
+        bash scripts/release/test-ubuntu-native-vectors.sh
+        "$GITHUB_WORKSPACE/build/private-ubuntu-${{ matrix.ubuntu }}"
 
   build-windows:
     name: Build Windows x64

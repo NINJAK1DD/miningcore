@@ -107,6 +107,10 @@ class WorkflowPolicyTests(unittest.TestCase):
         job = next(job for job in workflow['jobs'].values()
                    if job.get('name') == 'Build Ubuntu ${{ matrix.ubuntu }} source')
         steps = job['steps']
+        self.assertEqual(['24.04', '26.04'], job['strategy']['matrix']['ubuntu'])
+        self.assertEqual('ubuntu-${{ matrix.ubuntu }}', job['runs-on'])
+        self.assertNotIn('if', job)
+        self.assertNotIn('continue-on-error', job)
         self.assertEqual('/usr/lib/dotnet', job['env']['DOTNET_ROOT'])
         self.assertEqual('/usr/lib/dotnet', job['env']['DOTNET_ROOT_X64'])
         self.assertFalse(any('actions/setup-dotnet@' in step.get('uses', '') for step in steps))
@@ -115,11 +119,49 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn('unset MININGCORE_PRIVATE_DOTNET_ROOT DOTNET_HOST_PATH DOTNET_ROLL_FORWARD', build['run'])
         self.assertIn('export PATH="/usr/bin:$PATH"', build['run'])
         self.assertIn('echo "/usr/bin" >> "$GITHUB_PATH"', build['run'])
-        self.assertNotIn('if', build)
-        self.assertNotIn('continue-on-error', build)
-        self.assertTrue(any('test-ubuntu-source-build.sh' in step.get('run', '') for step in steps))
+        self.assertIn('./build-ubuntu-${{ matrix.ubuntu }}.sh', build['run'])
+        discovery = next(step for step in steps if step['name'] == 'Validate unaided apphost discovery')
+        for token in ('/etc/dotnet/install_location', '/etc/dotnet/install_location_x64',
+                      '-u DOTNET_ROOT ', '-u DOTNET_ROOT_X64 ', '/Miningcore" --version'):
+            self.assertIn(token, discovery['run'])
+        self.require_source_validation(steps, build, discovery)
         self.assertIn('run-managed-dependency-smoke',
                       (ROOT / 'scripts/release/test-ubuntu-source-build.sh').read_text())
+
+    def require_source_validation(self, steps, *additional):
+        required = list(additional)
+        for script in ('test-ubuntu-source-build.sh', 'test-ubuntu-native-vectors.sh'):
+            matches = [step for step in steps if script in step.get('run', '')]
+            self.assertEqual(1, len(matches), f'Expected exactly one invocation of {script}')
+            required.extend(matches)
+        for step in required:
+            self.assertNotIn('if', step, step['name'])
+            self.assertNotIn('continue-on-error', step, step['name'])
+
+    def test_private_source_builds_remain_explicit_and_validate_published_runtime(self):
+        workflow = yaml.load((ROOT / '.github/workflows/dotnet.yml').read_text(), Loader=yaml.BaseLoader)
+        option = workflow['on']['workflow_dispatch']['inputs']['private_source_builds']
+        self.assertEqual('boolean', option['type'])
+        self.assertEqual('false', option['default'])
+        job = workflow['jobs']['build-private-ubuntu-source']
+        self.assertEqual("github.event_name == 'workflow_dispatch' && inputs.private_source_builds", job['if'])
+        self.assertNotIn('continue-on-error', job)
+        self.assertNotIn('env', job, 'Do not pin the private lane to the system runtime')
+        self.assertEqual(['24.04', '26.04'], job['strategy']['matrix']['ubuntu'])
+        steps = job['steps']
+        setup = next(step for step in steps if 'actions/setup-dotnet@' in step.get('uses', ''))
+        self.assertEqual('${{ env.CI_DOTNET_SDK }}', setup['with']['dotnet-version'])
+        self.assertEqual('${{ runner.temp }}/miningcore-dotnet', setup['env']['DOTNET_INSTALL_DIR'])
+        build = next(step for step in steps if './build-ubuntu-' in step.get('run', ''))
+        self.assertIn('export MININGCORE_PRIVATE_DOTNET_ROOT="$DOTNET_ROOT"', build['run'])
+        self.assertIn('./build-ubuntu-${{ matrix.ubuntu }}.sh', build['run'])
+        self.assertIn('echo "DOTNET_ROOT_X64=$DOTNET_ROOT" >> "$GITHUB_ENV"', build['run'])
+        # Catch-up is an error only for a temporary default fallback, not this
+        # explicit compatibility exercise while Canonical is already serviced.
+        for step in steps:
+            self.assertNotIn('check-canonical-servicing.sh', step.get('run', ''))
+            self.assertNotIn('GITHUB_PATH', step.get('run', ''))
+        self.require_source_validation(steps, setup, build)
 
     def test_required_source_check_runs_for_every_dev_pull_request(self):
         workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)

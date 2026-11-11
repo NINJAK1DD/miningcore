@@ -202,8 +202,10 @@ python scripts/release/run-managed-dependency-smoke.py build/windows-x64
 
 Keep both shared frameworks patched to the latest supported .NET 10 servicing release, at least
 the common policy floor, raised to 10.0.15 for Microsoft's 10 November 2026 security servicing
-release. CI selects SDK 10.0.404, and the reviewed PKCS and Microsoft.Extensions references are
-10.0.15. Both container Dockerfiles use reviewed version tags with immutable manifest-list
+release. The Microsoft SDK lanes select 10.0.404; the Ubuntu 24.04/26.04 source lanes use
+Canonical's separately maintained SDK feature band (10.0.115 as of 11 November 2026).
+The reviewed PKCS and Microsoft.Extensions references are 10.0.15.
+Both container Dockerfiles use reviewed version tags with immutable manifest-list
 SHA-256 digests from Microsoft's registry. The source SDK tag matches the CI SDK; the runtime
 tag may advance independently to any stable `10.0.x` at or above the host minimum. Advancing a
 container patch does not by itself require raising every operator's host minimum. Both runtime
@@ -273,14 +275,48 @@ the default route's package-provenance and framework checks; its version is not 
 Microsoft's `10.0.4xx` feature band. The helpers install the current Canonical SDK candidate first.
 This explicit selection does not authenticate
 the archive; verify Microsoft's SHA-512 first. Native packages still come from Canonical, and no
-Microsoft APT feed is added. On 11 November, the source-lane servicing checks confirmed Canonical
+Microsoft APT feed is added. On 11 November 2026, the source-lane servicing checks confirmed Canonical
 SDK 10.0.115 with Core/ASP.NET 10.0.15 on both Ubuntu 24.04 and 26.04. Both lanes now use the
-Canonical host and packages again, with the same provenance checks, runtime floors and published
-binding smoke. Private-route helper regressions remain covered. If a later security update again
-requires the explicit private route, enable `check-canonical-servicing.sh` while that route is
-temporary: only the specific under-serviced-framework refusal passes its sentinel; unexpected
-failures or Canonical catch-up fail CI. Restore the Canonical lane when it catches up rather than
-suppressing that failure or lowering the runtime floor.
+Canonical host and packages from `noble-security` and `resolute-security`, respectively, with the
+same package checks, runtime floors and published binding smoke. Prepending `/usr/bin` also
+selects Ubuntu's APT CMake/native toolchain ahead of runner-local tools. A separate apphost launch
+clears `DOTNET_ROOT` and `DOTNET_ROOT_X64` and checks Ubuntu's registered installation files,
+including the architecture-specific override when present. This exercises the operator's unaided
+`./Miningcore` launch in addition to the pinned-runtime checks. See Microsoft's
+[runtime discovery guidance](https://learn.microsoft.com/en-us/dotnet/core/runtime-discovery/troubleshoot-app-launch).
+
+The package checks verify path, dpkg ownership and Ubuntu maintainer metadata; the maintainer
+field alone is not proof of Canonical origin. Use trusted, authenticated Ubuntu APT sources and
+inspect package candidates and configured repositories before installation. A candidate shown by
+`apt-cache policy` is not proof that an already installed binary came from that repository.
+Stronger source assurance for the host, SDK and both runtime packages is tracked in
+[issue #290](https://github.com/NINJAK1DD/miningcore/issues/290).
+
+Private-route helper regressions remain covered on ordinary CI runs. For an end-to-end private
+build, dispatch `.NET` (`dotnet.yml`) with `private_source_builds=true` on the intended branch.
+The optional Ubuntu 24.04/26.04 jobs install the reviewed Microsoft SDK in a separate directory,
+select its host and both root variables, then run the source build, published runtime/native checks
+and native known-answer tests. These jobs do not replace either required Canonical source lane.
+They deliberately omit the catch-up sentinel: Canonical availability is expected in this exercise.
+
+If a future servicing gap requires temporarily switching the default source lanes to a private SDK,
+make the following coordinated change in one PR:
+
+1. Use the optional private job's pinned `setup-dotnet` action, isolated install directory and build
+   step as the template for both required source jobs. Preserve their check names and target matrix.
+2. Remove the job's `/usr/lib/dotnet` root overrides and the `/usr/bin` prepend and `GITHUB_PATH`
+   write. Do not clear `MININGCORE_PRIVATE_DOTNET_ROOT`; export it from the selected private root.
+   Set and persist `DOTNET_ROOT_X64` to that same root for subsequent validation steps.
+3. Retain published runtime/native validation and native vectors. Move the unaided Canonical
+   apphost check out of the temporary private lane: it cannot certify the private installation.
+4. Enable `check-canonical-servicing.sh` in each temporary default lane. Only its specific
+   under-serviced-framework refusal passes; unexpected failures or Canonical catch-up fail CI.
+5. Update the workflow-policy tests to enforce that temporary selection, sentinel and mandatory
+   smokes, instead of their current prohibition on private setup in the Canonical lanes. Run the
+   helper regressions and both real source builds before adopting the fallback.
+
+Restore the complete Canonical selection and unaided launch check when the sentinel reports
+catch-up. Do not suppress that failure or lower the runtime floor.
 
 [dependabot-docker-names]: https://github.com/dependabot/dependabot-core/issues/16574
 [dependabot-docker-rebase]: https://github.com/dependabot/dependabot-core/issues/14780
