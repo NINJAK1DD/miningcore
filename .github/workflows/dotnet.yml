@@ -533,13 +533,13 @@ jobs:
       uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
       with:
         dotnet-version: ${{ env.CI_DOTNET_SDK }}
-    - name: Test PPS schema and old-writer compatibility
+    - name: Test PPS compatibility and payout recovery migrations
       env:
         MININGCORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Username=miningcore;Password=miningcore-test;Database=miningcore_tests
       run: >-
         dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj
         -p:MiningcoreStratumListenerSmoke=true
-        --filter "FullyQualifiedName~PpsArithmeticSchema|FullyQualifiedName~ShareAccountingIntegrationTests"
+        --filter "FullyQualifiedName~PpsArithmeticSchema|FullyQualifiedName~ShareAccountingIntegrationTests|FullyQualifiedName~PayoutOwnershipRecoveryIntegrationTests"
 
   build-ubuntu-source:
     name: Build Ubuntu ${{ matrix.ubuntu }} source

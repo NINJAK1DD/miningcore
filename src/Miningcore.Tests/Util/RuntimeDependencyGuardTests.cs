@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Threading.Tasks;
+using Miningcore.Mining;
 using Miningcore.Util;
 using Xunit;
 
@@ -7,6 +9,40 @@ namespace Miningcore.Tests.Util;
 
 public class RuntimeDependencyGuardTests
 {
+    [Theory]
+    [InlineData(0, 78)]
+    [InlineData(1, 78)]
+    [InlineData(74, 74)]
+    public async Task BadManagedImageRequiresOperatorWithoutMaskingDurabilityLoss(int previous, int expected)
+    {
+        var status = new ProcessStatus();
+        if(previous != 0)
+            status.MarkFailed(previous);
+        Exception reported = null;
+        var exit = await Program.RunStartupBoundaryAsync(() =>
+        {
+            Program.ValidateRuntimeDependencies(status, () => throw new BadImageFormatException("invalid test image"));
+            return Task.CompletedTask;
+        }, error =>
+        {
+            reported = error;
+            return Task.CompletedTask;
+        }, () => status.ExitCode);
+        Assert.IsType<PoolStartupException>(reported);
+        Assert.Contains("Runtime dependency validation failed", reported.Message);
+        Assert.Equal(expected, exit);
+    }
+
+    [Fact]
+    public void RuntimeBoundaryDoesNotReclassifyUnexpectedFailures()
+    {
+        var status = new ProcessStatus();
+        var failure = new IOException("unrelated test failure");
+        Assert.Same(failure, Assert.Throws<IOException>(() =>
+            Program.ValidateRuntimeDependencies(status, () => throw failure)));
+        Assert.Equal(0, status.ExitCode);
+    }
+
     [Theory]
     [InlineData("10.0.14")]
     [InlineData("9.0.99")]
