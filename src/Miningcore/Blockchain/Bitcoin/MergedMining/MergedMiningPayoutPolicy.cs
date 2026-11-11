@@ -39,7 +39,7 @@ internal static class MergedMiningPayoutPolicy
             if(auxiliary.Template is not BitcoinTemplate auxiliaryCoin)
                 throw new TrustedPoolStartupException($"Merged-mining parent pool '{parent.Id}': Auxiliary pool '{auxiliary.Id}' must use the Bitcoin coin family", parent.Id);
             if(!string.Equals(auxiliaryCoin.Symbol, "DOGE", StringComparison.OrdinalIgnoreCase))
-                throw new TrustedPoolStartupException($"Merged-mining parent pool '{parent.Id}': Merged mining currently requires Dogecoin as the auxiliary chain", parent.Id);
+                throw new TrustedPoolStartupException($"Merged-mining parent pool '{parent.Id}': Auxiliary pool '{auxiliary.Id}' must use Dogecoin as the auxiliary chain", parent.Id);
         }
 
         if(string.IsNullOrWhiteSpace(auxiliary.Address))

@@ -212,6 +212,151 @@
       "class": "Miningcore.Tests.Util.RuntimeDependencyGuardTests",
       "method": "RuntimeBoundaryDoesNotReclassifyUnexpectedFailures",
       "case": "RuntimeBoundaryDoesNotReclassifyUnexpectedFailures"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"aux-payment\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"missing-aux-template\", templateOnly: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "PausedProcess_RejectsEveryToggleWithoutMutatingPools",
+      "case": "PausedProcess_RejectsEveryToggleWithoutMutatingPools(bulk: False, enable: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"parent-coin\", templateOnly: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.PayoutManagerTests",
+      "method": "PausedManager_RejectsAccidentalStartupWithoutTouchingOwnershipOrWallets",
+      "case": "PausedManager_RejectsAccidentalStartupWithoutTouchingOwnershipOrWallets"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"aux-coin\", templateOnly: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"parent-payment\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinDirectSoloConfigurationTests",
+      "method": "PausedMixedCluster_PreservesDirectCoinbaseRewardsAndAccounting",
+      "case": "PausedMixedCluster_PreservesDirectCoinbaseRewardsAndAccounting"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"missing-daemon\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "PausedProcess_RejectsEveryToggleWithoutMutatingPools",
+      "case": "PausedProcess_RejectsEveryToggleWithoutMutatingPools(bulk: False, enable: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"unknown-id\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"same-id\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.HostedServiceStartupTests",
+      "method": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor",
+      "case": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor(paused: False, relay: False, postgres: True, expected: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"aux-beneficiary\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.HostedServiceStartupTests",
+      "method": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor",
+      "case": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor(paused: True, relay: True, postgres: True, expected: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"missing-parent-template\", templateOnly: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"missing-id\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.HostedServiceStartupTests",
+      "method": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor",
+      "case": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor(paused: True, relay: True, postgres: False, expected: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.PayoutOwnershipRecoveryAssistantTests",
+      "method": "StartupPrompt_RequiresTerminalAndAllowsOptOut",
+      "case": "StartupPrompt_RequiresTerminalAndAllowsOptOut(terminal: True, disabled: False, paused: True, expected: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "PausedProcess_RejectsEveryToggleWithoutMutatingPools",
+      "case": "PausedProcess_RejectsEveryToggleWithoutMutatingPools(bulk: True, enable: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"aux-scheme\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"missing-address\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"aux-family\", templateOnly: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"address-parameter\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "ClusterPaymentSchema_RejectsUnknownSafetyControls",
+      "case": "ClusterPaymentSchema_RejectsUnknownSafetyControls"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"disabled-aux\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "PausedProcess_RejectsEveryToggleWithoutMutatingPools",
+      "case": "PausedProcess_RejectsEveryToggleWithoutMutatingPools(bulk: True, enable: True)"
+    },
+    {
+      "class": "Miningcore.Tests.HostedServiceStartupTests",
+      "method": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor",
+      "case": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor(paused: True, relay: False, postgres: True, expected: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"parent-scheme\", templateOnly: False)"
     }
   ],
   "expected_skips": [

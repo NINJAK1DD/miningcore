@@ -1499,6 +1499,8 @@ online, and accepted work is reaching PostgreSQL. No payout manager is registere
 clears an owner, or initiates a wallet payout in this process. An unrelated enabled pool cannot
 override the pause. This is a process configuration, not a distributed database switch: a different
 unpaused node can still pay. Keep all such nodes stopped or paused.
+A separate [database-wide emergency-stop proposal](https://github.com/NINJAK1DD/miningcore/issues/291)
+tracks that additional capability; it is not implemented by this flag.
 
 The entire payout-manager pipeline is suspended: pending-block classification, uncertain-candidate
 reconciliation, maturity processing, block-reward balance allocation, wallet payouts and retention.

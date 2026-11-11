@@ -55,7 +55,8 @@ separate pool IDs for each accounting pair, matures the real candidates and star
 payout manager. It checks reward/liability conservation, wallet transaction IDs and repeated cycles
 without duplicate sends. An injected lost reply after a real wallet broadcast must retain both the
 unsettled balance and payout ownership, and a replacement manager must refuse startup. This does
-not automatically reconcile an ambiguous payment; an operator still needs wallet evidence. A configuration matrix also runs all
+not automatically reconcile an ambiguous payment; an operator still needs wallet evidence.
+A configuration matrix also runs all
 16 supported payout pairs through deployment validation and real manager configuration in direct,
 relay sender and receiver/recorder modes.
 

@@ -33,6 +33,12 @@ public partial class MergedMiningPayoutRegtestTests
         // Mature the real paused candidates past both networks' configured thresholds.
         await litecoin.RpcAsync("generatetoaddress", false, 260, cluster.Pools[0].Address);
         await dogecoin.RpcAsync("generate", true, 260);
+        // Let every paired ordinary share settle before the first wallet cycle. Otherwise
+        // legitimate staggered allocations can produce more than one payment per pool.
+        var newest = await connection.ExecuteScalarAsync<DateTime>("SELECT max(created) FROM blocks");
+        var settlementDelay = newest + PayoutManager.MergedParentShareSettlementDelay - DateTime.UtcNow;
+        if(settlementDelay > TimeSpan.Zero)
+            await Task.Delay(settlementDelay + TimeSpan.FromMilliseconds(100));
         var before = (await connection.QueryAsync<(string PoolId, decimal Amount)>(
             "SELECT poolid, sum(amount) FROM balances GROUP BY poolid")).ToDictionary(x => x.PoolId, x => x.Amount);
         var mapper = AutoMapperFactory.CreateMapper();
@@ -70,11 +76,14 @@ public partial class MergedMiningPayoutRegtestTests
                 if(manager.ExecuteTask.IsCompleted) await manager.ExecuteTask;
                 await Task.Delay(100, deadline.Token);
             }
-            Assert.Equal(0, await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM blocks WHERE status <> 'confirmed'"));
+            Assert.Equal(0, await connection.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM blocks WHERE status NOT IN ('confirmed', 'orphaned')"));
             foreach(var pool in cluster.Pools)
             {
+                Assert.True(await connection.ExecuteScalarAsync<int>(
+                    "SELECT count(*) FROM blocks WHERE poolid=@id AND status='confirmed'", new { id = pool.Id }) > 0);
                 var reward = pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS ? 0 :
-                    await connection.ExecuteScalarAsync<decimal>("SELECT coalesce(sum(reward),0) FROM blocks WHERE poolid=@id", new { id = pool.Id });
+                    await connection.ExecuteScalarAsync<decimal>("SELECT coalesce(sum(reward),0) FROM blocks WHERE poolid=@id AND status='confirmed'", new { id = pool.Id });
                 var paid = await connection.ExecuteScalarAsync<decimal>("SELECT sum(amount) FROM payments WHERE poolid=@id", new { id = pool.Id });
                 var remainder = await connection.ExecuteScalarAsync<decimal>("SELECT coalesce(sum(amount),0) FROM balances WHERE poolid=@id", new { id = pool.Id });
                 Assert.True(paid > 0);
@@ -95,8 +104,8 @@ public partial class MergedMiningPayoutRegtestTests
             // Broadcast for real, then lose the successful reply at the RPC boundary.
             var target = cluster.Pools[0];
             probe.DropPool = target.Id;
-            await connection.ExecuteAsync("UPDATE balances SET amount=amount+0.1 WHERE poolid=@id AND address=@address",
-                new { id = target.Id, address = target.Address });
+            Assert.Equal(1, await connection.ExecuteAsync("UPDATE balances SET amount=amount+0.1 WHERE poolid=@id AND address=@address",
+                new { id = target.Id, address = target.Address }));
             await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(async () => await manager.ExecuteTask.WaitAsync(deadline.Token));
             Assert.Equal(sendCount + 1, probe.Sends.Count);
             Assert.Equal(paidCount, await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM payments"));

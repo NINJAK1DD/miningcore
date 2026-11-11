@@ -92,6 +92,7 @@ public partial class MergedMiningManagerReorgTests
         var startup = Assert.IsAssignableFrom<PoolStartupException>(Record.Exception(() => manager.Configure(parent, cluster)));
         Assert.Equal(preflight.Message, startup.Message);
         Assert.Equal(preflight.PoolId, startup.PoolId);
+        Assert.Contains(preflight.PoolId, preflight.Message);
         if(early is PoolStartupException earlyFailure)
         {
             Assert.Equal(preflight.Message, earlyFailure.Message);

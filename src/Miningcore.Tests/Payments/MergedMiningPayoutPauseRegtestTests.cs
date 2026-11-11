@@ -226,8 +226,11 @@ public partial class MergedMiningPayoutRegtestTests
         }
         finally
         {
-            await connection.ExecuteAsync("SET search_path TO public");
-            await connection.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
+            // Closing resets/rolls back a failed migration transaction before cleanup.
+            await connection.CloseAsync();
+            await using var cleanup = new NpgsqlConnection(connectionString);
+            await cleanup.OpenAsync();
+            await cleanup.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
             Directory.Delete(directory, true);
         }
     }

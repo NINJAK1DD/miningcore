@@ -186,7 +186,10 @@ public class PayoutOwnershipRecoveryAssistantTests
         var config = new Miningcore.Configuration.ClusterConfig
         {
             PaymentProcessing = new() { Enabled = true, Paused = paused },
-            Pools = [new() { Enabled = true, PaymentProcessing = new() { Enabled = true } }],
+            Pools = [
+                new() { Id = "ltc", Enabled = true, PaymentProcessing = new() { Enabled = true } },
+                new() { Id = "doge", Enabled = true, PaymentProcessing = new() { Enabled = true } },
+            ],
         };
         Assert.Equal(expected, Program.ShouldOfferPayoutRecovery(config, terminal, disabled));
     }
