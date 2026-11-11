@@ -275,8 +275,8 @@ the default route's package-provenance and framework checks; its version is not 
 Microsoft's `10.0.4xx` feature band. The helpers install the current Canonical SDK candidate first.
 This explicit selection does not authenticate
 the archive; verify Microsoft's SHA-512 first. Native packages still come from Canonical, and no
-Microsoft APT feed is added. On 11 November 2026, the source-lane servicing checks confirmed Canonical
-SDK 10.0.115 with Core/ASP.NET 10.0.15 on both Ubuntu 24.04 and 26.04. Both lanes now use the
+Microsoft APT feed is added. On 11 November 2026, the source-lane servicing checks confirmed
+Canonical SDK 10.0.115 with Core/ASP.NET 10.0.15 on both Ubuntu 24.04 and 26.04. Both lanes now use the
 Canonical host and packages, available in `noble-security` and `resolute-security`, respectively,
 with the same package checks, runtime floors and published binding smoke. Prepending `/usr/bin`
 also selects Ubuntu's APT CMake/native toolchain ahead of runner-local tools. A later step verifies
@@ -309,8 +309,9 @@ make the following coordinated change in one PR:
 1. Use the optional private job's pinned `setup-dotnet` action, isolated install directory and build
    step as the template for both required source jobs. Preserve their check names and target matrix.
 2. Remove the job's `/usr/lib/dotnet` root overrides. Keep `/usr/bin` immediately after the private
-   root with `export PATH="$DOTNET_ROOT:/usr/bin:$PATH"`. Persist that ordering by writing `/usr/bin`
-   then the private root to `GITHUB_PATH`, as in the optional job, and retain its later selection check.
+   root with `export PATH="$DOTNET_ROOT:/usr/bin:$PATH"`. Persist that ordering by writing
+   `/usr/bin` then the private root to `GITHUB_PATH`, as in the optional job, and retain its later
+   selection check.
    Do not clear `MININGCORE_PRIVATE_DOTNET_ROOT`; export it from the selected private root.
    Set and persist `DOTNET_ROOT_X64` to that same root for subsequent validation steps.
 3. Retain published runtime/native validation and native vectors. Drop the unaided Canonical
