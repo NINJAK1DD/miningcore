@@ -192,6 +192,12 @@ jobs:
       shell: bash
       run: bash scripts/release/test-source-build-helpers.sh
 
+    - name: Test unaided apphost discovery failures
+      shell: bash
+      run: |
+        shellcheck scripts/release/test-ubuntu-apphost-discovery.sh
+        python3 scripts/release/test-apphost-discovery-fixtures.py
+
     - name: Test Linux release package target contract
       shell: bash
       run: bash scripts/release/test-linux-package-targets.sh
@@ -578,19 +584,9 @@ jobs:
 
     - name: Validate unaided apphost discovery
       shell: bash
-      run: |
-        set -euo pipefail
-        # Ubuntu registers its runtime here. The architecture-specific file takes
-        # precedence when present, so validate it too before launching unpinned.
-        cat /etc/dotnet/install_location
-        test "$(cat /etc/dotnet/install_location)" = /usr/lib/dotnet
-        if [ -e /etc/dotnet/install_location_x64 ]; then
-          cat /etc/dotnet/install_location_x64
-          test "$(cat /etc/dotnet/install_location_x64)" = /usr/lib/dotnet
-        fi
-        env -u DOTNET_ROOT -u DOTNET_ROOT_X64 -u DOTNET_HOST_PATH -u DOTNET_ROLL_FORWARD \
-          LD_LIBRARY_PATH="$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}" \
-          "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}/Miningcore" --version
+      run: >-
+        bash scripts/release/test-ubuntu-apphost-discovery.sh
+        "$GITHUB_WORKSPACE/build/ubuntu-${{ matrix.ubuntu }}"
 
     - name: Validate published native libraries and runtime paths
       shell: bash
@@ -652,8 +648,25 @@ jobs:
         export DOTNET_ROOT_X64="$DOTNET_ROOT"
         echo "DOTNET_ROOT_X64=$DOTNET_ROOT" >> "$GITHUB_ENV"
         export MININGCORE_PRIVATE_DOTNET_ROOT="$DOTNET_ROOT"
+        # Keep the private SDK first, then Ubuntu's APT native toolchain.
+        export PATH="$DOTNET_ROOT:/usr/bin:$PATH"
+        # The runner de-duplicates entries and prepends them in reverse order.
+        printf '%s\n' /usr/bin "$DOTNET_ROOT" >> "$GITHUB_PATH"
         ./build-ubuntu-${{ matrix.ubuntu }}.sh \
           "$GITHUB_WORKSPACE/build/private-ubuntu-${{ matrix.ubuntu }}"
+
+    - name: Verify persisted private SDK and native toolchain selection
+      shell: bash
+      run: |
+        set -euo pipefail
+        printf 'PATH=%s\n' "$PATH"
+        test "${PATH#"$DOTNET_ROOT:/usr/bin:"}" != "$PATH"
+        test "$(command -v dotnet)" = "$DOTNET_ROOT/dotnet"
+        test "$(command -v cmake)" = /usr/bin/cmake
+        test "$(command -v c++)" = /usr/bin/c++
+        test "$DOTNET_ROOT_X64" = "$DOTNET_ROOT"
+        command -v dotnet cmake c++
+        cmake --version
 
     - name: Validate published native libraries and runtime paths
       shell: bash

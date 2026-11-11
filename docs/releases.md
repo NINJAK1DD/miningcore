@@ -27,8 +27,9 @@ for the SIGILL investigation, runtime-dispatch policy and regression checks.
 > **Upgrade .NET before installing RC.2.** Normal Miningcore startup now requires both
 > .NET and ASP.NET Core **10.0.15 or later in .NET 10**. As of 11 November 2026, normal Canonical
 > APT upgrades on Ubuntu 24.04 (`noble-security`) and 26.04 (`resolute-security`) provide 10.0.15;
-> upgrade both frameworks and verify the installed versions. This does not establish availability
-> on Ubuntu 22.04 or upgrade a production host. Older 10.0.14 packages still fail the requirement.
+> upgrade both frameworks and verify the installed versions. This covers 24.04 and 26.04 only;
+> check 22.04 hosts separately. Upgrade and verify each production host. Older 10.0.14 packages
+> still fail the requirement.
 > The packaged service uses `/usr/bin/dotnet`; installing a private SDK for a
 > build does not change that service. Verify the service's selected host and published dependency
 > smoke before upgrading, or defer deployment. See the

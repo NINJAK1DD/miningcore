@@ -121,9 +121,15 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn('echo "/usr/bin" >> "$GITHUB_PATH"', build['run'])
         self.assertIn('./build-ubuntu-${{ matrix.ubuntu }}.sh', build['run'])
         discovery = next(step for step in steps if step['name'] == 'Validate unaided apphost discovery')
-        for token in ('/etc/dotnet/install_location', '/etc/dotnet/install_location_x64',
+        self.assertIn('bash scripts/release/test-ubuntu-apphost-discovery.sh', discovery['run'])
+        discovery_script = (ROOT / 'scripts/release/test-ubuntu-apphost-discovery.sh').read_text()
+        for token in ('/etc/dotnet', 'install_location_x64',
                       '-u DOTNET_ROOT ', '-u DOTNET_ROOT_X64 ', '/Miningcore" --version'):
-            self.assertIn(token, discovery['run'])
+            self.assertIn(token, discovery_script)
+        fixtures = next(step for step in workflow['jobs']['build']['steps']
+                        if 'test-apphost-discovery-fixtures.py' in step.get('run', ''))
+        self.assertNotIn('if', fixtures)
+        self.assertNotIn('continue-on-error', fixtures)
         self.require_source_validation(steps, build, discovery)
         self.assertIn('run-managed-dependency-smoke',
                       (ROOT / 'scripts/release/test-ubuntu-source-build.sh').read_text())
@@ -156,12 +162,21 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn('export MININGCORE_PRIVATE_DOTNET_ROOT="$DOTNET_ROOT"', build['run'])
         self.assertIn('./build-ubuntu-${{ matrix.ubuntu }}.sh', build['run'])
         self.assertIn('echo "DOTNET_ROOT_X64=$DOTNET_ROOT" >> "$GITHUB_ENV"', build['run'])
+        self.assertIn('export PATH="$DOTNET_ROOT:/usr/bin:$PATH"', build['run'])
+        self.assertIn('printf \'%s\\n\' /usr/bin "$DOTNET_ROOT" >> "$GITHUB_PATH"', build['run'])
+        selection = next(step for step in steps
+                         if step['name'] == 'Verify persisted private SDK and native toolchain selection')
+        self.assertLess(steps.index(build), steps.index(selection))
+        for token in ('${PATH#"$DOTNET_ROOT:/usr/bin:"}',
+                      'test "$(command -v dotnet)" = "$DOTNET_ROOT/dotnet"',
+                      'test "$(command -v cmake)" = /usr/bin/cmake',
+                      'test "$(command -v c++)" = /usr/bin/c++'):
+            self.assertIn(token, selection['run'])
         # Catch-up is an error only for a temporary default fallback, not this
         # explicit compatibility exercise while Canonical is already serviced.
         for step in steps:
             self.assertNotIn('check-canonical-servicing.sh', step.get('run', ''))
-            self.assertNotIn('GITHUB_PATH', step.get('run', ''))
-        self.require_source_validation(steps, setup, build)
+        self.require_source_validation(steps, setup, build, selection)
 
     def test_required_source_check_runs_for_every_dev_pull_request(self):
         workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)

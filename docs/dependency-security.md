@@ -277,7 +277,7 @@ This explicit selection does not authenticate
 the archive; verify Microsoft's SHA-512 first. Native packages still come from Canonical, and no
 Microsoft APT feed is added. On 11 November 2026, the source-lane servicing checks confirmed Canonical
 SDK 10.0.115 with Core/ASP.NET 10.0.15 on both Ubuntu 24.04 and 26.04. Both lanes now use the
-Canonical host and packages from `noble-security` and `resolute-security`, respectively, with the
+Canonical host and packages, available in `noble-security` and `resolute-security`, respectively, with the
 same package checks, runtime floors and published binding smoke. Prepending `/usr/bin` also
 selects Ubuntu's APT CMake/native toolchain ahead of runner-local tools. A separate apphost launch
 clears `DOTNET_ROOT` and `DOTNET_ROOT_X64` and checks Ubuntu's registered installation files,
@@ -296,7 +296,9 @@ Private-route helper regressions remain covered on ordinary CI runs. For an end-
 build, dispatch `.NET` (`dotnet.yml`) with `private_source_builds=true` on the intended branch.
 The optional Ubuntu 24.04/26.04 jobs install the reviewed Microsoft SDK in a separate directory,
 select its host and both root variables, then run the source build, published runtime/native checks
-and native known-answer tests. These jobs do not replace either required Canonical source lane.
+and native known-answer tests. The private root is first in `PATH`, immediately followed by
+`/usr/bin` so both routes use Ubuntu's APT native toolchain. A later step verifies the persisted
+ordering and resolved `dotnet`, `cmake` and `c++` paths. These jobs do not replace either required Canonical source lane.
 They deliberately omit the catch-up sentinel: Canonical availability is expected in this exercise.
 
 If a future servicing gap requires temporarily switching the default source lanes to a private SDK,
@@ -304,11 +306,14 @@ make the following coordinated change in one PR:
 
 1. Use the optional private job's pinned `setup-dotnet` action, isolated install directory and build
    step as the template for both required source jobs. Preserve their check names and target matrix.
-2. Remove the job's `/usr/lib/dotnet` root overrides and the `/usr/bin` prepend and `GITHUB_PATH`
-   write. Do not clear `MININGCORE_PRIVATE_DOTNET_ROOT`; export it from the selected private root.
+2. Remove the job's `/usr/lib/dotnet` root overrides. Keep `/usr/bin` immediately after the private
+   root with `export PATH="$DOTNET_ROOT:/usr/bin:$PATH"`. Persist that ordering by writing `/usr/bin`
+   then the private root to `GITHUB_PATH`, as in the optional job, and retain its later selection check.
+   Do not clear `MININGCORE_PRIVATE_DOTNET_ROOT`; export it from the selected private root.
    Set and persist `DOTNET_ROOT_X64` to that same root for subsequent validation steps.
-3. Retain published runtime/native validation and native vectors. Move the unaided Canonical
-   apphost check out of the temporary private lane: it cannot certify the private installation.
+3. Retain published runtime/native validation and native vectors. Drop the unaided Canonical
+   apphost check from the temporary private lane and restore it on catch-up: during a servicing gap
+   it would test the lagging Canonical runtime, not certify the private installation.
 4. Enable `check-canonical-servicing.sh` in each temporary default lane. Only its specific
    under-serviced-framework refusal passes; unexpected failures or Canonical catch-up fail CI.
 5. Update the workflow-policy tests to enforce that temporary selection, sentinel and mandatory
