@@ -6,6 +6,11 @@ For installations where Miningcore and PostgreSQL run on the same systemd host, 
 
 This is an operational hardening measure, not a replacement for payout-owner recovery. Power loss, kernel panic, forced reset, manual PostgreSQL termination, database crashes and remote-database failures can still leave fail-closed recovery state.
 
+If a marker remains, use the [guided recovery assistant](database.md#guided-payout-ownership-recovery)
+after checking the previous process and wallet outcomes. The updated Miningcore unit uses
+`RestartPreventExitStatus=74 78`; preserve both statuses in local service overrides and reload
+systemd after updating an installed unit. The helper manages ordering only, not this service setting.
+
 ## Packaged helper
 
 Archives from the release containing this change onward include the helper and example below.

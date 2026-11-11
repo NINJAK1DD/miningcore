@@ -22,6 +22,65 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
+## Unreleased (after v0.4.0-rc.1): guided payout recovery and timestamp setup
+
+Include these operator steps in the next candidate's deployment checklist (including RC.2 if this
+change ships there). Normal upgrades must preserve ownership markers and financial records.
+
+Standalone recovery enforces the same patched runtime policy as normal startup. Runtime-policy
+failures now exit with operator-required status 78 so the packaged service does not restart-loop
+until the installation is repaired, including malformed managed dependencies detected by the guard.
+Recovery audit warnings always reach the standalone or foreground recovery console, including
+when the copied service logging threshold is `error`, `fatal` or `off`. Foreground startup restores
+the configured service logging after recovery. Both recovery paths disable service log-file targets:
+the release line does not appear in `miningcore.log`. Preserve the console receipt and retain the
+protected database audit row as the durable record; central service-file collection alone is
+insufficient. See [recovery evidence retention](database.md#guided-payout-ownership-recovery).
+An audit owner can rerun the migration after
+temporary application membership and database `CREATE` have been revoked when the required
+index and protected schema already exist; malformed indexes still fail validation.
+
+### Guided recovery migration matrix
+
+| Existing deployment | Before enabling the new guided release |
+| --- | --- |
+| Existing ownership tables, no audit migration | Stop every payout manager, take a restorable full backup, and apply the candidate's `add_payout_recovery_audit.sql` as a separate administrator using the application's ownership schema/search path. |
+| Earlier guided recovery build with an audit table in `public` or another application-owned schema | Reapply the updated audit migration. It moves history into an administrator-owned `miningcore_audit_<ownership-OID>` schema, preserves receipt UUIDs and replaces direct INSERT access with restricted function execution. |
+| Logical restore or move to a new database/server | Preserve object owners/ACLs and all old audit schemas, rerun the audit migration for each ownership schema using its search path, and verify every new recovery endpoint before service activation. Migrating one schema can retire all obsolete endpoints but only creates that schema's replacement. Follow the post-restore backup drill. |
+| Earlier build already using `miningcore_audit_<ownership-OID>` | Reapply the updated audit migration to install the backend advisory-lock check, explicit `pg_catalog, pg_temp` function search path and automatic retirement of obsolete administrator-owned append endpoints. Existing receipt rows remain unchanged. |
+| New empty database using this candidate | Import this candidate's `createdb.sql` once; it includes protected audit storage. Never import it over an existing database. |
+| Legacy `timestamp without time zone` shares with no explicit timestamp setting | Set `persistence.postgres.enableLegacyTimestamps` to `true` before starting the candidate. Use `false` for the modern `timestamptz` schema; verify the actual current schema first. |
+
+Without the audit migration, clean startup still works but guided release refuses to clear an owner.
+Install it during the upgrade rather than discovering the missing permission/storage mid-incident.
+Keep administrator ownership of the audit schema and include it in backups. Validate table/role
+permissions, preserve `RestartPreventExitStatus=74 78` and the actual-cluster PostgreSQL ordering,
+reload the unit and verify fresh ownership acquisition on clean startup. See the
+[guided recovery and audit procedure](database.md#guided-payout-ownership-recovery) and
+[post-restore checklist](database.md#payout-recovery-after-a-logical-restore).
+
+RC.2 deployment acceptance also requires the isolated
+[cross-cluster restore rehearsal](database.md#cross-cluster-release-acceptance), including destination
+role/permission checks and explicit resolution of historical-endpoint exceptions. Choose dedicated
+recovery credentials where production requires stronger separation; terminal confirmations alone
+are not authentication. Preserve the rehearsal evidence separately from CI and wallet reconciliation.
+For that configuration, reapply the [dedicated-login grants](database.md#dedicated-recovery-identity-and-permissions)
+and require its automated permission check to pass after every migration/restore before activation.
+The check rejects excessive audit privileges and administrative recovery identities as well as missing
+grants. Guided inspection now keeps protection before prompting when the login lacks audit append
+access, directing intentionally restricted service logins to the dedicated recovery identity.
+
+When multiple failures occur, process exit status uses precedence **74 > 78 > ordinary failure**.
+An earlier retryable failure therefore cannot mask a later condition requiring operator recovery.
+
+Timestamp auto-detection no longer attempts to change Npgsql's cached mode after opening a
+connection. A legacy or indeterminate current schema without an explicit setting stops with exit
+78 and a configuration remedy; systemd does not retry it. Explicit settings take effect before the
+first connection, including standalone recovery. After correcting the configuration, use
+`systemctl reset-failed miningcore` and start the service. This change does not convert timestamps
+or require clearing payout state. The two-minute recovery limit is per idle prompt, and scripted
+TTY startups can use `--no-payout-recovery-prompt`; it cannot be combined with standalone recovery.
+
 ## Upcoming v0.4.0-rc.2
 
 > **Upgrade .NET before installing RC.2.** Normal Miningcore startup now requires both

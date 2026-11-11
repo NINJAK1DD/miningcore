@@ -1051,3 +1051,15 @@ before importing or restarting.
 4. Check `/api/health-check` and `/api/pools`.
 5. Connect a test miner at low risk before moving production traffic.
 6. For merged mining, repeat the documented regtest and schema preflight when topology changes.
+
+## PostgreSQL timestamp compatibility
+
+If `persistence.postgres.enableLegacyTimestamps` is explicitly set, Miningcore applies it before
+opening any database connection, including foreground and standalone payout recovery. Use `true`
+for a legacy timestamp-without-time-zone schema and `false` for the current timestamptz schema.
+Without an explicit setting, startup may inspect the schema, but it cannot safely change Npgsql's
+process-wide timestamp mode after that connection. A detected legacy schema therefore stops with
+instructions to set `enableLegacyTimestamps: true` and restart. An indeterminate schema also stops;
+check the schema and explicitly select the correct mode. Detection uses only the current schema,
+not an unrelated `shares` table elsewhere in the database. Both cases exit 78, so the packaged
+service waits for configuration repair rather than repeatedly restarting. Do not rely on late auto-enabling.

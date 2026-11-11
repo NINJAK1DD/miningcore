@@ -161,10 +161,16 @@ Restore into an empty database during a tested recovery exercise:
 
 ```console
 createdb -h 127.0.0.1 -U postgres -O miningcore miningcore_restore_test
-pg_restore -h 127.0.0.1 -U postgres -d miningcore_restore_test --no-owner miningcore-YYYY-MM-DD.dump
+pg_restore -h 127.0.0.1 -U postgres -d miningcore_restore_test --exit-on-error miningcore-YYYY-MM-DD.dump
 ```
 
-A backup is not proven until it has been restored and checked.
+Provision the original application and administrator roles on the destination first, and preserve
+ownership and ACLs. Do not use `--no-owner` or restore protected audit objects as the application
+role. If administrator identities change, explicitly transfer protected objects to the intended
+separate administrator before reapplying migrations; never give that role to the application.
+
+A backup is not proven until it has been restored and checked. For guided payout recovery, complete
+[the post-restore audit steps](#payout-recovery-after-a-logical-restore) in every backup drill.
 
 ## Upgrade an existing database
 
@@ -691,6 +697,417 @@ Miningcore holds both a PostgreSQL session advisory lock and one durable ownersh
 complete payout-manager lifetime. The advisory lock rejects a second live manager. The durable row
 continues to block replacement after a process, host or database-session loss, because an operator
 may need to reconcile a wallet submission whose response was lost.
+
+### Guided payout ownership recovery
+
+In a foreground terminal, normal startup can offer recovery before any hosted services start.
+Use `--no-payout-recovery-prompt` for unattended terminals, containers with an allocated TTY,
+or scripted tmux/screen sessions. This disables the prompt, not payout ownership protection.
+Each prompt has a **two-minute idle timeout**, renewed after each answer. An active operator can
+complete a longer standalone session; database operations remain bounded and cancellable.
+If reconciliation needs longer than an idle interval, keep protection and rerun after completing it.
+
+A retained owner without a live lock exits with status **78**; the packaged unit prevents restart
+loops for this case. A live lock exits with retryable status **1**, so a short overlap does not
+permanently stop a supervised service. Inspection reads lock state without acquiring the payout
+lock. Successful foreground recovery continues startup, which must acquire fresh ownership.
+Redirected input cannot approve release, and a non-terminal service never waits for input.
+
+Before using guided release, install its audit storage and payment-history index. Stop all payout
+managers and apply the migration from the verified candidate release **as a separate database
+administrator**, in the same schema as `payout_manager_ownership` and `payment_batches`:
+
+```console
+sudo systemctl stop miningcore
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore \
+  -f "$MININGCORE_CANDIDATE_DIR/migrations/add_payout_recovery_audit.sql"
+```
+
+Use the candidate-directory selection and schema precautions in the upgrade procedure above.
+The migration leaves retained owners and payment records unchanged. It creates an index on the
+history ordering columns and an administrator-owned schema named `miningcore_audit_<ownership-OID>`.
+The assistant displays its exact name. This schema contains `payout_manager_recovery_events` and
+its append function; the application receives schema USAGE, table SELECT and function EXECUTE,
+with no direct INSERT, UPDATE, DELETE, TRUNCATE or schema CREATE. Fresh `createdb.sql` includes it.
+The separate schema protects history even when `miningcore` owns the database and therefore owns
+`public` through `pg_database_owner` (PostgreSQL 15+).
+
+#### Managed PostgreSQL without a superuser
+
+Use a separate non-superuser migration administrator (for example `dbadmin`) on RDS,
+Cloud SQL or similar services. The first migration statement creates an index on the
+application-owned `payment_batches`, so database `CREATE` alone is insufficient. A role
+administrator with the necessary grant authority must grant the migration administrator
+inherited membership in the application owner, **never the reverse direction**:
+
+<!-- BEGIN MANAGED RECOVERY GRANTS -->
+```sql
+GRANT miningcore TO dbadmin WITH INHERIT TRUE; -- PostgreSQL 16+
+GRANT CREATE ON DATABASE miningcore TO dbadmin;
+```
+<!-- END MANAGED RECOVERY GRANTS -->
+
+For PostgreSQL 15, use `GRANT miningcore TO dbadmin` and ensure `dbadmin` has the
+`INHERIT` role attribute. Provider administrators still need authority to grant these
+privileges; `CREATEROLE` alone does not imply every grant is permitted. Connect directly
+as the migration administrator with `USAGE` on the ownership schema. Initial index creation
+also needs `CREATE` on that schema; the default database-owning application role already has
+it on `public`. For a custom schema, arrange that privilege explicitly during installation
+and revoke any temporary direct grant after migration. Connect
+as `dbadmin`, retain the ownership schema's search path, and run the same migration with
+`ON_ERROR_STOP=1`. Do not switch the session to `miningcore`: the migration resets `ROLE`
+and uses `session_user` as the protected audit owner. Keep that separate owner for future
+migration reruns. The application must never inherit or be able to assume `dbadmin`.
+
+After success, revoke membership and database `CREATE` if they were granted solely for
+this migration (`REVOKE miningcore FROM dbadmin` and
+`REVOKE CREATE ON DATABASE miningcore FROM dbadmin`). Preserve any pre-existing grants
+needed for administration. Confirm that the audit schema/table/function remain owned by
+`dbadmin`, the application cannot drop that schema, and reapply and verify the
+[dedicated recovery permissions](#dedicated-recovery-identity-and-permissions).
+Later reruns by that same audit owner do not require those temporary grants when the
+history index and protected audit schema already exist. The migration validates the existing
+index's complete required shape without recreating it. A missing index, a new ownership schema
+or a restore that needs new audit storage requires the temporary grants again; an incompatible
+index still stops migration for administrator inspection. Revoke newly temporary grants after
+successful repair and reapply the dedicated recovery permissions after every rerun.
+PostgreSQL documents [role inheritance and membership](https://www.postgresql.org/docs/16/role-membership.html)
+and the [grant options](https://www.postgresql.org/docs/16/sql-grant.html).
+
+#### Running the assistant
+
+Reapplying the migration moves an earlier ownership-schema audit table into the protected schema
+without changing its event UUIDs. If both locations contain audit tables, it stops for administrator
+reconciliation. It also rejects an incompatible existing history index instead of silently accepting
+it. Inspect any reported index mismatch before replacing the index with
+`CREATE INDEX idx_payment_batches_recovery_created ON payment_batches(created DESC, poolid, transactionconfirmationdata)`
+in the ownership schema during the maintenance window. Do not drop payment or audit data.
+Without this migration, normal clean startup remains available, but guided release fails closed.
+
+With the default application-role permissions, run the standalone assistant as the service account,
+with the same configuration/environment. For dedicated credentials, use the separate identity in
+[the dedicated recovery example](#dedicated-recovery-identity-and-permissions) instead:
+
+```console
+sudo -u miningcore /usr/bin/dotnet /opt/miningcore/Miningcore.dll \
+  -c /etc/miningcore/config.json --recover-payout-ownership
+```
+
+It starts no mining, API or wallet services and exits after recovery. Substitute the actual paths
+for custom layouts. Preserve PostgreSQL environment settings (such as `PGSSLROOTCERT`) and
+certificate access. Do not change database roles to bypass a permission failure.
+Standalone recovery requires the same patched runtime as the service: .NET and ASP.NET Core
+10.0.15 or later in .NET 10, with the release's reviewed PKCS dependency. Runtime-policy
+failure returns operator-required status 78 before any database connection; only the separate
+read-only share-recovery verification command has a warning-only exemption.
+
+The assistant displays the database, role, endpoint, ownership schema/relation identity, previous
+host/PID, acquisition time and owner token/generation. Option **2** refreshes these details and
+payment evidence; option **3** refreshes again before asking for confirmations. A changed owner,
+database identity or live lock refuses release. The resolved payment table's schema/OID is shown;
+a table outside the ownership schema is not used as evidence. If available history was displayed,
+release pins and rechecks that relation too; replacement or a changed resolution refuses release.
+This does not freeze the contents between prompts: reconciliation must still include external wallets/logs.
+
+Payment history is optional; each query is bounded to two seconds and returns the latest ten batches
+across all times. Each row is labelled before or at/after acquisition (or acquisition unknown).
+It is skipped entirely while a live payout lock exists. A missing/denied/timed-out query is labelled
+unavailable, not presented as an empty payment history. These rows are not a complete wallet
+history and cannot prove an old process is dead or that no unrecorded payment was sent. Reconcile
+wallets, logs and database records externally whenever evidence is incomplete.
+
+Choose **1** (default) to keep protection. Release requires `STOPPED`, `CHECKED`, a nonempty
+incident reference (up to 200 characters; do not include secrets), and `RELEASE <owner-token>`.
+Surrounding whitespace is ignored. Blank input, EOF, failed confirmation, cancellation or timeout
+before release keeps protection. Release refusals return 78. Inspection/connectivity errors return
+1 and explicitly say whether a release was attempted.
+Inspection checks the login's audit append access before offering release. A restricted login is
+directed to the dedicated recovery identity and keeps protection without asking for confirmations.
+The check repeats on refresh; permissions and all ownership safeguards still apply at release time.
+
+Terminal detection and confirmation strings are procedural checks, not authentication. Software
+controlling a pseudo-terminal can supply the same answers. Restrict access to the host and database
+credentials; use the dedicated recovery login described below when stronger separation is required.
+
+Release reacquires the advisory lock and checks the exact token/generation, database/role/endpoint
+and pinned ownership table. It inserts the complete previous owner, release time, releasing host/PID
+and incident reference through the protected append function into the audit table **in the same transaction** as clearing
+ownership. Audit insertion failure rolls the release back. The terminal reports the audit event UUID;
+standalone mode and the normal foreground recovery prompt always send warning-level recovery audit events to the console, even with
+`error`, `fatal` or `off` configured for ordinary service logging. Both disable service log-file
+targets during recovery. Foreground startup restores the configured service logging after the
+assistant returns or fails. Balances, payments, batches and generation are unchanged.
+
+**The protected database audit receipt is the durable recovery record.** A release through the
+foreground startup prompt is not written to `miningcore.log`, API logs or per-pool log files,
+even when their configured level would normally accept the warning. Central collection of those
+files alone therefore does not capture recovery releases. Preserve the terminal receipt (or its
+captured console/journal entry) in the incident record and include the protected audit rows in
+your central audit-retention and backup procedures. A missing service-log line does not mean
+ownership was not released; verify the displayed receipt UUID against the audit table.
+
+Audit rows survive later lease acquisition. UPDATE, DELETE and TRUNCATE are rejected, and the
+application role is not granted those privileges and cannot drop the administrator-owned audit
+schema or table. The database owner can still drop the entire database, and a superuser can alter
+any object. The append function accepts typed evidence and records the database and calling role
+itself, without running privileged SQL against application-owned relations. It also requires the
+calling backend to hold the exclusive payout advisory lock in this database. This prevents unlocked
+append calls, but an authorised caller that acquires that lock can still supply false incident/owner
+claims. It is an operational
+record of authorised recovery, not independent proof against compromised financial credentials.
+For stricter separation, an administrator can revoke the application's EXECUTE grant and grant it
+only to a dedicated recovery login with the necessary ownership-table access; use that login's
+configuration for standalone recovery. Normal startup can still inspect ownership, but cannot
+release it without the recovery login. Never grant the application membership in the audit owner.
+Keep recovery credentials outside the service account's readable configuration and secret stores.
+Verify effective permissions with both logins, including inherited role grants, after each migration
+or restore: the application must lack append-function EXECUTE and the recovery login must retain it.
+This separates access to audited recovery; it does not remove the database owner's ability to alter
+application-owned tables or make operator confirmations independent evidence of wallet reconciliation.
+
+Retain the release receipt UUID, UTC time and incident reference in central operational logs and
+the incident ticket. The release logger records all three, with the reference escaped; do not put
+secrets in it. Back up the whole database, including every `miningcore_audit_*` schema and its ACLs;
+a public-only dump omits the history. Verify restoration and permissions during backup drills.
+When an ownership table is deliberately replaced, preserve its old audit schema for retention;
+its successor has a different OID and audit schema.
+
+### Dedicated recovery identity and permissions
+
+This example uses database `miningcore`, ownership schema `public`, application login `miningcore`
+and a new database login `miningcore_recovery`. Substitute your deployment's names throughout.
+Keep payout managers stopped while changing permissions. As the separate database administrator,
+create the restricted login once, set its password interactively (never on the command line), and
+configure the destination's normal SCRAM/TLS authentication policy for it:
+
+```sql
+CREATE ROLE miningcore_recovery LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+\password miningcore_recovery
+ALTER ROLE miningcore_recovery IN DATABASE miningcore SET search_path TO public;
+```
+
+In `psql -X -v ON_ERROR_STOP=1 -d miningcore`, apply these grants after the audit migration.
+Repeat for each ownership schema, using a separate recovery login/search path where appropriate.
+The audit schema is derived from the current ownership table, so do not copy an OID from another
+database or an earlier restore. `SELECT, UPDATE` on ownership also permits its `ROW EXCLUSIVE`
+lock; `SELECT` on payment history permits its `ACCESS SHARE` lock. No direct audit INSERT is needed.
+
+<!-- BEGIN DEDICATED RECOVERY GRANTS -->
+```sql
+\set ON_ERROR_STOP on
+GRANT CONNECT ON DATABASE miningcore TO miningcore_recovery;
+GRANT USAGE ON SCHEMA public TO miningcore_recovery;
+GRANT SELECT, UPDATE ON public.payout_manager_ownership TO miningcore_recovery;
+GRANT SELECT ON public.payment_batches TO miningcore_recovery;
+SELECT 'miningcore_audit_' || 'public.payout_manager_ownership'::regclass::oid::text AS audit_schema \gset
+GRANT USAGE ON SCHEMA :"audit_schema" TO miningcore_recovery;
+GRANT SELECT ON :"audit_schema".payout_manager_recovery_events TO miningcore_recovery;
+REVOKE EXECUTE ON FUNCTION :"audit_schema".record_payout_recovery(uuid,uuid,bigint,text,integer,timestamptz,timestamptz,text,integer,text) FROM PUBLIC, miningcore;
+GRANT EXECUTE ON FUNCTION :"audit_schema".record_payout_recovery(uuid,uuid,bigint,text,integer,timestamptz,timestamptz,text,integer,text) TO miningcore_recovery;
+```
+<!-- END DEDICATED RECOVERY GRANTS -->
+
+Save the following read-only acceptance check in your deployment automation and run it with
+`psql -X -v ON_ERROR_STOP=1 -d miningcore -f recovery-permissions-check.sql` **after every migration
+or restore and after reapplying the grants above**. A nonzero exit must block service activation.
+It checks effective privileges, including PUBLIC/inherited grants, and rejects application membership
+in any role with append access even if that membership is not inherited. Remove unintended role/grant paths
+and rerun the check if it fails. Reapplying the audit migration restores the application's EXECUTE
+grant; this check deliberately fails until that grant is revoked again.
+This example requires a standalone recovery login with no other role memberships, administrative
+attributes, audit-write privileges (including column grants), or audit-schema CREATE permission.
+It also rejects ownership of the append function. Excess permissions must be removed and the check
+rerun; do not relax it just to make deployment pass. It validates this recovery boundary, not every
+possible privilege on unrelated database objects.
+
+<!-- BEGIN DEDICATED RECOVERY CHECK -->
+```sql
+\set ON_ERROR_STOP on
+SELECT 'miningcore_audit_' || 'public.payout_manager_ownership'::regclass::oid::text AS audit_schema \gset
+SELECT format('%I.record_payout_recovery(uuid,uuid,bigint,text,integer,timestamptz,timestamptz,text,integer,text)', :'audit_schema') AS append_function \gset
+SELECT NOT has_function_privilege('miningcore', :'append_function', 'EXECUTE')
+   AND NOT EXISTS (SELECT FROM pg_roles r WHERE pg_has_role('miningcore', r.oid, 'MEMBER')
+       AND has_function_privilege(r.oid, :'append_function', 'EXECUTE'))
+   AND has_database_privilege('miningcore_recovery', current_database(), 'CONNECT')
+   AND has_schema_privilege('miningcore_recovery', 'public', 'USAGE')
+   AND has_table_privilege('miningcore_recovery', 'public.payout_manager_ownership', 'SELECT')
+   AND has_table_privilege('miningcore_recovery', 'public.payout_manager_ownership', 'UPDATE')
+   AND has_table_privilege('miningcore_recovery', 'public.payment_batches', 'SELECT')
+   AND has_schema_privilege('miningcore_recovery', :'audit_schema', 'USAGE')
+   AND has_table_privilege('miningcore_recovery', format('%I.payout_manager_recovery_events', :'audit_schema'), 'SELECT')
+   AND NOT has_table_privilege('miningcore_recovery', format('%I.payout_manager_recovery_events', :'audit_schema'), 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+   AND NOT has_any_column_privilege('miningcore_recovery', format('%I.payout_manager_recovery_events', :'audit_schema'), 'INSERT,UPDATE,REFERENCES')
+   AND NOT has_schema_privilege('miningcore_recovery', :'audit_schema', 'CREATE')
+   AND EXISTS (SELECT FROM pg_roles WHERE rolname='miningcore_recovery' AND rolcanlogin
+       AND NOT (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls))
+   AND NOT EXISTS (SELECT FROM pg_roles r WHERE r.rolname <> 'miningcore_recovery'
+       AND pg_has_role('miningcore_recovery', r.oid, 'MEMBER'))
+   AND NOT EXISTS (SELECT FROM pg_proc p JOIN pg_roles r ON r.oid=p.proowner
+       WHERE p.oid=to_regprocedure(:'append_function') AND r.rolname='miningcore_recovery')
+   AND has_function_privilege('miningcore_recovery', :'append_function', 'EXECUTE') AS recovery_permissions_ok \gset
+\if :recovery_permissions_ok
+  \echo Dedicated recovery permission check passed
+\else
+  DO $$ BEGIN RAISE EXCEPTION 'Dedicated recovery permission check failed; keep payout managers stopped and review effective grants'; END $$;
+\endif
+```
+<!-- END DEDICATED RECOVERY CHECK -->
+
+Also connect with each actual login through the intended endpoint to verify authentication and TLS;
+catalog permission checks do not test those. The automated check requires a restricted standalone
+login; review unrelated table access and destination authentication separately.
+
+For the operating-system boundary, create a separate account once on Ubuntu:
+
+```console
+sudo useradd --system --user-group --create-home --home-dir /var/lib/miningcore-recovery \
+  --shell /usr/sbin/nologin miningcore-recovery
+sudo install -d -o root -g miningcore-recovery -m 0750 /etc/miningcore-recovery
+sudo install -o root -g miningcore-recovery -m 0640 /secure/staging/recovery.json \
+  /etc/miningcore-recovery/config.json
+sudo -u miningcore test ! -r /etc/miningcore-recovery/config.json &&
+sudo -u miningcore-recovery test -r /etc/miningcore-recovery/config.json &&
+sudo -H -u miningcore-recovery /usr/bin/dotnet /opt/miningcore/Miningcore.dll \
+  -c /etc/miningcore-recovery/config.json --recover-payout-ownership
+```
+
+Prepare `/secure/staging/recovery.json` in an administrator-only location before running this example.
+Use the same PostgreSQL endpoint/database, verified TLS settings and explicit timestamp mode as the
+service, with `persistence.postgres.user` set to `miningcore_recovery` and its separate password.
+The standalone recovery configuration can use `"pools": []`; do not copy wallet credentials into it.
+Use console-only logging, for example `"logging": { "level": "info", "enableConsoleColors": false }`.
+Omit service file targets under `/var/log/miningcore`; do not grant the recovery OS account access
+to that directory. Standalone recovery uses console logging and ignores service file targets.
+Keep both the staging file and installed configuration unreadable to `miningcore`, and do not add
+the service account to the `miningcore-recovery` group or grant it sudo access to that identity.
+Stop if either file-access check fails. The nologin shell prevents interactive login; an authorised
+administrator uses sudo to run the explicit recovery command. Retain its console receipt in the
+incident record. Normal service startup continues to use its original account and configuration.
+
+### Payout recovery after a logical restore
+
+`pg_dump`/`pg_restore`, logical replication and moves to a new database assign new relation OIDs.
+The restored audit schema keeps its old OID-based name and historical receipts; it is not the
+recovery endpoint for the new ownership table. Guided release safely refuses until its audit
+migration is reapplied. `pg_upgrade` preserves OIDs, but still verify the audit boundary after an upgrade.
+
+Before putting the restored database into service:
+
+1. Keep all payout managers stopped, verify the restored ownership markers and financial records,
+   and retain the full backup plus an inventory of every ownership schema and historical audit
+   schema/event UUID. Record schema/table/function owners and intended application/recovery logins;
+   explicitly review any different-administrator ownership or ambiguous OID mapping before activation.
+   Record each exception's responsible administrator, resolved relation/endpoint mapping and effective
+   permissions. Resolve and sign off each exception; an unexplained entry is not restore acceptance.
+2. Run the restored candidate's `add_payout_recovery_audit.sql` as the separate administrator
+   **for each ownership schema**, selecting that schema in the session's search path. For `public`:
+
+   ```console
+   sudo -u postgres psql -v ON_ERROR_STOP=1 -d miningcore_restore_test \
+     -c 'SET search_path TO public' \
+     -f /opt/miningcore/migrations/add_payout_recovery_audit.sql
+   ```
+
+   Replace the database and candidate path with the restored deployment's values. This creates
+   the new OID's protected audit schema; it does not move, erase or rewrite historical receipts.
+   Repeat the command for every other ownership schema; for example, use
+   `-c 'SET search_path TO "second"'` for a schema named `second`. Migrating one schema can retire
+   obsolete endpoints belonging to all restored schemas, but creates a replacement only for the
+   selected schema. The others safely refuse guided release until their own migration is applied.
+3. Retain all old `miningcore_audit_*` schemas for the incident/backup retention period. Their
+   append functions still identify the old relation and must not be used for new recovery.
+   The migration automatically revokes EXECUTE from PUBLIC and non-owner grantees (including
+   delegated grants) on obsolete append functions when the schema, history table and function
+   are all owned by the administrator running it. It preserves historical rows and SELECT/USAGE.
+   An OID that still identifies a `payout_manager_ownership` table in any schema is left alone,
+   so other live ownership schemas keep working. Objects owned by another administrator and
+   lookalike schemas are also left alone: review these and any OID-reuse ambiguity manually,
+   revoking obsolete EXECUTE grants without changing history/read access. Verify old endpoints
+   reject the application/recovery login even when it holds the payout lock. Reapply dedicated
+   recovery-login grants/revocations after the migration, which restores the current endpoint's
+   default application EXECUTE grant.
+4. For each ownership schema, use its intended service-account/recovery login to verify the new
+   endpoint and its permissions without releasing any owner (substitute that schema's qualified
+   ownership relation in the query):
+
+   ```sql
+   WITH audit AS (
+     SELECT 'miningcore_audit_' || 'public.payout_manager_ownership'::regclass::oid::text AS schema
+   )
+   SELECT schema,
+     has_schema_privilege(current_user, schema, 'USAGE') AS can_use,
+     has_table_privilege(current_user, format('%I.payout_manager_recovery_events', schema), 'SELECT') AS can_read,
+     has_function_privilege(current_user, format('%I.record_payout_recovery(uuid,uuid,bigint,text,integer,timestamptz,timestamptz,text,integer,text)', schema), 'EXECUTE') AS can_release
+   FROM audit;
+   ```
+
+   All three should be true for the intended recovery login. An intentionally restricted ordinary
+   application login may have `can_release=false`. Compare historical receipt UUIDs/counts against
+   the backup, inspect ownership with the assistant and choose **Keep**. Do not clear a retained
+   production marker just to test restore readiness. Finish migration and permission verification
+   for every ownership schema, including manual review of excluded historical endpoints, before
+   reactivating any payout manager.
+5. In the isolated backup drill only, exercise a guarded release using synthetic ownership with
+   wallets and mining services disabled. Confirm a new receipt appears in the new schema, old
+   receipts remain intact, and missing/revoked audit permissions roll back the synthetic release.
+
+The documented live lab automates a dump/restore with changed OIDs, refusal before migration,
+post-migration release as the pool role, retirement of historical append permissions with read
+access preserved, and preservation of the original receipt identities.
+Only resume production after normal wallet reconciliation and startup checks succeed.
+
+#### Cross-cluster release acceptance
+
+Before deploying this feature in RC.2, also rehearse the restore between separately administered
+PostgreSQL clusters using isolated staging systems that match the intended deployment. The automated
+lab's two disposable databases exercise logical restore within one cluster; that result does not
+verify the destination's independently managed roles, authentication, TLS or service configuration.
+
+- Use synthetic financial data and test credentials, with production wallets and miners disconnected.
+  Restore a full database including all ownership/audit schemas, owners and ACLs. Provision the intended
+  destination roles and memberships explicitly; do not use `--no-owner` to bypass ownership errors.
+- Complete the checklist above for every ownership schema using the destination administrator and
+  intended application/recovery logins over the actual destination connection and authentication path.
+  Record both cluster identities, source revision, backup identity, role mappings and resolved OID or
+  administrative-ownership exceptions. Verify retained receipt identities and effective read/append
+  permissions, including denial through obsolete endpoints and any dedicated-login restrictions.
+- In this isolated rehearsal, verify guarded synthetic recovery, fresh ownership acquisition, normal
+  accounting and clean shutdown with the destination's service units. Confirm exit-code 74/78 restart
+  prevention and PostgreSQL ordering. Retain the results and administrator sign-off with the release
+  acceptance record before production activation.
+
+The rehearsal does not reconcile production wallets. Keep production ownership markers intact until
+their own wallet/log evidence has been reconciled through the normal recovery procedure.
+
+### Reconcile an uncertain or duplicate recovery receipt
+
+A lost commit response is explicitly reported as **unknown**, with the attempted audit UUID.
+Before retrying, inspect both the event and ownership row using a read-only database session:
+
+```sql
+SELECT * FROM miningcore_audit_12345.payout_manager_recovery_events
+WHERE event_id = 'REPLACE_WITH_REPORTED_UUID';
+SELECT * FROM payout_manager_ownership WHERE id = 1;
+```
+
+Replace `miningcore_audit_12345` with the protected audit schema printed by the assistant and
+qualify ownership with its separately reported schema. Do not assume that a connection failure means the
+release rolled back. A duplicate audit-event error also keeps protection: inspect the reported
+owner/generation and historical receipt, then reconcile the earlier attempt. Do not delete the
+receipt, clear ownership manually or repeatedly retry to bypass the conflict. Escalate an
+inconsistent or pre-claimed record to the database administrator with the wallet evidence.
+After confirmed recovery, start exactly one intended instance:
+
+```console
+sudo systemctl reset-failed miningcore
+sudo systemctl start miningcore
+sudo systemctl status miningcore --no-pager -l
+```
+
+The manual procedure below remains for diagnosis and older binaries; it does not create the new
+assistant's audit event. Prefer guided release when the migrated version is installed.
+
+### Manual diagnosis and recovery
 
 Stop Miningcore before stopping or restarting its PostgreSQL server during planned maintenance. A
 clean Miningcore shutdown clears the durable row; stopping PostgreSQL first destroys the guard
