@@ -1,7 +1,7 @@
 {
-  "source_commit": "d5a64505ddb6571290248b37ff80da3beeb7960f",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42476001430",
-  "minimum_total": 5843,
+  "source_commit": "94401fdb0caf53ce66882ccc5fb37a131238858d",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43068617700",
+  "minimum_total": 6049,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -734,6 +734,11 @@
       "class": "Miningcore.Tests.Payments.MergedMiningPayoutRegtestTests",
       "method": "Nexa_RealCoinbaseWalletAndChainContractsEnforceMaturityAndPolicy",
       "case": "Nexa_RealCoinbaseWalletAndChainContractsEnforceMaturityAndPolicy"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.MergedMiningPayoutRegtestTests",
+      "method": "PausedExample_RealStartupMiningPersistenceAndOwnershipRecovery",
+      "case": "PausedExample_RealStartupMiningPersistenceAndOwnershipRecovery"
     },
     {
       "class": "Miningcore.Tests.Payments.MergedMiningPayoutRegtestTests",
