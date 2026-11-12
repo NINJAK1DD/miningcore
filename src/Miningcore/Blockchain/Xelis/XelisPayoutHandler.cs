@@ -265,10 +265,13 @@ public class XelisPayoutHandler : PayoutHandlerBase,
         // Activating the wallet belongs to the admitted wallet batch, not accounting setup.
         if(!await EnsureWalletOnlineAsync(ct))
             return;
-        var chain = await rpcClient.ExecuteAsync<GetChainInfoResponse>(logger, XelisCommands.GetChainInfo, ct);
+        var chain = await rpcClient.ExecuteAsync<JObject>(logger, XelisCommands.GetChainInfo, ct);
         var scanned = await rpcClientWallet.ExecuteAsync<JToken>(logger, XelisWalletCommands.GetTopoHeight, ct);
+        var chainHeight = chain.Response?["topoheight"];
         if(chain.Error != null || chain.Response == null || scanned.Error != null ||
-            scanned.Response?.Type != JTokenType.Integer || scanned.Response.Value<ulong>() < chain.Response.TopoHeight)
+            chainHeight?.Type != JTokenType.Integer || scanned.Response?.Type != JTokenType.Integer ||
+            !ulong.TryParse(chainHeight.ToString(), out var daemonHeight) ||
+            !ulong.TryParse(scanned.Response.ToString(), out var walletHeight) || walletHeight < daemonHeight)
         {
             logger.Warn(() => $"[{LogCategory}] Payout deferred until the online wallet has scanned the daemon topoheight");
             return;

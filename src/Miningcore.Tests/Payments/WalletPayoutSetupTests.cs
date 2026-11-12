@@ -39,6 +39,7 @@ public class WalletPayoutSetupTests : TestBase
     {
         var online = false;
         var caughtUp = false;
+        var missingHeight = false;
         var calls = new ConcurrentQueue<string>();
         await using var server = await RpcDiagnosticTests.Server.Start(async context =>
         {
@@ -52,7 +53,7 @@ public class WalletPayoutSetupTests : TestBase
                 "set_online_mode" => new JValue(online = true),
                 "get_topoheight" => new JValue(caughtUp ? 10 : 9),
                 "get_balance" => new JValue(0),
-                _ => new JObject { ["network"] = "mainnet", ["topoheight"] = 10, ["peer_count"] = 4 },
+                _ => new JObject { ["network"] = "mainnet", ["topoheight"] = missingHeight ? JValue.CreateNull() : new JValue(10), ["peer_count"] = 4 },
             };
             await context.Response.WriteAsync(new JObject { ["id"] = request["id"], ["result"] = result, ["error"] = null }.ToString());
         });
@@ -72,6 +73,10 @@ public class WalletPayoutSetupTests : TestBase
         Assert.Contains("get_topoheight", calls);
         Assert.DoesNotContain("get_balance", calls);
         caughtUp = true;
+        missingHeight = true;
+        await handler.PayoutAsync(pool, balances, CancellationToken.None);
+        Assert.DoesNotContain("get_balance", calls);
+        missingHeight = false;
         await handler.PayoutAsync(pool, balances, CancellationToken.None);
         Assert.Contains("get_balance", calls);
         Assert.DoesNotContain("build_transaction", calls);
@@ -87,11 +92,12 @@ public class WalletPayoutSetupTests : TestBase
         string coin, Type handlerType, string mutation)
     {
         var calls = new ConcurrentQueue<string>();
+        var peers = 4;
         await using var server = await RpcDiagnosticTests.Server.Start(async context =>
         {
             if(context.Request.Method == "GET")
             {
-                await context.Response.WriteAsJsonAsync(new { status = "OK", incoming_connections_count = 4, outgoing_connections_count = 4 });
+                await context.Response.WriteAsJsonAsync(new { status = "OK", incoming_connections_count = peers, outgoing_connections_count = peers });
                 return;
             }
             using var reader = new StreamReader(context.Request.Body);
@@ -99,7 +105,7 @@ public class WalletPayoutSetupTests : TestBase
             var method = request.Value<string>("method");
             calls.Enqueue(method);
             JToken result = new JObject { ["chain"] = "main", ["network"] = "mainnet", ["nettype"] = "mainnet",
-                ["incoming_connections_count"] = 4, ["outgoing_connections_count"] = 4, ["peer_count"] = 4 };
+                ["incoming_connections_count"] = peers, ["outgoing_connections_count"] = peers, ["peer_count"] = peers };
             JToken error = JValue.CreateNull();
             if(method == "is_online") result = new JValue(false);
             if(method == mutation)
@@ -145,6 +151,14 @@ public class WalletPayoutSetupTests : TestBase
         pool.Config.Returns(config);
         await handler.PayoutAsync(pool, Array.Empty<Balance>(), CancellationToken.None);
         Assert.DoesNotContain(mutation, calls);
+#if !DEBUG
+        peers = 0;
+        if(coin != "zcash")
+        {
+            await handler.PayoutAsync(pool, new[] { new Balance { Address = "invalid-recipient", Amount = 1m } }, CancellationToken.None);
+            Assert.DoesNotContain(mutation, calls);
+        }
+#endif
     }
 
     [Theory]
