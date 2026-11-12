@@ -238,19 +238,12 @@ fixtures; they are not claimed as verified. The tested binaries and databases we
 isolated from production. Evidence is retained in the lab checkout's
 `build/test-lab/build.log`, `test-rebuild.log` and `wallet-control-final.trx`.
 
-This validates the six original acceptance criteria of #291. The four scenarios
-added to that issue during implementation remain **unverified and unchecked**:
-combined locally paused/unpaused deployments of the local control from #262,
-extended paused relay operation, a large accumulated block backlog across restart,
-and PostgreSQL interruption during paused PPS arrivals. Keep #291 open for those
-combined integration scenarios. Merging #262 and testing its existing single-node
-pause/resume fixture with this protocol does not establish their acceptance.
-These four scenarios are **production release
-blockers** for the combined local-pause, relay/backlog and paused-PPS topologies;
-a green CI run does not remove that restriction. Keep such deployments on the
-documented coordinated-shutdown procedure until the combined implementation is
-validated. Live payout compatibility for the affected non-Bitcoin wallet families
-is also a release gate: transport fixtures alone do not establish daemon support.
+That initial run validated the six original acceptance criteria of #291. The four
+subsequently added topology scenarios were verified separately in the
+[combined topology lab run](#combined-topology-and-pps-durability-verification) below.
+Their acceptance is based on those live observations, not on merging #262 or its
+single-node fixture. Live payout compatibility for affected non-Bitcoin wallet families
+remains a separate release gate: transport fixtures alone do not establish daemon support.
 
 Empty-argument probes now follow peer/recipient checks and fail conclusively on
 transport loss; unexpected success still requires reconciliation. Parameterized
@@ -273,9 +266,8 @@ against the daemon before building transactions, following the official
 | L3 / Xelis readiness and diagnostics | Activation defers payout, subsequent cycles require a readable scanned topoheight, diagnostic labels are corrected, and pause warnings occur on observed state changes. Live Xelis wallet compatibility remains a release gate. |
 | Durable identity, API and retention | Pool ID and liability digest are persisted; the real-database API test checks paused, admitted and completed state without disclosing recipients; indefinite retention and verified export are documented. |
 
-The topology and non-Bitcoin live-wallet gates above remain intentionally unchecked.
-This follow-up does not assert production validation from mocked transports or
-replace those gates with a benchmark claim.
+The non-Bitcoin live-wallet gate remains. The topology follow-up below supplies
+separate live evidence; mocked transports and benchmarks do not establish wallet compatibility.
 
 Initial review verification source: `771a15ae16dd20e68fc2a2b37a2f211f0c2bd4f2`.
 The documented lab's complete build passed with **zero warnings and errors**;
@@ -329,4 +321,53 @@ PostgreSQL 15–18 schema jobs and Ubuntu 24.04/26.04 source builds also passed.
 [Release](https://github.com/NINJAK1DD/miningcore/actions/runs/43206090528) and
 [listener portability](https://github.com/NINJAK1DD/miningcore/actions/runs/43206090753)
 passed. The final documentation-only commit records these results; it does not
-change the verified implementation or remove any release gate above.
+change that verified implementation. The subsequent topology follow-up is recorded below.
+
+### Combined topology and PPS durability verification
+
+The documented isolated lab now covers all four additional #291 scenarios using the
+merged local-pause implementation. Fixtures use production registration, payout ownership,
+Bitcoin classification/allocation and wallet RPCs, real PostgreSQL and real ZeroMQ.
+Child process fixtures supply pool discovery and telemetry; accounting fixtures supply
+validated share evidence and invoke the production Stratum acknowledgement boundary directly.
+This does not claim a live TCP miner, indefinite soak, throughput benchmark or other wallet-family
+compatibility. Reproduction steps and test names are in the
+[test-lab guide](../scripts/test-lab/README.md#combined-pause-relay-backlog-and-pps-outage-scenarios).
+
+| Additional acceptance scenario | Verified observations |
+| --- | --- |
+| Mixed locally paused/unpaused nodes | Separate services share one database and Bitcoin wallet. Local pause registers no payout processor and owns no payout lease; an unpaused peer pays. A third owner is rejected. Database pause blocks that active peer across cycles/restart; resume produces exactly two recorded wallet sends overall. Stopping the paused peer preserves the active owner's marker. |
+| Extended paused relay receiver/recorder | 622.7 seconds, 6,100 unique durable shares/credits, exact 30.500 BTC test liability, 64 unchanged pending blocks, two five-minute pause heartbeats and pause gauge 1. Queue high-water 50/512, no queue overflows, storage growth 12,140,544 bytes and zero payout batches/wallet sends. |
+| Large backlog and restart | 256 real Bitcoin block/coinbase identities accumulated while paused; three payout-process lifetimes and two maturity waves. All blocks confirmed, rewards equal payments plus balances, balance changes reconcile, and exactly two payment batches/receipts match two wallet transactions. Additional cycles and restart do not allocate or pay twice. |
+| PostgreSQL interruption during paused PPS | Twenty positive responses remain pending while a real SQL write is blocked. Abrupt PostgreSQL loss permits responses only after authenticated journal/terminal-anchor durability. A fresh recorder imports/replays to exactly 21 total credits and the exact balance. A second database outage plus journal-flush failure acknowledges zero new shares, retains fatal evidence and blocks startup even after PostgreSQL returns. |
+
+This testing exposed and fixed a PPS acknowledgement gap: ordinary primary-queue admission
+previously completed before durable accounting. PPS acceptance now waits for a conclusive
+database commit or force-flushed authenticated recovery evidence. Pending responses also fault
+on unknown commit outcomes, including when incident recording fails. PPS relay senders register
+a local recorder and require share partitions; the receiver deduplicates the same immutable
+receipts in the same database. Non-PPS statistical traffic retains its existing relay boundary.
+The extra live relay test first commits with no receiver present, then confirms exactly-once
+accounting after real relay delivery. These changes apply with or without local payout pause.
+
+The native/managed build at `62754be264e43ba5362da62f9d9f5c514eb9ec85` passed with
+zero warnings/errors. The complete timed soak and PPS sender/receiver checks passed at that
+revision. Fixture-only corrections at `76d88259b84de8be1da162e2e3db8d3b51ac2116` rebuilt
+both test projects with zero warnings/errors and passed all seven focused topology/admission
+cases without skips. Evidence is retained in `build/test-lab/topology-durable-build.log`,
+`topology-durable.trx`, `topology-corrected-host-build.log`,
+`topology-corrected-tests-build.log` and `topology-corrected.trx`.
+
+The Windows artifact from [run 43230058390](https://github.com/NINJAK1DD/miningcore/actions/runs/43230058390)
+passed **6,010 tests, zero failures, 219 skips** (6,229 total). Its only evidence-validator
+failure was the five newly introduced live-lab skips absent from the old inventory. The
+reviewed baseline now matches that downloaded artifact exactly, raises the discovery floor
+to 6,229 and requires all 105 regression cases, including the three new PPS unit cases.
+The artifact's tested merge commit is `f9b055e9c8e5177dbdfb38ea19019215a828698a`;
+all 18 evidence-validator self-tests and documentation link checks passed.
+
+The soak bounds apply to its measured workload. Paused reconciliation and retention do not
+cap PPS liabilities, pending blocks or disk growth indefinitely. Operators must monitor reserves,
+disk space, queue pressure and recovery evidence and stop admission before exhausting capacity.
+Keep all participating versions on the same protocol and accounting database. Direct coinbase,
+already admitted/broadcast work and external wallet tools retain the scope exclusions above.

@@ -107,9 +107,57 @@ pool IDs and test interval in a private incident record, without wallet credenti
 
 This is an opt-in manual acceptance procedure, not a claim that TCP staging ran in CI.
 The automated `PausedExample_RealStartupMiningPersistenceAndOwnershipRecovery` fixture
-exercises production job managers directly. Multi-node emergency-stop, prolonged-pause,
-large-backlog and database-failure scenarios remain separately tracked in
-[issue #291](https://github.com/NINJAK1DD/miningcore/issues/291).
+exercises production job managers directly. The additional #291 scenarios are covered by
+the fixtures below; neither fixture group claims this optional TCP mining smoke ran.
+
+## Combined pause, relay, backlog and PPS outage scenarios
+
+Run `WalletPayoutControlIntegrationTests` through the runner above, or use its same daemon
+environment and `with-postgres.sh` wrapper with a previously built, unchanged revision:
+
+```bash
+bash scripts/test-lab/with-postgres.sh dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj \
+  --no-build --no-restore --filter 'FullyQualifiedName~WalletPayoutControlIntegrationTests' \
+  --logger 'trx;LogFileName=wallet-topologies.trx' --results-directory build/test-lab
+```
+
+Allow at least 20 minutes for the focused group. Every database, role, wallet, daemon and
+child service belongs to the fixture; the outage case starts and abruptly stops its own
+loopback PostgreSQL server, never the shared lab server. Runtime roles remain distinct
+from table owners and wallet-control operators. The private outage server uses the existing
+TLS-policy fixture's loopback-only trust authentication; the outer lab wrapper uses SCRAM.
+
+- `MixedLocalPauseProcesses_ShareWalletAndDatabaseWithoutSharingOwnership` starts separate
+  locally paused and active service processes on one database/wallet. A third payout owner
+  must fail. It distinguishes the local flag from the database stop, restarts the owner,
+  and matches database payment receipts to actual wallet sends.
+- `ExtendedPausedRelay_PersistsPpsAndMonitorsBoundedQueuesAndBacklog` runs for at least
+  **620 real seconds**, crossing two production five-minute pause heartbeats. It feeds
+  50 immutable PPS shares approximately every five seconds through real ZeroMQ and the
+  production receiver/recorder, checks each durable credit and balance, keeps 64 blocks
+  pending, and records queue high-water, overflow, storage growth and zero wallet sends.
+  Synthetic validated evidence isolates relay/accounting behavior; it is not proof of TCP
+  mining. Test-only repeats of the same IDs compensate for PUB/SUB loss and verify deduplication.
+- `LargePausedBacklog_RestartsBetweenMaturityWavesWithoutDuplicateAllocationOrPayment`
+  records 256 real regtest block/coinbase identities while locally paused, then uses three
+  payout-process lifetimes and two maturity waves. It checks complete classification,
+  reward/balance conservation, exactly two payment receipts and matching wallet transactions.
+- `PausedPps_DatabaseInterruptionRequiresDurabilityBeforeAcknowledgementAndExplicitRecovery`
+  holds a real database statement pending, abruptly stops PostgreSQL, and checks that PPS
+  responses wait for authenticated journal durability. A fresh recorder imports and replays
+  the evidence exactly once. A second outage plus injected journal-flush failure must produce
+  no positive responses and must retain a fatal incident that still blocks startup after
+  PostgreSQL returns. It invokes the production Stratum publish/acknowledgement boundary
+  directly, without a TCP mining client.
+- `PpsRelaySender_CommitsLocallyAndReceiverDeduplicates` verifies local PPS durability with
+  the receiver absent, followed by real relay delivery and receipt deduplication in the same
+  database. Mixed-scheme statistical traffic must not be duplicated by the sender's recorder.
+
+The soak's bounded measurements describe that traffic and duration, not an indefinite pause
+or capacity benchmark. Local pause suspends payout reconciliation/retention while PPS liabilities
+continue growing. Monitor disk capacity, queue pressure, pending blocks, recovery evidence and
+wallet reserves; stop admission before capacity is exhausted. Keep the shared database and
+coordinated-version boundaries in the [wallet-stop guide](../../docs/emergency-wallet-stop.md).
 
 ## Live payout recovery and shutdown checks
 

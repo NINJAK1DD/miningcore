@@ -1,7 +1,7 @@
 {
-  "source_commit": "0d63ef98ed32afbe0700539b1e2c3d0e7c007fae",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43193103932",
-  "minimum_total": 6221,
+  "source_commit": "f9b055e9c8e5177dbdfb38ea19019215a828698a",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43230058390",
+  "minimum_total": 6229,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -512,6 +512,21 @@
       "class": "Miningcore.Tests.ConfigurationContractTests",
       "method": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored",
       "case": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored(key: \"paused\")"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ShareRecorderTests",
+      "method": "PpsPrimaryAdmission_UncertainCommitFaultsActiveAndQueuedResponses",
+      "case": "PpsPrimaryAdmission_UncertainCommitFaultsActiveAndQueuedResponses(incidentHandlerFails: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ShareRecorderTests",
+      "method": "PpsPrimaryAdmission_UncertainCommitFaultsActiveAndQueuedResponses",
+      "case": "PpsPrimaryAdmission_UncertainCommitFaultsActiveAndQueuedResponses(incidentHandlerFails: True)"
+    },
+    {
+      "class": "Miningcore.Tests.ProgramPoolTemplateTests",
+      "method": "PpsRelaySender_RegistersRecorderAndRequiresSharePartitionsEvenWhilePaused",
+      "case": "PpsRelaySender_RegistersRecorderAndRequiresSharePartitionsEvenWhilePaused"
     }
   ],
   "expected_skips": [
@@ -1142,6 +1157,16 @@
     },
     {
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "ExtendedPausedRelay_PersistsPpsAndMonitorsBoundedQueuesAndBacklog",
+      "case": "ExtendedPausedRelay_PersistsPpsAndMonitorsBoundedQueuesAndBacklog"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "LargePausedBacklog_RestartsBetweenMaturityWavesWithoutDuplicateAllocationOrPayment",
+      "case": "LargePausedBacklog_RestartsBetweenMaturityWavesWithoutDuplicateAllocationOrPayment"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
       "method": "MigrationRejectsEffectiveWritePrivilegesAtomically",
       "case": "MigrationRejectsEffectiveWritePrivilegesAtomically"
     },
@@ -1149,6 +1174,11 @@
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
       "method": "MissingDeniedOrIncompatibleProtocol_AndCancelledAdmission_FailClosed",
       "case": "MissingDeniedOrIncompatibleProtocol_AndCancelledAdmission_FailClosed"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "MixedLocalPauseProcesses_ShareWalletAndDatabaseWithoutSharingOwnership",
+      "case": "MixedLocalPauseProcesses_ShareWalletAndDatabaseWithoutSharingOwnership"
     },
     {
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
@@ -1167,6 +1197,11 @@
     },
     {
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "PausedPps_DatabaseInterruptionRequiresDurabilityBeforeAcknowledgementAndExplicitRecovery",
+      "case": "PausedPps_DatabaseInterruptionRequiresDurabilityBeforeAcknowledgementAndExplicitRecovery"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
       "method": "PermissionsAuditRollbackAndMissingState_CannotOpenTheGate",
       "case": "PermissionsAuditRollbackAndMissingState_CannotOpenTheGate"
     },
@@ -1174,6 +1209,11 @@
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
       "method": "PostgreSqlRestart_PreservesStopOutstandingBatchAndOwnership",
       "case": "PostgreSqlRestart_PreservesStopOutstandingBatchAndOwnership"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "PpsRelaySender_CommitsLocallyAndReceiverDeduplicates",
+      "case": "PpsRelaySender_CommitsLocallyAndReceiverDeduplicates"
     },
     {
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
