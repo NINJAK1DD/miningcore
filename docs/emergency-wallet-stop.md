@@ -277,7 +277,7 @@ The topology and non-Bitcoin live-wallet gates above remain intentionally unchec
 This follow-up does not assert production validation from mocked transports or
 replace those gates with a benchmark claim.
 
-Verified follow-up source: `771a15ae16dd20e68fc2a2b37a2f211f0c2bd4f2`.
+Initial review verification source: `771a15ae16dd20e68fc2a2b37a2f211f0c2bd4f2`.
 The documented lab's complete build passed with **zero warnings and errors**;
 the full suite passed **6,311 tests, zero failures, 28 skips** (6,339 total).
 Evidence is in `build/test-lab/review-verified-build.log` and
@@ -293,3 +293,40 @@ peer-guard checks and log-redaction regression. Its exact skip inventory and all
 the discovery minimum was raised to 6,130. Release and listener-portability
 workflows also passed. Any subsequent documentation/provenance commit does not
 change the tested payout implementation.
+
+After #262 merged into `dev`, the combined isolated lab suite passed at
+`382268dd41de3b656b98c34782190103ac9f4816`: **6,402 passed, zero failures,
+28 skips** (6,430 total). The existing real Litecoin/Dogecoin local-pause and
+resume fixture now uses the wallet-control migration and a distinct runtime
+login, preserving SELECT-only PPS transition privileges. Evidence is retained
+in `build/test-lab/review-final-combined.trx`. The native/production build was
+unchanged while the combined test fixtures were corrected and rebuilt; the
+test-project rebuild passed its warning audit.
+
+The subsequent commit `733ce85a87a3f68665641a04c17abd17da6cc278` only makes
+the completion log-redaction fixture independent of global test initialization.
+Both logging tests passed in isolation without skips; evidence is in
+`build/test-lab/review-logging-isolated.trx`. The combined Windows artifact
+from [run 43193103932](https://github.com/NINJAK1DD/miningcore/actions/runs/43193103932)
+passed **6,007 tests with 214 skips**, including all **102 required regression
+cases** and the exact expected skip inventory. Its verified discovery floor is
+6,221. All 18 evidence-validator self-tests and links in 58 Markdown files passed.
+
+At `3d49300a5450bec7da3b3d7dd172c4ce743adaa8`, the existing Knots payment
+restart regression also passed against the installed released Knots 29.4.3
+binary and disposable PostgreSQL, covering both successful and uncertain payouts
+without skips (`build/test-lab/review-knots-restart.trx`). Its funding height is
+now 200: Knots' wallet can backdate an anti-fee-sniping locktime by 99 blocks,
+so the former height 110 could randomly select the unrelated CAT21 policy's
+rejected locktime 21. The fixture retains the released node policy and tests
+the original transaction's rebroadcast and exactly-once accounting unchanged.
+
+Final implementation CI at that commit is green:
+[.NET run 43206090483](https://github.com/NINJAK1DD/miningcore/actions/runs/43206090483)
+passed the full Linux suite (**6,421 passed, 9 skipped**) and Windows suite
+(**6,007 passed, 214 skipped**), with zero failures and successful warning audits.
+PostgreSQL 15–18 schema jobs and Ubuntu 24.04/26.04 source builds also passed.
+[Release](https://github.com/NINJAK1DD/miningcore/actions/runs/43206090528) and
+[listener portability](https://github.com/NINJAK1DD/miningcore/actions/runs/43206090753)
+passed. The final documentation-only commit records these results; it does not
+change the verified implementation or remove any release gate above.
