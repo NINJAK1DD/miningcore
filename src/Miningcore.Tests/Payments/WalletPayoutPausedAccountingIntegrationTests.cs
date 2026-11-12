@@ -217,7 +217,7 @@ public partial class WalletPayoutControlIntegrationTests
     {
         var share = new Share
         {
-            PoolId = pool.Id, Miner = pool.Address ?? "lab-miner", Worker = "lab", IpAddress = "127.0.0.1",
+            PoolId = pool.Id, Miner = pool.Address ?? "lab-miner", Worker = "lab", IpAddress = "127.0.0.1", SessionId = "lab-session",
             Created = DateTime.UtcNow, PreserveCreated = true, AccountingId = Guid.NewGuid().ToString("N"),
             AccountingRole = ShareAccountingRole.Single, Difficulty = 1, ShareDifficulty = 1, ActualDifficulty = 1,
             NetworkDifficulty = 10000, BlockHeight = 100, RewardBasisSatoshis = 5_000_000_000,

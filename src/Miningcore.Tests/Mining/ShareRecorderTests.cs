@@ -73,7 +73,7 @@ public class ShareRecorderTests
             repository, Substitute.For<IBlockRepository>(), config, bus, recovery, coordinator);
         Share NewShare()
         {
-            var share = new Share { PoolId = pool.Id, Miner = "miner", IpAddress = "127.0.0.1",
+            var share = new Share { PoolId = pool.Id, Miner = "miner", IpAddress = "127.0.0.1", SessionId = "lab-session",
                 Created = DateTime.UtcNow, AccountingId = Guid.NewGuid().ToString("N"), AccountingRole = ShareAccountingRole.Single,
                 Difficulty = 1, ActualDifficulty = 1, ShareDifficulty = 1, NetworkDifficulty = 100, RewardBasisSatoshis = 5_000_000_000 };
             ShareAccounting.AttachPpsCreditEvidence(pool, share);
