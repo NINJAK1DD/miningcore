@@ -1,7 +1,7 @@
 {
-  "source_commit": "5f17faeaa8309342fa9f92e6110ed0928cf2743f",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42926822543",
-  "minimum_total": 6097,
+  "source_commit": "98b056a1658d02b0946ca3deb826090e80fd3359",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43133981388",
+  "minimum_total": 6116,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -824,6 +824,41 @@
       "class": "Miningcore.Tests.Payments.PayoutHandlerPersistenceIntegrationTests",
       "method": "ProductionRetryOverlapsUnfinishedCommitWithoutAnotherWalletSubmission",
       "case": "ProductionRetryOverlapsUnfinishedCommitWithoutAnotherWalletSubmission"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "CompetingProcesses_PauseSurvivesCleanAndUncleanRestart",
+      "case": "CompetingProcesses_PauseSurvivesCleanAndUncleanRestart"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "DatabaseSessionLossBeforeAndAfterAdmission_FailsClosedAcrossRestart",
+      "case": "DatabaseSessionLossBeforeAndAfterAdmission_FailsClosedAcrossRestart"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "MissingDeniedOrIncompatibleProtocol_AndCancelledAdmission_FailClosed",
+      "case": "MissingDeniedOrIncompatibleProtocol_AndCancelledAdmission_FailClosed"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "PauseWinsAdmissionRace_AndConcurrentOperatorsUseRevisionCompareAndSwap",
+      "case": "PauseWinsAdmissionRace_AndConcurrentOperatorsUseRevisionCompareAndSwap"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "PermissionsAuditRollbackAndMissingState_CannotOpenTheGate",
+      "case": "PermissionsAuditRollbackAndMissingState_CannotOpenTheGate"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "PostgreSqlRestart_PreservesStopOutstandingBatchAndOwnership",
+      "case": "PostgreSqlRestart_PreservesStopOutstandingBatchAndOwnership"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "RealWallet_PauseAccountingResumeAndAmbiguousOutcome_PreserveBothDurableMarkers",
+      "case": "RealWallet_PauseAccountingResumeAndAmbiguousOutcome_PreserveBothDurableMarkers"
     },
     {
       "class": "Miningcore.Tests.Persistence.Postgres.BitcoinDirectSoloIntegrationTests",
