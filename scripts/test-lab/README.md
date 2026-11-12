@@ -53,6 +53,12 @@ reusing a persistent lab. NuGet auditing must remain enabled.
 
 ## Live payout recovery and shutdown checks
 
+For database emergency wallet admission, run the full suite and the focused
+`FullyQualifiedName~WalletPayoutControlIntegrationTests` cases. They create disposable
+databases and authenticated runtime/operator roles, start competing process hosts,
+restart a private PostgreSQL server and exercise a real Bitcoin wallet. See the
+[protocol, rollout policy and verified results](../../docs/emergency-wallet-stop.md).
+
 After building the current source, run:
 
 ```powershell

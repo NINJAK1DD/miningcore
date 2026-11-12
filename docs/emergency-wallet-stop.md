@@ -169,3 +169,28 @@ The design follows PostgreSQL's [row-lock ordering](https://www.postgresql.org/d
 and [security-definer rules](https://www.postgresql.org/docs/18/sql-createfunction.html#SQL-CREATEFUNCTION-SECURITY).
 Database serialization establishes admission order, not atomicity with an external
 wallet. Durable uncertainty and coordinated deployment are part of the protocol.
+
+### Verified lab run: 12 November 2026
+
+The isolated Ubuntu 26.04 lab used SDK 10.0.404, .NET/ASP.NET Core 10.0.15,
+Bitcoin Core 31.1, Litecoin 0.21.5.8, Dogecoin 1.14.9 and disposable PostgreSQL.
+The complete native/managed build had zero warnings and errors. Final test revision
+`107615a4a09ffe337ec72393a5a97cc7ed37cca7` passed **6,297 tests, zero failures,
+28 skips** (6,325 total). The only change after the complete production rebuild was
+the reviewed integration-collection membership entry; the test project was rebuilt
+and the entire suite rerun. All 19 new regression cases passed without skips,
+including seven live PostgreSQL/process/Bitcoin scenarios and five transport-level
+wallet setup cases. Documentation links and diff whitespace checks passed.
+
+The 28 skips are opt-in daemon/GPU, privileged ownership/trust-store and benchmark
+fixtures; they are not claimed as verified. The tested binaries and databases were
+isolated from production. Evidence is retained in the lab checkout's
+`build/test-lab/build.log`, `test-rebuild.log` and `wallet-control-final.trx`.
+
+This validates the six original acceptance criteria of #291. The four scenarios
+added to that issue during implementation remain **unverified and unchecked**:
+combined locally paused/unpaused deployments of the unmerged #262 feature,
+extended paused relay operation, a large accumulated block backlog across restart,
+and PostgreSQL interruption during paused PPS arrivals. Keep #291 open for those
+combined integration scenarios; this independent protocol change does not establish
+their acceptance or expand #262.
