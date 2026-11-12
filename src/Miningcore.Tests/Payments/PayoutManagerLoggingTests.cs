@@ -53,7 +53,7 @@ public class PayoutManagerLoggingTests
                 new ClusterConfig { PaymentProcessing = new() }, Substitute.For<IMessageBus>(), lease, new ProcessStatus());
             await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => manager.PayoutPoolBalancesAsync(
                 Substitute.For<IMiningPool>(), new PoolConfig { Id = "pool", PaymentProcessing = new(),
-                    Template = ModuleInitializer.CoinTemplates["bitcoin"] }, Substitute.For<IPayoutHandler>(), CancellationToken.None));
+                    Template = new BitcoinTemplate { Symbol = "BTC" } }, Substitute.For<IPayoutHandler>(), CancellationToken.None));
             Assert.Contains(target.Logs, x => x.Contains("completion is unrecorded"));
             Assert.Contains(target.Logs, x => x.Contains("PayoutManager.CompleteConclusiveBatchAsync"));
             Assert.DoesNotContain(secret, string.Join("\n", target.Logs));
