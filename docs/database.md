@@ -1449,49 +1449,139 @@ sudo systemctl status miningcore --no-pager
 sudo journalctl -u miningcore --since '10 minutes ago' --no-pager
 ```
 
-If mining and share recording must resume before wallet reconciliation is complete, pause the
-payout-manager pipeline without violating the deployment's startup validation:
+### Restart-only payout pause
 
-- On a node without enabled LTC-DOGE merged mining, or on a share-relay sender with the top-level
-  `shareRelay` configured, set the top-level `paymentProcessing.enabled` value to `false`.
-- On a direct pool or share-relay receiver/recorder with LTC-DOGE merged mining enabled (no
-  top-level `shareRelay`), keep the top-level `paymentProcessing.enabled` value `true` and
-  temporarily set `paymentProcessing.enabled` to `false` inside **every enabled pool**. Direct and
-  receiver nodes require the cluster-level switch for merged-block reconciliation validation, while
-  disabling all pool-level switches prevents `PayoutManager` from being registered.
+This option requires a binary containing the payout-pause fix (target: v0.4.0-rc.2).
+The v0.4.0-rc.1 binary does not implement it. Verify the selected binary's generated schema
+(`--generate-config-schema`) includes `ClusterPaymentProcessingConfig.properties.paused`
+before relying on it. Never roll back to an older binary with a paused configuration: an unknown
+flag may be ignored. On an older binary, keep mining stopped during full payout recovery.
 
-For the merged-mining case, preserve every other payment setting and change only each pool's
-`enabled` value:
+Use the read-only pre-start helper against the **same apphost and configuration paths** that
+will be used by the service. After positively confirming every payout-capable process is stopped,
+record the node/service inventory, selected binary versions and check results in the incident record:
+
+```console
+python3 scripts/release/verify-payout-pause-support.py --binary /opt/miningcore/Miningcore --config /etc/miningcore/config.json --all-payout-nodes-stopped
+```
+
+A failed check must prevent service startup. The helper executes only schema generation and the
+safe configuration diagnostic command; it rejects missing/unsupported pause properties, unknown-field
+permissiveness, and a configuration that is not explicitly enabled and paused. It checks the
+installed `config.schema.json` beside the apphost as well as the generated schema, and requires
+those schemas to match. A missing, stale or edited installed schema blocks the check. Schema generation
+also enforces the patched runtime requirement. Use a trusted binary; this is capability validation,
+not an authenticity check. The flag is an operator attestation, not remote process discovery.
+Repeat on each node before its paused restart, keep the same files in place, and do not let another
+service manager or deployment controller restart an unchecked node. This version rejects unknown
+cluster payment-processing fields; older already-shipped binaries cannot gain that protection.
+
+Use immutable versioned paths for the **whole release** and incident configuration, not a mutable
+`current` symlink. Freeze deployment controllers and make those files non-writable by the service
+identity before checking them; do not replace them between checking and starting. The helper detects
+changes to the apphost, installed schema and configuration during verification, but cannot make a
+later launch atomic or authenticate the release/dependencies. Optionally add
+`--receipt /protected/incident/node-pause-check.json` to save their resolved paths and SHA-256 hashes.
+The receipt must be a new file; existing files are never overwritten. Keep it private with the
+incident record (and restrict its directory/Windows ACL); configuration hashes are not public
+telemetry or proof that those exact bytes were subsequently launched.
+
+For systemd, install the helper at a root-owned versioned path and use a temporary pause-only
+drop-in that runs it immediately before the same apphost/configuration. Example paths below must
+be replaced with the immutable paths actually deployed; retain the service's existing user,
+database ordering and other hardening. After confirming the all-node stop inventory, an operator
+can install this drop-in and reload systemd:
+
+The embedded attestation records that initial inventory check; it does not reconfirm remote
+node state on a later start. Keep the unit disabled for automatic boot activation while this
+temporary drop-in is installed, and prevent dependency-triggered or external automatic starts.
+Before every manual start, including after a reboot, repeat the all-node stop inventory and
+pre-start verification. `Restart=no` alone does not prevent boot or dependency activation.
+
+```ini
+[Service]
+Restart=no
+ExecStartPre=/usr/bin/python3 /usr/local/libexec/miningcore/rc2/verify-payout-pause-support.py --binary /opt/miningcore/releases/rc2/Miningcore --config /etc/miningcore/incidents/pause/config.json --all-payout-nodes-stopped
+ExecStart=
+ExecStart=/opt/miningcore/releases/rc2/Miningcore -c /etc/miningcore/incidents/pause/config.json
+```
+
+An unsuccessful `ExecStartPre` prevents `ExecStart`; do not prefix the check with `-` to ignore
+failure. `Restart=no` makes this incident procedure operator-controlled: the packaged main-process
+`RestartPreventExitStatus` does not apply to pre-start commands. See
+[systemd's startup-command contract](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#ExecStartPre=).
+Do not put a fixed receipt filename in a restartable unit, since the second exclusive creation
+would fail. Remove the pause-only override only during the controlled resume procedure below;
+otherwise it intentionally refuses an unpaused configuration. This narrows the deployment race,
+but still depends on immutable files and does not discover other payout-capable nodes.
+
+Before restarting mining during wallet recovery, stop **every** payout-capable process using the
+database and wallets, including relay senders. Confirm they are stopped; editing a file does not
+pause a running process or cancel a transaction already sent. Retain the durable ownership marker
+until the preceding reconciliation procedure is complete.
+
+On each node that could run payouts, keep cluster `paymentProcessing.enabled: true` and set
+`paymentProcessing.paused: true`. Keep both LTC and DOGE pool payment configurations enabled,
+including their original payout schemes, recipients and arithmetic settings. Disabling these pool
+switches is rejected before Stratum startup and through the administrative API while an enabled
+merged-mining relationship requires them. Put `paused` only inside the cluster `paymentProcessing`
+object, never at the document root, directly inside a pool object, or inside a pool's payment
+settings. Those misplaced keys are
+hard errors, even with alternative casing. The same pause works for direct, relay sender and
+relay receiver/recorder nodes. A dedicated sender may retain its existing cluster-disabled
+configuration instead; that is not permission to disable pool accounting, and PPS still requires
+cluster processing enabled.
+
+Apply this **fragment** to the existing complete configuration (do not replace it):
 
 ```json
 {
   "paymentProcessing": {
-    "enabled": true
-  },
-  "pools": [
-    {
-      "id": "ltc",
-      "paymentProcessing": {
-        "enabled": false
-      }
-    },
-    {
-      "id": "doge",
-      "paymentProcessing": {
-        "enabled": false
-      }
-    }
-  ]
+    "enabled": true,
+    "paused": true
+  }
 }
 ```
 
-Validate the complete JSON before starting Miningcore. This emergency configuration pauses the
-entire payout-manager pipeline: pending-block classification, uncertain merged-block reconciliation,
-maturity processing, balance credit and wallet payouts. Newly persisted block candidates remain in
-PostgreSQL and are processed after the original configuration is restored. It does not clear or
-supersede the durable marker. Keep this mode temporary, inspect the pending block backlog before
-re-enabling the pipeline, and restore the original configuration only after ownership recovery is
-complete and exactly one designated node is ready to acquire it.
+Restart and verify the startup warning that payment processing is paused, both expected pools are
+online, and accepted work is reaching PostgreSQL. No payout manager is registered, acquires a lease,
+clears an owner, or initiates a wallet payout in this process. An unrelated enabled pool cannot
+override the pause. This is a process configuration, not a distributed database switch: a different
+unpaused node can still pay. Keep all such nodes stopped or paused.
+A separate [database-wide emergency-stop proposal](https://github.com/NINJAK1DD/miningcore/issues/291)
+tracks that additional capability; it is not implemented by this flag.
+
+The entire payout-manager pipeline is suspended: pending-block classification, uncertain-candidate
+reconciliation, maturity processing, block-reward balance allocation, wallet payouts and retention.
+Mining-side operations continue: ordinary shares, paired PROP/PPLNS effort, synchronous PPS
+liability/balance credits, accepted/uncertain candidate persistence, SOLO beneficiary attribution
+and recovery journals. Database/schema, local recovery ownership and fail-stop checks still apply.
+Relay transport guarantees are unchanged; pausing does not add replay to ordinary PUB/SUB shares.
+Direct Bitcoin SOLO rewards paid in the block coinbase are **unaffected**, including on a cluster
+that also runs custodial LTC/DOGE pools. Their payout-manager maturity/reorg tracking is paused,
+but miners can still receive on-chain coinbase rewards. Stop mining if all such rewards must stop.
+
+The metric `miningcore_payout_processor_paused` is 1 only when this process has an otherwise
+configured processor that is paused; it is 0 on an unconfigured sender or node without participating
+pools. The gauge can only be scraped when the API metrics endpoint is enabled and reachable;
+otherwise the five-minute log warning is the available signal. Alert on a sustained value of 1
+where metrics are exposed, and retain the warning. API payment enable/disable
+routes return 409 during a pause and cannot resume the processor. The automatic recovery prompt
+is suppressed while paused; `--recover-payout-ownership` remains an explicit operator action.
+
+Monitor storage, pending blocks, PPS liabilities and reserves. Stop mining if durable accounting is
+unavailable or reserves/storage cannot cover the pause. Keep the pause shorter than the configured
+share-accounting replay horizon: stopping retention does not extend replay acceptance limits.
+
+To resume, stop the paused process, inspect/import outstanding journals under the normal recovery
+procedure, reconcile uncertain wallet transactions against durable balances/payment evidence, and
+complete the explicit stale-owner procedure above if needed. Never automatically clear or overwrite
+ownership. Set `paused: false` (or remove it) on **exactly one** designated payout node and restart.
+Other nodes remain paused or use their valid sender-only configuration. Normal advisory-lock and
+durable-marker acquisition still gate startup; pending candidates/balances use the existing
+idempotent processing paths. Verify the new ownership generation and a complete payout cycle
+before declaring recovery complete. If reconciliation cannot be completed safely, remain paused or
+keep mining stopped.
 
 ## Routine inspection
 

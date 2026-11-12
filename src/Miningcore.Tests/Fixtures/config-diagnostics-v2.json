@@ -69,6 +69,7 @@
       "coinbaseString": "[set]",
       "enabled": true,
       "interval": 600,
+      "paused": false,
       "shareAccountingPruneBatchSize": 50000,
       "shareAccountingRetentionDays": 30
     },

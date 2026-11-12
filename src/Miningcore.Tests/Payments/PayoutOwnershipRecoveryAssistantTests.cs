@@ -177,15 +177,19 @@ public class PayoutOwnershipRecoveryAssistantTests
     }
 
     [Theory]
-    [InlineData(true, false, true)]
-    [InlineData(true, true, false)]
-    [InlineData(false, false, false)]
-    public void StartupPrompt_RequiresTerminalAndAllowsOptOut(bool terminal, bool disabled, bool expected)
+    [InlineData(true, false, false, true)]
+    [InlineData(true, false, true, false)]
+    [InlineData(true, true, false, false)]
+    [InlineData(false, false, false, false)]
+    public void StartupPrompt_RequiresTerminalAndAllowsOptOut(bool terminal, bool disabled, bool paused, bool expected)
     {
         var config = new Miningcore.Configuration.ClusterConfig
         {
-            PaymentProcessing = new() { Enabled = true },
-            Pools = [new() { Enabled = true, PaymentProcessing = new() { Enabled = true } }],
+            PaymentProcessing = new() { Enabled = true, Paused = paused },
+            Pools = [
+                new() { Id = "ltc", Enabled = true, PaymentProcessing = new() { Enabled = true } },
+                new() { Id = "doge", Enabled = true, PaymentProcessing = new() { Enabled = true } },
+            ],
         };
         Assert.Equal(expected, Program.ShouldOfferPayoutRecovery(config, terminal, disabled));
     }

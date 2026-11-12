@@ -99,10 +99,14 @@ public partial class ProgramPoolTemplateTests
             Persistence = postgres ? new PersistenceConfig { Postgres = new PostgresConfig() } : null,
             PaymentProcessing = new ClusterPaymentProcessingConfig { Enabled = true } };
         Assert.Equal(runs, Program.ShouldRunPaymentProcessor(config));
-        if(runs)
-            Assert.Throws<PoolStartupException>(() => Program.ValidateBitcoinConfirmationDeployment(config));
-        else
-            Program.ValidateBitcoinConfirmationDeployment(config);
+        foreach(var paused in new[] { false, true })
+        {
+            config.PaymentProcessing.Paused = paused;
+            if(runs)
+                Assert.Throws<PoolStartupException>(() => Program.ValidateBitcoinConfirmationDeployment(config));
+            else
+                Program.ValidateBitcoinConfirmationDeployment(config);
+        }
     }
 
     [Fact]

@@ -42,6 +42,13 @@ review stored journals and support attachments before sharing them.
 
 ## Normal service checks
 
+For emergency payment suspension, follow the [restart-only payout-pause procedure](database.md#restart-only-payout-pause).
+Keep required pool payment configurations enabled. Stop every payout-capable node, set cluster
+`paymentProcessing.enabled: true, paused: true`, then restart only after confirming prior processes
+have stopped. Verify the pause warning and durable share/candidate accounting. Retention and block
+reconciliation stop; monitor storage and PPS liabilities. Resume only after wallet reconciliation
+and explicit ownership recovery, with exactly one unpaused payout node.
+
 For a systemd installation:
 
 ```console

@@ -250,6 +250,37 @@ public class AdminApiController : ApiControllerBase
     private void ValidatePaymentProcessingToggle(IEnumerable<IMiningPool> targetPools,
         bool enable)
     {
+        if(clusterConfig.PaymentProcessing?.Paused == true)
+            throw new ApiException(
+                "The payout processor is paused for this process; changing payment processing requires a controlled restart",
+                HttpStatusCode.Conflict);
+
+        if(!enable)
+        {
+            // An auxiliary recorder need not expose a Stratum listener. Inspect the
+            // configured relationship, not just the target pool's own mergedMining flag.
+            var requiredPools = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach(var parent in clusterConfig.Pools ?? Array.Empty<PoolConfig>())
+            {
+                if(!parent.Enabled)
+                    continue;
+                var merged = MergedMiningConfigLoader.GetNormalizedConfig(parent);
+                if(merged?.Enabled != true)
+                    continue;
+                requiredPools.Add(parent.Id);
+                requiredPools.Add(merged.AuxPoolId);
+            }
+
+            var required = targetPools.FirstOrDefault(pool => requiredPools.Contains(pool.Config.Id));
+            if(required != null)
+                throw new ApiException(
+                    $"Cannot disable payment processing for active merged-mining pool '{required.Config.Id}'; " +
+                    "stop Miningcore and use a controlled restart. To pause payouts, retain both pool " +
+                    "payment switches and set cluster-level paymentProcessing.paused=true; " +
+                    "other pools remain individually controllable through their per-pool routes",
+                    HttpStatusCode.Conflict);
+        }
+
         var protectedPool = targetPools
             .Select(pool =>
             {

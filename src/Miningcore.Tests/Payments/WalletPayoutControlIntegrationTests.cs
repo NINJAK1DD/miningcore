@@ -511,7 +511,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
         }
     }
 
-    private sealed class Database : IAsyncDisposable
+    internal sealed class Database : IAsyncDisposable
     {
         private readonly string name = "wallet_control_" + Guid.NewGuid().ToString("N");
         public string AppRole => name + "_app";

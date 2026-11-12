@@ -122,6 +122,13 @@ public class PayoutManager : ProcessStatusBackgroundService
     {
         ct.ThrowIfCancellationRequested();
 
+        // Defense in depth: a registration mistake must not acquire ownership or broadcast.
+        if(clusterConfig.PaymentProcessing.Paused)
+        {
+            ProcessStatus.MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
+            throw new TrustedPoolStartupException("Cannot start the payout manager while cluster paymentProcessing.paused=true");
+        }
+
         // Read-only preflight happens before durable ownership is acquired.
         await payoutLease.ValidateWalletControlAsync(ct);
         if(!await payoutLease.TryAcquireAsync(ct))

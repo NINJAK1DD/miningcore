@@ -47,6 +47,7 @@ internal static class ConfigurationDiagnosticProjection
                 nameof(PostgresConfig.Port), nameof(PostgresConfig.Tls), nameof(PostgresConfig.TlsNoValidate),
                 nameof(PostgresConfig.CommandTimeout), nameof(PostgresConfig.EnableLegacyTimestamps)),
             [typeof(ClusterPaymentProcessingConfig)] = Fields<ClusterPaymentProcessingConfig>(
+                nameof(ClusterPaymentProcessingConfig.Paused),
                 nameof(ClusterPaymentProcessingConfig.Enabled), nameof(ClusterPaymentProcessingConfig.Interval),
                 nameof(ClusterPaymentProcessingConfig.ShareAccountingPruneBatchSize),
                 nameof(ClusterPaymentProcessingConfig.ShareAccountingRetentionDays)),

@@ -1,5 +1,14 @@
 # Upgrade from v0.3.0 to v0.4.0-rc.1
 
+> **Payout-pause compatibility warning:** RC.1 ignores `paymentProcessing.paused` and may pay
+> wallets even when it is true. Keep RC.1 stopped during full payout recovery. Before restarting
+> on RC.2, stop every payout-capable node and run the exact-binary
+> [pre-start check](database.md#restart-only-payout-pause). Never roll back a paused configuration
+> to RC.1. RC.2 rejects unknown cluster payment-processing fields, including incorrect casing:
+> use `enabled`, `interval` and `paused`, not `Enabled`, `Interval` or `Paused`. Misplaced root
+> or pool-level pause flags are rejected. Fix these settings before startup.
+
+
 This guide covers the first v0.4.0 release candidate. It is a staging candidate,
 not the v0.4.0 stable release. Confirm that its release assets have been published
 before using download commands; preparing a release branch does not publish them.
@@ -198,6 +207,11 @@ empty dashboard or silent alert rule is not evidence of a healthy pool.
 
 ## Family and payout boundaries
 
+- The original RC.1 recovery advice to disable LTC/DOGE pool payment switches is contradictory
+  and must not be used. RC.1 has no supported continued-mining full payout pause; keep it stopped
+  during recovery. Builds containing the issue #261 fix (target RC.2) add cluster
+  `paymentProcessing.paused`. Follow the [version-checked pause procedure](database.md#restart-only-payout-pause),
+  retain both pool accounting switches, and never roll back to RC.1 while relying on that flag.
 - BTC, LTC and DOGE retain their existing chain identities and SOLO modes.
   Keep pool IDs, wallet addresses, coin keys and direct/custodial choices unchanged.
   The new BTCB2B maturity rules do not apply to ordinary SHA256d BTC, LTC or DOGE.
