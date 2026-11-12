@@ -47,6 +47,7 @@ public partial class WalletPayoutControlIntegrationTests
     private async Task PpsCapacity(bool relayed)
     {
         await using var db = await Database.Create();
+        await db.Admin.ExecuteAsync($"ALTER ROLE {db.AppRole} SET track_io_timing=on; ALTER ROLE {db.AppRole} SET track_wal_io_timing=on");
         var config = CapacityConfig();
         config.ClusterName = "capacity-sender";
         if(relayed) config.ShareRelay = new() { PublishUrl = RelayUrl(), SharedEncryptionKey = RelayTestKey };
@@ -107,6 +108,10 @@ public partial class WalletPayoutControlIntegrationTests
                 output.WriteLine($"Relay queue: {transport.Relay.GetRelayQueueMetrics()}; queued bytes={transport.Relay.QueuedBytes}/{transport.Relay.ByteCapacity}.");
             }
             output.WriteLine($"PPS {(relayed ? "relay" : "local")} {(burst ? "burst" : "sustained")}: shares={count}; offered seconds={offeredSeconds:F3}; recovery seconds={recoverySeconds:F3}; ack p95={latencies[(int)(count*.95)]:F3}ms p99={latencies[(int)(count*.99)]:F3}ms max={latencies[^1]:F3}ms; commits={after.Commits-before.Commits}; WAL bytes={after.WalBytes}; managed CPU seconds={(process.TotalProcessorTime-cpu).TotalSeconds:F3}; queue high-water={lab.Recorder.PersistenceQueueHighWatermark}/65536; queue depth={lab.Recorder.PersistenceQueueDepth}.");
+            output.WriteLine("PostgreSQL cumulative WAL statistics: " + await db.Admin.ExecuteScalarAsync<string>("SELECT row_to_json(w)::text FROM pg_stat_wal w"));
+            if(await db.Admin.ExecuteScalarAsync<bool>("SELECT to_regclass('pg_stat_io') IS NOT NULL"))
+                output.WriteLine("PostgreSQL cumulative client I/O statistics: " + await db.Admin.ExecuteScalarAsync<string>(
+                    "SELECT json_agg(i)::text FROM pg_stat_io i WHERE backend_type='client backend' AND context='normal'"));
         }
     }
 

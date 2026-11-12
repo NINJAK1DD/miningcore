@@ -4,11 +4,14 @@ import concurrent.futures
 import hashlib
 from pathlib import Path
 import sys
+import subprocess
 import tarfile
 import tempfile
 import urllib.request
 
 PACKAGES = [
+    ("zcash-6.20.0", "https://apt.z.cash/pool/main/z/zcash/zcash-6.20.0-amd64-bookworm.deb",
+     "863595b5567c97502450413d3e4ce633fac69c587db65fc964139fc4f9b60fac"),
     ("verus-1.2.18", "https://github.com/VerusCoin/VerusCoin/releases/download/v1.2.18/Verus-CLI-Linux-v1.2.18-x86_64.tgz",
      "3c8a749a2d18059988bafcff37e72175bb8b2853caa356f820ad1e75c8189cb0"),
     ("monero-0.18.5.4", "https://downloads.getmonero.org/cli/monero-linux-x64-v0.18.5.4.tar.bz2",
@@ -41,8 +44,12 @@ def install(root, package):
     with tempfile.TemporaryDirectory(prefix=name + "-extract-", dir=root) as temporary:
         staging = Path(temporary) / "package"
         staging.mkdir(mode=0o700)
-        with tarfile.open(archive) as source:
-            source.extractall(staging, filter="data")
+        if url.endswith(".deb"):
+            # Extract a verified package; do not install it or execute maintainer scripts.
+            subprocess.run(["dpkg-deb", "--extract", str(archive), str(staging)], check=True)
+        else:
+            with tarfile.open(archive) as source:
+                source.extractall(staging, filter="data")
         if name.startswith("verus-"):
             nested = list(staging.glob("*.tar.gz"))
             if len(nested) != 1:

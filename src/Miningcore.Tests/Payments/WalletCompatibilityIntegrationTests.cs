@@ -54,8 +54,8 @@ public partial class WalletPayoutControlIntegrationTests
     [InlineData("conceal", typeof(ConcealPayoutHandler), true)]
     [InlineData("zano", typeof(ZanoPayoutHandler), false)]
     [InlineData("zano", typeof(ZanoPayoutHandler), true)]
-    [InlineData("veruscoin", typeof(EquihashPayoutHandler), false)]
-    [InlineData("veruscoin", typeof(EquihashPayoutHandler), true)]
+    [InlineData("zcash", typeof(EquihashPayoutHandler), false)]
+    [InlineData("zcash", typeof(EquihashPayoutHandler), true)]
     [InlineData("xelis", typeof(XelisPayoutHandler), false)]
     [InlineData("xelis", typeof(XelisPayoutHandler), true)]
     public async Task LiveWalletCompatibility_PauseSuccessAndLostSubmissionPreserveAccounting(string coin, Type handlerType, bool cancel)
@@ -138,11 +138,17 @@ public partial class WalletPayoutControlIntegrationTests
         builder.RegisterType<ActiveBlockGracePeriodTracker>().As<IActiveBlockGracePeriodTracker>();
         builder.RegisterType(handlerType).As<IPayoutHandler>();
         using var scope = builder.Build();
-        var walletEndpoint = wallet.Endpoint(); walletEndpoint.Category = "wallet";
+        static DaemonEndpointConfig Endpoint(RpcDiagnosticTests.Server server)
+        {
+            var endpoint = server.Endpoint();
+            endpoint.HttpPath = null; endpoint.User = null; endpoint.Password = null;
+            return endpoint;
+        }
+        var walletEndpoint = Endpoint(wallet); walletEndpoint.Category = "wallet";
         var config = new PoolConfig { Id = "live-" + coin, Coin = coin, Enabled = true,
             Address = fixture.Value<string>("address"), Template = ModuleInitializer.CoinTemplates[coin],
-            Daemons = coin == "veruscoin" ? new[] { wallet.Endpoint() } : new[] { daemon.Endpoint(), walletEndpoint },
-            Extra = new Dictionary<string, object> { ["zAddress"] = fixture.Value<string>("address") },
+            Daemons = coin == "zcash" ? new[] { Endpoint(wallet) } : new[] { Endpoint(daemon), walletEndpoint },
+            Extra = new Dictionary<string, object> { ["zAddress"] = fixture.Value<string>("zAddress") ?? fixture.Value<string>("address") },
             RewardRecipients = Array.Empty<RewardRecipient>(),
             PaymentProcessing = new() { Enabled = true, MinimumPayment = .01m, PayoutScheme = PayoutScheme.SOLO } };
         var cluster = new ClusterConfig { PaymentProcessing = new() { Enabled = true }, Pools = new[] { config } };
