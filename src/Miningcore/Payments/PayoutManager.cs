@@ -899,7 +899,8 @@ public class PayoutManager : ProcessStatusBackgroundService
             var message = handlerFailure == null
                 ? "Payout handler completed conclusively; database batch completion is unrecorded. Preserve existing payment receipts and reconcile the control record before restart."
                 : "Payout handler failed conclusively; database batch completion is unrecorded. Preserve the original failure and reconcile the control record before restart.";
-            logger.Error(completionFailure, "[{0}] {1}", config.Id, message);
+            logger.Error("[{0}] {1}", config.Id, message);
+            RpcConsumerDiagnostics.Write(logger, LogLevel.Error, "PayoutManager.CompleteConclusiveBatchAsync", failure: completionFailure);
             try
             {
                 // No recipient uncertainty is inferred from a control-write failure.

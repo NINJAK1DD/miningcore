@@ -256,3 +256,21 @@ transport loss; unexpected success still requires reconciliation. Parameterized
 defers payout until a later cycle, then checks the wallet's scanned topoheight
 against the daemon before building transactions, following the official
 [Xelis wallet API](https://docs.xelis.io/developers-api/wallet#get_topoheight).
+
+### Independent review follow-up
+
+| Review finding | Change and verification boundary |
+| --- | --- |
+| M1 / startup and admission rejection | Read-only preflight precedes ownership; explicit SQL rejection releases the attempted operation; cancellation and lost responses retain protection. Tests inspect markers after disposal and replacement acquisition. |
+| M2 / operator lock waits | Server-side admission lock timeout, state-lock-free idempotent completion, and bounded same-session completion retries. The lab holds an operator transaction beyond five seconds, exercises serialization retry, and runs admissions with 10,000 historical rows and concurrent state readers. |
+| M3 / effective privileges | Migration and startup check effective and assumable-role rights; migration rolls back for `pg_write_all_data` and server program/file access roles. Administrative signalling, checkpoint and maintenance roles are also forbidden. |
+| M4 / non-owner runtime | Explicit runtime login setting; all wallet-control lab scenarios now use a service login distinct from the payout-table owner. |
+| M5 / preparation failures | Empty-argument probes follow peer/recipient checks; real connection refusal and in-flight cancellation are tested. Parameterized probes and unexpected success retain conservative handling. |
+| L1 / completion notifications | Success, ordinary failure and cancellation have separate completion-write tests; original failures are retained and no recipient uncertainty is invented. |
+| L2 / guided recovery | Recovery refuses outstanding/unreadable batch evidence; a killed process is reconciled, ownership is explicitly released, and replacement starts paused in the live lab. |
+| L3 / Xelis readiness and diagnostics | Activation defers payout, subsequent cycles require a readable scanned topoheight, diagnostic labels are corrected, and pause warnings occur on observed state changes. Live Xelis wallet compatibility remains a release gate. |
+| Durable identity, API and retention | Pool ID and liability digest are persisted; the real-database API test checks paused, admitted and completed state without disclosing recipients; indefinite retention and verified export are documented. |
+
+The topology and non-Bitcoin live-wallet gates above remain intentionally unchecked.
+This follow-up does not assert production validation from mocked transports or
+replace those gates with a benchmark claim.
