@@ -16,6 +16,7 @@ using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Time;
 using NSubstitute;
+using Newtonsoft.Json;
 using Xunit;
 
 namespace Miningcore.Tests.Payments;
@@ -38,14 +39,23 @@ public partial class WalletPayoutControlIntegrationTests
     }
 
     [WalletControlFact]
-    public async Task PpsCapacity_Sustains1000PerSecondAndRecovers10000ShareBurst()
+    public Task PpsCapacity_Sustains1000PerSecondAndRecovers10000ShareBurst() => PpsCapacity(false);
+
+    [WalletControlFact]
+    public Task PpsRelayCapacity_Sustains1000PerSecondAndRecovers10000ShareBurst() => PpsCapacity(true);
+
+    private async Task PpsCapacity(bool relayed)
     {
         await using var db = await Database.Create();
         var config = CapacityConfig();
+        config.ClusterName = "capacity-sender";
+        if(relayed) config.ShareRelay = new() { PublishUrl = RelayUrl(), SharedEncryptionKey = RelayTestKey };
         await using var lab = new AccountingLab(db, config);
         lab.Recorder.PersistenceQueueCapacity = 65_536; // Production default.
         await lab.Start();
-        await lab.Acknowledge(PpsShare(config.Pools[0])); // Warm database and serializer.
+        await using var transport = relayed ? await RelayCapacityLab.Start(db, config, lab) : null;
+        Share NewShare() { var share = PpsShare(config.Pools[0]); share.Source = config.ClusterName; return share; }
+        await lab.Acknowledge(NewShare()); // Warm database and serializer.
         foreach(var burst in new[] { false, true })
         {
             var count = burst ? 10_000 : 60_000;
@@ -69,11 +79,12 @@ public partial class WalletPayoutControlIntegrationTests
                 responses[index] = Acknowledge();
                 async Task Acknowledge()
                 {
-                    await lab.Acknowledge(PpsShare(config.Pools[0]));
+                    await lab.Acknowledge(NewShare());
                     latencies[index] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
                 }
             }
             var offeredSeconds = elapsed.Elapsed.TotalSeconds;
+            if(!burst) Assert.InRange(offeredSeconds, 59.5, 66);
             await Task.WhenAll(responses).WaitAsync(TimeSpan.FromSeconds(60));
             var recoverySeconds = elapsed.Elapsed.TotalSeconds - offeredSeconds;
             await db.Admin.ExecuteAsync("SELECT pg_stat_clear_snapshot()");
@@ -90,7 +101,51 @@ public partial class WalletPayoutControlIntegrationTests
             Assert.Equal(0, lab.Recorder.EmergencyJournalQueueOverflowCount);
             Assert.False(File.Exists(config.ShareRecoveryFile));
             Assert.False(lab.Coordinator.IsFailStopRequested);
-            output.WriteLine($"PPS {(burst ? "burst" : "sustained")}: shares={count}; offered seconds={offeredSeconds:F3}; recovery seconds={recoverySeconds:F3}; ack p95={latencies[(int)(count*.95)]:F3}ms p99={latencies[(int)(count*.99)]:F3}ms max={latencies[^1]:F3}ms; commits={after.Commits-before.Commits}; WAL bytes={after.WalBytes}; managed CPU seconds={(process.TotalProcessorTime-cpu).TotalSeconds:F3}; queue high-water={lab.Recorder.PersistenceQueueHighWatermark}/65536; queue depth={lab.Recorder.PersistenceQueueDepth}.");
+            if(transport != null)
+            {
+                Assert.Equal(0, transport.Relay.GetRelayQueueMetrics().OverflowCount);
+                output.WriteLine($"Relay queue: {transport.Relay.GetRelayQueueMetrics()}; queued bytes={transport.Relay.QueuedBytes}/{transport.Relay.ByteCapacity}.");
+            }
+            output.WriteLine($"PPS {(relayed ? "relay" : "local")} {(burst ? "burst" : "sustained")}: shares={count}; offered seconds={offeredSeconds:F3}; recovery seconds={recoverySeconds:F3}; ack p95={latencies[(int)(count*.95)]:F3}ms p99={latencies[(int)(count*.99)]:F3}ms max={latencies[^1]:F3}ms; commits={after.Commits-before.Commits}; WAL bytes={after.WalBytes}; managed CPU seconds={(process.TotalProcessorTime-cpu).TotalSeconds:F3}; queue high-water={lab.Recorder.PersistenceQueueHighWatermark}/65536; queue depth={lab.Recorder.PersistenceQueueDepth}.");
+        }
+    }
+
+    private sealed class RelayCapacityLab : IAsyncDisposable
+    {
+        public ShareRelay Relay;
+        private ShareReceiver receiver;
+        private AccountingLab accounting;
+        public static async Task<RelayCapacityLab> Start(Database db, ClusterConfig senderConfig, AccountingLab sender)
+        {
+            var result = new RelayCapacityLab();
+            try
+            {
+                var config = JsonConvert.DeserializeObject<ClusterConfig>(JsonConvert.SerializeObject(senderConfig));
+                config.Pools[0].Template = senderConfig.Pools[0].Template;
+                config.ShareRelay = null;
+                config.ShareRelays = new[] { new ShareRelayEndpointConfig { Url = senderConfig.ShareRelay.PublishUrl, SharedEncryptionKey = RelayTestKey } };
+                result.accounting = new AccountingLab(db, config);
+                result.accounting.Recorder.PersistenceQueueCapacity = 65_536;
+                await result.accounting.Start();
+                result.receiver = new ShareReceiver(config, new StandardClock(), result.accounting.Bus,
+                    TimeSpan.FromMilliseconds(50), TimeSpan.FromSeconds(15));
+                var pool = Substitute.For<IMiningPool>(); pool.Config.Returns(config.Pools[0]);
+                pool.NetworkStats.Returns(new BlockchainStats()); pool.ShareMultiplier.Returns(1d);
+                await result.receiver.StartAsync(CancellationToken.None);
+                result.accounting.Bus.SendMessage(new PoolStatusNotification { Pool = pool, Status = PoolStatus.Online });
+                await Until(() => Task.FromResult(result.receiver.AttachedPoolCount == 1), 5);
+                result.Relay = new ShareRelay(senderConfig, sender.Bus, sender.Coordinator);
+                await result.Relay.StartAsync(CancellationToken.None);
+                await Task.Delay(300);
+                return result;
+            }
+            catch { await result.DisposeAsync(); throw; }
+        }
+        public async ValueTask DisposeAsync()
+        {
+            if(Relay != null) { await Relay.StopAsync(CancellationToken.None); Relay.Dispose(); }
+            if(receiver != null) { await receiver.StopAsync(CancellationToken.None); receiver.Dispose(); }
+            if(accounting != null) await accounting.DisposeAsync();
         }
     }
 

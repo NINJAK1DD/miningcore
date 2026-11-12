@@ -48,12 +48,17 @@ public partial class WalletPayoutControlIntegrationTests
     }
 
     [WalletCompatibilityTheory]
-    [InlineData("monero", typeof(CryptonotePayoutHandler))]
-    [InlineData("conceal", typeof(ConcealPayoutHandler))]
-    [InlineData("zano", typeof(ZanoPayoutHandler))]
-    [InlineData("veruscoin", typeof(EquihashPayoutHandler))]
-    [InlineData("xelis", typeof(XelisPayoutHandler))]
-    public async Task LiveWalletCompatibility_PauseSuccessAndLostSubmissionPreserveAccounting(string coin, Type handlerType)
+    [InlineData("monero", typeof(CryptonotePayoutHandler), false)]
+    [InlineData("monero", typeof(CryptonotePayoutHandler), true)]
+    [InlineData("conceal", typeof(ConcealPayoutHandler), false)]
+    [InlineData("conceal", typeof(ConcealPayoutHandler), true)]
+    [InlineData("zano", typeof(ZanoPayoutHandler), false)]
+    [InlineData("zano", typeof(ZanoPayoutHandler), true)]
+    [InlineData("veruscoin", typeof(EquihashPayoutHandler), false)]
+    [InlineData("veruscoin", typeof(EquihashPayoutHandler), true)]
+    [InlineData("xelis", typeof(XelisPayoutHandler), false)]
+    [InlineData("xelis", typeof(XelisPayoutHandler), true)]
+    public async Task LiveWalletCompatibility_PauseSuccessAndLostSubmissionPreserveAccounting(string coin, Type handlerType, bool cancel)
     {
         var manifest = JObject.Parse(await File.ReadAllTextAsync(Environment.GetEnvironmentVariable("MININGCORE_TEST_WALLET_MANIFEST")));
         var fixture = (JObject)manifest[coin];
@@ -98,7 +103,15 @@ public partial class WalletPayoutControlIntegrationTests
                 lastSubmission = returned;
                 if(loseResponse)
                 {
+                    var envelope = JObject.Parse(returned);
+                    Assert.True(envelope["error"] == null || envelope["error"].Type == JTokenType.Null,
+                        "The real wallet must accept the submitted request before its response is withheld");
                     forwardedSubmission.TrySetResult();
+                    if(cancel)
+                    {
+                        try { await Task.Delay(Timeout.Infinite, context.RequestAborted); }
+                        catch(OperationCanceledException) { }
+                    }
                     context.Abort();
                     return;
                 }
@@ -157,14 +170,17 @@ public partial class WalletPayoutControlIntegrationTests
         output.WriteLine($"{coin}: successful live wallet submission, one payment receipt, exact balance reset and completed admission.");
         await db.Factory.RunTx((connection, tx) => balances.AddAmountAsync(connection, tx, config.Id, recipient, .01m, "response-loss fixture"));
         loseResponse = true;
-        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => manager.PayoutPoolBalancesAsync(pool, config, handler, CancellationToken.None));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        var payout = manager.PayoutPoolBalancesAsync(pool, config, handler, cancellation.Token);
         await forwardedSubmission.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        if(cancel) cancellation.Cancel();
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => payout);
         Assert.False(lease.CanReleaseOwnership);
         Assert.Equal(1, (await db.State()).OutstandingBatches);
         Assert.Equal(1, await PaymentCount(db));
         Assert.Equal(.01m, await db.Admin.ExecuteScalarAsync<decimal>("SELECT sum(amount) FROM balances"));
         await db.SetPaused(true);
         await Assert.ThrowsAsync<Npgsql.PostgresException>(() => db.SetPaused(false));
-        output.WriteLine($"{coin}: live spending request forwarded, response dropped; no automatic retry/reset, outstanding admission and ownership retained, resume rejected.");
+        output.WriteLine($"{coin}: live spending request accepted, response {(cancel ? "cancelled" : "dropped")}; no automatic retry/reset, outstanding admission and ownership retained, resume rejected.");
     }
 }
