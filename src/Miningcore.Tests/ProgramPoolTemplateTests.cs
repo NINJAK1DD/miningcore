@@ -1005,6 +1005,29 @@ public partial class ProgramPoolTemplateTests
     }
 
     [Fact]
+    public async Task PpsRelaySender_RegistersRecorderAndRequiresSharePartitionsEvenWhilePaused()
+    {
+        var config = MergedMiningCluster(shareRelaySender: true);
+        config.PaymentProcessing.Paused = true;
+        config.Pools[1].PaymentProcessing.PayoutScheme = PayoutScheme.PPS;
+        var services = new ServiceCollection();
+        Program.ConfigureShareProcessingHostedServices(services, config);
+        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(ISharePersistenceQueueMetricsProvider));
+        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(ShareRecorder));
+        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IHostedService) &&
+            descriptor.ImplementationType == typeof(ShareRelay));
+        Assert.DoesNotContain(services, descriptor => descriptor.ImplementationType == typeof(ShareReceiver));
+        var cf = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        cf.OpenConnectionAsync().Returns(connection);
+        var repository = Substitute.For<IShareRepository>();
+        repository.GetMissingSharePartitionsAsync(connection, Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns(new[] { config.Pools[1].Id });
+        await Assert.ThrowsAsync<PoolStartupException>(() =>
+            Program.EnsureSharePartitionsAsync(false, config, cf, repository, CancellationToken.None));
+    }
+
+    [Fact]
     public void RelayShareProcessing_DoesNotRegisterLocalQueueMetricsProvider()
     {
         var services = new ServiceCollection();

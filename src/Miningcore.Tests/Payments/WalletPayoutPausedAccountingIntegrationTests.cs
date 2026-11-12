@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Reactive;
+using System.Reactive.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -37,6 +38,67 @@ namespace Miningcore.Tests.Payments;
 public partial class WalletPayoutControlIntegrationTests
 {
     [WalletControlFact]
+    public async Task PpsRelaySender_CommitsLocallyAndReceiverDeduplicates()
+    {
+        await using var db = await Database.Create();
+        await using var wallet = await Node.StartAsync(true);
+        var receiverConfig = TopologyConfig(wallet, await wallet.GetNewAddressAsync(), true);
+        receiverConfig.Pools[0].PaymentProcessing.PayoutScheme = PayoutScheme.PPS;
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var url = $"tcp://127.0.0.1:{((IPEndPoint) listener.LocalEndpoint).Port}";
+        listener.Stop();
+        receiverConfig.ShareRelays = new[] { new ShareRelayEndpointConfig { Url = url } };
+        var senderConfig = JsonConvert.DeserializeObject<ClusterConfig>(JsonConvert.SerializeObject(receiverConfig));
+        senderConfig.Pools[0].Template = receiverConfig.Pools[0].Template;
+        senderConfig.ClusterName = "pps-sender";
+        senderConfig.ShareRelays = null;
+        senderConfig.ShareRelay = new ShareRelayConfig { PublishUrl = url };
+        await using var sender = new AccountingLab(db, senderConfig);
+        await using var recorder = new AccountingLab(db, receiverConfig);
+        await sender.Start();
+        await recorder.Start();
+        var share = PpsShare(senderConfig.Pools[0]);
+        share.Source = senderConfig.ClusterName;
+        // A disconnected receiver cannot turn a successful PPS response into a lost liability.
+        await sender.Acknowledge(share).WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(1, sender.Acknowledgements);
+        Assert.Equal(1, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM pps_share_credits"));
+        using var receiver = new ShareReceiver(receiverConfig, new StandardClock(), recorder.Bus,
+            TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(15));
+        var pool = Substitute.For<IMiningPool>();
+        pool.Config.Returns(receiverConfig.Pools[0]);
+        pool.NetworkStats.Returns(new BlockchainStats());
+        pool.ShareMultiplier.Returns(1d);
+        await receiver.StartAsync(CancellationToken.None);
+        recorder.Bus.SendMessage(new PoolStatusNotification { Pool = pool, Status = PoolStatus.Online });
+        await Until(() => Task.FromResult(receiver.AttachedPoolCount == 1), 10);
+        var received = new TaskCompletionSource<Share>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = recorder.Bus.Listen<Share>().Subscribe(value => received.TrySetResult(value));
+        var relay = new ShareRelay(senderConfig, sender.Bus);
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            await Until(async () => { await sender.Acknowledge(share); return received.Task.IsCompleted; }, 15);
+            var delivered = await received.Task;
+            await delivered.PersistenceAdmission.WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.Equal(share.AccountingId, delivered.AccountingId);
+            Assert.Equal(1, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM shares"));
+            Assert.Equal(1, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM pps_share_credits"));
+            Assert.Equal(share.PpsCalculatedAmount, await db.Admin.ExecuteScalarAsync<decimal>("SELECT sum(amount) FROM balances"));
+            Assert.False(recorder.Coordinator.IsFailStopRequested);
+            // The sender's extra recorder must not double-write mixed-scheme statistical traffic.
+            await sender.Acknowledge(new Share { PoolId = "statistical", Miner = "miner", Created = DateTime.UtcNow });
+            Assert.Equal(1, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM shares"));
+        }
+        finally
+        {
+            await relay.StopAsync(CancellationToken.None);
+            await receiver.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [WalletControlFact]
     public async Task ExtendedPausedRelay_PersistsPpsAndMonitorsBoundedQueuesAndBacklog()
     {
         // Real wall time: crosses two production five-minute pause heartbeats.
@@ -65,7 +127,7 @@ public partial class WalletPayoutControlIntegrationTests
         lab.Bus.SendMessage(new PoolStatusNotification { Pool = pool, Status = PoolStatus.Online });
         await Until(() => Task.FromResult(receiver.AttachedPoolCount == 1), 10);
         var sender = new MessageBus();
-        using var relay = new ShareRelay(new ClusterConfig
+        var relay = new ShareRelay(new ClusterConfig
         {
             ClusterName = "paused-soak-sender", ShareRelay = new ShareRelayConfig { PublishUrl = url },
         }, sender);

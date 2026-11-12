@@ -2743,10 +2743,16 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         BoundedQueueAccounting<QueuedShare> primaryAccounting,
         BoundedQueueAccounting<QueuedShare> emergencyAccounting, Share share)
     {
+        var requiresDurability = RequiresDurableAcknowledgement(share) ||
+            RequiresDurableAcknowledgement(share.PairedShare);
+        // A mixed-scheme relay sender records PPS envelopes locally. Leave its
+        // ordinary statistical traffic to the receiver to avoid duplicate rows.
+        if(clusterConfig.ShareRelay != null && !requiresDurability)
+            return;
+
         var queued = new QueuedShare(
             Interlocked.Increment(ref nextQueuedShareId), share);
-        queued.RequiresDurableAcknowledgement = RequiresDurableAcknowledgement(share) ||
-            RequiresDurableAcknowledgement(share.PairedShare);
+        queued.RequiresDurableAcknowledgement = requiresDurability;
         unresolvedShares[queued.Id] = queued;
         if(queued.RequiresDurableAcknowledgement)
             SetDurableAdmission(queued);
