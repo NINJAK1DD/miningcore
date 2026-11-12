@@ -20,14 +20,15 @@ public sealed class WalletPayoutControlState
         return await ReadAsync(connection, ct);
     }
 
-    internal static async Task<WalletPayoutControlState> ReadAsync(IDbConnection connection, CancellationToken ct)
+    internal static async Task<WalletPayoutControlState> ReadAsync(IDbConnection connection, CancellationToken ct,
+        IDbTransaction transaction = null)
     {
         var result = await connection.QuerySingleAsync<WalletPayoutControlState>(new CommandDefinition(
             """
             SELECT protocol_version AS ProtocolVersion, revision, paused,
                 (SELECT count(*) FROM miningcore_payout_control.batches WHERE completed IS NULL) AS OutstandingBatches
             FROM miningcore_payout_control.state WHERE id=1
-            """, commandTimeout: 5, cancellationToken: ct));
+            """, transaction: transaction, commandTimeout: 5, cancellationToken: ct));
         if(result.ProtocolVersion != 1 || result.Revision < 1)
             throw new InvalidOperationException("Wallet payout control state is not supported");
         return result;

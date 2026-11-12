@@ -450,6 +450,8 @@ public class WalletPayoutControlIntegrationTests : TestBase
         await Assert.ThrowsAsync<InvalidOperationException>(() => lease.TryBeginWalletPayoutAsync(CancellationToken.None, new WalletPayoutBatch("lab", new string('a', 64))));
         Assert.True(lease.CanReleaseOwnership);
         await Assert.ThrowsAsync<InvalidOperationException>(() => db.State());
+        var recovery = new PostgresPayoutOwnershipRecovery(db.AdminFactory);
+        Assert.Contains("could not be read", (await recovery.InspectAsync(CancellationToken.None)).WalletControlWarning);
         Assert.Equal(0, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM miningcore_payout_control.batches"));
     }
 

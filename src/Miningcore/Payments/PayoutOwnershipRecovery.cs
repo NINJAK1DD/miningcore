@@ -154,10 +154,8 @@ internal sealed class PostgresPayoutOwnershipRecovery(IConnectionFactory cf, Act
                 "SELECT to_regnamespace('miningcore_payout_control') IS NOT NULL",
                 transaction: tx, commandTimeout: 5, cancellationToken: ct)))
                 return null;
-            var outstanding = await con.ExecuteScalarAsync<long>(new CommandDefinition(
-                "SELECT count(*) FROM miningcore_payout_control.batches WHERE completed IS NULL",
-                transaction: tx, commandTimeout: 5, cancellationToken: ct));
-            return outstanding == 0 ? null : "Outstanding wallet-control batches block recovery. Stop and verify all wallet processes, pause, reconcile wallet/accounting evidence, then run reconcile_batch before releasing ownership or restarting. See docs/emergency-wallet-stop.md.";
+            var control = await WalletPayoutControlState.ReadAsync(con, ct, tx);
+            return control.OutstandingBatches == 0 ? null : "Outstanding wallet-control batches block recovery. Stop and verify all wallet processes, pause, reconcile wallet/accounting evidence, then run reconcile_batch before releasing ownership or restarting. See docs/emergency-wallet-stop.md.";
         }
         catch(Exception) when(!ct.IsCancellationRequested)
         {
