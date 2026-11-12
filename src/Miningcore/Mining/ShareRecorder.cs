@@ -2692,8 +2692,18 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 QuiesceQueueIntake(subscription, queue, emergencyQueue,
                     commitError);
                 await emergencyProcessing;
-                await recoveryFailureHandler.StopClusterForUncertainCommitAsync(
-                    SnapshotUnresolvedShares(), recoveryFilename, commitError);
+                try
+                {
+                    await recoveryFailureHandler.StopClusterForUncertainCommitAsync(
+                        SnapshotUnresolvedShares(), recoveryFilename, commitError);
+                }
+                finally
+                {
+                    // Pending PPS responses must fault too, including shares not
+                    // in the transaction whose commit response was lost.
+                    foreach(var item in unresolvedShares.Values)
+                        item.JournalCompletion?.TrySetException(commitError);
+                }
                 throw;
             }
             catch(Exception pipelineError)
@@ -3155,12 +3165,17 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
                 // A dedicated thread guarantees that fatal evidence can make progress even when
                 // the shared pool is starved. Blocking the dedicated worker across asynchronous
                 // notification I/O cannot consume a Stratum, Rx or general thread-pool worker.
-                recoveryFailureHandler.StopClusterAsync(unresolved,
-                        recoveryFilename, databaseError, journalError)
-                    .GetAwaiter().GetResult();
-
-                foreach(var queued in unresolvedShares.Values)
-                    queued.JournalCompletion?.TrySetException(journalError);
+                try
+                {
+                    recoveryFailureHandler.StopClusterAsync(unresolved,
+                            recoveryFilename, databaseError, journalError)
+                        .GetAwaiter().GetResult();
+                }
+                finally
+                {
+                    foreach(var queued in unresolvedShares.Values)
+                        queued.JournalCompletion?.TrySetException(journalError);
+                }
             }, CancellationToken.None, TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
         lock(deferredFailStopGate)

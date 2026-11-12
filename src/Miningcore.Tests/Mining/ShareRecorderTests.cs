@@ -42,6 +42,72 @@ namespace Miningcore.Tests.Mining;
 [Collection(ShareRecoveryLoggingCollection.Name)]
 public class ShareRecorderTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PpsPrimaryAdmission_UncertainCommitFaultsActiveAndQueuedResponses(bool incidentHandlerFails)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "miningcore-pps-admission-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var pool = new PoolConfig { Id = "pps", Template = new BitcoinTemplate { Family = CoinFamily.Bitcoin },
+            PaymentProcessing = new() { Enabled = true, PayoutScheme = PayoutScheme.PPS } };
+        var config = new ClusterConfig { Pools = new[] { pool }, ShareRecoveryFile = Path.Combine(directory, "shares.json") };
+        var cf = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        cf.OpenConnectionAsync().Returns(connection);
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        transaction.When(x => x.Commit()).Do(_ => throw new IOException("lost commit response"));
+        var repository = Substitute.For<IShareRepository>();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        repository.InsertAccountingBatchAsync(connection, transaction, Arg.Any<ShareAccountingBatch>(), Arg.Any<CancellationToken>())
+            .Returns(async _ => { entered.TrySetResult(); await release.Task; return ShareAccountingInsertResult.Inserted; });
+        var recovery = Substitute.For<IShareRecoveryFailureHandler>();
+        if(incidentHandlerFails)
+            recovery.StopClusterForUncertainCommitAsync(Arg.Any<IReadOnlyCollection<Share>>(), Arg.Any<string>(), Arg.Any<Exception>())
+                .Returns(Task.FromException(new IOException("incident writer failed")));
+        using var coordinator = new MiningFailStopCoordinator(new ProcessStatus(), Substitute.For<IHostApplicationLifetime>());
+        var bus = new MessageBus(coordinator);
+        using var recorder = new ShareRecorder(cf, AutoMapperFactory.CreateMapper(), new JsonSerializerSettings(),
+            repository, Substitute.For<IBlockRepository>(), config, bus, recovery, coordinator);
+        Share NewShare()
+        {
+            var share = new Share { PoolId = pool.Id, Miner = "miner", IpAddress = "127.0.0.1",
+                Created = DateTime.UtcNow, AccountingId = Guid.NewGuid().ToString("N"), AccountingRole = ShareAccountingRole.Single,
+                Difficulty = 1, ActualDifficulty = 1, ShareDifficulty = 1, NetworkDifficulty = 100, RewardBasisSatoshis = 5_000_000_000 };
+            ShareAccounting.AttachPpsCreditEvidence(pool, share);
+            return share;
+        }
+        try
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            var active = NewShare();
+            bus.SendMessage(active);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var queued = NewShare();
+            bus.SendMessage(queued);
+            Assert.False(active.PersistenceAdmission.IsCompleted);
+            Assert.False(queued.PersistenceAdmission.IsCompleted);
+            release.TrySetResult();
+            foreach(var share in new[] { active, queued })
+            {
+                await Assert.ThrowsAsync<TransactionCommitOutcomeUncertainException>(() =>
+                    share.PersistenceAdmission.WaitAsync(TimeSpan.FromSeconds(5)));
+                Assert.True(share.PersistenceAdmission.IsFaulted);
+            }
+            Assert.True(coordinator.IsFailStopRequested);
+            Assert.Throws<OperationCanceledException>(() => coordinator.AcquireSubmissionAcceptance());
+        }
+        finally
+        {
+            release.TrySetResult();
+            await StopRecorderBeforeFixtureCleanupAsync(recorder);
+            ShareRecorder.ForgetRecoveryWriteStateForTests(config.ShareRecoveryFile);
+            Directory.Delete(directory, true);
+        }
+    }
+
     [Fact]
     public async Task PairedAccounting_RetryCommitsOneAuthenticatedGroup()
     {
