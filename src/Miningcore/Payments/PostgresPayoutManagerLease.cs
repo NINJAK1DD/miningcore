@@ -37,9 +37,13 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
     private int activeFinancialOperations;
     private bool financialOutcomeUncertain;
     private Guid? walletBatch;
+    private bool? observedPaused;
 
-    public async Task<bool> TryBeginWalletPayoutAsync(CancellationToken ct)
+    public Task ValidateWalletControlAsync(CancellationToken ct) => WalletPayoutControlState.PreflightAsync(cf, ct);
+
+    public async Task<bool> TryBeginWalletPayoutAsync(CancellationToken ct, WalletPayoutBatch batch)
     {
+        ArgumentNullException.ThrowIfNull(batch);
         await EnsureHeldAsync(ct);
         await gate.WaitAsync(ct);
         try
@@ -50,18 +54,34 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
             try
             {
                 var admitted = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
-                    "SELECT miningcore_payout_control.begin_batch(@token, @ownerId, @generation)",
-                    new { token, ownerId, generation }, commandTimeout: 5, cancellationToken: ct));
+                    "SELECT miningcore_payout_control.begin_batch(@token, @ownerId, @generation, @PoolId, @Digest)",
+                    new { token, ownerId, generation, batch.PoolId, batch.Digest }, commandTimeout: 5, cancellationToken: ct));
                 if(!admitted)
                 {
                     CompleteFinancialOperation();
-                    logger.Warn("Database wallet payout control is paused; new wallet batches are blocked. Mining-side accounting remains enabled.");
+                    if(observedPaused != true)
+                        logger.Warn("Database wallet payout control is paused; new wallet batches are blocked. Mining-side accounting remains enabled.");
+                    observedPaused = true;
                     return false;
                 }
 
                 walletBatch = token;
+                observedPaused = false;
                 logger.Info("Admitted database-controlled wallet payout batch {0}", token);
                 return true;
+            }
+            catch(PostgresException ex) when(ex.InvariantSeverity == "ERROR" &&
+                ex.SqlState != PostgresErrorCodes.QueryCanceled && !ex.SqlState.StartsWith("08", StringComparison.Ordinal))
+            {
+                // An explicit server rejection rolls back this single autocommit
+                // statement. Client cancellation/timeout remains conservative.
+                CompleteFinancialOperation();
+                if(ex.SqlState == PostgresErrorCodes.LockNotAvailable)
+                {
+                    logger.Warn("Wallet admission deferred because the operator control is locked; retry next cycle");
+                    return false;
+                }
+                throw new InvalidOperationException("Wallet payout admission was rejected by PostgreSQL; no wallet request was started", ex);
             }
             catch(Exception ex)
             {
@@ -84,9 +104,24 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                 throw new InvalidOperationException("No admitted wallet payout batch is active");
             try
             {
-                await connection.ExecuteAsync(new CommandDefinition(
-                    "SELECT miningcore_payout_control.finish_batch(@token, @ownerId, @generation)",
-                    new { token = walletBatch.Value, ownerId, generation }, commandTimeout: 5, cancellationToken: ct));
+                for(var attempt = 0; ; attempt++)
+                {
+                    try
+                    {
+                        await connection.ExecuteAsync(new CommandDefinition(
+                            "SELECT miningcore_payout_control.finish_batch(@token, @ownerId, @generation)",
+                            new { token = walletBatch.Value, ownerId, generation }, commandTimeout: 5, cancellationToken: ct));
+                        break;
+                    }
+                    catch(Exception ex) when(attempt < 2 && !ct.IsCancellationRequested &&
+                        connection.State == ConnectionState.Open &&
+                        (ex is NpgsqlException { IsTransient: true } || ex is TimeoutException))
+                    {
+                        // Idempotent completion may be retried only on the original
+                        // guard session. Never reconnect or retry a wallet request.
+                        await Task.Delay(TimeSpan.FromMilliseconds(100 * (attempt + 1)), ct);
+                    }
+                }
                 walletBatch = null;
                 CompleteFinancialOperation();
             }

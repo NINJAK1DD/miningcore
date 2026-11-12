@@ -173,6 +173,9 @@ public class AdminApiPaymentProcessingTests
     }
 
     private static AdminApiController CreateController(bool clusterPaymentEnabled,
+        params PoolConfig[] poolConfigs) => CreateController(Substitute.For<IConnectionFactory>(), clusterPaymentEnabled, poolConfigs);
+
+    internal static AdminApiController CreateController(IConnectionFactory factory, bool clusterPaymentEnabled,
         params PoolConfig[] poolConfigs)
     {
         var clusterConfig = new ClusterConfig
@@ -194,7 +197,7 @@ public class AdminApiPaymentProcessingTests
         var builder = new ContainerBuilder();
         builder.RegisterInstance(Substitute.For<IMapper>());
         builder.RegisterInstance(clusterConfig);
-        builder.RegisterInstance(Substitute.For<IConnectionFactory>());
+        builder.RegisterInstance(factory).As<IConnectionFactory>();
         builder.RegisterInstance(new global::Miningcore.Api.Responses.AdminGcStats());
         builder.RegisterInstance(Substitute.For<IMinerRepository>());
         builder.RegisterInstance(Substitute.For<IPaymentRepository>());

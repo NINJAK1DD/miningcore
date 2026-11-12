@@ -18,7 +18,12 @@ Admission and pause serialize on the same singleton row with `FOR UPDATE`.
 Committed admission is the ordering boundary. If pause wins, the handler is never
 called. Otherwise the durable batch stays outstanding until the handler conclusively
 finishes and accounting persists. Pause commits without waiting. Resume and further
-admission refuse outstanding batches. Keep operator transactions short.
+admission refuse outstanding batches. Keep operator transactions short. Admission
+uses a two-second server lock timeout: a confirmed lock timeout defers the batch
+until the next cycle, without retaining ownership solely for that attempt.
+Completion does not lock the state row, so an open pause transaction cannot prevent
+a conclusive payout from completing. Completion is idempotent for the same batch,
+owner and generation; at most three attempts use the original guard session.
 
 The gap between admission and a wallet request cannot be atomic. A suspended or
 partitioned process can begin an admitted request much later. A dead database
@@ -59,6 +64,20 @@ Mining-side direct allocation and block submission are outside this wallet contr
    The migration rejects that relationship, removes default ACLs, grants runtime
    read/admit/complete rights and starts **paused**. Existing schemas are rejected:
    rerunning never resets history, adopts lookalikes or unpauses the control.
+   Supply the exact runtime login explicitly (it need not own the payout tables):
+
+   ```sql
+   -- In the same administrator psql session, before \i of the migration:
+   \set app_role miningcore_service
+   SELECT set_config('miningcore.wallet_control_app_role', :'app_role', false);
+   \i src/Miningcore/Persistence/Postgres/Scripts/add_wallet_payout_control.sql
+   ```
+
+   The migration and read-only startup preflight reject effective write/operator
+   access, including `pg_write_all_data`, inherited privileges and assumable roles.
+   Missing state, incompatible protocol or missing admission/completion permissions
+   fail preflight **before acquiring durable ownership**. Intentionally paused
+   state passes. Fresh installations require this separate administrator step too.
 3. Provision an individually attributable operator LOGIN through your credential
    manager, using SCRAM and verified TLS or a secured local socket. Keep credentials
    out of application configuration, logs and command lines. As administrator, grant
@@ -83,6 +102,10 @@ Mining-side direct allocation and block submission are outside this wallet contr
    denied, unsupported or unreadable control state fails closed. Verify exact
    binaries, grants and paused state in staging before live startup. Ambiguous
    admission retains ownership even though no new wallet batch was started.
+   Explicit statement rejection is different: a PostgreSQL `ERROR` rolls back the
+   autocommit admission and leaves ownership releasable. Fatal connection failures,
+   client cancellations, timeouts and lost responses remain uncertain. No wallet
+   request is made in either case.
 5. Verify accounting/monitoring while paused, then explicitly resume. Older versions
    ignore the marker even when sharing advisory ownership. Mixed deployments are
    **unprotected**.
@@ -138,6 +161,33 @@ Substitute the actual batch UUID/revision. This audited resolution is not a paym
 retry or accounting adjustment and **never clears ownership**. Perform guarded
 ownership recovery separately, retaining its confirmations/evidence. Resume is
 another explicit action. No TTL, expiry, reconciliation or failover is automatic.
+Reconcile outstanding batches **before ownership recovery and before restart**:
+reconciliation needs the advisory lock. The guided recovery assistant reports
+outstanding or unreadable control evidence and refuses release until resolved.
+
+Each batch stores a bounded pool ID and a SHA-256 digest of the selected recipient/
+amount snapshot, using sorted, length-prefixed fields and invariant decimal encoding.
+This is an incident correlation reference, not proof of payment or a replacement
+for wallet receipts. It contains no credentials or raw recipient addresses; treat
+the digest as financial metadata (it is not encryption). The HTTP state endpoint
+does not expose it. A completion-recording failure reports a control incident,
+preserves the original handler failure if any, and does not relabel paid recipients
+as having uncertain wallet outcomes.
+
+## Retention and archival
+
+Retain completed batches and all events indefinitely by default. Do not delete or
+expire outstanding batches. Monitor table/index size, oldest outstanding admission,
+backup age and restore results. Plan capacity for one row per admitted handler call.
+Export completed batches and events periodically to access-controlled immutable
+storage with database identity, schema version, export cutoff, row counts and a
+cryptographic manifest; verify restoration before treating an export as archival.
+Audit events remain append-only. This version provides no online deletion or
+automatic retention job. If storage pressure requires pruning completed history,
+stop every writer, obtain a reviewed administrator-only archival migration that
+retains the verified audit trail and financial references, and test restore and
+reconciliation before rollout. Application/operator roles must never receive DELETE
+or TRUNCATE for retention purposes.
 
 ## State and alerts
 
@@ -193,4 +243,16 @@ combined locally paused/unpaused deployments of the unmerged #262 feature,
 extended paused relay operation, a large accumulated block backlog across restart,
 and PostgreSQL interruption during paused PPS arrivals. Keep #291 open for those
 combined integration scenarios; this independent protocol change does not establish
-their acceptance or expand #262.
+their acceptance or expand #262. These four scenarios are **production release
+blockers** for the combined local-pause, relay/backlog and paused-PPS topologies;
+a green CI run does not remove that restriction. Keep such deployments on the
+documented coordinated-shutdown procedure until the combined implementation is
+validated. Live payout compatibility for the affected non-Bitcoin wallet families
+is also a release gate: transport fixtures alone do not establish daemon support.
+
+Empty-argument probes now follow peer/recipient checks and fail conclusively on
+transport loss; unexpected success still requires reconciliation. Parameterized
+`z_sendmany` probes remain conservative. Xelis activation is non-spending and
+defers payout until a later cycle, then checks the wallet's scanned topoheight
+against the daemon before building transactions, following the official
+[Xelis wallet API](https://docs.xelis.io/developers-api/wallet#get_topoheight).

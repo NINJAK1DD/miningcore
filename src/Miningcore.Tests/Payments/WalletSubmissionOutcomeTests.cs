@@ -9,6 +9,29 @@ namespace Miningcore.Tests.Payments;
 
 public class WalletSubmissionOutcomeTests
 {
+    [Fact]
+    public void EmptyArgumentProbeTransportFailure_IsConclusiveButUnexpectedSuccessIsNot()
+    {
+        var cause = new TaskCanceledException("cancelled");
+        var error = Assert.Throws<InvalidOperationException>(() => WalletSubmissionOutcome.RequireRejectedProbe(
+            new JsonRpcError(-500, "Cancelled", null, cause), "empty probe", hasNoTransferArguments: true));
+        Assert.Same(cause, error.InnerException);
+        Assert.Throws<PayoutOutcomeUncertainException>(() => WalletSubmissionOutcome.RequireRejectedProbe(
+            null, "empty probe", hasNoTransferArguments: true));
+    }
+
+    [Fact]
+    public void PayoutSnapshotDigest_IsOrderIndependentAndChangesWithLiabilities()
+    {
+        var balances = new[] { new Miningcore.Persistence.Model.Balance { Address = "a", Amount = 1m },
+            new Miningcore.Persistence.Model.Balance { Address = "b", Amount = 2m } };
+        var snapshot = WalletPayoutBatch.Create("pool", balances);
+        Assert.Equal(snapshot, WalletPayoutBatch.Create("pool", new[] { balances[1], balances[0] }));
+        Assert.NotEqual(snapshot.Digest, WalletPayoutBatch.Create("other", balances).Digest);
+        balances[0].Amount++;
+        Assert.NotEqual(snapshot.Digest, WalletPayoutBatch.Create("pool", balances).Digest);
+        Assert.Equal(64, snapshot.Digest.Length);
+    }
     [Theory]
     [InlineData(-32601)]
     [InlineData(-32602)]

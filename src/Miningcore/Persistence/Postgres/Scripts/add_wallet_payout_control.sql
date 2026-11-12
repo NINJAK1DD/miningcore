@@ -1,6 +1,7 @@
 -- Run ONCE as a separate trusted administrator, with the application's search_path.
 -- Stop every wallet-capable process first. This database-wide protocol starts PAUSED.
 -- Deliberately fail on an existing schema: never reset a stop or adopt lookalike storage.
+-- First set miningcore.wallet_control_app_role to the exact persistence.postgres.user.
 BEGIN;
 SET LOCAL ROLE NONE;
 DO $migration$
@@ -9,8 +10,8 @@ BEGIN
     IF NOT pg_try_advisory_xact_lock(19779,5259609) THEN
         RAISE EXCEPTION 'Stop payout managers before installing wallet control';
     END IF;
-    SELECT pg_get_userbyid(relowner) INTO STRICT app_role
-        FROM pg_class WHERE oid='payout_manager_ownership'::regclass;
+    SELECT rolname INTO STRICT app_role FROM pg_roles
+        WHERE rolname=current_setting('miningcore.wallet_control_app_role');
     IF app_role = session_user OR pg_has_role(app_role, session_user, 'MEMBER')
         OR EXISTS(SELECT FROM pg_roles WHERE rolname=app_role
             AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls)) THEN
@@ -31,6 +32,8 @@ CREATE TABLE miningcore_payout_control.batches (
     batch_id uuid PRIMARY KEY,
     owner_id uuid NOT NULL,
     generation bigint NOT NULL CHECK(generation>0),
+    pool_id text NOT NULL CHECK(length(pool_id) BETWEEN 1 AND 200),
+    payout_digest text NOT NULL CHECK(payout_digest ~ '^[0-9a-f]{64}$'),
     admitted timestamptz NOT NULL DEFAULT clock_timestamp(),
     completed timestamptz,
     resolution text CHECK(resolution IN ('completed','reconciled')),
@@ -67,8 +70,9 @@ BEGIN
     END IF;
 END $$;
 
-CREATE FUNCTION miningcore_payout_control.begin_batch(token uuid, owner_token uuid, owner_generation bigint)
-RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+CREATE FUNCTION miningcore_payout_control.begin_batch(token uuid, owner_token uuid, owner_generation bigint,
+    pool text, snapshot_digest text)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp SET lock_timeout='2s' AS $$
 DECLARE control miningcore_payout_control.state;
 BEGIN
     PERFORM miningcore_payout_control.require_owner_lock();
@@ -78,8 +82,8 @@ BEGIN
     IF EXISTS(SELECT FROM miningcore_payout_control.batches WHERE completed IS NULL) THEN
         RAISE EXCEPTION 'An outstanding wallet batch requires completion or explicit reconciliation' USING ERRCODE='55000';
     END IF;
-    INSERT INTO miningcore_payout_control.batches(batch_id,owner_id,generation)
-        VALUES(token,owner_token,owner_generation);
+    INSERT INTO miningcore_payout_control.batches(batch_id,owner_id,generation,pool_id,payout_digest)
+        VALUES(token,owner_token,owner_generation,pool,snapshot_digest);
     RETURN true;
 END $$;
 
@@ -87,12 +91,16 @@ CREATE FUNCTION miningcore_payout_control.finish_batch(token uuid, owner_token u
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
 BEGIN
     PERFORM miningcore_payout_control.require_owner_lock();
-    -- Same lock order as admission, resume and reconciliation.
-    PERFORM FROM miningcore_payout_control.state WHERE id=1 FOR UPDATE;
-    IF NOT FOUND THEN RAISE EXCEPTION 'Missing wallet control state'; END IF;
+    -- Completion does not take the operator's state lock. A concurrent resume
+    -- may conservatively see the batch as outstanding and refuse. Reconciliation
+    -- requires our advisory lock, so it cannot race this update.
     UPDATE miningcore_payout_control.batches SET completed=clock_timestamp(),resolution='completed'
         WHERE batch_id=token AND owner_id=owner_token AND generation=owner_generation AND completed IS NULL;
-    IF NOT FOUND THEN RAISE EXCEPTION 'Wallet batch identity does not match'; END IF;
+    IF NOT FOUND AND NOT EXISTS(SELECT FROM miningcore_payout_control.batches
+        WHERE batch_id=token AND owner_id=owner_token AND generation=owner_generation
+            AND resolution='completed' AND completed IS NOT NULL) THEN
+        RAISE EXCEPTION 'Wallet batch identity does not match';
+    END IF;
 END $$;
 
 CREATE FUNCTION miningcore_payout_control.set_paused(stop boolean, expected_revision bigint, incident_reference text)
@@ -142,6 +150,20 @@ END $$;
 
 -- Remove all default privileges, including non-PUBLIC defaults, before granting
 -- only runtime read/admit/complete privileges. Operator grants are a separate step.
+CREATE FUNCTION miningcore_payout_control.runtime_role_safe(app_role name)
+RETURNS boolean LANGUAGE sql SET search_path=pg_catalog,pg_temp AS $$
+    SELECT EXISTS(SELECT FROM pg_roles WHERE rolname=app_role)
+        AND NOT EXISTS(
+            SELECT FROM pg_roles r WHERE (r.rolname=app_role OR pg_has_role(app_role,r.oid,'MEMBER'))
+            AND (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication OR r.rolbypassrls
+                OR has_schema_privilege(r.oid,'miningcore_payout_control','CREATE')
+                OR EXISTS(SELECT FROM pg_class t JOIN pg_namespace n ON n.oid=t.relnamespace
+                    WHERE n.nspname='miningcore_payout_control' AND t.relkind='r'
+                    AND has_table_privilege(r.oid,t.oid,'INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER,REFERENCES'))
+                OR has_function_privilege(r.oid,'miningcore_payout_control.set_paused(boolean,bigint,text)','EXECUTE')
+                OR has_function_privilege(r.oid,'miningcore_payout_control.reconcile_batch(uuid,bigint,text)','EXECUTE')))
+$$;
+
 DO $permissions$
 DECLARE app_role name; grantee name;
 BEGIN
@@ -152,9 +174,13 @@ BEGIN
     END LOOP;
     REVOKE ALL ON ALL TABLES IN SCHEMA miningcore_payout_control FROM PUBLIC;
     REVOKE ALL ON ALL FUNCTIONS IN SCHEMA miningcore_payout_control FROM PUBLIC;
-    SELECT pg_get_userbyid(relowner) INTO STRICT app_role FROM pg_class WHERE oid='payout_manager_ownership'::regclass;
+    SELECT rolname INTO STRICT app_role FROM pg_roles
+        WHERE rolname=current_setting('miningcore.wallet_control_app_role');
     EXECUTE format('GRANT USAGE ON SCHEMA miningcore_payout_control TO %I',app_role);
     EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA miningcore_payout_control TO %I',app_role);
-    EXECUTE format('GRANT EXECUTE ON FUNCTION miningcore_payout_control.begin_batch(uuid,uuid,bigint), miningcore_payout_control.finish_batch(uuid,uuid,bigint) TO %I',app_role);
+    EXECUTE format('GRANT EXECUTE ON FUNCTION miningcore_payout_control.begin_batch(uuid,uuid,bigint,text,text), miningcore_payout_control.finish_batch(uuid,uuid,bigint), miningcore_payout_control.runtime_role_safe(name) TO %I',app_role);
+    IF NOT miningcore_payout_control.runtime_role_safe(app_role) THEN
+        RAISE EXCEPTION 'Runtime role has unsafe effective control privileges (including inherited or assumable roles)';
+    END IF;
 END $permissions$;
 COMMIT;

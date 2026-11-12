@@ -75,12 +75,12 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
     {
         // detect z_shieldcoinbase support
         var response = await rpcClient.ExecuteAsync<JObject>(logger, EquihashCommands.ZShieldCoinbase, ct);
-        WalletSubmissionOutcome.RequireRejectedProbe(response.Error, EquihashCommands.ZShieldCoinbase);
+        WalletSubmissionOutcome.RequireRejectedProbe(response.Error, EquihashCommands.ZShieldCoinbase, hasNoTransferArguments: true);
         supportsNativeShielding = response.Error.Code != (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND;
         
         // detect sendcurrency support
         var responseSendCurrency = await rpcClient.ExecuteAsync<JObject>(logger, EquihashCommands.SendCurrency, ct);
-        WalletSubmissionOutcome.RequireRejectedProbe(responseSendCurrency.Error, EquihashCommands.SendCurrency);
+        WalletSubmissionOutcome.RequireRejectedProbe(responseSendCurrency.Error, EquihashCommands.SendCurrency, hasNoTransferArguments: true);
         supportsSendCurrency = responseSendCurrency.Error.Code != (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND;
         
         // detect z_sendmany PrivacyPolicy support
@@ -88,7 +88,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         WalletSubmissionOutcome.RequireRejectedProbe(responseZSendMany.Error, EquihashCommands.ZSendMany);
         supportsZSendManyPrivacyPolicy = responseZSendMany.Error.Code == (int) BitcoinRPCErrorCode.RPC_INVALID_PARAMETER;
         if(responseZSendMany.Error?.Code != null)
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "EquihashPayoutHandler.ConfigureAsync");
+            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "EquihashPayoutHandler.DetectPayoutCapabilitiesAsync");
     }
 
     public override async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
@@ -117,6 +117,8 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
     {
         // Even invalid-argument probes invoke spending RPC methods. Never run
         // them during configuration/classification outside wallet admission.
+        if(!balances.Any(x => x.Amount > 0))
+            return;
         await DetectPayoutCapabilitiesAsync(ct);
         // Some projects like Veruscoin do not require shielding before being able to spend coins.
         // They can also send coins from a t-address to t-addresses and z-addresses.

@@ -391,9 +391,6 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
     private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
     {
         // Spending capability probes are permitted only inside admitted payouts.
-        var probe = await rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger, ConcealWalletCommands.SendTransaction, ct);
-        WalletSubmissionOutcome.RequireRejectedProbe(probe.Error, ConcealWalletCommands.SendTransaction);
-        walletSupportsSendTransaction = probe.Error.Code != ConcealConstants.ConcealRpcMethodNotFound;
         var coin = poolConfig.Template.As<ConcealCoinTemplate>();
 
 #if !DEBUG // ensure we have peers
@@ -439,6 +436,13 @@ public class ConcealPayoutHandler : PayoutHandlerBase,
                 return true;
             })
             .ToArray();
+
+        if(balances.Length == 0)
+            return;
+
+        var probe = await rpcClientWallet.ExecuteAsync<SendTransactionResponse>(logger, ConcealWalletCommands.SendTransaction, ct);
+        WalletSubmissionOutcome.RequireRejectedProbe(probe.Error, ConcealWalletCommands.SendTransaction, hasNoTransferArguments: true);
+        walletSupportsSendTransaction = probe.Error.Code != ConcealConstants.ConcealRpcMethodNotFound;
 
         // simple balances first
         var simpleBalances = balances

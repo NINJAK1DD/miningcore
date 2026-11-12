@@ -538,9 +538,6 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
 
     private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
     {
-        var probe = await rpcClientWallet.ExecuteAsync<TransferResponse>(logger, ZanoWalletCommands.TransferSplit, ct);
-        WalletSubmissionOutcome.RequireRejectedProbe(probe.Error, ZanoWalletCommands.TransferSplit);
-        walletSupportsTransferSplit = probe.Error.Code != ZanoConstants.RpcMethodNotFound;
         var coin = poolConfig.Template.As<ZanoCoinTemplate>();
 
 #if !DEBUG // ensure we have peers
@@ -593,6 +590,13 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
                 return true;
             })
             .ToArray();
+
+        if(balances.Length == 0)
+            return;
+
+        var probe = await rpcClientWallet.ExecuteAsync<TransferResponse>(logger, ZanoWalletCommands.TransferSplit, ct);
+        WalletSubmissionOutcome.RequireRejectedProbe(probe.Error, ZanoWalletCommands.TransferSplit, hasNoTransferArguments: true);
+        walletSupportsTransferSplit = probe.Error.Code != ZanoConstants.RpcMethodNotFound;
 
         // simple balances first
         var simpleBalances = balances

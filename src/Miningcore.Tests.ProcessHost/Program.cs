@@ -55,7 +55,7 @@ if(args.Length == 1 && args[0] == "wallet-control-probe")
             Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES")));
     if(!await lease.TryAcquireAsync(CancellationToken.None))
         return lease.RequiresRecovery ? 78 : 1;
-    if(!await lease.TryBeginWalletPayoutAsync(CancellationToken.None))
+    if(!await lease.TryBeginWalletPayoutAsync(CancellationToken.None, new WalletPayoutBatch("lab", new string('a', 64))))
     {
         Console.WriteLine("paused");
         return 0;

@@ -107,7 +107,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
         minConfirmations = extraPoolPaymentProcessingConfig?.MinimumConfirmations ?? (network == "mainnet" ? 60 : 50);
     }
 
-    private async Task EnsureWalletOnlineAsync(CancellationToken ct)
+    private async Task<bool> EnsureWalletOnlineAsync(CancellationToken ct)
     {
         // wallet daemon needs to be online
         var isOnline = await rpcClientWallet.ExecuteAsync<object>(logger, XelisWalletCommands.IsOnline, ct);
@@ -120,15 +120,17 @@ public class XelisPayoutHandler : PayoutHandlerBase,
             logger.Warn(() => $"[{LogCategory}] '{XelisWalletCommands.DaemonName}' is offline...");
 
             var setOnlineMode = await rpcClientWallet.ExecuteAsync<object>(logger, XelisWalletCommands.SetOnlineMode, ct);
-            WalletSubmissionOutcome.ThrowIfUnknown(setOnlineMode.Error, XelisWalletCommands.SetOnlineMode);
             if(setOnlineMode.Error != null)
                 throw new Exception($"'{XelisWalletCommands.SetOnlineMode}': {setOnlineMode.Error.Message} (Code {setOnlineMode.Error.Code})");
 
             // wallet daemon is online
             if((bool)setOnlineMode.Response)
                 logger.Info(() => $"[{LogCategory}] '{XelisWalletCommands.DaemonName}' is now online...");
+            // Activation is not a spend. Give the wallet a cycle to synchronize,
+            // then recheck online state before considering any payout.
+            return false;
         }
-
+        return true;
     }
 
     public virtual async Task<Block[]> ClassifyBlocksAsync(IMiningPool pool, Block[] blocks, CancellationToken ct)
@@ -247,8 +249,6 @@ public class XelisPayoutHandler : PayoutHandlerBase,
 
     private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
     {
-        // Activating the wallet belongs to the admitted wallet batch, not accounting setup.
-        await EnsureWalletOnlineAsync(ct);
         // ensure we have enough peers
         var enoughPeers = await EnsureDaemonsSynchedAsync(ct);
         if(!enoughPeers)
@@ -261,6 +261,18 @@ public class XelisPayoutHandler : PayoutHandlerBase,
 
         if(amounts.Count == 0)
             return;
+
+        // Activating the wallet belongs to the admitted wallet batch, not accounting setup.
+        if(!await EnsureWalletOnlineAsync(ct))
+            return;
+        var chain = await rpcClient.ExecuteAsync<GetChainInfoResponse>(logger, XelisCommands.GetChainInfo, ct);
+        var scanned = await rpcClientWallet.ExecuteAsync<JToken>(logger, XelisWalletCommands.GetTopoHeight, ct);
+        if(chain.Error != null || chain.Response == null || scanned.Error != null ||
+            scanned.Response?.Type != JTokenType.Integer || scanned.Response.Value<ulong>() < chain.Response.TopoHeight)
+        {
+            logger.Warn(() => $"[{LogCategory}] Payout deferred until the online wallet has scanned the daemon topoheight");
+            return;
+        }
         
         var coin = poolConfig.Template.As<XelisCoinTemplate>();
 

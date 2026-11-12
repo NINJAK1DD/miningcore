@@ -33,6 +33,138 @@ namespace Miningcore.Tests.Payments;
 [Collection(BitcoinCorePayoutIntegrationCollection.Name)]
 public class WalletPayoutControlIntegrationTests : TestBase
 {
+    [WalletControlFact]
+    public async Task NonOwnerRuntime_PreflightAdmissionMetadataAndApiContract()
+    {
+        await using var db = await Database.Create();
+        await WalletPayoutControlState.PreflightAsync(db.Factory, CancellationToken.None);
+        using var app = await db.Factory.OpenConnectionAsync();
+        Assert.False(await app.ExecuteScalarAsync<bool>("SELECT relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user) FROM pg_class WHERE oid='payout_manager_ownership'::regclass"));
+        var controller = Api.Controllers.AdminApiPaymentProcessingTests.CreateController(db.Factory, true);
+        var paused = (await controller.GetWalletPayoutControl(CancellationToken.None)).Value;
+        Assert.True(paused.Paused);
+        Assert.Equal(1, paused.ProtocolVersion);
+        Assert.Equal(1, paused.Revision);
+        Assert.Equal(0, paused.OutstandingBatches);
+        await db.SetPaused(false);
+        await using var lease = new PostgresPayoutManagerLease(db.Factory);
+        Assert.True(await lease.TryAcquireAsync(CancellationToken.None));
+        var batch = WalletPayoutBatch.Create("pool-a", new[] { new Balance { Address = "private-recipient", Amount = 3m } });
+        Assert.True(await lease.TryBeginWalletPayoutAsync(CancellationToken.None, batch));
+        Assert.Equal(batch.PoolId, await db.Admin.ExecuteScalarAsync<string>("SELECT pool_id FROM miningcore_payout_control.batches"));
+        Assert.Equal(batch.Digest, await db.Admin.ExecuteScalarAsync<string>("SELECT payout_digest FROM miningcore_payout_control.batches"));
+        var active = (await controller.GetWalletPayoutControl(CancellationToken.None)).Value;
+        Assert.False(active.Paused);
+        Assert.Equal(2, active.Revision);
+        Assert.Equal(1, active.OutstandingBatches);
+        Assert.DoesNotContain("private-recipient", Newtonsoft.Json.JsonConvert.SerializeObject(active));
+        await lease.CompleteWalletPayoutAsync(CancellationToken.None);
+        Assert.Equal(0, (await controller.GetWalletPayoutControl(CancellationToken.None)).Value.OutstandingBatches);
+    }
+
+    [WalletControlFact]
+    public async Task PreflightRejectsMissingDeniedIncompatibleAndUnsafeControlWithoutOwnership()
+    {
+        foreach(var failure in new[] { "missing", "denied", "version", "write", "operator" })
+        {
+            await using var db = await Database.Create(installControl: failure != "missing");
+            if(failure == "denied") await db.RevokeAdmission();
+            if(failure == "version") await db.Admin.ExecuteAsync("ALTER TABLE miningcore_payout_control.state DROP CONSTRAINT state_protocol_version_check; UPDATE miningcore_payout_control.state SET protocol_version=2");
+            if(failure == "write") await db.Admin.ExecuteAsync($"GRANT pg_write_all_data TO {db.AppRole}");
+            if(failure == "operator") await db.Admin.ExecuteAsync($"GRANT {db.OperatorRole} TO {db.AppRole}");
+            await using var lease = new PostgresPayoutManagerLease(db.Factory);
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => lease.ValidateWalletControlAsync(CancellationToken.None));
+            Assert.Contains("preflight", error.Message);
+            Assert.Equal(0, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM payout_manager_ownership WHERE owner_id IS NOT NULL"));
+            Assert.True(lease.CanReleaseOwnership);
+        }
+    }
+
+    [WalletControlFact]
+    public async Task MigrationRejectsEffectiveWritePrivilegesAtomically()
+    {
+        await using var db = await Database.Create(installControl: false);
+        await db.Admin.ExecuteAsync($"GRANT pg_write_all_data TO {db.AppRole}");
+        var error = await Assert.ThrowsAsync<PostgresException>(() => db.InstallControl());
+        Assert.Contains("unsafe effective", error.MessageText);
+        await db.Admin.ExecuteAsync("ROLLBACK");
+        Assert.False(await db.Admin.ExecuteScalarAsync<bool>("SELECT to_regnamespace('miningcore_payout_control') IS NOT NULL"));
+        await db.Admin.ExecuteAsync($"REVOKE pg_write_all_data FROM {db.AppRole}");
+        await db.InstallControl();
+        await WalletPayoutControlState.PreflightAsync(db.Factory, CancellationToken.None);
+    }
+
+    [WalletControlFact]
+    public async Task OperatorLockAndHistoricalLoad_DoNotStrandConclusiveBatches()
+    {
+        await using var db = await Database.Create();
+        await db.SetPaused(false);
+        // Review the active lookup with a substantial completed history, without
+        // asserting hardware-dependent throughput or a brittle query plan.
+        await db.Admin.ExecuteAsync("""
+            INSERT INTO miningcore_payout_control.batches(batch_id,owner_id,generation,pool_id,payout_digest,completed,resolution)
+            SELECT gen_random_uuid(),gen_random_uuid(),1,'historical',repeat('b',64),now(),'completed' FROM generate_series(1,10000)
+            """);
+        await using var lease = new PostgresPayoutManagerLease(db.Factory);
+        Assert.True(await lease.TryAcquireAsync(CancellationToken.None));
+        var batch = new WalletPayoutBatch("load", new string('a',64));
+        var readers = Task.Run(async () => { for(var i = 0; i < 60; i++) await db.State(); });
+        for(var i = 0; i < 30; i++)
+        {
+            Assert.True(await lease.TryBeginWalletPayoutAsync(CancellationToken.None, batch));
+            await lease.CompleteWalletPayoutAsync(CancellationToken.None);
+        }
+        await readers;
+        Assert.True(await lease.TryBeginWalletPayoutAsync(CancellationToken.None, batch));
+        await using(var tx = await db.Operator.BeginTransactionAsync())
+        {
+            await db.Operator.ExecuteAsync("SELECT miningcore_payout_control.set_paused(true,2,'open incident transaction')", transaction: tx);
+            // Must complete while the operator still holds its row lock.
+            await lease.CompleteWalletPayoutAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(4));
+            Assert.False(await lease.TryBeginWalletPayoutAsync(CancellationToken.None, batch)); // server lock_timeout
+            Assert.True(lease.CanReleaseOwnership);
+            await Task.Delay(TimeSpan.FromSeconds(6)); // operator outlasts client command timeout
+            await tx.CommitAsync();
+        }
+        Assert.Equal(0, (await db.State()).OutstandingBatches);
+        await lease.DisposeAsync();
+        // Identical completion is idempotent; foreign identity and reconciliation
+        // cannot be reinterpreted as a completed handler batch.
+        await db.Admin.ExecuteAsync("SELECT pg_advisory_lock(19779,5259609)");
+        await db.Admin.ExecuteAsync("""
+            SELECT miningcore_payout_control.finish_batch(batch_id,owner_id,generation)
+            FROM miningcore_payout_control.batches WHERE pool_id='load'
+            """);
+        await Assert.ThrowsAsync<PostgresException>(() => db.Admin.ExecuteAsync("""
+            SELECT miningcore_payout_control.finish_batch(batch_id,gen_random_uuid(),generation)
+            FROM miningcore_payout_control.batches WHERE pool_id='load' LIMIT 1
+            """));
+        await db.Admin.ExecuteAsync("SELECT pg_advisory_unlock(19779,5259609)");
+        await using var replacement = new PostgresPayoutManagerLease(db.Factory);
+        Assert.True(await replacement.TryAcquireAsync(CancellationToken.None));
+        // First completion returns a conclusive serialization failure; the
+        // second succeeds on the same guard session, without another admission.
+        await db.Admin.ExecuteAsync($"""
+            ALTER FUNCTION miningcore_payout_control.finish_batch(uuid,uuid,bigint) RENAME TO finish_original;
+            CREATE SEQUENCE miningcore_payout_control.completion_attempt;
+            CREATE FUNCTION miningcore_payout_control.finish_batch(t uuid,o uuid,g bigint) RETURNS void
+            LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+            BEGIN
+                IF nextval('miningcore_payout_control.completion_attempt')=1 THEN
+                    RAISE EXCEPTION 'injected serialization retry' USING ERRCODE='40001';
+                END IF;
+                PERFORM miningcore_payout_control.finish_original(t,o,g);
+            END $$;
+            REVOKE ALL ON FUNCTION miningcore_payout_control.finish_batch(uuid,uuid,bigint) FROM PUBLIC;
+            GRANT EXECUTE ON FUNCTION miningcore_payout_control.finish_batch(uuid,uuid,bigint) TO {db.AppRole};
+            """);
+        await db.SetPaused(false);
+        Assert.True(await replacement.TryBeginWalletPayoutAsync(CancellationToken.None, batch));
+        await replacement.CompleteWalletPayoutAsync(CancellationToken.None);
+        Assert.True(replacement.CanReleaseOwnership);
+        Assert.Equal(2, await db.Admin.ExecuteScalarAsync<int>("SELECT last_value FROM miningcore_payout_control.completion_attempt"));
+    }
+
     [IsolatedPostgresFact]
     public async Task PostgreSqlRestart_PreservesStopOutstandingBatchAndOwnership()
     {
@@ -45,7 +177,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
         await using(var lease = new PostgresPayoutManagerLease(db.Factory))
         {
             Assert.True(await lease.TryAcquireAsync(CancellationToken.None));
-            Assert.True(await lease.TryBeginWalletPayoutAsync(CancellationToken.None));
+            Assert.True(await lease.TryBeginWalletPayoutAsync(CancellationToken.None, new WalletPayoutBatch("lab", new string('a', 64))));
             await db.SetPaused(true);
             await server.Restart("valid");
             await db.ReconnectObservers();
@@ -103,6 +235,27 @@ public class WalletPayoutControlIntegrationTests : TestBase
         Assert.Equal(78, blocked.ExitCode);
         Assert.Equal(1, (await db.State()).OutstandingBatches);
         await Assert.ThrowsAsync<PostgresException>(() => db.SetPaused(false));
+        await db.Admin.ExecuteAsync(await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_payout_recovery_audit.sql")));
+        var recovery = new PostgresPayoutOwnershipRecovery(db.AdminFactory);
+        var inspected = await recovery.InspectAsync(CancellationToken.None);
+        Assert.Contains("reconcile_batch before", inspected.WalletControlWarning);
+        var output = new StringWriter();
+        Assert.Equal(PayoutRecoveryResult.Kept, await PayoutOwnershipRecoveryAssistant.RunAsync(
+            recovery, new StringReader("3\n"), output, true, CancellationToken.None));
+        Assert.Contains("reconcile_batch before", output.ToString());
+        await Assert.ThrowsAsync<PayoutRecoveryException>(() => recovery.ReleaseAsync(inspected, "too early", CancellationToken.None));
+        await db.Operator.ExecuteAsync("SELECT pg_advisory_lock(19779,5259609)");
+        var token = await db.Admin.ExecuteScalarAsync<Guid>("SELECT batch_id FROM miningcore_payout_control.batches WHERE completed IS NULL");
+        await db.Operator.ExecuteAsync("SELECT miningcore_payout_control.reconcile_batch(@token,@revision,'confirmed dead; lab reconciled')",
+            new { token, revision = (await db.State()).Revision });
+        await db.Operator.ExecuteAsync("SELECT pg_advisory_unlock(19779,5259609)");
+        inspected = await recovery.InspectAsync(CancellationToken.None);
+        Assert.Null(inspected.WalletControlWarning);
+        await recovery.ReleaseAsync(inspected, "reviewed crash recovery", CancellationToken.None);
+        await using var recovered = new PostgresPayoutManagerLease(db.Factory);
+        await recovered.ValidateWalletControlAsync(CancellationToken.None);
+        Assert.True(await recovered.TryAcquireAsync(CancellationToken.None));
+        Assert.False(await recovered.TryBeginWalletPayoutAsync(CancellationToken.None, new WalletPayoutBatch("lab", new string('a',64))));
     }
 
     [WalletControlFact]
@@ -172,7 +325,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
         await lease.DisposeAsync();
         await using var restarted = new PostgresPayoutManagerLease(db.Factory);
         Assert.True(await restarted.TryAcquireAsync(CancellationToken.None));
-        Assert.False(await restarted.TryBeginWalletPayoutAsync(CancellationToken.None));
+        Assert.False(await restarted.TryBeginWalletPayoutAsync(CancellationToken.None, new WalletPayoutBatch("lab", new string('a', 64))));
         await db.SetPaused(false);
         await db.Factory.RunTx((con, tx) => balances.AddAmountAsync(con, tx, config.Id, address, 1m, "test credit"));
         var restartedManager = new PayoutManager(container, db.Factory, blocks, shares, balances, cluster, bus, restarted, new ProcessStatus());
@@ -213,7 +366,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
         var revision = (await db.State()).Revision;
         await using var transaction = await db.Operator.BeginTransactionAsync();
         await db.Operator.ExecuteAsync("SELECT miningcore_payout_control.set_paused(true,@revision,'race')", new { revision }, transaction);
-        var admission = lease.TryBeginWalletPayoutAsync(CancellationToken.None);
+        var admission = lease.TryBeginWalletPayoutAsync(CancellationToken.None, new WalletPayoutBatch("lab", new string('a', 64)));
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         while(!await db.Admin.ExecuteScalarAsync<bool>(new CommandDefinition(
             "SELECT EXISTS(SELECT FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%begin_batch%')",
@@ -237,7 +390,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
         await using(var lease = new PostgresPayoutManagerLease(db.Factory))
         {
             Assert.True(await lease.TryAcquireAsync(CancellationToken.None));
-            Assert.True(await lease.TryBeginWalletPayoutAsync(CancellationToken.None));
+            Assert.True(await lease.TryBeginWalletPayoutAsync(CancellationToken.None, new WalletPayoutBatch("lab", new string('a', 64))));
             await db.KillGuard();
             await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => lease.CompleteWalletPayoutAsync(CancellationToken.None));
             Assert.False(lease.CanReleaseOwnership);
@@ -253,7 +406,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
         {
             Assert.True(await lease.TryAcquireAsync(CancellationToken.None));
             await second.KillGuard();
-            await Assert.ThrowsAsync<InvalidOperationException>(() => lease.TryBeginWalletPayoutAsync(CancellationToken.None));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => lease.TryBeginWalletPayoutAsync(CancellationToken.None, new WalletPayoutBatch("lab", new string('a', 64))));
         }
         Assert.Equal(0, (await second.State()).OutstandingBatches);
         Assert.True(await second.Admin.ExecuteScalarAsync<bool>("SELECT owner_id IS NOT NULL FROM payout_manager_ownership"));
@@ -277,7 +430,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
         })
             await Assert.ThrowsAsync<PostgresException>(() => app.ExecuteAsync(sql));
         await Assert.ThrowsAsync<PostgresException>(() => db.Operator.ExecuteAsync("UPDATE miningcore_payout_control.state SET paused=false"));
-        await Assert.ThrowsAsync<PostgresException>(() => app.ExecuteAsync("SELECT miningcore_payout_control.begin_batch(gen_random_uuid(),gen_random_uuid(),1)"));
+        await Assert.ThrowsAsync<PostgresException>(() => app.ExecuteAsync("SELECT miningcore_payout_control.begin_batch(gen_random_uuid(),gen_random_uuid(),1,'lab',repeat('a',64))"));
         await db.SetPaused(false);
         Assert.Equal(db.OperatorRole, await db.Admin.ExecuteScalarAsync<string>("SELECT database_role FROM miningcore_payout_control.events WHERE revision=2"));
         await db.Admin.ExecuteAsync("""
@@ -291,8 +444,8 @@ public class WalletPayoutControlIntegrationTests : TestBase
         await using var lease = new PostgresPayoutManagerLease(db.Factory);
         Assert.True(await lease.TryAcquireAsync(CancellationToken.None));
         await db.Admin.ExecuteAsync("DELETE FROM miningcore_payout_control.state");
-        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => lease.TryBeginWalletPayoutAsync(CancellationToken.None));
-        Assert.False(lease.CanReleaseOwnership);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => lease.TryBeginWalletPayoutAsync(CancellationToken.None, new WalletPayoutBatch("lab", new string('a', 64))));
+        Assert.True(lease.CanReleaseOwnership);
         await Assert.ThrowsAsync<InvalidOperationException>(() => db.State());
         Assert.Equal(0, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM miningcore_payout_control.batches"));
     }
@@ -318,12 +471,18 @@ public class WalletPayoutControlIntegrationTests : TestBase
                 await db.Admin.ExecuteAsync("BEGIN; SELECT * FROM miningcore_payout_control.state FOR UPDATE");
             }
             using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
-            await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => lease.TryBeginWalletPayoutAsync(
-                failure == "cancelled" ? deadline.Token : CancellationToken.None));
-            Assert.False(lease.CanReleaseOwnership);
+            var admission = () => lease.TryBeginWalletPayoutAsync(
+                failure == "cancelled" ? deadline.Token : CancellationToken.None, new WalletPayoutBatch("lab", new string('a', 64)));
+            if(failure == "cancelled") await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(admission);
+            else await Assert.ThrowsAsync<InvalidOperationException>(admission);
+            Assert.Equal(failure != "cancelled", lease.CanReleaseOwnership);
             if(failure == "cancelled") await db.Admin.ExecuteAsync("ROLLBACK");
             if(failure != "missing")
                 Assert.Equal(0, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM miningcore_payout_control.batches"));
+            await lease.DisposeAsync();
+            Assert.Equal(failure == "cancelled", await db.Admin.ExecuteScalarAsync<bool>("SELECT owner_id IS NOT NULL FROM payout_manager_ownership"));
+            await using var restart = new PostgresPayoutManagerLease(db.Factory);
+            Assert.Equal(failure != "cancelled", await restart.TryAcquireAsync(CancellationToken.None));
         }
     }
 
@@ -350,12 +509,14 @@ public class WalletPayoutControlIntegrationTests : TestBase
     private sealed class Database : IAsyncDisposable
     {
         private readonly string name = "wallet_control_" + Guid.NewGuid().ToString("N");
-        private string AppRole => name + "_app";
+        public string AppRole => name + "_app";
+        private string OwnerRole => name + "_owner";
         public string OperatorRole => name + "_op";
         private NpgsqlConnection root;
         public NpgsqlConnection Admin { get; private set; }
         public NpgsqlConnection Operator { get; private set; }
         public PgConnectionFactory Factory { get; private set; }
+        public PgConnectionFactory AdminFactory { get; private set; }
         private string appConnectionString;
         public Process StartProbe()
         {
@@ -374,7 +535,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
                 await connection.OpenAsync();
             }
         }
-        public static async Task<Database> Create(string connectionString = null)
+        public static async Task<Database> Create(string connectionString = null, bool installControl = true)
         {
             var db = new Database();
             try
@@ -384,21 +545,17 @@ public class WalletPayoutControlIntegrationTests : TestBase
                 db.root = new NpgsqlConnection(settings.ConnectionString);
                 await db.root.OpenAsync();
                 var password = Guid.NewGuid().ToString("N");
-                await db.root.ExecuteAsync($"CREATE ROLE {db.AppRole} LOGIN PASSWORD '{password}'; CREATE ROLE {db.OperatorRole} LOGIN PASSWORD '{password}'");
-                await db.root.ExecuteAsync($"CREATE DATABASE {db.name} OWNER {db.AppRole}");
+                await db.root.ExecuteAsync($"CREATE ROLE {db.AppRole} LOGIN PASSWORD '{password}'; CREATE ROLE {db.OperatorRole} LOGIN PASSWORD '{password}'; CREATE ROLE {db.OwnerRole}");
+                await db.root.ExecuteAsync($"CREATE DATABASE {db.name} OWNER {db.OwnerRole}");
                 settings.Database = db.name;
+                db.AdminFactory = new PgConnectionFactory(settings.ConnectionString);
                 db.Admin = new NpgsqlConnection(settings.ConnectionString);
                 await db.Admin.OpenAsync();
                 var schema = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("createdb.sql"));
-                await db.Admin.ExecuteAsync(schema.Replace("SET ROLE miningcore;", $"SET ROLE {db.AppRole};"));
+                await db.Admin.ExecuteAsync(schema.Replace("SET ROLE miningcore;", $"SET ROLE {db.OwnerRole};"));
                 await db.Admin.ExecuteAsync("RESET ROLE");
-                await db.Admin.ExecuteAsync(await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_wallet_payout_control.sql")));
-                await db.Admin.ExecuteAsync($"""
-                    GRANT USAGE ON SCHEMA miningcore_payout_control TO {db.OperatorRole};
-                    GRANT SELECT ON ALL TABLES IN SCHEMA miningcore_payout_control TO {db.OperatorRole};
-                    GRANT EXECUTE ON FUNCTION miningcore_payout_control.set_paused(boolean,bigint,text),
-                        miningcore_payout_control.reconcile_batch(uuid,bigint,text) TO {db.OperatorRole};
-                    """);
+                await db.Admin.ExecuteAsync($"GRANT USAGE ON SCHEMA public TO {db.AppRole}; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO {db.AppRole}; GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO {db.AppRole}");
+                if(installControl) await db.InstallControl();
                 settings.Username = db.AppRole; settings.Password = password;
                 db.appConnectionString = settings.ConnectionString;
                 db.Factory = new PgConnectionFactory(settings.ConnectionString);
@@ -410,6 +567,17 @@ public class WalletPayoutControlIntegrationTests : TestBase
             catch { await db.DisposeAsync(); throw; }
         }
         public Task<WalletPayoutControlState> State() => WalletPayoutControlState.ReadAsync(Factory, CancellationToken.None);
+        public async Task InstallControl()
+        {
+            await Admin.ExecuteAsync("SELECT set_config('miningcore.wallet_control_app_role',@role,false)", new { role = AppRole });
+            await Admin.ExecuteAsync(await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_wallet_payout_control.sql")));
+            await Admin.ExecuteAsync($"""
+                GRANT USAGE ON SCHEMA miningcore_payout_control TO {OperatorRole};
+                GRANT SELECT ON ALL TABLES IN SCHEMA miningcore_payout_control TO {OperatorRole};
+                GRANT EXECUTE ON FUNCTION miningcore_payout_control.set_paused(boolean,bigint,text),
+                    miningcore_payout_control.reconcile_batch(uuid,bigint,text) TO {OperatorRole};
+                """);
+        }
         public async Task SetPaused(bool paused) => await Operator.ExecuteAsync(
             "SELECT miningcore_payout_control.set_paused(@paused,@revision,'integration incident')",
             new { paused, revision = (await State()).Revision });
@@ -418,7 +586,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
             AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
             AND classid=19779 AND objid=5259609 AND granted
             """);
-        public Task RevokeAdmission() => Admin.ExecuteAsync($"REVOKE EXECUTE ON FUNCTION miningcore_payout_control.begin_batch(uuid,uuid,bigint) FROM {AppRole}");
+        public Task RevokeAdmission() => Admin.ExecuteAsync($"REVOKE EXECUTE ON FUNCTION miningcore_payout_control.begin_batch(uuid,uuid,bigint,text,text) FROM {AppRole}");
         public async ValueTask DisposeAsync()
         {
             if(Operator != null) await Operator.DisposeAsync();
@@ -426,7 +594,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
             if(root != null)
             {
                 await root.ExecuteAsync($"DROP DATABASE IF EXISTS {name} WITH (FORCE)");
-                await root.ExecuteAsync($"DROP ROLE IF EXISTS {AppRole}; DROP ROLE IF EXISTS {OperatorRole}");
+                await root.ExecuteAsync($"DROP ROLE IF EXISTS {AppRole}; DROP ROLE IF EXISTS {OperatorRole}; DROP ROLE IF EXISTS {OwnerRole}");
                 await root.DisposeAsync();
             }
         }

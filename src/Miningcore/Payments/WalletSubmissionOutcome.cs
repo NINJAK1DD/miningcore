@@ -17,8 +17,10 @@ public static class WalletSubmissionOutcome
 
     // Capability probes use deliberately invalid arguments to a spending RPC.
     // They belong inside admitted payouts; unexpected success is still uncertain.
-    public static void RequireRejectedProbe(JsonRpcError error, string operation)
+    public static void RequireRejectedProbe(JsonRpcError error, string operation, bool hasNoTransferArguments = false)
     {
+        if(hasNoTransferArguments && IsUnknown(error))
+            throw new InvalidOperationException($"{operation} capability probe unavailable; no transfer arguments were supplied", error.InnerException);
         ThrowIfUnknown(error, operation);
         if(error == null)
             throw new PayoutOutcomeUncertainException($"{operation} capability probe unexpectedly succeeded; inspect wallet history");
