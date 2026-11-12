@@ -1488,6 +1488,12 @@ be replaced with the immutable paths actually deployed; retain the service's exi
 database ordering and other hardening. After confirming the all-node stop inventory, an operator
 can install this drop-in and reload systemd:
 
+The embedded attestation records that initial inventory check; it does not reconfirm remote
+node state on a later start. Keep the unit disabled for automatic boot activation while this
+temporary drop-in is installed, and prevent dependency-triggered or external automatic starts.
+Before every manual start, including after a reboot, repeat the all-node stop inventory and
+pre-start verification. `Restart=no` alone does not prevent boot or dependency activation.
+
 ```ini
 [Service]
 Restart=no
@@ -1515,7 +1521,8 @@ On each node that could run payouts, keep cluster `paymentProcessing.enabled: tr
 including their original payout schemes, recipients and arithmetic settings. Disabling these pool
 switches is rejected before Stratum startup and through the administrative API while an enabled
 merged-mining relationship requires them. Put `paused` only inside the cluster `paymentProcessing`
-object, never at the document root or inside a pool's payment settings. Those misplaced keys are
+object, never at the document root, directly inside a pool object, or inside a pool's payment
+settings. Those misplaced keys are
 hard errors, even with alternative casing. The same pause works for direct, relay sender and
 relay receiver/recorder nodes. A dedicated sender may retain its existing cluster-disabled
 configuration instead; that is not permission to disable pool accounting, and PPS still requires

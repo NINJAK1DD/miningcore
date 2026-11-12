@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 import copy
+import contextlib
 import importlib.util
+import io
 import json
 import hashlib
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location("pause", Path(__file__).with_name("verify-payout-pause-support.py"))
 pause = importlib.util.module_from_spec(spec)
@@ -19,6 +23,34 @@ STATE = {"configuration": {"paymentProcessing": {"enabled": True, "paused": True
 
 
 class PauseSupportTests(unittest.TestCase):
+    def test_cli_reports_malformed_schema_nodes_without_tracebacks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary, config = root / "Miningcore", root / "config.json"
+            binary.touch()
+            config.touch()
+            for node in (None, [], "private-schema-value", 1):
+                (root / "config.schema.json").write_text(json.dumps({"definitions": {
+                    "ClusterPaymentProcessingConfig": node}}), encoding="utf-8")
+                result = subprocess.run([sys.executable, str(Path(pause.__file__)),
+                    "--binary", str(binary), "--config", str(config), "--all-payout-nodes-stopped"],
+                    capture_output=True, text=True, check=False)
+                with self.subTest(node=node):
+                    self.assertEqual(78, result.returncode)
+                    self.assertIn("check FAILED", result.stdout)
+                    self.assertNotIn("private-schema-value", result.stdout)
+                    self.assertEqual("", result.stderr)
+
+    def test_attribute_error_is_redacted_and_requires_operator(self):
+        output = io.StringIO()
+        with mock.patch("sys.argv", ["verify", "--binary", "unused", "--config", "unused",
+                                     "--all-payout-nodes-stopped"]), \
+                mock.patch.object(pause, "verify", side_effect=AttributeError("private-schema-value")), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(78, pause.main())
+        self.assertIn("check FAILED", output.getvalue())
+        self.assertNotIn("private-schema-value", output.getvalue())
+
     def test_current_contract(self):
         pause.validate(SCHEMA, STATE)
 

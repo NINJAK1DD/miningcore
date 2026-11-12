@@ -262,7 +262,8 @@ public class AdminApiController : ApiControllerBase
                 throw new ApiException(
                     $"Cannot disable payment processing for active merged-mining pool '{required.Config.Id}'; " +
                     "stop Miningcore and use a controlled restart. To pause payouts, retain both pool " +
-                    "payment switches and set cluster-level paymentProcessing.paused=true",
+                    "payment switches and set cluster-level paymentProcessing.paused=true; " +
+                    "other pools remain individually controllable through their per-pool routes",
                     HttpStatusCode.Conflict);
         }
 

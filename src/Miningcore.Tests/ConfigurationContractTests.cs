@@ -104,6 +104,29 @@ public class ConfigurationContractTests
     [InlineData("paused")]
     [InlineData("Paused")]
     [InlineData("PAUSED")]
+    public void PoolObjectPausedFlag_IsRejectedRatherThanIgnored(string key)
+    {
+        var document = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.example.json")));
+        document["pools"][0][key] = true;
+        var path = WriteTemporaryConfig(document);
+        try
+        {
+            var config = Program.ReadConfig(path);
+            var result = new ClusterConfigValidator().Validate(config);
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Errors, error => error.ErrorMessage.Contains($"Pool '{config.Pools[0].Id}'") &&
+                error.ErrorMessage.Contains("paused is not a pool setting") &&
+                error.ErrorMessage.Contains("cluster-level paymentProcessing.paused=true"));
+            Assert.Throws<PoolStartupException>(() => Program.ReadAndValidateConfig(path, false));
+            Program.ReadConfig(path, true);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Theory]
+    [InlineData("paused")]
+    [InlineData("Paused")]
+    [InlineData("PAUSED")]
     public void RootLevelPausedFlag_IsRejectedRatherThanIgnored(string key)
     {
         var document = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.example.json")));

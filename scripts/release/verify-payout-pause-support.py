@@ -80,7 +80,7 @@ def main():
         fingerprints = verify(args.binary, args.config)
         if args.receipt:
             write_receipt(args.receipt, fingerprints)
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
         # Do not replay CLI diagnostics that might contain configuration values.
         print("Payout pause pre-start check FAILED. Keep services stopped; inspect binary and config privately.")
         return 78

@@ -44,6 +44,7 @@ public class AdminApiPaymentProcessingTests
             Assert.Equal(409, error.ResponseStatusCode);
             Assert.Contains("active merged-mining", error.Message);
             Assert.Contains("controlled restart", error.Message);
+            Assert.Contains("other pools remain individually controllable through their per-pool routes", error.Message);
             Assert.Contains("paymentProcessing.paused=true", error.Message);
             Assert.True(parent.PaymentProcessing.Enabled);
             Assert.True(auxiliary.PaymentProcessing.Enabled);
