@@ -116,8 +116,13 @@ public partial class WalletPayoutControlIntegrationTests
                 if(loseResponse)
                 {
                     var envelope = JObject.Parse(returned);
-                    Assert.True(envelope["error"] == null || envelope["error"].Type == JTokenType.Null,
-                        "The real wallet must accept the submitted request before its response is withheld");
+                    if(envelope["error"] != null && envelope["error"].Type != JTokenType.Null)
+                    {
+                        context.Response.StatusCode = (int)response.StatusCode;
+                        context.Response.ContentType = "application/json";
+                        await context.Response.WriteAsync(returned);
+                        return; // A conclusive rejection is not the response-loss injection point.
+                    }
                     forwardedSubmission.TrySetResult();
                     if(cancel)
                     {
@@ -218,10 +223,29 @@ public partial class WalletPayoutControlIntegrationTests
         await db.Factory.RunTx((connection, tx) => balances.AddAmountAsync(connection, tx, config.Id, recipient, .01m, "response-loss fixture"));
         loseResponse = true;
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(90));
-        var payout = manager.PayoutPoolBalancesAsync(pool, config, handler, cancellation.Token);
-        await forwardedSubmission.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        if(cancel) cancellation.Cancel();
-        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => payout);
+        async Task SubmitWhenMature()
+        {
+            while(!forwardedSubmission.Task.IsCompleted)
+            {
+                await manager.PayoutPoolBalancesAsync(pool, config, handler, cancellation.Token);
+                await Task.Delay(1000, cancellation.Token);
+            }
+        }
+        var payout = SubmitWhenMature();
+        try
+        {
+            await Task.WhenAny(forwardedSubmission.Task, payout).WaitAsync(TimeSpan.FromSeconds(85));
+            if(!forwardedSubmission.Task.IsCompleted) await payout;
+            Assert.True(forwardedSubmission.Task.IsCompletedSuccessfully, lastSubmission);
+            if(cancel) cancellation.Cancel();
+            await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => payout);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            try { await payout.WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch(Exception) { /* Assertions above retain the primary test outcome. */ }
+        }
         Assert.False(lease.CanReleaseOwnership);
         Assert.Equal(1, (await db.State()).OutstandingBatches);
         Assert.Equal(1, await PaymentCount(db));

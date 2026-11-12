@@ -10,6 +10,8 @@ import tempfile
 import urllib.request
 
 PACKAGES = [
+    ("xelis-1.25.0", "https://github.com/xelis-project/xelis-blockchain/releases/download/v1.25.0/x86_64-unknown-linux-gnu.tar.gz",
+     "424ac65de320a835b4cbe2c2a8b9140b12e8bab86cf5ebda89ffee024947135e"),
     ("zcash-6.20.0", "https://apt.z.cash/pool/main/z/zcash/zcash-6.20.0-amd64-bookworm.deb",
      "863595b5567c97502450413d3e4ce633fac69c587db65fc964139fc4f9b60fac"),
     ("verus-1.2.18", "https://github.com/VerusCoin/VerusCoin/releases/download/v1.2.18/Verus-CLI-Linux-v1.2.18-x86_64.tgz",
