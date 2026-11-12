@@ -66,6 +66,7 @@ public partial class WalletPayoutControlIntegrationTests
         await using var db = await Database.Create();
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(90) };
         var methods = new ConcurrentQueue<string>();
+        var responses = new ConcurrentQueue<string>();
         var loseResponse = false;
         var forwardedSubmission = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var lastSubmission = "";
@@ -77,13 +78,14 @@ public partial class WalletPayoutControlIntegrationTests
             var method = request.Value<string>("method") ?? context.Request.Path.Value;
             methods.Enqueue(method);
             var parameters = request["params"];
+            var namedParameters = parameters as JObject;
             var submission = method switch
             {
-                "transfer" or "transfer_split" => parameters?["destinations"] is JArray destinations && destinations.Count > 0,
-                "sendTransaction" => parameters?["transfers"] is JArray transfers && transfers.Count > 0,
+                "transfer" or "transfer_split" => namedParameters?["destinations"] is JArray destinations && destinations.Count > 0,
+                "sendTransaction" => namedParameters?["transfers"] is JArray transfers && transfers.Count > 0,
                 "sendcurrency" => parameters is JArray send && send.Count > 1,
                 "z_sendmany" => parameters is JArray args && args.Count > 1 && args.Last?.Value<string>() != "WrongPrivacyPolicy",
-                "build_transaction" => parameters?["broadcast"]?.Value<bool>() == true,
+                "build_transaction" => namedParameters?["broadcast"]?.Value<bool>() == true,
                 _ => false,
             };
             using var outgoing = new HttpRequestMessage(new HttpMethod(context.Request.Method),
@@ -93,6 +95,8 @@ public partial class WalletPayoutControlIntegrationTests
             if(body.Length != 0) outgoing.Content = new StringContent(body, Encoding.UTF8, "application/json");
             using var response = await http.SendAsync(outgoing);
             var returned = await response.Content.ReadAsStringAsync();
+            if(method is "get_balance" or "get_topoheight" or "is_online" or "z_getbalance" or "getBalance")
+                responses.Enqueue(method + ": " + returned);
             // Monero labels its isolated regression chain 'fakechain', while the
             // production handler accepts named networks. Only this lab metadata
             // is normalized; wallet spending requests/responses stay unmodified.
@@ -170,7 +174,7 @@ public partial class WalletPayoutControlIntegrationTests
             await manager.PayoutPoolBalancesAsync(pool, config, handler, CancellationToken.None);
             if(await PaymentCount(db) == 0) await Task.Delay(1000);
         }
-        Assert.True(await PaymentCount(db) == 1, $"No successful {coin} payment. Last wallet response: {lastSubmission}");
+        Assert.True(await PaymentCount(db) == 1, $"No successful {coin} payment. Last wallet response: {lastSubmission}; reads: {string.Join("; ", responses.Distinct())}");
         Assert.Equal(0m, await db.Admin.ExecuteScalarAsync<decimal>("SELECT sum(amount) FROM balances"));
         Assert.Equal(0, (await db.State()).OutstandingBatches);
         output.WriteLine($"{coin}: successful live wallet submission, one payment receipt, exact balance reset and completed admission.");
