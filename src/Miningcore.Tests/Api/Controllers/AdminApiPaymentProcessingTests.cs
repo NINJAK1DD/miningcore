@@ -267,10 +267,10 @@ public class AdminApiPaymentProcessingTests
                 Enabled = clusterPaymentEnabled,
             },
             Pools = poolConfigs,
-        });
+        }, factory);
     }
 
-    private static AdminApiController CreateController(ClusterConfig clusterConfig)
+    private static AdminApiController CreateController(ClusterConfig clusterConfig, IConnectionFactory factory = null)
     {
         var poolConfigs = clusterConfig.Pools;
         var pools = new ConcurrentDictionary<string, IMiningPool>();
@@ -284,7 +284,7 @@ public class AdminApiPaymentProcessingTests
         var builder = new ContainerBuilder();
         builder.RegisterInstance(Substitute.For<IMapper>());
         builder.RegisterInstance(clusterConfig);
-        builder.RegisterInstance(factory).As<IConnectionFactory>();
+        builder.RegisterInstance(factory ?? Substitute.For<IConnectionFactory>()).As<IConnectionFactory>();
         builder.RegisterInstance(new global::Miningcore.Api.Responses.AdminGcStats());
         builder.RegisterInstance(Substitute.For<IMinerRepository>());
         builder.RegisterInstance(Substitute.For<IPaymentRepository>());

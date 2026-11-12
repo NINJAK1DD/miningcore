@@ -44,9 +44,10 @@ database. Independent consumers need independent controls and deployment invento
 Shares, PPS liabilities, merged parent/auxiliary accounting, classification and
 balance credits continue normally while admission is paused. Database loss can
 still interrupt accounting. Existing process-local enable/disable controls retain
-their accounting semantics. The restart-only `paymentProcessing.paused` proposal
-in PR #262 is not implemented or redefined here; where supported it is an additional
-local gate, never database-wide protection. Check the exact deployed binary.
+their accounting semantics. The restart-only `paymentProcessing.paused` control
+merged in PR #262 is an additional local gate, never database-wide protection.
+It suspends the local payout processor, including classification and retention;
+database admission pause leaves those activities running. Check the exact deployed binary.
 
 **Direct-coinbase rewards and already-broadcast transactions cannot be recalled.**
 Mining-side direct allocation and block submission are outside this wallet control.
@@ -239,11 +240,12 @@ isolated from production. Evidence is retained in the lab checkout's
 
 This validates the six original acceptance criteria of #291. The four scenarios
 added to that issue during implementation remain **unverified and unchecked**:
-combined locally paused/unpaused deployments of the unmerged #262 feature,
+combined locally paused/unpaused deployments of the local control from #262,
 extended paused relay operation, a large accumulated block backlog across restart,
 and PostgreSQL interruption during paused PPS arrivals. Keep #291 open for those
-combined integration scenarios; this independent protocol change does not establish
-their acceptance or expand #262. These four scenarios are **production release
+combined integration scenarios. Merging #262 and testing its existing single-node
+pause/resume fixture with this protocol does not establish their acceptance.
+These four scenarios are **production release
 blockers** for the combined local-pause, relay/backlog and paused-PPS topologies;
 a green CI run does not remove that restriction. Keep such deployments on the
 documented coordinated-shutdown procedure until the combined implementation is
