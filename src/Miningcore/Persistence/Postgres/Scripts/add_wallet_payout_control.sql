@@ -156,6 +156,8 @@ RETURNS boolean LANGUAGE sql SET search_path=pg_catalog,pg_temp AS $$
         AND NOT EXISTS(
             SELECT FROM pg_roles r WHERE (r.rolname=app_role OR pg_has_role(app_role,r.oid,'MEMBER'))
             AND (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication OR r.rolbypassrls
+                OR r.rolname IN ('pg_execute_server_program','pg_read_server_files','pg_write_server_files',
+                    'pg_signal_backend','pg_checkpoint','pg_maintain')
                 OR has_schema_privilege(r.oid,'miningcore_payout_control','CREATE')
                 OR EXISTS(SELECT FROM pg_class t JOIN pg_namespace n ON n.oid=t.relnamespace
                     WHERE n.nspname='miningcore_payout_control' AND t.relkind='r'

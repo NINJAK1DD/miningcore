@@ -84,12 +84,15 @@ public class WalletPayoutControlIntegrationTests : TestBase
     public async Task MigrationRejectsEffectiveWritePrivilegesAtomically()
     {
         await using var db = await Database.Create(installControl: false);
-        await db.Admin.ExecuteAsync($"GRANT pg_write_all_data TO {db.AppRole}");
-        var error = await Assert.ThrowsAsync<PostgresException>(() => db.InstallControl());
-        Assert.Contains("unsafe effective", error.MessageText);
-        await db.Admin.ExecuteAsync("ROLLBACK");
-        Assert.False(await db.Admin.ExecuteScalarAsync<bool>("SELECT to_regnamespace('miningcore_payout_control') IS NOT NULL"));
-        await db.Admin.ExecuteAsync($"REVOKE pg_write_all_data FROM {db.AppRole}");
+        foreach(var role in new[] { "pg_write_all_data", "pg_execute_server_program", "pg_read_server_files", "pg_write_server_files" })
+        {
+            await db.Admin.ExecuteAsync($"GRANT {role} TO {db.AppRole}");
+            var error = await Assert.ThrowsAsync<PostgresException>(() => db.InstallControl());
+            Assert.Contains("unsafe effective", error.MessageText);
+            await db.Admin.ExecuteAsync("ROLLBACK");
+            Assert.False(await db.Admin.ExecuteScalarAsync<bool>("SELECT to_regnamespace('miningcore_payout_control') IS NOT NULL"));
+            await db.Admin.ExecuteAsync($"REVOKE {role} FROM {db.AppRole}");
+        }
         await db.InstallControl();
         await WalletPayoutControlState.PreflightAsync(db.Factory, CancellationToken.None);
     }
