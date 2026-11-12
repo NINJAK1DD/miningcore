@@ -1,7 +1,7 @@
 {
-  "source_commit": "061170140193cee7a05381c38f60ab61a1facd58",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43133747784",
-  "minimum_total": 6188,
+  "source_commit": "0d63ef98ed32afbe0700539b1e2c3d0e7c007fae",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43193103932",
+  "minimum_total": 6221,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",

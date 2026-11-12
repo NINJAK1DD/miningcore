@@ -560,6 +560,10 @@ public class WalletPayoutControlIntegrationTests : TestBase
                 await db.Admin.ExecuteAsync(schema.Replace("SET ROLE miningcore;", $"SET ROLE {db.OwnerRole};"));
                 await db.Admin.ExecuteAsync("RESET ROLE");
                 await db.Admin.ExecuteAsync($"GRANT USAGE ON SCHEMA public TO {db.AppRole}; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO {db.AppRole}; GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO {db.AppRole}");
+                // Match createdb.sql's administrative PPS boundary for the distinct
+                // runtime login too. The general accounting grants must not make
+                // arithmetic cutover evidence writable by a service process.
+                await db.Admin.ExecuteAsync($"REVOKE ALL ON pps_arithmetic_transitions FROM {db.AppRole}; GRANT SELECT ON pps_arithmetic_transitions TO {db.AppRole}");
                 if(installControl) await db.InstallControl();
                 settings.Username = db.AppRole; settings.Password = password;
                 db.appConnectionString = settings.ConnectionString;
