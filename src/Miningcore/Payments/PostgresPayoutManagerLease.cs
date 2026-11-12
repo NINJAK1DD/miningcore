@@ -71,14 +71,14 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                 return true;
             }
             catch(PostgresException ex) when(ex.InvariantSeverity == "ERROR" &&
-                ex.SqlState != PostgresErrorCodes.QueryCanceled && !ex.SqlState.StartsWith("08", StringComparison.Ordinal))
+                !ex.SqlState.StartsWith("08", StringComparison.Ordinal))
             {
                 // An explicit server rejection rolls back this single autocommit
                 // statement. Client cancellation/timeout remains conservative.
                 CompleteFinancialOperation();
-                if(ex.SqlState == PostgresErrorCodes.LockNotAvailable)
+                if(ex.SqlState is PostgresErrorCodes.LockNotAvailable or PostgresErrorCodes.QueryCanceled)
                 {
-                    logger.Warn("Wallet admission deferred because the operator control is locked; retry next cycle");
+                    logger.Warn("Wallet admission was rejected by a server-side lock or statement timeout/cancellation; retry next cycle");
                     return false;
                 }
                 throw new InvalidOperationException("Wallet payout admission was rejected by PostgreSQL; no wallet request was started", ex);

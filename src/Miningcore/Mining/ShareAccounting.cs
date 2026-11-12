@@ -13,6 +13,15 @@ namespace Miningcore.Mining;
 
 internal static class ShareAccounting
 {
+    internal static bool UsesPps(PoolConfig pool) =>
+        pool?.PaymentProcessing?.Enabled == true &&
+        pool.PaymentProcessing.PayoutScheme == PayoutScheme.PPS;
+
+    // Preserve issued liabilities across configuration changes; a scheme name
+    // alone must never make an ordinary statistical share a financial envelope.
+    internal static bool HasPpsLiability(Share share) => share != null &&
+        (share.PpsCalculatedAmount.HasValue || share.PairedShare?.PpsCalculatedAmount.HasValue == true);
+
     internal static readonly TimeSpan EvidencePruneSafetyMargin =
         TimeSpan.FromDays(1);
     // NUMERIC(38,24) reserves 24 fractional digits and therefore permits fewer

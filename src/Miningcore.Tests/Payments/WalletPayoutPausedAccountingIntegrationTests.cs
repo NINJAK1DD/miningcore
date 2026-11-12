@@ -37,6 +37,7 @@ namespace Miningcore.Tests.Payments;
 
 public partial class WalletPayoutControlIntegrationTests
 {
+    private const string RelayTestKey = "isolated-fixture-key-32-characters-minimum";
     [WalletControlFact]
     public async Task PpsRelaySender_CommitsLocallyAndReceiverDeduplicates()
     {
@@ -48,12 +49,12 @@ public partial class WalletPayoutControlIntegrationTests
         listener.Start();
         var url = $"tcp://127.0.0.1:{((IPEndPoint) listener.LocalEndpoint).Port}";
         listener.Stop();
-        receiverConfig.ShareRelays = new[] { new ShareRelayEndpointConfig { Url = url } };
+        receiverConfig.ShareRelays = new[] { new ShareRelayEndpointConfig { Url = url, SharedEncryptionKey = RelayTestKey } };
         var senderConfig = JsonConvert.DeserializeObject<ClusterConfig>(JsonConvert.SerializeObject(receiverConfig));
         senderConfig.Pools[0].Template = receiverConfig.Pools[0].Template;
         senderConfig.ClusterName = "pps-sender";
         senderConfig.ShareRelays = null;
-        senderConfig.ShareRelay = new ShareRelayConfig { PublishUrl = url };
+        senderConfig.ShareRelay = new ShareRelayConfig { PublishUrl = url, SharedEncryptionKey = RelayTestKey };
         await using var sender = new AccountingLab(db, senderConfig);
         await using var recorder = new AccountingLab(db, receiverConfig);
         await sender.Start();
@@ -88,8 +89,15 @@ public partial class WalletPayoutControlIntegrationTests
             Assert.Equal(share.PpsCalculatedAmount, await db.Admin.ExecuteScalarAsync<decimal>("SELECT sum(amount) FROM balances"));
             Assert.False(recorder.Coordinator.IsFailStopRequested);
             // The sender's extra recorder must not double-write mixed-scheme statistical traffic.
-            await sender.Acknowledge(new Share { PoolId = "statistical", Miner = "miner", Created = DateTime.UtcNow });
-            Assert.Equal(1, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM shares"));
+            senderConfig.Pools[0].PaymentProcessing.Enabled = false;
+            receiverConfig.Pools[0].PaymentProcessing.Enabled = false;
+            var statistical = new Share { PoolId = senderConfig.Pools[0].Id, Miner = "miner", Created = DateTime.UtcNow };
+            await sender.Acknowledge(statistical);
+            Assert.True(statistical.PersistenceAdmission.IsCompletedSuccessfully);
+            await Until(async () => await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM shares") == 2, 15);
+            await sender.Stop();
+            Assert.Equal(2, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM shares"));
+            Assert.Equal(1, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM pps_share_credits"));
         }
         finally
         {
@@ -114,7 +122,7 @@ public partial class WalletPayoutControlIntegrationTests
         listener.Start();
         var url = $"tcp://127.0.0.1:{((IPEndPoint) listener.LocalEndpoint).Port}";
         listener.Stop();
-        cluster.ShareRelays = new[] { new ShareRelayEndpointConfig { Url = url } };
+        cluster.ShareRelays = new[] { new ShareRelayEndpointConfig { Url = url, SharedEncryptionKey = RelayTestKey } };
         await using var lab = new AccountingLab(db, cluster);
         await lab.Start();
         using var receiver = new ShareReceiver(cluster, new StandardClock(), lab.Bus,
@@ -129,7 +137,7 @@ public partial class WalletPayoutControlIntegrationTests
         var sender = new MessageBus();
         var relay = new ShareRelay(new ClusterConfig
         {
-            ClusterName = "paused-soak-sender", ShareRelay = new ShareRelayConfig { PublishUrl = url },
+            ClusterName = "paused-soak-sender", ShareRelay = new ShareRelayConfig { PublishUrl = url, SharedEncryptionKey = RelayTestKey },
         }, sender);
         var registry = Metrics.NewCustomRegistry();
         var heartbeats = 0;

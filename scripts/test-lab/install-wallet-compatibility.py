@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Install pinned upstream CLI tools into an isolated lab directory (never system PATH)."""
+import concurrent.futures
+import hashlib
+from pathlib import Path
+import sys
+import tarfile
+import urllib.request
+
+PACKAGES = [
+    ("verus-1.2.18", "https://github.com/VerusCoin/VerusCoin/releases/download/v1.2.18/Verus-CLI-Linux-v1.2.18-x86_64.tgz",
+     "3c8a749a2d18059988bafcff37e72175bb8b2853caa356f820ad1e75c8189cb0"),
+    ("monero-0.18.5.4", "https://downloads.getmonero.org/cli/monero-linux-x64-v0.18.5.4.tar.bz2",
+     "ba2928962c101b609434bf8c1b43ad59ebe96c5525977284ca599d8bf0f02d10"),
+    ("zano-2.2.3.608", "https://build.zano.org/builds/zano-linux-x64-cli-release-v2.2.3.608%5B09c0526%5D.tar.bz2",
+     "aee9387a064d4f0964321959c56c944298b01fed877f328ea81ad205caf8eebd"),
+    ("conceal-6.7.6", "https://github.com/ConcealNetwork/conceal-core/releases/download/6.7.6/ccx-cli-ubuntu-2604-v6.7.6.tar.gz",
+     "1dc8d5e478539d0d10308aa95798cdfa77a519fda98e1ff3d9630f6987b30114"),
+]
+
+def install(root, package):
+    name, url, digest = package
+    target = root / name
+    archive = root / (name + ".archive")
+    if not archive.exists():
+        request = urllib.request.Request(url, headers={"User-Agent": "Miningcore isolated compatibility lab"})
+        with urllib.request.urlopen(request, timeout=120) as source, archive.open("xb") as output:
+            while chunk := source.read(1024 * 1024):
+                output.write(chunk)
+    with archive.open("rb") as source:
+        actual = hashlib.file_digest(source, "sha256").hexdigest()
+    if actual != digest:
+        raise RuntimeError(f"Checksum mismatch for {name}; retain the archive for inspection")
+    if not target.exists():
+        target.mkdir(mode=0o700)
+        with tarfile.open(archive) as source:
+            source.extractall(target, filter="data")
+    print(f"Verified {name}: {digest}; {target}", flush=True)
+
+if __name__ == "__main__":
+    root = Path(sys.argv[1]).resolve()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as workers:
+        for result in workers.map(lambda package: install(root, package), PACKAGES):
+            pass

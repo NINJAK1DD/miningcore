@@ -714,7 +714,7 @@ public class PayoutManagerTests
         else Assert.Same(completion, error.InnerException);
         fixture.PayoutLease.Received(1).MarkFinancialOutcomeUncertain();
         fixture.MessageBus.DidNotReceive().SendMessage(Arg.Is<PaymentNotification>(x => x.Outcome == PaymentNotificationOutcome.Uncertain), Arg.Any<string>());
-        fixture.MessageBus.Received(1).SendMessage(Arg.Is<PaymentNotification>(x => x.Error.Contains("completion is unrecorded") && x.RecipientsCount == 0 && x.Amount == 0), Arg.Any<string>());
+        fixture.MessageBus.Received(1).SendMessage(Arg.Is<PaymentNotification>(x => x.Outcome == PaymentNotificationOutcome.CompletionUnrecorded && x.Error.Contains("completion is unrecorded") && x.RecipientsCount == 0 && x.Amount == 0), Arg.Any<string>());
         if(outcome == "failure")
             fixture.MessageBus.Received(1).SendMessage(Arg.Is<PaymentNotification>(x => x.Error == original.Message), Arg.Any<string>());
     }

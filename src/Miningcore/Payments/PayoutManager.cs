@@ -911,7 +911,8 @@ public class PayoutManager : ProcessStatusBackgroundService
             try
             {
                 // No recipient uncertainty is inferred from a control-write failure.
-                messageBus.SendMessage(new PaymentNotification(config.Id, message, 0, config.Template.Symbol, 0, null, null, null));
+                messageBus.SendMessage(new PaymentNotification(config.Id, message, 0, config.Template.Symbol, 0, null, null, null)
+                { Outcome = PaymentNotificationOutcome.CompletionUnrecorded });
             }
             catch(Exception notificationFailure)
             {

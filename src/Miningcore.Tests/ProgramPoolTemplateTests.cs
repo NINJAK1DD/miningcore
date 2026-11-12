@@ -1015,8 +1015,7 @@ public partial class ProgramPoolTemplateTests
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(ISharePersistenceQueueMetricsProvider));
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IHostedService) &&
             descriptor.ImplementationFactory != null);
-        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IHostedService) &&
-            descriptor.ImplementationType == typeof(ShareRelay));
+        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IShareRelayQueueMetricsProvider));
         Assert.DoesNotContain(services, descriptor => descriptor.ImplementationType == typeof(ShareReceiver));
         var cf = Substitute.For<IConnectionFactory>();
         var connection = Substitute.For<IDbConnection>();
@@ -1026,6 +1025,12 @@ public partial class ProgramPoolTemplateTests
             .Returns(new[] { config.Pools[1].Id });
         await Assert.ThrowsAsync<PoolStartupException>(() =>
             Program.EnsureSharePartitionsAsync(false, config, cf, repository, CancellationToken.None));
+
+        config.Pools[1].PaymentProcessing.Enabled = false;
+        Assert.False(Program.RequiresLocalPpsRecorder(config));
+        var disabledServices = new ServiceCollection();
+        Program.ConfigureShareProcessingHostedServices(disabledServices, config);
+        Assert.DoesNotContain(disabledServices, descriptor => descriptor.ServiceType == typeof(ISharePersistenceQueueMetricsProvider));
     }
 
     [Fact]

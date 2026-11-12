@@ -17,6 +17,10 @@ using Miningcore.Rpc;
 using Miningcore.Time;
 using NBitcoin;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json;
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using Contract = Miningcore.Contracts.Contract;
 using IBlockRepository = Miningcore.Persistence.Repositories.IBlockRepository;
 
@@ -54,6 +58,17 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
     protected const decimal TransferFee = 0.0001m;
     protected const int ZMinConfirmations = 8;
     protected const string PrivacyPolicy = "AllowRevealedRecipients";
+    // Handlers are recreated each payout cycle. Cache only conclusive probe
+    // results for this process/configuration, without retaining retired pools.
+    private static readonly ConditionalWeakTable<PoolConfig, CapabilityCache> capabilities = new();
+    private sealed class CapabilityCache
+    {
+        public readonly SemaphoreSlim Gate = new(1, 1);
+        public string Configuration;
+        public bool? NativeShielding;
+        public bool? SendCurrency;
+        public bool? Privacy;
+    }
 
     #region IPayoutHandler
 
@@ -73,22 +88,48 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
     private async Task DetectPayoutCapabilitiesAsync(CancellationToken ct)
     {
-        // detect z_shieldcoinbase support
-        var response = await rpcClient.ExecuteAsync<JObject>(logger, EquihashCommands.ZShieldCoinbase, ct);
-        WalletSubmissionOutcome.RequireRejectedProbe(response.Error, EquihashCommands.ZShieldCoinbase, hasNoTransferArguments: true);
-        supportsNativeShielding = response.Error.Code != (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND;
-        
-        // detect sendcurrency support
-        var responseSendCurrency = await rpcClient.ExecuteAsync<JObject>(logger, EquihashCommands.SendCurrency, ct);
-        WalletSubmissionOutcome.RequireRejectedProbe(responseSendCurrency.Error, EquihashCommands.SendCurrency, hasNoTransferArguments: true);
-        supportsSendCurrency = responseSendCurrency.Error.Code != (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND;
-        
-        // detect z_sendmany PrivacyPolicy support
-        var responseZSendMany = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.ZSendMany, ct, new object[] { poolExtraConfig.ZAddress, new [] { new ZSendManyRecipient { Address = poolExtraConfig.ZAddress, Amount = 0.0m } }, ZMinConfirmations, TransferFee, "WrongPrivacyPolicy" }); // we willingly provide the wrong parameter for "PrivacyPolicy" in order to detect its support and more importantly not accidently altering the pool wallet
-        WalletSubmissionOutcome.RequireRejectedProbe(responseZSendMany.Error, EquihashCommands.ZSendMany);
-        supportsZSendManyPrivacyPolicy = responseZSendMany.Error.Code == (int) BitcoinRPCErrorCode.RPC_INVALID_PARAMETER;
-        if(responseZSendMany.Error?.Code != null)
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "EquihashPayoutHandler.DetectPayoutCapabilitiesAsync");
+        var cache = capabilities.GetValue(poolConfig, _ => new CapabilityCache());
+        var configuration = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            JsonConvert.SerializeObject(new { poolConfig.Coin, poolConfig.Address,
+                poolConfig.Daemons, poolExtraConfig.ZAddress }))));
+        await cache.Gate.WaitAsync(ct);
+        try
+        {
+            if(cache.Configuration != configuration)
+            {
+                cache.Configuration = configuration;
+                cache.NativeShielding = cache.SendCurrency = cache.Privacy = null;
+            }
+            if(!cache.NativeShielding.HasValue)
+            {
+                var response = await rpcClient.ExecuteAsync<JObject>(logger, EquihashCommands.ZShieldCoinbase, ct);
+                WalletSubmissionOutcome.RequireRejectedProbe(response.Error, EquihashCommands.ZShieldCoinbase, hasNoTransferArguments: true);
+                cache.NativeShielding = response.Error.Code != (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND;
+            }
+            supportsNativeShielding = cache.NativeShielding.Value;
+
+            if(!cache.SendCurrency.HasValue)
+            {
+                var response = await rpcClient.ExecuteAsync<JObject>(logger, EquihashCommands.SendCurrency, ct);
+                WalletSubmissionOutcome.RequireRejectedProbe(response.Error, EquihashCommands.SendCurrency, hasNoTransferArguments: true);
+                cache.SendCurrency = response.Error.Code != (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND;
+            }
+            supportsSendCurrency = cache.SendCurrency.Value;
+
+            if(!cache.Privacy.HasValue)
+            {
+                // Invalid policy and zero amount deliberately request rejection.
+                // A lost response remains uncertain; never cache it as a capability.
+                var response = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.ZSendMany, ct,
+                    new object[] { poolExtraConfig.ZAddress,
+                        new[] { new ZSendManyRecipient { Address = poolExtraConfig.ZAddress, Amount = 0m } },
+                        ZMinConfirmations, TransferFee, "WrongPrivacyPolicy" });
+                WalletSubmissionOutcome.RequireRejectedProbe(response.Error, EquihashCommands.ZSendMany);
+                cache.Privacy = response.Error.Code == (int) BitcoinRPCErrorCode.RPC_INVALID_PARAMETER;
+            }
+            supportsZSendManyPrivacyPolicy = cache.Privacy.Value;
+        }
+        finally { cache.Gate.Release(); }
     }
 
     public override async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)

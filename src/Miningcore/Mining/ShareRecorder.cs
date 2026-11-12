@@ -2743,8 +2743,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         BoundedQueueAccounting<QueuedShare> primaryAccounting,
         BoundedQueueAccounting<QueuedShare> emergencyAccounting, Share share)
     {
-        var requiresDurability = RequiresDurableAcknowledgement(share) ||
-            RequiresDurableAcknowledgement(share.PairedShare);
+        var requiresDurability = ShareAccounting.HasPpsLiability(share);
         // A mixed-scheme relay sender records PPS envelopes locally. Leave its
         // ordinary statistical traffic to the receiver to avoid duplicate rows.
         if(clusterConfig.ShareRelay != null && !requiresDurability)
@@ -2778,11 +2777,6 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             () => FailStopUnresolvedSharesAsync(saturation, journalError),
             journalError);
     }
-
-    private bool RequiresDurableAcknowledgement(Share share) => share != null &&
-        (share.PpsCalculatedAmount.HasValue ||
-         (share.PoolId != null && pools.TryGetValue(share.PoolId, out var pool) &&
-          pool.PaymentProcessing?.PayoutScheme == PayoutScheme.PPS));
 
     private static TaskCompletionSource SetDurableAdmission(QueuedShare queued)
     {
@@ -2885,7 +2879,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
 
             // PPS responses await durable liabilities. Flush the currently available
             // batch without imposing the statistical-share dwell timer on miners.
-            if(remaining > TimeSpan.Zero && !batch.Any(x => x.RequiresDurableAcknowledgement))
+            if(remaining > TimeSpan.Zero && !batch.Any(x => x.RequiresDurableAcknowledgement && !x.Share.IsRelayed))
             {
                 using var wait = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 wait.CancelAfter(remaining);

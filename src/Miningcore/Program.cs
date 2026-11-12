@@ -790,13 +790,14 @@ public class Program : ProcessStatusBackgroundService
             // sender commits the same immutable receipts used by the receiver.
             if(RequiresLocalPpsRecorder(config))
                 ConfigureShareRecorderHostedService(services);
-            services.AddHostedService<ShareRelay>();
+            services.AddHostedService(sp => sp.GetRequiredService<ShareRelay>());
+            services.TryAddSingleton<IShareRelayQueueMetricsProvider>(sp => sp.GetRequiredService<ShareRelay>());
         }
     }
 
     internal static bool RequiresLocalPpsRecorder(ClusterConfig config) =>
         config?.Pools?.Any(pool => pool.Enabled &&
-            pool.PaymentProcessing?.PayoutScheme == PayoutScheme.PPS) == true;
+            ShareAccounting.UsesPps(pool)) == true;
 
     internal static void ConfigureMiningShutdownCoordinator(IServiceCollection services)
     {
@@ -2564,6 +2565,7 @@ public class Program : ProcessStatusBackgroundService
     internal static void ValidatePpsDeployment(ClusterConfig config,
         bool requireAssignedTemplates = false)
     {
+        ShareRelaySecurity.Validate(config);
         var ppsPools = config?.Pools?.Where(pool => pool.Enabled &&
             pool.PaymentProcessing?.PayoutScheme == PayoutScheme.PPS).ToArray() ??
             Array.Empty<PoolConfig>();
