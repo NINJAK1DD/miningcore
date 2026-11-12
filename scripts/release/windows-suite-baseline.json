@@ -1,7 +1,7 @@
 {
-  "source_commit": "b69eb604756479c7ef6acc9814861991efd2bf61",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43126456717",
-  "minimum_total": 6185,
+  "source_commit": "061170140193cee7a05381c38f60ab61a1facd58",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43133747784",
+  "minimum_total": 6188,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -497,6 +497,21 @@
       "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
       "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
       "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: PPLNS, auxiliaryScheme: SOLO)"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored",
+      "case": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored(key: \"PAUSED\")"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored",
+      "case": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored(key: \"Paused\")"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored",
+      "case": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored(key: \"paused\")"
     }
   ],
   "expected_skips": [
