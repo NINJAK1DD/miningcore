@@ -241,6 +241,7 @@ internal static class RpcConsumerOperations
         "XelisJobManager.AreDaemonsConnectedAsync",
         "XelisJobManager.AreDaemonsHealthyAsync",
         "XelisJobManager.EnsureDaemonsSynchedAsync",
+        "ShareRelay.Publication",
         "XelisJobManager.NormalizeAddressAsync",
         "XelisJobManager.PostStartInitAsync",
         "XelisJobManager.SubmitBlockAsync",

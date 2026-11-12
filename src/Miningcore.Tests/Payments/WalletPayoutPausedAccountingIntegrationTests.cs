@@ -91,7 +91,8 @@ public partial class WalletPayoutControlIntegrationTests
             // The sender's extra recorder must not double-write mixed-scheme statistical traffic.
             senderConfig.Pools[0].PaymentProcessing.Enabled = false;
             receiverConfig.Pools[0].PaymentProcessing.Enabled = false;
-            var statistical = new Share { PoolId = senderConfig.Pools[0].Id, Miner = "miner", Created = DateTime.UtcNow };
+            var statistical = new Share { PoolId = senderConfig.Pools[0].Id, Miner = "miner",
+                IpAddress = "127.0.0.1", Difficulty = 1, NetworkDifficulty = 100, Created = DateTime.UtcNow };
             await sender.Acknowledge(statistical);
             Assert.True(statistical.PersistenceAdmission.IsCompletedSuccessfully);
             await Until(async () => await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM shares") == 2, 15);
@@ -161,7 +162,10 @@ public partial class WalletPayoutControlIntegrationTests
                 await Until(async () =>
                 {
                     foreach(var share in batch) sender.SendMessage(share);
-                    await Task.Delay(100);
+                    // A receiver intentionally retains the normal five-second
+                    // batch dwell. Do not create an artificial duplicate storm
+                    // while waiting for that durable receipt.
+                    await Task.Delay(TimeSpan.FromSeconds(5.2));
                     return await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM pps_share_credits") == expected;
                 }, 30);
                 Assert.Equal(expected, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM shares"));
@@ -174,7 +178,6 @@ public partial class WalletPayoutControlIntegrationTests
                 Assert.Equal(0, lab.Recorder.EmergencyJournalQueueOverflowCount);
                 Assert.False(lab.Coordinator.IsFailStopRequested);
                 Assert.False(Program.ShouldRunPaymentProcessor(cluster));
-                await Task.Delay(TimeSpan.FromSeconds(5));
             }
             Assert.True(Volatile.Read(ref heartbeats) >= 2);
             await using var metrics = new MemoryStream();
