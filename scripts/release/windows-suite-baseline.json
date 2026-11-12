@@ -1,7 +1,7 @@
 {
-  "source_commit": "98b056a1658d02b0946ca3deb826090e80fd3359",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43133981388",
-  "minimum_total": 6116,
+  "source_commit": "d86247dee0c77b8f94f0cf8a9d1b9f8e837427b9",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43152183153",
+  "minimum_total": 6130,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -215,26 +215,6 @@
     }
   ],
   "expected_skips": [
-    {
-      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
-      "method": "NonOwnerRuntime_PreflightAdmissionMetadataAndApiContract",
-      "case": "NonOwnerRuntime_PreflightAdmissionMetadataAndApiContract"
-    },
-    {
-      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
-      "method": "PreflightRejectsMissingDeniedIncompatibleAndUnsafeControlWithoutOwnership",
-      "case": "PreflightRejectsMissingDeniedIncompatibleAndUnsafeControlWithoutOwnership"
-    },
-    {
-      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
-      "method": "MigrationRejectsEffectiveWritePrivilegesAtomically",
-      "case": "MigrationRejectsEffectiveWritePrivilegesAtomically"
-    },
-    {
-      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
-      "method": "OperatorLockAndHistoricalLoad_DoNotStrandConclusiveBatches",
-      "case": "OperatorLockAndHistoricalLoad_DoNotStrandConclusiveBatches"
-    },
     {
       "class": "Miningcore.Tests.Benchmarks.Benchmarks",
       "method": "Run_Benchmarks",
@@ -857,8 +837,23 @@
     },
     {
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "MigrationRejectsEffectiveWritePrivilegesAtomically",
+      "case": "MigrationRejectsEffectiveWritePrivilegesAtomically"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
       "method": "MissingDeniedOrIncompatibleProtocol_AndCancelledAdmission_FailClosed",
       "case": "MissingDeniedOrIncompatibleProtocol_AndCancelledAdmission_FailClosed"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "NonOwnerRuntime_PreflightAdmissionMetadataAndApiContract",
+      "case": "NonOwnerRuntime_PreflightAdmissionMetadataAndApiContract"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "OperatorLockAndHistoricalLoad_DoNotStrandConclusiveBatches",
+      "case": "OperatorLockAndHistoricalLoad_DoNotStrandConclusiveBatches"
     },
     {
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
@@ -874,6 +869,11 @@
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
       "method": "PostgreSqlRestart_PreservesStopOutstandingBatchAndOwnership",
       "case": "PostgreSqlRestart_PreservesStopOutstandingBatchAndOwnership"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "PreflightRejectsMissingDeniedIncompatibleAndUnsafeControlWithoutOwnership",
+      "case": "PreflightRejectsMissingDeniedIncompatibleAndUnsafeControlWithoutOwnership"
     },
     {
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",

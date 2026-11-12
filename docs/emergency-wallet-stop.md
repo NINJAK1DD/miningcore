@@ -274,3 +274,20 @@ against the daemon before building transactions, following the official
 The topology and non-Bitcoin live-wallet gates above remain intentionally unchecked.
 This follow-up does not assert production validation from mocked transports or
 replace those gates with a benchmark claim.
+
+Verified follow-up source: `771a15ae16dd20e68fc2a2b37a2f211f0c2bd4f2`.
+The documented lab's complete build passed with **zero warnings and errors**;
+the full suite passed **6,311 tests, zero failures, 28 skips** (6,339 total).
+Evidence is in `build/test-lab/review-verified-build.log` and
+`build/test-lab/review-verified.trx` in the isolated lab checkout.
+The additional 14 regression cases passed on Linux, including all four new live
+database cases. The earlier focused run passed 175 cases without skips.
+
+[CI run 43152183153](https://github.com/NINJAK1DD/miningcore/actions/runs/43152183153)
+passed the Linux full suite (**6,330 passed, 9 skipped**) and Windows full suite
+(**5,917 passed, 213 skipped**), with no failures. Windows includes the Release
+peer-guard checks and log-redaction regression. Its exact skip inventory and all
+42 required regression passes were validated against the downloaded TRX artifact;
+the discovery minimum was raised to 6,130. Release and listener-portability
+workflows also passed. Any subsequent documentation/provenance commit does not
+change the tested payout implementation.
