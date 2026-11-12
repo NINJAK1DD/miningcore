@@ -10,6 +10,8 @@ using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Payments;
 using Miningcore.Payments.PaymentSchemes;
+using Miningcore.Persistence;
+using Miningcore.Persistence.Repositories;
 using Miningcore.Persistence.Postgres;
 using Miningcore.Persistence.Postgres.Repositories;
 using Miningcore.Time;
@@ -44,19 +46,25 @@ internal static class PayoutTopologyNode
         payouts.RegisterInstance(new PPSPaymentScheme(shares)).Keyed<IPayoutScheme>(PayoutScheme.PPS);
         await using var payoutScope = payouts.Build();
         await using var lease = new PostgresPayoutManagerLease(database);
-        using var manager = new PayoutManager(payoutScope, database, blocks, shares, balances,
-            config, bus, lease, new ProcessStatus());
-        foreach(var pool in config.Pools)
-            manager.AttachPool(new ConfiguredPool(pool));
-
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
-        builder.Services.AddSingleton(manager);
+        builder.Services.AddSingleton<ILifetimeScope>(payoutScope);
+        builder.Services.AddSingleton<IConnectionFactory>(database);
+        builder.Services.AddSingleton<IBlockRepository>(blocks);
+        builder.Services.AddSingleton<IShareRepository>(shares);
+        builder.Services.AddSingleton<IBalanceRepository>(balances);
+        builder.Services.AddSingleton(config);
+        builder.Services.AddSingleton<IMessageBus>(bus);
+        builder.Services.AddSingleton<IPayoutManagerLease>(lease);
+        builder.Services.AddSingleton<IProcessStatus>(new ProcessStatus());
         Miningcore.Program.ConfigurePaymentProcessingHostedService(builder.Services, config);
         var registry = Metrics.NewCustomRegistry();
         builder.Services.AddSingleton<IHostedService>(new PayoutPauseMonitor(config,
             Metrics.WithCustomRegistry(registry), _ => Interlocked.Increment(ref probe.Heartbeats)));
         using var host = builder.Build();
+        foreach(var manager in host.Services.GetServices<IHostedService>().OfType<PayoutManager>())
+            foreach(var pool in config.Pools)
+                manager.AttachPool(new ConfiguredPool(pool));
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(20));
         try { await host.StartAsync(deadline.Token); }
         catch(PoolStartupException)

@@ -214,8 +214,14 @@ public partial class WalletPayoutControlIntegrationTests
         await db.Admin.ExecuteAsync("BEGIN; LOCK TABLE pps_share_credits IN ACCESS EXCLUSIVE MODE");
         var arrivals = Enumerable.Range(0, 20).Select(_ => PpsShare(config.Pools[0])).ToArray();
         var responses = arrivals.Select(lab.Acknowledge).ToArray();
-        await Until(async () => await db.Admin.ExecuteScalarAsync<int>(
-            "SELECT count(*) FROM pg_stat_activity WHERE usename=@app AND wait_event_type='Lock'", new { app = db.AppRole }) > 0, 15);
+        await Until(async () =>
+        {
+            // PostgreSQL caches statistics snapshots inside the lock-holding
+            // transaction. Refresh before looking for the blocked runtime writer.
+            await db.Admin.ExecuteAsync("SELECT pg_stat_clear_snapshot()");
+            return await db.Admin.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM pg_stat_activity WHERE usename=@app AND wait_event_type='Lock'", new { app = db.AppRole }) > 0;
+        }, 15);
         Assert.Equal(1, lab.Acknowledgements);
         Assert.All(responses, response => Assert.False(response.IsCompleted));
         await server.StopForOutageAsync();
