@@ -44,7 +44,9 @@ public partial class WalletPayoutControlIntegrationTests : TestBase
         await using(var tx = await db.Operator.BeginTransactionAsync())
         {
             await db.Operator.ExecuteAsync("SELECT miningcore_payout_control.set_paused(true,2,'statement timeout fixture')", transaction: tx);
+            var elapsed = Stopwatch.StartNew();
             Assert.False(await lease.TryBeginWalletPayoutAsync(CancellationToken.None, new WalletPayoutBatch("timeout", new string('a', 64))));
+            Assert.InRange(elapsed.Elapsed.TotalMilliseconds, 100, 1500); // Before the SQL function's 2s lock_timeout.
             Assert.True(lease.CanReleaseOwnership);
             await tx.RollbackAsync();
         }

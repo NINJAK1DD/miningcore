@@ -59,7 +59,7 @@ public partial class WalletPayoutControlIntegrationTests
             var elapsed = Stopwatch.StartNew();
             for(var i = 0; i < count; i++)
             {
-                if(!burst && i % 10 == 0)
+                if(!burst)
                 {
                     var delay = TimeSpan.FromMilliseconds(i) - elapsed.Elapsed;
                     if(delay > TimeSpan.Zero) await Task.Delay(delay);
