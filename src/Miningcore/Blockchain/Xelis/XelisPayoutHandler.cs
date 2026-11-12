@@ -104,6 +104,11 @@ public class XelisPayoutHandler : PayoutHandlerBase,
 
         network = info.Response.Network;
 
+        minConfirmations = extraPoolPaymentProcessingConfig?.MinimumConfirmations ?? (network == "mainnet" ? 60 : 50);
+    }
+
+    private async Task EnsureWalletOnlineAsync(CancellationToken ct)
+    {
         // wallet daemon needs to be online
         var isOnline = await rpcClientWallet.ExecuteAsync<object>(logger, XelisWalletCommands.IsOnline, ct);
         if(isOnline.Error != null)
@@ -115,6 +120,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
             logger.Warn(() => $"[{LogCategory}] '{XelisWalletCommands.DaemonName}' is offline...");
 
             var setOnlineMode = await rpcClientWallet.ExecuteAsync<object>(logger, XelisWalletCommands.SetOnlineMode, ct);
+            WalletSubmissionOutcome.ThrowIfUnknown(setOnlineMode.Error, XelisWalletCommands.SetOnlineMode);
             if(setOnlineMode.Error != null)
                 throw new Exception($"'{XelisWalletCommands.SetOnlineMode}': {setOnlineMode.Error.Message} (Code {setOnlineMode.Error.Code})");
 
@@ -123,7 +129,6 @@ public class XelisPayoutHandler : PayoutHandlerBase,
                 logger.Info(() => $"[{LogCategory}] '{XelisWalletCommands.DaemonName}' is now online...");
         }
 
-        minConfirmations = extraPoolPaymentProcessingConfig?.MinimumConfirmations ?? (network == "mainnet" ? 60 : 50);
     }
 
     public virtual async Task<Block[]> ClassifyBlocksAsync(IMiningPool pool, Block[] blocks, CancellationToken ct)
@@ -242,6 +247,8 @@ public class XelisPayoutHandler : PayoutHandlerBase,
 
     private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
     {
+        // Activating the wallet belongs to the admitted wallet batch, not accounting setup.
+        await EnsureWalletOnlineAsync(ct);
         // ensure we have enough peers
         var enoughPeers = await EnsureDaemonsSynchedAsync(ct);
         if(!enoughPeers)

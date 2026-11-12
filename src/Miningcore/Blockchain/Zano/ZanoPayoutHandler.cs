@@ -444,10 +444,6 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
         // detect network
         await UpdateNetworkTypeAsync(ct);
 
-        // detect transfer_split support
-        var response = await rpcClientWallet.ExecuteAsync<TransferResponse>(logger, ZanoWalletCommands.TransferSplit, ct);
-        walletSupportsTransferSplit = response.Error.Code != ZanoConstants.RpcMethodNotFound;
-
         revealPoolAddress = extraConfig?.RevealPoolAddress ?? true;
         hideMinerAddress = extraConfig?.HideMinerAddress ?? false;
     }
@@ -542,6 +538,9 @@ public class ZanoPayoutHandler : PayoutHandlerBase,
 
     private async Task PayoutTrackedAsync(Balance[] balances, CancellationToken ct)
     {
+        var probe = await rpcClientWallet.ExecuteAsync<TransferResponse>(logger, ZanoWalletCommands.TransferSplit, ct);
+        WalletSubmissionOutcome.RequireRejectedProbe(probe.Error, ZanoWalletCommands.TransferSplit);
+        walletSupportsTransferSplit = probe.Error.Code != ZanoConstants.RpcMethodNotFound;
         var coin = poolConfig.Template.As<ZanoCoinTemplate>();
 
 #if !DEBUG // ensure we have peers

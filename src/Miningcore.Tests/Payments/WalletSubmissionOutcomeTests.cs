@@ -9,6 +9,21 @@ namespace Miningcore.Tests.Payments;
 
 public class WalletSubmissionOutcomeTests
 {
+    [Theory]
+    [InlineData(-32601)]
+    [InlineData(-32602)]
+    [InlineData(-8)]
+    public void RejectedCapabilityProbe_IsConclusive(int code) =>
+        WalletSubmissionOutcome.RequireRejectedProbe(new JsonRpcError(code, "rejected", null), "probe");
+
+    [Fact]
+    public void SuccessfulOrUnknownCapabilityProbe_RequiresReconciliation()
+    {
+        Assert.Throws<PayoutOutcomeUncertainException>(() => WalletSubmissionOutcome.RequireRejectedProbe(null, "probe"));
+        Assert.Throws<PayoutOutcomeUncertainException>(() => WalletSubmissionOutcome.RequireRejectedProbe(
+            new JsonRpcError(-500, "lost", null), "probe"));
+    }
+
     [Fact]
     public void TransportRpcError_IsUnknown()
     {

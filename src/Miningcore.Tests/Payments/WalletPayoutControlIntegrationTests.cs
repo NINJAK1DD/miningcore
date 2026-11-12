@@ -315,13 +315,13 @@ public class WalletPayoutControlIntegrationTests : TestBase
             else
             {
                 // Hold admission at the database boundary until its command is cancelled.
-                await db.Operator.ExecuteAsync("BEGIN; SELECT * FROM miningcore_payout_control.state FOR UPDATE");
+                await db.Admin.ExecuteAsync("BEGIN; SELECT * FROM miningcore_payout_control.state FOR UPDATE");
             }
             using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
             await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => lease.TryBeginWalletPayoutAsync(
                 failure == "cancelled" ? deadline.Token : CancellationToken.None));
             Assert.False(lease.CanReleaseOwnership);
-            if(failure == "cancelled") await db.Operator.ExecuteAsync("ROLLBACK");
+            if(failure == "cancelled") await db.Admin.ExecuteAsync("ROLLBACK");
             if(failure != "missing")
                 Assert.Equal(0, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM miningcore_payout_control.batches"));
         }
@@ -391,6 +391,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
                 await db.Admin.OpenAsync();
                 var schema = await File.ReadAllTextAsync(PostgresTestScripts.PathFor("createdb.sql"));
                 await db.Admin.ExecuteAsync(schema.Replace("SET ROLE miningcore;", $"SET ROLE {db.AppRole};"));
+                await db.Admin.ExecuteAsync("RESET ROLE");
                 await db.Admin.ExecuteAsync(await File.ReadAllTextAsync(PostgresTestScripts.PathFor("add_wallet_payout_control.sql")));
                 await db.Admin.ExecuteAsync($"""
                     GRANT USAGE ON SCHEMA miningcore_payout_control TO {db.OperatorRole};
