@@ -50,6 +50,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
     protected readonly IComponentContext ctx;
     private RpcClient rpcClient;
     private RpcClient rpcClientWallet;
+    private string walletDaemonAddress;
     private string network;
     private XelisPaymentProcessingConfigExtra extraPoolPaymentProcessingConfig;
     private int minConfirmations;
@@ -83,6 +84,9 @@ public class XelisPayoutHandler : PayoutHandlerBase,
             .ToArray();
 
         rpcClient = new RpcClient(daemonEndpoints.First(), jsonSerializerSettings, messageBus, pc.Id);
+        var daemonEndpoint = daemonEndpoints.First();
+        walletDaemonAddress = new UriBuilder(daemonEndpoint.Ssl ? "https" : "http",
+            daemonEndpoint.Host, daemonEndpoint.Port).Uri.AbsoluteUri;
 
         // configure wallet daemon
         var walletDaemonEndpoints = pc.Daemons
@@ -119,7 +123,8 @@ public class XelisPayoutHandler : PayoutHandlerBase,
         {
             logger.Warn(() => $"[{LogCategory}] '{XelisWalletCommands.DaemonName}' is offline...");
 
-            var setOnlineMode = await rpcClientWallet.ExecuteAsync<object>(logger, XelisWalletCommands.SetOnlineMode, ct);
+            var setOnlineMode = await rpcClientWallet.ExecuteAsync<object>(logger, XelisWalletCommands.SetOnlineMode, ct,
+                new SetOnlineModeRequest { DaemonAddress = walletDaemonAddress });
             if(setOnlineMode.Error != null)
                 throw new Exception($"'{XelisWalletCommands.SetOnlineMode}': {setOnlineMode.Error.Message} (Code {setOnlineMode.Error.Code})");
 

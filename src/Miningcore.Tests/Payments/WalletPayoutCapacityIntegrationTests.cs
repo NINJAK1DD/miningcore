@@ -105,6 +105,7 @@ public partial class WalletPayoutControlIntegrationTests
             if(transport != null)
             {
                 Assert.Equal(0, transport.Relay.GetRelayQueueMetrics().OverflowCount);
+                transport.AssertHealthy();
                 output.WriteLine($"Relay queue: {transport.Relay.GetRelayQueueMetrics()}; queued bytes={transport.Relay.QueuedBytes}/{transport.Relay.ByteCapacity}.");
             }
             output.WriteLine($"PPS {(relayed ? "relay" : "local")} {(burst ? "burst" : "sustained")}: shares={count}; offered seconds={offeredSeconds:F3}; recovery seconds={recoverySeconds:F3}; ack p95={latencies[(int)(count*.95)]:F3}ms p99={latencies[(int)(count*.99)]:F3}ms max={latencies[^1]:F3}ms; commits={after.Commits-before.Commits}; WAL bytes={after.WalBytes}; managed CPU seconds={(process.TotalProcessorTime-cpu).TotalSeconds:F3}; queue high-water={lab.Recorder.PersistenceQueueHighWatermark}/65536; queue depth={lab.Recorder.PersistenceQueueDepth}.");
@@ -120,6 +121,12 @@ public partial class WalletPayoutControlIntegrationTests
         public ShareRelay Relay;
         private ShareReceiver receiver;
         private AccountingLab accounting;
+        public void AssertHealthy()
+        {
+            Assert.False(accounting.Coordinator.IsFailStopRequested);
+            Assert.Equal(0, accounting.Recorder.PersistenceQueueOverflowCount);
+            Assert.Equal(0, accounting.Recorder.EmergencyJournalQueueOverflowCount);
+        }
         public static async Task<RelayCapacityLab> Start(Database db, ClusterConfig senderConfig, AccountingLab sender)
         {
             var result = new RelayCapacityLab();

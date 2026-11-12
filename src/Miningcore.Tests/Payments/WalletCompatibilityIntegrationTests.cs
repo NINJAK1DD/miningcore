@@ -68,6 +68,7 @@ public partial class WalletPayoutControlIntegrationTests
         var methods = new ConcurrentQueue<string>();
         var responses = new ConcurrentQueue<string>();
         var loseResponse = false;
+        var staleXelisHeight = false;
         var forwardedSubmission = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var lastSubmission = "";
         async Task Forward(HttpContext context, bool wallet)
@@ -95,8 +96,15 @@ public partial class WalletPayoutControlIntegrationTests
             if(body.Length != 0) outgoing.Content = new StringContent(body, Encoding.UTF8, "application/json");
             using var response = await http.SendAsync(outgoing);
             var returned = await response.Content.ReadAsStringAsync();
-            if(method is "get_balance" or "get_topoheight" or "is_online" or "z_getbalance" or "getBalance")
+            if(method is "get_balance" or "get_topoheight" or "is_online" or "z_getbalance" or "getBalance" or "z_getoperationresult")
                 responses.Enqueue(method + ": " + returned);
+            if(coin == "xelis" && method == "get_topoheight" && staleXelisHeight)
+            {
+                var stale = JObject.Parse(returned);
+                Assert.Equal(JTokenType.Integer, stale["result"].Type);
+                stale["result"] = 0; // Inject stale scan metadata while retaining the real online wallet.
+                returned = stale.ToString();
+            }
             // Monero labels its isolated regression chain 'fakechain', while the
             // production handler accepts named networks. Only this lab metadata
             // is normalized; wallet spending requests/responses stay unmodified.
@@ -149,14 +157,29 @@ public partial class WalletPayoutControlIntegrationTests
             return endpoint;
         }
         var walletEndpoint = Endpoint(wallet); walletEndpoint.Category = "wallet";
+        var daemonEndpoint = Endpoint(daemon);
+        // Xelis activates its websocket connection using the configured daemon;
+        // use the real endpoint so activation does not target the HTTP fault proxy.
+        if(coin == "xelis") daemonEndpoint.Port = fixture.Value<int>("daemonPort");
         var config = new PoolConfig { Id = "live-" + coin, Coin = coin, Enabled = true,
             Address = fixture.Value<string>("address"), Template = ModuleInitializer.CoinTemplates[coin],
-            Daemons = coin == "zcash" ? new[] { Endpoint(wallet) } : new[] { Endpoint(daemon), walletEndpoint },
+            Daemons = coin == "zcash" ? new[] { Endpoint(wallet) } : new[] { daemonEndpoint, walletEndpoint },
             Extra = new Dictionary<string, object> { ["z-address"] = fixture.Value<string>("zAddress") ?? fixture.Value<string>("address") },
             RewardRecipients = Array.Empty<RewardRecipient>(),
             PaymentProcessing = new() { Enabled = true, MinimumPayment = .01m, PayoutScheme = PayoutScheme.SOLO } };
         var cluster = new ClusterConfig { PaymentProcessing = new() { Enabled = true }, Pools = new[] { config } };
         var handler = scope.Resolve<IPayoutHandler>();
+        if(coin == "xelis")
+        {
+            using var offline = new HttpRequestMessage(HttpMethod.Post,
+                $"http://127.0.0.1:{fixture.Value<int>("walletPort")}/json_rpc");
+            offline.Headers.Authorization = new("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes(
+                fixture.Value<string>("user") + ":" + fixture.Value<string>("password"))));
+            offline.Content = new StringContent("{\"jsonrpc\":\"2.0\",\"id\":\"offline\",\"method\":\"set_offline_mode\"}", Encoding.UTF8, "application/json");
+            using var result = await http.SendAsync(offline);
+            var envelope = JObject.Parse(await result.Content.ReadAsStringAsync());
+            Assert.True(envelope["error"] == null || envelope["error"].Type == JTokenType.Null);
+        }
         await handler.ConfigureAsync(cluster, config, CancellationToken.None);
         Assert.DoesNotContain(methods, method => method is "transfer_split" or "z_shieldcoinbase" or "sendcurrency" or "z_sendmany" or "set_online_mode");
         var pool = Substitute.For<IMiningPool>(); pool.Config.Returns(config);
@@ -169,6 +192,20 @@ public partial class WalletPayoutControlIntegrationTests
         Assert.Equal(0, await PaymentCount(db));
         Assert.Empty(lastSubmission);
         await db.SetPaused(false);
+        if(coin == "xelis")
+        {
+            await manager.PayoutPoolBalancesAsync(pool, config, handler, CancellationToken.None);
+            Assert.Contains("set_online_mode", methods);
+            Assert.Empty(lastSubmission);
+            Assert.Equal(0, await PaymentCount(db));
+            staleXelisHeight = true;
+            await manager.PayoutPoolBalancesAsync(pool, config, handler, CancellationToken.None);
+            Assert.Contains("get_topoheight", methods);
+            Assert.Empty(lastSubmission);
+            Assert.Equal(0, (await db.State()).OutstandingBatches);
+            staleXelisHeight = false;
+            output.WriteLine("Xelis: real offline-to-online activation defers spending; injected stale scan height also defers without stranding admission.");
+        }
         for(var i = 0; i < 20 && await PaymentCount(db) == 0; i++)
         {
             await manager.PayoutPoolBalancesAsync(pool, config, handler, CancellationToken.None);

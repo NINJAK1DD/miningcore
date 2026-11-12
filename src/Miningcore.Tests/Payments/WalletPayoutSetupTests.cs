@@ -40,6 +40,8 @@ public class WalletPayoutSetupTests : TestBase
     {
         var calls = new ConcurrentQueue<string>();
         var failPrivacy = true;
+        var funded = false;
+        var conventionalFeeRequested = false;
         await using var server = await RpcDiagnosticTests.Server.Start(async context =>
         {
             using var reader = new StreamReader(context.Request.Body);
@@ -49,7 +51,7 @@ public class WalletPayoutSetupTests : TestBase
             {
                 "getblockchaininfo" => new JObject { ["chain"] = "main" },
                 "listunspent" => new JArray(),
-                "z_getbalance" => new JValue(0.0),
+                "z_getbalance" => new JValue(funded ? 100.0 : 0.0),
                 _ => JValue.CreateNull(),
             };
             JToken error = method switch
@@ -58,11 +60,17 @@ public class WalletPayoutSetupTests : TestBase
                 "z_sendmany" => new JObject { ["code"] = failPrivacy ? -500 : -8, ["message"] = "probe rejected" },
                 _ => JValue.CreateNull(),
             };
+            if(method == "z_sendmany" && request["params"] is JArray args && args.Last.Value<string>() != "WrongPrivacyPolicy")
+            {
+                Assert.Equal(JTokenType.Null, args[3].Type);
+                conventionalFeeRequested = true;
+                error = new JObject { ["code"] = -6, ["message"] = "deliberately reject test submission" };
+            }
             await context.Response.WriteAsync(new JObject { ["id"] = request["id"], ["result"] = result, ["error"] = error }.ToString());
         });
         var config = new PoolConfig { Id = "capabilities", Coin = "zcash", Address = "t-address",
             Template = ModuleInitializer.CoinTemplates["zcash"], Daemons = new[] { server.Endpoint() },
-            Extra = new Dictionary<string, object> { ["zAddress"] = "z-address" }, PaymentProcessing = new() };
+            Extra = new Dictionary<string, object> { ["z-address"] = "z-address" }, PaymentProcessing = new() };
         var pool = Substitute.For<IMiningPool>(); pool.Config.Returns(config);
         async Task RunCycle()
         {
@@ -85,6 +93,9 @@ public class WalletPayoutSetupTests : TestBase
         Assert.Equal(2, calls.Count(method => method == "z_shieldcoinbase"));
         Assert.Equal(2, calls.Count(method => method == "sendcurrency"));
         Assert.Equal(3, calls.Count(method => method == "z_sendmany"));
+        funded = true;
+        await RunCycle();
+        Assert.True(conventionalFeeRequested);
     }
 
     [Fact]
@@ -100,6 +111,13 @@ public class WalletPayoutSetupTests : TestBase
             var request = JObject.Parse(await reader.ReadToEndAsync());
             var method = request.Value<string>("method");
             calls.Enqueue(method);
+            if(method == "set_online_mode")
+            {
+                var daemonAddress = new Uri(request["params"].Value<string>("daemon_address"));
+                Assert.Equal("http", daemonAddress.Scheme);
+                Assert.Equal("127.0.0.1", daemonAddress.Host);
+                Assert.True(request["params"].Value<bool>("auto_reconnect"));
+            }
             JToken result = method switch
             {
                 "is_online" => new JValue(online),

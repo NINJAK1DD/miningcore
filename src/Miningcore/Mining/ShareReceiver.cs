@@ -182,7 +182,16 @@ public class ShareReceiver : BackgroundService
                                             if(!queue.SendAsync((relays[i].Url, msg), ct).GetAwaiter().GetResult())
                                                 msg.Dispose();
                                         }
-                                        catch { msg.Dispose(); throw; }
+                                        catch
+                                        {
+                                            msg.Dispose();
+                                            // PollIn transferred all returned native messages to us.
+                                            // Cancellation while waiting for queue space must also
+                                            // release messages from endpoints not yet visited.
+                                            for(var pending = i + 1; pending < messages.Length; pending++)
+                                                messages[pending]?.Dispose();
+                                            throw;
+                                        }
                                     }
 
                                     else if(clock.Now - lastMessageReceived[i] > reconnectTimeout)

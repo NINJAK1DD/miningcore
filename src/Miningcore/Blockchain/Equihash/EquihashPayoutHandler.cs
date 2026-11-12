@@ -289,7 +289,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                     poolExtraConfig.ZAddress, // default account
                     amounts, // addresses and associated amounts
                     ZMinConfirmations, // only spend funds covered by this many confirmations
-                    TransferFee,
+                    null, // Let privacy-policy-capable wallets calculate their conventional fee (ZIP 317).
                     PrivacyPolicy // allow transactions with transparent recipients to be processed, which is not enabled by default for that coin because of severe privacy reinforcements
                 };
             }
