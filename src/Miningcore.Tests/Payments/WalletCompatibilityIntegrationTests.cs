@@ -152,7 +152,7 @@ public partial class WalletPayoutControlIntegrationTests
         var config = new PoolConfig { Id = "live-" + coin, Coin = coin, Enabled = true,
             Address = fixture.Value<string>("address"), Template = ModuleInitializer.CoinTemplates[coin],
             Daemons = coin == "zcash" ? new[] { Endpoint(wallet) } : new[] { Endpoint(daemon), walletEndpoint },
-            Extra = new Dictionary<string, object> { ["zAddress"] = fixture.Value<string>("zAddress") ?? fixture.Value<string>("address") },
+            Extra = new Dictionary<string, object> { ["z-address"] = fixture.Value<string>("zAddress") ?? fixture.Value<string>("address") },
             RewardRecipients = Array.Empty<RewardRecipient>(),
             PaymentProcessing = new() { Enabled = true, MinimumPayment = .01m, PayoutScheme = PayoutScheme.SOLO } };
         var cluster = new ClusterConfig { PaymentProcessing = new() { Enabled = true }, Pools = new[] { config } };
