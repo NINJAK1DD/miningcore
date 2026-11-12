@@ -15,6 +15,57 @@ namespace Miningcore.Tests.Api.Controllers;
 
 public class AdminApiPaymentProcessingTests
 {
+    public static IEnumerable<object[]> MergedPaymentSchemes()
+    {
+        foreach(var parent in new[] { PayoutScheme.SOLO, PayoutScheme.PROP, PayoutScheme.PPLNS, PayoutScheme.PPS })
+        foreach(var auxiliary in new[] { PayoutScheme.SOLO, PayoutScheme.PROP, PayoutScheme.PPLNS, PayoutScheme.PPS })
+            yield return new object[] { parent, auxiliary };
+    }
+
+    [Theory]
+    [MemberData(nameof(MergedPaymentSchemes))]
+    public void ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(
+        PayoutScheme parentScheme, PayoutScheme auxiliaryScheme)
+    {
+        foreach(var route in new[] { "ltc", "doge", "bulk" })
+        {
+            var parent = Pool("ltc", parentScheme, true);
+            var auxiliary = Pool("doge", auxiliaryScheme, true);
+            auxiliary.EnableInternalStratum = false;
+            parent.Extra = new Dictionary<string, object> { ["mergedMining"] =
+                new Dictionary<string, object> { ["enabled"] = true, ["auxPoolId"] = "DOGE" } };
+            var ordinary = Pool("ordinary", PayoutScheme.PPLNS, true);
+            var controller = CreateController(true, ordinary, parent, auxiliary);
+            var error = Assert.Throws<ApiException>(() =>
+            {
+                if(route == "bulk") controller.DisablePoolsPaymentProcessing();
+                else controller.DisablePoolPaymentProcessing(route);
+            });
+            Assert.Equal(409, error.ResponseStatusCode);
+            Assert.Contains("active merged-mining", error.Message);
+            Assert.Contains("controlled restart", error.Message);
+            Assert.Contains("paymentProcessing.paused=true", error.Message);
+            Assert.True(parent.PaymentProcessing.Enabled);
+            Assert.True(auxiliary.PaymentProcessing.Enabled);
+            Assert.True(ordinary.PaymentProcessing.Enabled);
+            Assert.Equal("Ok", controller.DisablePoolPaymentProcessing(ordinary.Id).Value);
+        }
+    }
+
+    [Fact]
+    public void InactiveMergedParent_DoesNotProtectOrdinaryAuxiliaryFromApiToggle()
+    {
+        var parent = Pool("ltc", PayoutScheme.SOLO, true);
+        parent.Enabled = false;
+        parent.Extra = new Dictionary<string, object> { ["mergedMining"] =
+            new Dictionary<string, object> { ["enabled"] = true, ["auxPoolId"] = "doge" } };
+        var auxiliary = Pool("doge", PayoutScheme.PROP, true);
+        var controller = CreateController(true, parent, auxiliary);
+        Assert.Equal("Ok", controller.DisablePoolPaymentProcessing(auxiliary.Id).Value);
+        Assert.False(auxiliary.PaymentProcessing.Enabled);
+        Assert.True(parent.PaymentProcessing.Enabled);
+    }
+
     [Theory]
     [InlineData(true, true)]
     [InlineData(true, false)]

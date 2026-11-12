@@ -28,6 +28,10 @@ internal static class MergedMiningPayoutPolicy
             throw new TrustedPoolStartupException($"Merged-mining parent pool '{parent.Id}': Auxiliary pool '{auxiliary.Id}' must be enabled", parent.Id);
 
         EnsurePaymentProcessing(auxiliary, "auxiliary");
+        if(requireAssignedTemplates && parent.Template == null)
+            throw new TrustedPoolStartupException($"Merged-mining parent pool '{parent.Id}': coin template was not assigned", parent.Id);
+        if(requireAssignedTemplates && auxiliary.Template == null)
+            throw new TrustedPoolStartupException($"Merged-mining parent pool '{parent.Id}': Auxiliary pool '{auxiliary.Id}' coin template was not assigned", parent.Id);
         if(requireAssignedTemplates || parent.Template != null)
         {
             if(parent.Template is not BitcoinTemplate parentCoin ||

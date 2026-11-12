@@ -2,6 +2,8 @@
 import copy
 import importlib.util
 import json
+import hashlib
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -47,6 +49,7 @@ class PauseSupportTests(unittest.TestCase):
             binary, config = Path(directory) / "Miningcore", Path(directory) / "config.json"
             binary.touch()
             config.touch()
+            (Path(directory) / "config.schema.json").write_text(json.dumps(SCHEMA), encoding="utf-8")
             calls = []
             def run(argv, **options):
                 self.assertTrue(options["check"])
@@ -63,6 +66,63 @@ class PauseSupportTests(unittest.TestCase):
                 raise subprocess.CalledProcessError(1, args[0])
             with self.assertRaises(subprocess.CalledProcessError):
                 pause.verify(binary, config, failed)
+
+    def test_installed_schema_is_mandatory_and_matches_generated_schema(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary, config = Path(directory) / "Miningcore", Path(directory) / "config.json"
+            binary.touch()
+            config.touch()
+            installed = Path(directory) / "config.schema.json"
+            def run(argv, **options):
+                if argv[1] == "--generate-config-schema":
+                    Path(argv[2]).write_text(json.dumps(SCHEMA), encoding="utf-8")
+                    return subprocess.CompletedProcess(argv, 0, "")
+                return subprocess.CompletedProcess(argv, 0, json.dumps(STATE))
+            with self.assertRaises(OSError):
+                pause.verify(binary, config, run)
+            for invalid in ("not json", "{}", json.dumps({"definitions": {
+                    "ClusterPaymentProcessingConfig": {"properties": {"paused": {"type": "boolean", "default": False}}}}})):
+                installed.write_text(invalid, encoding="utf-8")
+                with self.subTest(invalid=invalid), self.assertRaises((ValueError, KeyError)):
+                    pause.verify(binary, config, run)
+            changed = copy.deepcopy(SCHEMA)
+            changed["description"] = "stale installation"
+            installed.write_text(json.dumps(changed), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "differs"):
+                pause.verify(binary, config, run)
+            installed.write_text(json.dumps(SCHEMA), encoding="utf-8")
+            self.assertEqual(hashlib.sha256(b"").hexdigest(), pause.verify(binary, config, run)["apphost"]["sha256"])
+
+    def test_changes_during_verification_are_rejected(self):
+        for target in ("Miningcore", "config.json", "config.schema.json"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                binary, config = root / "Miningcore", root / "config.json"
+                binary.touch()
+                config.touch()
+                (root / "config.schema.json").write_text(json.dumps(SCHEMA), encoding="utf-8")
+                def run(argv, **options):
+                    if argv[1] == "--generate-config-schema":
+                        Path(argv[2]).write_text(json.dumps(SCHEMA), encoding="utf-8")
+                        return subprocess.CompletedProcess(argv, 0, "")
+                    with (root / target).open("a", encoding="utf-8") as changed:
+                        changed.write(" ")
+                    return subprocess.CompletedProcess(argv, 0, json.dumps(STATE))
+                with self.assertRaisesRegex(ValueError, "changed during"):
+                    pause.verify(binary, config, run)
+
+    def test_receipt_is_private_and_never_overwrites_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "receipt.json"
+            fingerprints = {"apphost": {"sha256": "test-evidence"}}
+            pause.write_receipt(path, fingerprints)
+            self.assertEqual(fingerprints, json.loads(path.read_text())["checked_files"])
+            if os.name != "nt":
+                self.assertEqual(0o600, path.stat().st_mode & 0o777)
+            original = path.read_bytes()
+            with self.assertRaises(FileExistsError):
+                pause.write_receipt(path, {})
+            self.assertEqual(original, path.read_bytes())
 
 
 if __name__ == "__main__":

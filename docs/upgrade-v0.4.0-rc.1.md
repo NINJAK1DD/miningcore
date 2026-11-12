@@ -4,7 +4,9 @@
 > wallets even when it is true. Keep RC.1 stopped during full payout recovery. Before restarting
 > on RC.2, stop every payout-capable node and run the exact-binary
 > [pre-start check](database.md#restart-only-payout-pause). Never roll back a paused configuration
-> to RC.1. RC.2 rejects unknown cluster payment-processing fields; fix typos before startup.
+> to RC.1. RC.2 rejects unknown cluster payment-processing fields, including incorrect casing:
+> use `enabled`, `interval` and `paused`, not `Enabled`, `Interval` or `Paused`. Misplaced root
+> or pool-level pause flags are rejected. Fix these settings before startup.
 
 
 This guide covers the first v0.4.0 release candidate. It is a staging candidate,

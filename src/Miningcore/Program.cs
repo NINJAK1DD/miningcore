@@ -1498,6 +1498,15 @@ public class Program : ProcessStatusBackgroundService
             throw new InvalidOperationException("Generated schema is missing cluster payment processing");
         // Unknown future safety controls must fail closed on rollback to this binary.
         paymentSchema["additionalProperties"] = false;
+        // Reject misplaced root flags, including casing variants, without closing
+        // unrelated configuration extension points.
+        var rootPatterns = document["patternProperties"] as JObject ?? new JObject();
+        rootPatterns["^[pP][aA][uU][sS][eE][dD]$"] = new JObject { ["not"] = new JObject() };
+        // Newtonsoft accepts casing aliases for the enclosing object. They must
+        // not bypass the strict schema for the fields inside that object.
+        rootPatterns["^[pP][aA][yY][mM][eE][nN][tT][pP][rR][oO][cC][eE][sS][sS][iI][nN][gG]$"] =
+            new JObject { ["$ref"] = "#/definitions/ClusterPaymentProcessingConfig" };
+        document["patternProperties"] = rootPatterns;
         Miningcore.Blockchain.Pearl.PearlPoolConfig.AddSchemaRules(document);
         var activationSchema = document.SelectToken(
             "definitions.PoolPaymentProcessingConfig.properties.ppsBinary64Activation") as JObject ??

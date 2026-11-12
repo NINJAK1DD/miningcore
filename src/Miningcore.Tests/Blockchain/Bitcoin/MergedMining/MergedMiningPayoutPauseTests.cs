@@ -93,6 +93,8 @@ public partial class MergedMiningManagerReorgTests
         Assert.Equal(preflight.Message, startup.Message);
         Assert.Equal(preflight.PoolId, startup.PoolId);
         Assert.Contains(preflight.PoolId, preflight.Message);
+        if(invalid is "missing-parent-template" or "missing-aux-template")
+            Assert.Contains("coin template was not assigned", preflight.Message);
         if(early is PoolStartupException earlyFailure)
         {
             Assert.Equal(preflight.Message, earlyFailure.Message);

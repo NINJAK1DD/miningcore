@@ -7,7 +7,12 @@ Before starting any paused service, stop and inventory every wallet-capable proc
 exact selected binary and configuration with the [pre-start check](database.md#restart-only-payout-pause),
 and retain the incident record. Do not roll back a paused configuration to RC.1. This release
 rejects unknown cluster `paymentProcessing` fields so future controls cannot silently disappear
-on rollback to this version. Correct unknown or misspelled fields before upgrading.
+on rollback to this version. Property names **inside** this object are case-sensitive: use `enabled`,
+`interval` and `paused`, not `Enabled`, `Interval` or `Paused`. Correct unknown, misspelled or
+incorrectly cased fields before upgrading. A root-level `paused` or pool-level
+`paymentProcessing.paused` is rejected, including casing variants. Active merged-mining parent and
+auxiliary payment switches cannot be disabled through either individual or bulk API routes;
+stop and reconfigure through a controlled restart.
 
 The pause stops this process's wallet payout manager, reconciliation and retention; it does not
 stop another node or direct Bitcoin SOLO coinbase rewards. Keep mining stopped if all on-chain

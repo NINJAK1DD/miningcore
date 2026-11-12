@@ -7,8 +7,10 @@ namespace Miningcore.Payments;
 /// <summary>Process-local pause visibility, independent of API and relay configuration.</summary>
 public sealed class PayoutPauseMonitor : StartupGatedBackgroundService
 {
+    private static readonly ILogger logger = LogManager.GetCurrentClassLogger();
+
     public PayoutPauseMonitor(ClusterConfig config) : this(config, Metrics.DefaultFactory,
-        message => LogManager.GetCurrentClassLogger().Warn(message)) { }
+        message => logger.Warn(message)) { }
 
     internal PayoutPauseMonitor(ClusterConfig config, IMetricFactory factory, Action<string> warn)
     {

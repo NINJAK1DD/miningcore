@@ -330,6 +330,13 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
             .When(j => !recoveryMode && j.PaymentProcessing != null)
             .WithMessage("paymentProcessing.ppsBinary64Activation must be a microsecond-aligned UTC timestamp");
 
+        RuleFor(pool => pool.PaymentProcessing.Extra)
+            .Must(extra => extra?.Keys.Any(key =>
+                string.Equals(key, "paused", StringComparison.OrdinalIgnoreCase)) != true)
+            .When(pool => !recoveryMode && pool.PaymentProcessing != null)
+            .WithMessage(pool => $"Pool '{pool.Id}': paymentProcessing.paused is not a pool setting; " +
+                "use cluster-level paymentProcessing.paused=true and keep pool switches enabled");
+
         RuleFor(j => j.PaymentProcessing.PpsShareRetentionDays)
             .InclusiveBetween(1, 365)
             .When(j => !recoveryMode && j.PaymentProcessing?.Enabled == true &&
