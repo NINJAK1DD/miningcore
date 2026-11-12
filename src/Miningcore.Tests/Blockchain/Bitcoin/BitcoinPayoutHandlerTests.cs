@@ -2767,6 +2767,7 @@ public partial class BitcoinPayoutHandlerTests : TestBase
         pool.Config.Returns(config);
 
         var payoutLease = Substitute.For<IPayoutManagerLease>();
+        payoutLease.TryBeginWalletPayoutAsync(Arg.Any<CancellationToken>()).Returns(true);
         var manager = new PayoutManager(container, connectionFactory, blockRepository,
             shareRepository, balanceRepository, clusterConfig, messageBus, payoutLease,
             new ProcessStatus());

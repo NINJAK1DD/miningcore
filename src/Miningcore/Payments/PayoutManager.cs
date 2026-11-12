@@ -825,12 +825,16 @@ public class PayoutManager : ProcessStatusBackgroundService
 
         if(poolBalancesOverMinimum.Length > 0)
         {
-            payoutLease.BeginFinancialOperation();
+            // Admission is serialized with the database stop. A successful durable
+            // admission permits this entire handler batch, including later requests.
+            // Pause cannot recall it; the outstanding batch blocks resume until resolved.
+            if(!await payoutLease.TryBeginWalletPayoutAsync(ct))
+                return;
 
             try
             {
                 await handler.PayoutAsync(pool, poolBalancesOverMinimum, ct);
-                payoutLease.CompleteFinancialOperation();
+                await payoutLease.CompleteWalletPayoutAsync(CancellationToken.None);
             }
 
             catch(PayoutOutcomeUncertainException ex)
@@ -856,7 +860,7 @@ public class PayoutManager : ProcessStatusBackgroundService
                 // conclusive, fully persisted partial batch. A handler must classify every
                 // ambiguous wallet outcome as PayoutOutcomeUncertainException instead, so no
                 // ambiguity remains here and durable ownership can be released safely.
-                payoutLease.CompleteFinancialOperation();
+                await payoutLease.CompleteWalletPayoutAsync(CancellationToken.None);
                 throw;
             }
 
@@ -865,7 +869,7 @@ public class PayoutManager : ProcessStatusBackgroundService
                 // No handler may throw an ordinary exception after an ambiguous submission.
                 // Such outcomes must be classified explicitly above. This path is therefore a
                 // conclusive pre-submission/configuration failure and must not strand ownership.
-                payoutLease.CompleteFinancialOperation();
+                await payoutLease.CompleteWalletPayoutAsync(CancellationToken.None);
 
                 try
                 {

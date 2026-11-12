@@ -36,6 +36,69 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
     private int disposed;
     private int activeFinancialOperations;
     private bool financialOutcomeUncertain;
+    private Guid? walletBatch;
+
+    public async Task<bool> TryBeginWalletPayoutAsync(CancellationToken ct)
+    {
+        await EnsureHeldAsync(ct);
+        await gate.WaitAsync(ct);
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            BeginFinancialOperation();
+            var token = Guid.NewGuid();
+            try
+            {
+                var admitted = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+                    "SELECT miningcore_payout_control.begin_batch(@token, @ownerId, @generation)",
+                    new { token, ownerId, generation }, commandTimeout: 5, cancellationToken: ct));
+                if(!admitted)
+                {
+                    CompleteFinancialOperation();
+                    logger.Warn("Database wallet payout control is paused; new wallet batches are blocked. Mining-side accounting remains enabled.");
+                    return false;
+                }
+
+                walletBatch = token;
+                logger.Info("Admitted database-controlled wallet payout batch {0}", token);
+                return true;
+            }
+            catch(Exception ex)
+            {
+                // The database may have committed admission before losing its response.
+                // No wallet is called, but neither marker may be released automatically.
+                MarkFinancialOutcomeUncertain();
+                throw new PayoutOutcomeUncertainException(
+                    "Wallet payout admission could not be established. No new wallet batch was started; retain ownership and inspect database control state.", ex);
+            }
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task CompleteWalletPayoutAsync(CancellationToken ct)
+    {
+        await gate.WaitAsync(ct);
+        try
+        {
+            if(walletBatch == null)
+                throw new InvalidOperationException("No admitted wallet payout batch is active");
+            try
+            {
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "SELECT miningcore_payout_control.finish_batch(@token, @ownerId, @generation)",
+                    new { token = walletBatch.Value, ownerId, generation }, commandTimeout: 5, cancellationToken: ct));
+                walletBatch = null;
+                CompleteFinancialOperation();
+            }
+            catch(Exception ex)
+            {
+                MarkFinancialOutcomeUncertain();
+                throw new PayoutOutcomeUncertainException(
+                    "Wallet batch completion could not be established. Retain ownership and reconcile wallet and accounting evidence before resuming.", ex);
+            }
+        }
+        finally { gate.Release(); }
+    }
 
     public string AcquisitionFailure { get; private set; }
     public bool RequiresRecovery { get; private set; }

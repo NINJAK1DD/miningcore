@@ -75,8 +75,10 @@ public class BitcoinCustodialSettlementIntegrationTests(IsolatedPostgresServer s
         await db.Factory.RunTx((con, tx) => blocks.InsertAsync(con, tx, block));
         var state = new WalletState { Confirmations = walletMaturity };
         var handler = await Handler();
+        var lease = Substitute.For<IPayoutManagerLease>();
+        lease.TryBeginWalletPayoutAsync(Arg.Any<CancellationToken>()).Returns(true);
         PayoutManager Manager() => new(container, db.Factory, blocks, shares, balances,
-            cluster, bus, Substitute.For<IPayoutManagerLease>(), new ProcessStatus());
+            cluster, bus, lease, new ProcessStatus());
         async Task<FixtureHandler> Handler()
         {
             var value = new FixtureHandler(container, db, mapper, shares, blocks,

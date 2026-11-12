@@ -654,9 +654,45 @@ public class PayoutManagerTests
         await fixture.Manager.PayoutPoolBalancesAsync(fixture.MiningPool, fixture.Pool,
             handler, CancellationToken.None);
 
-        fixture.PayoutLease.Received(1).BeginFinancialOperation();
-        fixture.PayoutLease.Received(1).CompleteFinancialOperation();
+        await fixture.PayoutLease.Received(1).TryBeginWalletPayoutAsync(Arg.Any<CancellationToken>());
+        await fixture.PayoutLease.Received(1).CompleteWalletPayoutAsync(CancellationToken.None);
         fixture.PayoutLease.DidNotReceive().MarkFinancialOutcomeUncertain();
+    }
+
+    [Fact]
+    public async Task DatabasePause_SkipsWalletAndPreservesBalances()
+    {
+        var fixture = CreateFixture();
+        var handler = Substitute.For<IPayoutHandler>();
+        fixture.BalanceRepository.GetPoolBalancesOverThresholdAsync(
+                fixture.Connection, fixture.Pool.Id, Arg.Any<decimal>())
+            .Returns(new[] { new Balance { PoolId = fixture.Pool.Id, Address = "miner", Amount = 1 } });
+        fixture.PayoutLease.TryBeginWalletPayoutAsync(Arg.Any<CancellationToken>()).Returns(false);
+
+        await fixture.Manager.PayoutPoolBalancesAsync(fixture.MiningPool, fixture.Pool, handler, CancellationToken.None);
+
+        Assert.Empty(handler.ReceivedCalls());
+        await fixture.PayoutLease.DidNotReceive().CompleteWalletPayoutAsync(Arg.Any<CancellationToken>());
+        fixture.PayoutLease.DidNotReceive().MarkFinancialOutcomeUncertain();
+        Assert.Single(fixture.BalanceRepository.ReceivedCalls()); // read only, no debits
+    }
+
+    [Fact]
+    public async Task UnestablishedAdmission_NeverCallsWalletOrCompletesBatch()
+    {
+        var fixture = CreateFixture();
+        var handler = Substitute.For<IPayoutHandler>();
+        fixture.BalanceRepository.GetPoolBalancesOverThresholdAsync(
+                fixture.Connection, fixture.Pool.Id, Arg.Any<decimal>())
+            .Returns(new[] { new Balance { PoolId = fixture.Pool.Id, Address = "miner", Amount = 1 } });
+        fixture.PayoutLease.TryBeginWalletPayoutAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<bool>(new PayoutOutcomeUncertainException("admission unavailable")));
+
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() =>
+            fixture.Manager.PayoutPoolBalancesAsync(fixture.MiningPool, fixture.Pool, handler, CancellationToken.None));
+
+        Assert.Empty(handler.ReceivedCalls());
+        await fixture.PayoutLease.DidNotReceive().CompleteWalletPayoutAsync(Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -669,7 +705,7 @@ public class PayoutManagerTests
         await fixture.Manager.PayoutPoolBalancesAsync(pool, fixture.Pool, handler, CancellationToken.None);
         Assert.Empty(fixture.BalanceRepository.ReceivedCalls());
         Assert.Empty(handler.ReceivedCalls());
-        fixture.PayoutLease.DidNotReceive().BeginFinancialOperation();
+        await fixture.PayoutLease.DidNotReceive().TryBeginWalletPayoutAsync(Arg.Any<CancellationToken>());
     }
 
     [Theory]
@@ -826,7 +862,7 @@ public class PayoutManagerTests
         }
         finally { complete.TrySetResult(); await payment.WaitAsync(HostTestTimeout); }
         await gate.Drained.WaitAsync(HostTestTimeout);
-        fixture.PayoutLease.Received(2).CompleteFinancialOperation();
+        await fixture.PayoutLease.Received(2).CompleteWalletPayoutAsync(CancellationToken.None);
         fixture.PayoutLease.DidNotReceive().MarkFinancialOutcomeUncertain();
     }
 
@@ -850,9 +886,9 @@ public class PayoutManagerTests
                 handler, CancellationToken.None));
 
         Assert.Equal("wallet response lost", exception.Message);
-        fixture.PayoutLease.Received(1).BeginFinancialOperation();
+        await fixture.PayoutLease.Received(1).TryBeginWalletPayoutAsync(Arg.Any<CancellationToken>());
         fixture.PayoutLease.Received(1).MarkFinancialOutcomeUncertain();
-        fixture.PayoutLease.DidNotReceive().CompleteFinancialOperation();
+        await fixture.PayoutLease.DidNotReceive().CompleteWalletPayoutAsync(Arg.Any<CancellationToken>());
         fixture.MessageBus.Received(1).SendMessage(
             Arg.Is<PaymentNotification>(notification =>
                 notification.PoolId == fixture.Pool.Id &&
@@ -893,7 +929,7 @@ public class PayoutManagerTests
                 handler, CancellationToken.None));
 
         fixture.PayoutLease.Received(1).MarkFinancialOutcomeUncertain();
-        fixture.PayoutLease.DidNotReceive().CompleteFinancialOperation();
+        await fixture.PayoutLease.DidNotReceive().CompleteWalletPayoutAsync(Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -912,8 +948,8 @@ public class PayoutManagerTests
             fixture.Manager.PayoutPoolBalancesAsync(fixture.MiningPool, fixture.Pool,
                 handler, CancellationToken.None));
 
-        fixture.PayoutLease.Received(1).BeginFinancialOperation();
-        fixture.PayoutLease.Received(1).CompleteFinancialOperation();
+        await fixture.PayoutLease.Received(1).TryBeginWalletPayoutAsync(Arg.Any<CancellationToken>());
+        await fixture.PayoutLease.Received(1).CompleteWalletPayoutAsync(CancellationToken.None);
         fixture.PayoutLease.DidNotReceive().MarkFinancialOutcomeUncertain();
     }
 
@@ -934,8 +970,8 @@ public class PayoutManagerTests
             fixture.Manager.PayoutPoolBalancesAsync(fixture.MiningPool, fixture.Pool,
                 handler, canceled.Token));
 
-        fixture.PayoutLease.Received(1).BeginFinancialOperation();
-        fixture.PayoutLease.Received(1).CompleteFinancialOperation();
+        await fixture.PayoutLease.Received(1).TryBeginWalletPayoutAsync(Arg.Any<CancellationToken>());
+        await fixture.PayoutLease.Received(1).CompleteWalletPayoutAsync(CancellationToken.None);
         fixture.PayoutLease.DidNotReceive().MarkFinancialOutcomeUncertain();
         fixture.MessageBus.DidNotReceive().SendMessage(
             Arg.Any<PaymentNotification>(), Arg.Any<string>());
@@ -1096,6 +1132,7 @@ public class PayoutManagerTests
         var payoutLease = Substitute.For<IPayoutManagerLease>();
         var processStatus = new ProcessStatus();
         payoutLease.TryAcquireAsync(Arg.Any<CancellationToken>()).Returns(true);
+        payoutLease.TryBeginWalletPayoutAsync(Arg.Any<CancellationToken>()).Returns(true);
         var clusterConfig = new ClusterConfig
         {
             PaymentProcessing = new ClusterPaymentProcessingConfig(),

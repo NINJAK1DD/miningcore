@@ -1,5 +1,11 @@
 # Miningcore API
 
+`GET /api/admin/payment/wallet-control` reports the database wallet gate's protocol,
+revision, paused flag and outstanding batch count. Unknown/unreadable state returns
+503 rather than implying resumed or confirmed-paused state. See the
+[wallet control protocol and alerting guide](emergency-wallet-stop.md); this read-only
+endpoint is separate from process-local payment settings and mining accounting.
+
 This guide describes the API implemented by the current repository. The root URL is normally
 `http://HOST:4000`; use HTTPS through a trusted reverse proxy for public access.
 

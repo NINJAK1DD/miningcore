@@ -12,6 +12,7 @@ wallet balances or recovery files.
 
 | Task | Guide |
 | --- | --- |
+| Pause wallet batches across a PostgreSQL database | [Emergency wallet stop](emergency-wallet-stop.md) |
 | Install, upgrade or roll back a release | [Release installation](releases.md) |
 | Prepare v0.4.0-rc.1 or upgrade an existing v0.3.0 pool | [RC.1 upgrade and commissioning](upgrade-v0.4.0-rc.1.md) |
 | Check Linux CPU requirements or investigate native SIGILL | [Native CPU portability](native-cpu-portability.md) |

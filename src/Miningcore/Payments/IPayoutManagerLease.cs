@@ -10,6 +10,8 @@ public interface IPayoutManagerLease : IAsyncDisposable
     bool RequiresRecovery { get; }
     Task<bool> TryAcquireAsync(CancellationToken ct);
     Task EnsureHeldAsync(CancellationToken ct);
+    Task<bool> TryBeginWalletPayoutAsync(CancellationToken ct);
+    Task CompleteWalletPayoutAsync(CancellationToken ct);
     void BeginFinancialOperation();
     void CompleteFinancialOperation();
     void MarkFinancialOutcomeUncertain();
