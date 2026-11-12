@@ -1013,7 +1013,8 @@ public partial class ProgramPoolTemplateTests
         var services = new ServiceCollection();
         Program.ConfigureShareProcessingHostedServices(services, config);
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(ISharePersistenceQueueMetricsProvider));
-        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(ShareRecorder));
+        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IHostedService) &&
+            descriptor.ImplementationFactory != null);
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IHostedService) &&
             descriptor.ImplementationType == typeof(ShareRelay));
         Assert.DoesNotContain(services, descriptor => descriptor.ImplementationType == typeof(ShareReceiver));
