@@ -13,7 +13,9 @@ public sealed class WalletPayoutControlState
 
     public static async Task<WalletPayoutControlState> ReadAsync(IConnectionFactory cf, CancellationToken ct)
     {
-        using var connection = await cf.OpenConnectionAsync();
+        using var connection = cf is ICancellableConnectionFactory cancellable
+            ? await cancellable.OpenConnectionAsync(ct)
+            : await cf.OpenConnectionAsync();
         var result = await connection.QuerySingleAsync<WalletPayoutControlState>(new CommandDefinition(
             """
             SELECT protocol_version AS ProtocolVersion, revision, paused,

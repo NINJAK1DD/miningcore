@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -32,6 +33,78 @@ namespace Miningcore.Tests.Payments;
 [Collection(BitcoinCorePayoutIntegrationCollection.Name)]
 public class WalletPayoutControlIntegrationTests : TestBase
 {
+    [IsolatedPostgresFact]
+    public async Task PostgreSqlRestart_PreservesStopOutstandingBatchAndOwnership()
+    {
+        await using var server = new IsolatedPostgresServer();
+        await server.Initialize();
+        var settings = new NpgsqlConnectionStringBuilder
+        { Host = "127.0.0.1", Port = server.Port, Username = "miningcore", Database = "postgres", SslMode = SslMode.Disable };
+        await using var db = await Database.Create(settings.ConnectionString);
+        await db.SetPaused(false);
+        await using(var lease = new PostgresPayoutManagerLease(db.Factory))
+        {
+            Assert.True(await lease.TryAcquireAsync(CancellationToken.None));
+            Assert.True(await lease.TryBeginWalletPayoutAsync(CancellationToken.None));
+            await db.SetPaused(true);
+            await server.Restart("valid");
+            await db.ReconnectObservers();
+            await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => lease.CompleteWalletPayoutAsync(CancellationToken.None));
+        }
+        Assert.True((await db.State()).Paused);
+        Assert.Equal(1, (await db.State()).OutstandingBatches);
+        await using var replacement = new PostgresPayoutManagerLease(db.Factory);
+        Assert.False(await replacement.TryAcquireAsync(CancellationToken.None));
+        Assert.True(replacement.RequiresRecovery);
+        await Assert.ThrowsAsync<PostgresException>(() => db.SetPaused(false));
+    }
+
+    [WalletControlFact]
+    public async Task CompetingProcesses_PauseSurvivesCleanAndUncleanRestart()
+    {
+        await using var db = await Database.Create();
+        await db.SetPaused(false);
+        using(var first = db.StartProbe())
+        {
+            try
+            {
+                Assert.Equal("admitted", await first.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(20)));
+                using var second = db.StartProbe();
+                await second.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(20));
+                Assert.Equal(1, second.ExitCode);
+                await db.SetPaused(true);
+                await first.StandardInput.WriteLineAsync("complete");
+                await first.StandardInput.FlushAsync();
+                await first.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(20));
+                Assert.Equal(0, first.ExitCode);
+            }
+            finally { if(!first.HasExited) first.Kill(true); }
+        }
+        using(var restart = db.StartProbe())
+        {
+            try
+            {
+                Assert.Equal("paused", await restart.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(20)));
+                await restart.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(20));
+                Assert.Equal(0, restart.ExitCode);
+            }
+            finally { if(!restart.HasExited) restart.Kill(true); }
+        }
+        await db.SetPaused(false);
+        using(var crash = db.StartProbe())
+        {
+            try { Assert.Equal("admitted", await crash.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(20))); }
+            finally { if(!crash.HasExited) crash.Kill(true); }
+            await crash.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(20));
+        }
+        await db.SetPaused(true);
+        using var blocked = db.StartProbe();
+        await blocked.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(20));
+        Assert.Equal(78, blocked.ExitCode);
+        Assert.Equal(1, (await db.State()).OutstandingBatches);
+        await Assert.ThrowsAsync<PostgresException>(() => db.SetPaused(false));
+    }
+
     [WalletControlFact]
     public async Task RealWallet_PauseAccountingResumeAndAmbiguousOutcome_PreserveBothDurableMarkers()
     {
@@ -224,6 +297,36 @@ public class WalletPayoutControlIntegrationTests : TestBase
         Assert.Equal(0, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM miningcore_payout_control.batches"));
     }
 
+    [WalletControlFact]
+    public async Task MissingDeniedOrIncompatibleProtocol_AndCancelledAdmission_FailClosed()
+    {
+        foreach(var failure in new[] { "missing", "denied", "version", "cancelled" })
+        {
+            await using var db = await Database.Create();
+            await db.SetPaused(false);
+            await using var lease = new PostgresPayoutManagerLease(db.Factory);
+            Assert.True(await lease.TryAcquireAsync(CancellationToken.None));
+            if(failure == "missing")
+                await db.Admin.ExecuteAsync("ALTER SCHEMA miningcore_payout_control RENAME TO unavailable_control");
+            else if(failure == "denied")
+                await db.RevokeAdmission();
+            else if(failure == "version")
+                await db.Admin.ExecuteAsync("ALTER TABLE miningcore_payout_control.state DROP CONSTRAINT state_protocol_version_check; UPDATE miningcore_payout_control.state SET protocol_version=2");
+            else
+            {
+                // Hold admission at the database boundary until its command is cancelled.
+                await db.Operator.ExecuteAsync("BEGIN; SELECT * FROM miningcore_payout_control.state FOR UPDATE");
+            }
+            using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
+            await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => lease.TryBeginWalletPayoutAsync(
+                failure == "cancelled" ? deadline.Token : CancellationToken.None));
+            Assert.False(lease.CanReleaseOwnership);
+            if(failure == "cancelled") await db.Operator.ExecuteAsync("ROLLBACK");
+            if(failure != "missing")
+                Assert.Equal(0, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM miningcore_payout_control.batches"));
+        }
+    }
+
     private sealed class ControlledHandler(IComponentContext context, PgConnectionFactory factory, IMapper mapper,
         ShareRepository shares, BlockRepository blocks, BalanceRepository balances, PaymentRepository payments,
         IMasterClock clock, IMessageBus bus) : BitcoinPayoutHandler(context, factory, mapper, shares, blocks, balances,
@@ -253,12 +356,30 @@ public class WalletPayoutControlIntegrationTests : TestBase
         public NpgsqlConnection Admin { get; private set; }
         public NpgsqlConnection Operator { get; private set; }
         public PgConnectionFactory Factory { get; private set; }
-        public static async Task<Database> Create()
+        private string appConnectionString;
+        public Process StartProbe()
+        {
+            var start = new ProcessStartInfo("dotnet")
+            { UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.ProcessHost.dll"));
+            start.ArgumentList.Add("wallet-control-probe");
+            start.Environment["MININGCORE_TEST_POSTGRES"] = appConnectionString;
+            return Process.Start(start);
+        }
+        public async Task ReconnectObservers()
+        {
+            foreach(var connection in new[] { root, Admin, Operator })
+            {
+                await connection.CloseAsync();
+                await connection.OpenAsync();
+            }
+        }
+        public static async Task<Database> Create(string connectionString = null)
         {
             var db = new Database();
             try
             {
-                var settings = new NpgsqlConnectionStringBuilder(Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"))
+                var settings = new NpgsqlConnectionStringBuilder(connectionString ?? Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES"))
                 { Pooling = false, SearchPath = "public", CommandTimeout = 15 };
                 db.root = new NpgsqlConnection(settings.ConnectionString);
                 await db.root.OpenAsync();
@@ -278,6 +399,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
                         miningcore_payout_control.reconcile_batch(uuid,bigint,text) TO {db.OperatorRole};
                     """);
                 settings.Username = db.AppRole; settings.Password = password;
+                db.appConnectionString = settings.ConnectionString;
                 db.Factory = new PgConnectionFactory(settings.ConnectionString);
                 settings.Username = db.OperatorRole;
                 db.Operator = new NpgsqlConnection(settings.ConnectionString);
@@ -295,6 +417,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
             AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
             AND classid=19779 AND objid=5259609 AND granted
             """);
+        public Task RevokeAdmission() => Admin.ExecuteAsync($"REVOKE EXECUTE ON FUNCTION miningcore_payout_control.begin_batch(uuid,uuid,bigint) FROM {AppRole}");
         public async ValueTask DisposeAsync()
         {
             if(Operator != null) await Operator.DisposeAsync();

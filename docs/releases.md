@@ -24,6 +24,11 @@ for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
 ## Unreleased (after v0.4.0-rc.1): guided payout recovery and timestamp setup
 
+Wallet payout admission now requires the separate, initially paused
+[database emergency wallet control migration and coordinated rollout](emergency-wallet-stop.md).
+Deploy all wallet-capable binaries before relying on it. Older versions ignore the
+marker; rollback requires coordinated shutdown and wallet reconciliation.
+
 Include these operator steps in the next candidate's deployment checklist (including RC.2 if this
 change ships there). Normal upgrades must preserve ownership markers and financial records.
 

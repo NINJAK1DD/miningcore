@@ -6,9 +6,14 @@ SET LOCAL ROLE NONE;
 DO $migration$
 DECLARE app_role name;
 BEGIN
+    IF NOT pg_try_advisory_xact_lock(19779,5259609) THEN
+        RAISE EXCEPTION 'Stop payout managers before installing wallet control';
+    END IF;
     SELECT pg_get_userbyid(relowner) INTO STRICT app_role
         FROM pg_class WHERE oid='payout_manager_ownership'::regclass;
-    IF app_role = session_user OR pg_has_role(app_role, session_user, 'MEMBER') THEN
+    IF app_role = session_user OR pg_has_role(app_role, session_user, 'MEMBER')
+        OR EXISTS(SELECT FROM pg_roles WHERE rolname=app_role
+            AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls)) THEN
         RAISE EXCEPTION 'Use a separate administrator that the application cannot assume';
     END IF;
 END $migration$;

@@ -48,6 +48,28 @@ if(args.Length > 0 && string.Equals(args[0], "hold",
        StringComparison.Ordinal))
     return await HoldRecoveryOwnershipAsync(args);
 
+if(args.Length == 1 && args[0] == "wallet-control-probe")
+{
+    await using var lease = new Miningcore.Payments.PostgresPayoutManagerLease(
+        new Miningcore.Persistence.Postgres.PgConnectionFactory(
+            Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES")));
+    if(!await lease.TryAcquireAsync(CancellationToken.None))
+        return lease.RequiresRecovery ? 78 : 1;
+    if(!await lease.TryBeginWalletPayoutAsync(CancellationToken.None))
+    {
+        Console.WriteLine("paused");
+        return 0;
+    }
+    Console.WriteLine("admitted");
+    if(await Console.In.ReadLineAsync() != "complete")
+    {
+        lease.MarkFinancialOutcomeUncertain();
+        return 78;
+    }
+    await lease.CompleteWalletPayoutAsync(CancellationToken.None);
+    return 0;
+}
+
 if(args.Length > 0 && args[0] == "payout-lease")
 {
     if(args.Length != 3)

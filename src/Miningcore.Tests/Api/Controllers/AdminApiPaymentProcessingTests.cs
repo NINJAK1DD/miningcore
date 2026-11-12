@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Autofac;
 using AutoMapper;
 using Miningcore.Api;
@@ -15,6 +17,19 @@ namespace Miningcore.Tests.Api.Controllers;
 
 public class AdminApiPaymentProcessingTests
 {
+    [Fact]
+    public async Task UnreadableWalletControl_IsUnknownAndUnavailable_NotResumed()
+    {
+        var controller = CreateController(true);
+        var result = await controller.GetWalletPayoutControl(CancellationToken.None);
+        var unavailable = Assert.IsType<Microsoft.AspNetCore.Mvc.ObjectResult>(result.Result);
+        Assert.Equal(503, unavailable.StatusCode);
+        var body = Newtonsoft.Json.Linq.JObject.FromObject(unavailable.Value);
+        Assert.Equal("unknown", body.Value<string>("state"));
+        Assert.False(body.Value<bool>("newWalletBatchesAllowed"));
+        Assert.Null(result.Value);
+    }
+
     [Fact]
     public void BulkEnable_RejectsPpsWithoutClusterSchedulerBeforeMutatingAnyPool()
     {
