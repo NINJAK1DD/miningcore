@@ -2735,23 +2735,20 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
     {
         var queued = new QueuedShare(
             Interlocked.Increment(ref nextQueuedShareId), share);
+        queued.RequiresDurableAcknowledgement = RequiresDurableAcknowledgement(share) ||
+            RequiresDurableAcknowledgement(share.PairedShare);
         unresolvedShares[queued.Id] = queued;
-        share.SetPersistenceAdmission(Task.CompletedTask);
+        if(queued.RequiresDurableAcknowledgement)
+            SetDurableAdmission(queued);
+        else
+            share.SetPersistenceAdmission(Task.CompletedTask);
 
         if(primaryAccounting.TryWrite(queue.Writer, queued))
             return;
 
         var saturation = new IOException(
             $"The bounded share-persistence queue reached its {PersistenceQueueCapacity}-share limit");
-        var journalCompletion = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        _ = journalCompletion.Task.ContinueWith(task => _ = task.Exception,
-            CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted |
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
-        queued.JournalCompletion = journalCompletion;
-        share.SetPersistenceAdmission(journalCompletion.Task);
+        var journalCompletion = queued.JournalCompletion ?? SetDurableAdmission(queued);
 
         if(emergencyAccounting.TryWrite(emergencyQueue.Writer, queued))
             return;
@@ -2764,6 +2761,22 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         throw new SharePersistenceBacklogFailureException(
             () => FailStopUnresolvedSharesAsync(saturation, journalError),
             journalError);
+    }
+
+    private bool RequiresDurableAcknowledgement(Share share) => share != null &&
+        (share.PpsCalculatedAmount.HasValue ||
+         (share.PoolId != null && pools.TryGetValue(share.PoolId, out var pool) &&
+          pool.PaymentProcessing?.PayoutScheme == PayoutScheme.PPS));
+
+    private static TaskCompletionSource SetDurableAdmission(QueuedShare queued)
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = completion.Task.ContinueWith(task => _ = task.Exception,
+            CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted |
+            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        queued.JournalCompletion = completion;
+        queued.Share.SetPersistenceAdmission(completion.Task);
+        return completion;
     }
 
     private async Task ProcessEmergencyJournalQueueAsync(
@@ -2854,7 +2867,9 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             var remaining = TimeSpan.FromSeconds(5) -
                 (DateTime.UtcNow - batchStarted);
 
-            if(remaining > TimeSpan.Zero)
+            // PPS responses await durable liabilities. Flush the currently available
+            // batch without imposing the statistical-share dwell timer on miners.
+            if(remaining > TimeSpan.Zero && !batch.Any(x => x.RequiresDurableAcknowledgement))
             {
                 using var wait = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 wait.CancelAfter(remaining);
@@ -2892,6 +2907,8 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         {
             if(queued.Count == 1)
             {
+                if(queued.Single().RequiresDurableAcknowledgement)
+                    queued.Single().JournalCompletion?.TrySetException(ex);
                 ex.Data[InvalidQueuedShareIdsKey] = new[] { queued.Single().Id };
                 throw;
             }
@@ -2934,13 +2951,25 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
             // the outer durability boundary snapshots or journals anything; replaying it would
             // duplicate share and potentially block accounting.
             foreach(var item in queued)
+            {
                 unresolvedShares.TryRemove(item.Id, out _);
+                item.JournalCompletion?.TrySetResult();
+            }
 
+            throw;
+        }
+        catch(Exception error)
+        {
+            foreach(var item in queued.Where(x => x.RequiresDurableAcknowledgement))
+                item.JournalCompletion?.TrySetException(error);
             throw;
         }
 
         foreach(var item in queued)
+        {
             unresolvedShares.TryRemove(item.Id, out _);
+            item.JournalCompletion?.TrySetResult();
+        }
     }
 
     private async Task JournalUnresolvedSharesOnShutdownAsync()
@@ -3169,6 +3198,7 @@ public class ShareRecorder : StartupGatedBackgroundService, IBlockCandidateRecor
         public long Id { get; }
         public Share Share { get; }
         public TaskCompletionSource JournalCompletion { get; set; }
+        public bool RequiresDurableAcknowledgement { get; set; }
     }
 
     private sealed class SharePersistenceBacklogFailureException : IOException,

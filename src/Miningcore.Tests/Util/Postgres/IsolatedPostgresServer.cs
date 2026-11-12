@@ -135,6 +135,15 @@ public sealed class IsolatedPostgresServer : IAsyncDisposable, IAsyncLifetime
         await Start(certificate, Port);
     }
 
+    internal async Task StopForOutageAsync()
+    {
+        if(started)
+            await Run("pg_ctl", "-D", Data, "-m", "immediate", "-w", "stop");
+        started = false;
+    }
+
+    internal Task ResumeAfterOutageAsync() => Start(activeCertificate, Port);
+
     internal async Task<string> Run(string executable, params string[] arguments)
     {
         // A Windows postgres child can retain pg_ctl's redirected pipe handles after

@@ -31,7 +31,7 @@ using Node = Miningcore.Tests.Blockchain.Bitcoin.BitcoinPayoutHandlerRegtestTest
 namespace Miningcore.Tests.Payments;
 
 [Collection(BitcoinCorePayoutIntegrationCollection.Name)]
-public class WalletPayoutControlIntegrationTests : TestBase
+public partial class WalletPayoutControlIntegrationTests : TestBase
 {
     [WalletControlFact]
     public async Task NonOwnerRuntime_PreflightAdmissionMetadataAndApiContract()
@@ -523,6 +523,7 @@ public class WalletPayoutControlIntegrationTests : TestBase
         public PgConnectionFactory Factory { get; private set; }
         public PgConnectionFactory AdminFactory { get; private set; }
         private string appConnectionString;
+        internal string ConnectionString => appConnectionString;
         public Process StartProbe()
         {
             var start = new ProcessStartInfo("dotnet")
