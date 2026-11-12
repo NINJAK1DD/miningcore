@@ -34,6 +34,26 @@ namespace Miningcore.Tests.Payments;
 public partial class WalletPayoutControlIntegrationTests : TestBase
 {
     [WalletControlFact]
+    public async Task ExplicitServerStatementTimeout_RollsBackAdmissionWithoutStrandingOwnership()
+    {
+        await using var db = await Database.Create();
+        await db.SetPaused(false);
+        await db.Admin.ExecuteAsync($"ALTER ROLE {db.AppRole} SET statement_timeout='200ms'");
+        await using var lease = new PostgresPayoutManagerLease(db.Factory);
+        Assert.True(await lease.TryAcquireAsync(CancellationToken.None));
+        await using(var tx = await db.Operator.BeginTransactionAsync())
+        {
+            await db.Operator.ExecuteAsync("SELECT miningcore_payout_control.set_paused(true,2,'statement timeout fixture')", transaction: tx);
+            Assert.False(await lease.TryBeginWalletPayoutAsync(CancellationToken.None, new WalletPayoutBatch("timeout", new string('a', 64))));
+            Assert.True(lease.CanReleaseOwnership);
+            await tx.RollbackAsync();
+        }
+        Assert.Equal(0, (await db.State()).OutstandingBatches);
+        Assert.True(await lease.TryBeginWalletPayoutAsync(CancellationToken.None, new WalletPayoutBatch("retry", new string('b', 64))));
+        await lease.CompleteWalletPayoutAsync(CancellationToken.None);
+    }
+
+    [WalletControlFact]
     public async Task NonOwnerRuntime_PreflightAdmissionMetadataAndApiContract()
     {
         await using var db = await Database.Create();

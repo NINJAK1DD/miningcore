@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 import sys
 import tarfile
+import tempfile
 import urllib.request
 
 PACKAGES = [
@@ -31,10 +32,28 @@ def install(root, package):
         actual = hashlib.file_digest(source, "sha256").hexdigest()
     if actual != digest:
         raise RuntimeError(f"Checksum mismatch for {name}; retain the archive for inspection")
-    if not target.exists():
-        target.mkdir(mode=0o700)
+    marker = target / ".verified-install"
+    if marker.exists() and marker.read_text().strip() == digest:
+        print(f"Verified existing {name}: {digest}; {target}", flush=True)
+        return
+    # A failed extraction must never become an apparently complete installation.
+    # Retain older/incomplete directories for inspection instead of deleting them.
+    with tempfile.TemporaryDirectory(prefix=name + "-extract-", dir=root) as temporary:
+        staging = Path(temporary) / "package"
+        staging.mkdir(mode=0o700)
         with tarfile.open(archive) as source:
-            source.extractall(target, filter="data")
+            source.extractall(staging, filter="data")
+        if name.startswith("verus-"):
+            nested = list(staging.glob("*.tar.gz"))
+            if len(nested) != 1:
+                raise RuntimeError("Unexpected Verus release archive layout")
+            with tarfile.open(nested[0]) as source:
+                source.extractall(staging, filter="data")
+        (staging / ".verified-install").write_text(digest + "\n")
+        if target.exists():
+            retained = root / (name + ".previous-" + Path(temporary).name)
+            target.rename(retained)
+        staging.rename(target)
     print(f"Verified {name}: {digest}; {target}", flush=True)
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -34,6 +35,57 @@ namespace Miningcore.Tests.Payments;
 
 public class WalletPayoutSetupTests : TestBase
 {
+    [Fact]
+    public async Task EquihashCapabilities_SurviveHandlerRecreationButRetryInconclusiveProbeAndConfigChange()
+    {
+        var calls = new ConcurrentQueue<string>();
+        var failPrivacy = true;
+        await using var server = await RpcDiagnosticTests.Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JObject.Parse(await reader.ReadToEndAsync());
+            var method = request.Value<string>("method"); calls.Enqueue(method);
+            JToken result = method switch
+            {
+                "getblockchaininfo" => new JObject { ["chain"] = "main" },
+                "listunspent" => new JArray(),
+                "z_getbalance" => new JValue(0.0),
+                _ => JValue.CreateNull(),
+            };
+            JToken error = method switch
+            {
+                "z_shieldcoinbase" or "sendcurrency" => new JObject { ["code"] = -32601, ["message"] = "not supported" },
+                "z_sendmany" => new JObject { ["code"] = failPrivacy ? -500 : -8, ["message"] = "probe rejected" },
+                _ => JValue.CreateNull(),
+            };
+            await context.Response.WriteAsync(new JObject { ["id"] = request["id"], ["result"] = result, ["error"] = error }.ToString());
+        });
+        var config = new PoolConfig { Id = "capabilities", Coin = "zcash", Address = "t-address",
+            Template = ModuleInitializer.CoinTemplates["zcash"], Daemons = new[] { server.Endpoint() },
+            Extra = new Dictionary<string, object> { ["zAddress"] = "z-address" }, PaymentProcessing = new() };
+        var pool = Substitute.For<IMiningPool>(); pool.Config.Returns(config);
+        async Task RunCycle()
+        {
+            var handler = new EquihashPayoutHandler(container, Substitute.For<IConnectionFactory>(), container.Resolve<IMapper>(),
+                Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(), Substitute.For<IBalanceRepository>(),
+                Substitute.For<IPaymentRepository>(), Substitute.For<IMasterClock>(), Substitute.For<IMessageBus>());
+            await handler.ConfigureAsync(new ClusterConfig(), config, CancellationToken.None);
+            await handler.PayoutAsync(pool, new[] { new Balance { Address = "recipient", Amount = 1m } }, CancellationToken.None);
+        }
+        await Assert.ThrowsAnyAsync<Exception>(RunCycle);
+        failPrivacy = false;
+        await RunCycle();
+        await RunCycle();
+        Assert.Equal(1, calls.Count(method => method == "z_shieldcoinbase"));
+        Assert.Equal(1, calls.Count(method => method == "sendcurrency"));
+        Assert.Equal(2, calls.Count(method => method == "z_sendmany"));
+        config.Address = "changed-pool-wallet";
+        await RunCycle();
+        Assert.Equal(2, calls.Count(method => method == "z_shieldcoinbase"));
+        Assert.Equal(2, calls.Count(method => method == "sendcurrency"));
+        Assert.Equal(3, calls.Count(method => method == "z_sendmany"));
+    }
+
     [Fact]
     public async Task XelisActivationDefersPayoutUntilLaterCycleAndWalletCatchup()
     {

@@ -37,6 +37,15 @@ namespace Miningcore.Tests;
 public class ConfigurationContractTests
 {
     [Theory]
+    [InlineData(200, true)]
+    [InlineData(201, false)]
+    public void PoolIdFitsAuditedWalletBatchMetadata(int length, bool valid)
+    {
+        var result = new PoolConfigValidator(recoveryMode: true).Validate(new PoolConfig { Id = new string('p', length) });
+        Assert.Equal(valid, result.Errors.All(error => error.PropertyName != nameof(PoolConfig.Id)));
+    }
+
+    [Theory]
     [InlineData(true, true, true)]
     [InlineData(true, false, true)]
     [InlineData(false, true, false)]
