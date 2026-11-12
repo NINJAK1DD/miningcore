@@ -21,10 +21,18 @@ The required relationship is:
 
 - Litecoin and Dogecoin are separate enabled pools with unique IDs.
 - Each pool independently uses `SOLO`, `PPS`, `PROP` or `PPLNS`; mixed schemes are supported.
+- Both pool-level `paymentProcessing.enabled` switches remain true, including during recovery.
 - Direct and relay receiver/recorder nodes set cluster-level `paymentProcessing.enabled` to `true`.
 - Dogecoin supplies its daemon, wallet address, block classification and payout pipeline.
 - Litecoin references that Dogecoin pool through `mergedMining`.
 - Non-SOLO Dogecoin pools set `requireAuxAddress: true`.
+
+To temporarily suspend payouts while continuing durable mining/accounting, use cluster
+`paymentProcessing.enabled: true, paused: true` and restart. This suspends the entire local payout
+pipeline, including reconciliation and retention, while PPS liabilities and paired effort still
+commit. Apply the [payout-pause runbook](database.md#restart-only-payout-pause) across direct and relay
+nodes; a local pause does not stop another node's wallet activity. The previous procedure that
+disabled the two pool switches is unsupported and now fails deployment validation before listeners.
 
 ```json
 "mergedMining": {

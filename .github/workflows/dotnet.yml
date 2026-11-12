@@ -94,6 +94,9 @@ jobs:
       shell: bash
       run: sudo bash scripts/release/test-systemd-postgresql-ordering-integration.sh --disposable-host
 
+    - name: Test fail-closed payout pause pre-start check
+      run: python3 scripts/release/test-payout-pause-support.py
+
     - name: Validate documentation links
       shell: bash
       run: python3 scripts/release/test-doc-links.py

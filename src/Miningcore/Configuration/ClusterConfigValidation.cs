@@ -322,13 +322,27 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
             .When(_ => !recoveryMode)
             .WithMessage(pool =>
                 $"Pool '{(string.IsNullOrEmpty(pool.Id) ? "<unnamed>" : pool.Id)}': " +
-                "paymentProcessing configuration missing; keep the object and " +
-                "set enabled=false to disable payouts");
+                "paymentProcessing configuration missing; retain the required pool accounting configuration " +
+                "and use cluster paymentProcessing.paused=true for a recovery pause");
 
         RuleFor(j => j.PaymentProcessing.PpsBinary64Activation)
             .Must(value => value == null || (value.Value.Kind == DateTimeKind.Utc && value.Value.Ticks % 10 == 0))
             .When(j => !recoveryMode && j.PaymentProcessing != null)
             .WithMessage("paymentProcessing.ppsBinary64Activation must be a microsecond-aligned UTC timestamp");
+
+        RuleFor(pool => pool.Extra)
+            .Must(extra => extra?.Keys.Any(key =>
+                string.Equals(key, "paused", StringComparison.OrdinalIgnoreCase)) != true)
+            .When(_ => !recoveryMode)
+            .WithMessage(pool => $"Pool '{pool.Id}': paused is not a pool setting; " +
+                "use cluster-level paymentProcessing.paused=true and keep pool switches enabled");
+
+        RuleFor(pool => pool.PaymentProcessing.Extra)
+            .Must(extra => extra?.Keys.Any(key =>
+                string.Equals(key, "paused", StringComparison.OrdinalIgnoreCase)) != true)
+            .When(pool => !recoveryMode && pool.PaymentProcessing != null)
+            .WithMessage(pool => $"Pool '{pool.Id}': paymentProcessing.paused is not a pool setting; " +
+                "use cluster-level paymentProcessing.paused=true and keep pool switches enabled");
 
         RuleFor(j => j.PaymentProcessing.PpsShareRetentionDays)
             .InclusiveBetween(1, 365)
@@ -371,6 +385,11 @@ public class ClusterConfigValidator : AbstractValidator<ClusterConfig>
             .When(j => j.PaymentProcessing != null)
             .WithMessage(
                 "Cluster paymentProcessing.shareAccountingRetentionDays must be between 1 and 3650");
+
+        RuleFor(j => j.PaymentProcessing.Enabled)
+            .Equal(true)
+            .When(j => !recoveryMode && j.PaymentProcessing?.Paused == true)
+            .WithMessage("Cluster paymentProcessing.paused requires enabled=true; retain pool accounting switches while paused");
 
         RuleFor(j => j.PaymentProcessing.ShareAccountingPruneBatchSize)
             .InclusiveBetween(1_000, 100_000)

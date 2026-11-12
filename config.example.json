@@ -123,6 +123,8 @@
 
   // This cluster-wide switch must be enabled on the single node that owns payouts.
   "paymentProcessing": {
+    // Restart-only cluster pause: retains mining accounting, suspends payouts and reconciliation.
+    "paused": false,
     // Starts block reconciliation and payout processing on this node.
     "enabled": true,
     // Seconds between payment-processing cycles.

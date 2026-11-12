@@ -256,6 +256,10 @@
         "interval": {
           "type": "integer"
         },
+        "paused": {
+          "type": "boolean",
+          "default": false
+        },
         "shareAccountingPruneBatchSize": {
           "type": "integer",
           "default": 50000
@@ -264,7 +268,8 @@
           "type": "integer",
           "default": 30
         }
-      }
+      },
+      "additionalProperties": false
     },
     "DaemonEndpointConfig": {
       "type": [
@@ -1274,5 +1279,13 @@
   },
   "required": [
     "pools"
-  ]
+  ],
+  "patternProperties": {
+    "^[pP][aA][uU][sS][eE][dD]$": {
+      "not": {}
+    },
+    "^[pP][aA][yY][mM][eE][nN][tT][pP][rR][oO][cC][eE][sS][sS][iI][nN][gG]$": {
+      "$ref": "#/definitions/ClusterPaymentProcessingConfig"
+    }
+  }
 }

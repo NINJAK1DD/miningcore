@@ -12,6 +12,7 @@ using Miningcore.Blockchain;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Payments;
 using Miningcore.Notifications;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Repositories;
@@ -202,7 +203,7 @@ public partial class ProgramPoolTemplateTests
         Assert.Contains("ltc-solo", ex.Message);
         Assert.Contains("docs/database.md", ex.Message);
         await shareRepository.Received(1).GetMissingSharePartitionsAsync(connection,
-            Arg.Is<IEnumerable<string>>(ids => ids.SequenceEqual(new[] { "ltc-solo" })),
+            Arg.Is<IEnumerable<string>>(ids => ids.SequenceEqual(new[] { "ltc-solo", "doge-solo" })),
             Arg.Any<CancellationToken>());
     }
 
@@ -775,67 +776,59 @@ public partial class ProgramPoolTemplateTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void MergedMining_DirectAndReceiverNodes_PausePayoutManagerWithPoolPaymentsDisabled(
-        bool relayReceiver)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void MergedMining_PauseRetainsAccountingAcrossTopologies(bool sender, bool receiver)
     {
-        var config = MergedMiningCluster(relayReceiver: relayReceiver);
-        config.Pools[0].PaymentProcessing.Enabled = false;
-
+        var config = MergedMiningCluster(shareRelaySender: sender, relayReceiver: receiver);
+        config.PaymentProcessing.Paused = true;
         Program.ValidateMergedMiningDeployment(config);
-
-        Assert.True(config.PaymentProcessing.Enabled);
         Assert.False(Program.ShouldRunPaymentProcessor(config));
-    }
-
-    [Fact]
-    public void MergedMining_MultiPoolPause_RequiresEveryPoolPaymentSwitchDisabled()
-    {
-        var config = MergedMiningCluster();
-        config.Pools = config.Pools.Concat(new[]
-        {
-            new PoolConfig
-            {
-                Id = "other-pool",
-                Enabled = true,
-                PaymentProcessing = new PoolPaymentProcessingConfig
-                {
-                    Enabled = true,
-                },
-            },
-        }).ToArray();
-        config.Pools[0].PaymentProcessing.Enabled = false;
-
-        Program.ValidateMergedMiningDeployment(config);
-
+        var pausedServices = new ServiceCollection();
+        Program.ConfigurePaymentProcessingHostedService(pausedServices, config);
+        Assert.Empty(pausedServices);
+        Assert.True(Program.RequiresSynchronousBlockCandidatePersistence(config));
+        Assert.All(config.Pools, pool => Assert.True(pool.PaymentProcessing.Enabled));
+        config.PaymentProcessing.Paused = false;
         Assert.True(Program.ShouldRunPaymentProcessor(config));
+        var resumedServices = new ServiceCollection();
+        Program.ConfigurePaymentProcessingHostedService(resumedServices, config);
+        Assert.Equal(typeof(PayoutManager), Assert.Single(resumedServices).ImplementationType);
+    }
 
-        config.Pools[1].PaymentProcessing.Enabled = false;
-
-        Assert.False(Program.ShouldRunPaymentProcessor(config));
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void MergedMining_DisabledPoolPaymentsAreRejectedBeforeStartup(int index)
+    {
+        var config = MergedMiningCluster();
+        config.Pools[index].PaymentProcessing.Enabled = false;
+        var error = Assert.Throws<PoolStartupException>(() =>
+            Program.ValidateMergedMiningDeployment(config));
+        Assert.Contains("paymentProcessing.paused=true", error.Message);
     }
 
     [Fact]
-    public void MergedMining_MultiPoolPause_IgnoresDisabledPoolPaymentSwitch()
+    public void PaymentProcessor_PauseOverridesUnrelatedEnabledPools()
     {
         var config = MergedMiningCluster();
         config.Pools = config.Pools.Concat(new[]
         {
-            new PoolConfig
-            {
-                Id = "disabled-pool",
-                Enabled = false,
-                PaymentProcessing = new PoolPaymentProcessingConfig
-                {
-                    Enabled = true,
-                },
-            },
+            new PoolConfig { Id = "unrelated", Enabled = true,
+                PaymentProcessing = new PoolPaymentProcessingConfig { Enabled = true } },
         }).ToArray();
-        config.Pools[0].PaymentProcessing.Enabled = false;
-
+        config.PaymentProcessing.Paused = true;
         Program.ValidateMergedMiningDeployment(config);
+        Assert.False(Program.ShouldRunPaymentProcessor(config));
+    }
 
+    [Fact]
+    public void PaymentProcessor_DisabledPoolsNeverActivateProcessor()
+    {
+        var config = MergedMiningCluster();
+        foreach(var pool in config.Pools)
+            pool.Enabled = false;
         Assert.False(Program.ShouldRunPaymentProcessor(config));
     }
 
@@ -1099,6 +1092,7 @@ public partial class ProgramPoolTemplateTests
                     PaymentProcessing = new PoolPaymentProcessingConfig
                     {
                         Enabled = true,
+                        PayoutScheme = PayoutScheme.SOLO,
                     },
                     Extra = new Dictionary<string, object>
                     {
@@ -1107,6 +1101,18 @@ public partial class ProgramPoolTemplateTests
                             ["enabled"] = true,
                             ["auxPoolId"] = "doge-solo",
                         },
+                    },
+                },
+                new PoolConfig
+                {
+                    Id = "doge-solo",
+                    Enabled = true,
+                    Address = "test-auxiliary-wallet",
+                    Daemons = new[] { new DaemonEndpointConfig { Host = "127.0.0.1", Port = 44555 } },
+                    PaymentProcessing = new PoolPaymentProcessingConfig
+                    {
+                        Enabled = true,
+                        PayoutScheme = PayoutScheme.SOLO,
                     },
                 },
             },
