@@ -28,7 +28,7 @@ public class WalletSubmissionOutcomeTests
         var snapshot = WalletPayoutBatch.Create("pool", balances);
         Assert.Equal(snapshot, WalletPayoutBatch.Create("pool", new[] { balances[1], balances[0] }));
         Assert.NotEqual(snapshot.Digest, WalletPayoutBatch.Create("other", balances).Digest);
-        balances[0].Amount++;
+        balances[0] = new Miningcore.Persistence.Model.Balance { Address = "a", Amount = 2m };
         Assert.NotEqual(snapshot.Digest, WalletPayoutBatch.Create("pool", balances).Digest);
         Assert.Equal(64, snapshot.Digest.Length);
     }
