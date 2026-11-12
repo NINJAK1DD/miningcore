@@ -68,7 +68,8 @@ public class WalletPayoutSetupTests : TestBase
         {
             var handler = new EquihashPayoutHandler(container, Substitute.For<IConnectionFactory>(), container.Resolve<IMapper>(),
                 Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(), Substitute.For<IBalanceRepository>(),
-                Substitute.For<IPaymentRepository>(), Substitute.For<IMasterClock>(), Substitute.For<IMessageBus>());
+                Substitute.For<IPaymentRepository>(), Substitute.For<IMasterClock>(), Substitute.For<IMessageBus>(),
+                new ActiveBlockGracePeriodTracker());
             await handler.ConfigureAsync(new ClusterConfig(), config, CancellationToken.None);
             await handler.PayoutAsync(pool, new[] { new Balance { Address = "recipient", Amount = 1m } }, CancellationToken.None);
         }
