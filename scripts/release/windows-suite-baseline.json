@@ -216,6 +216,26 @@
   ],
   "expected_skips": [
     {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "NonOwnerRuntime_PreflightAdmissionMetadataAndApiContract",
+      "case": "NonOwnerRuntime_PreflightAdmissionMetadataAndApiContract"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "PreflightRejectsMissingDeniedIncompatibleAndUnsafeControlWithoutOwnership",
+      "case": "PreflightRejectsMissingDeniedIncompatibleAndUnsafeControlWithoutOwnership"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "MigrationRejectsEffectiveWritePrivilegesAtomically",
+      "case": "MigrationRejectsEffectiveWritePrivilegesAtomically"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "OperatorLockAndHistoricalLoad_DoNotStrandConclusiveBatches",
+      "case": "OperatorLockAndHistoricalLoad_DoNotStrandConclusiveBatches"
+    },
+    {
       "class": "Miningcore.Tests.Benchmarks.Benchmarks",
       "method": "Run_Benchmarks",
       "case": "Run_Benchmarks"
