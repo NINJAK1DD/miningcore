@@ -20,6 +20,7 @@ public class ShareRepository : IShareRepository
 
     private sealed class AccountingGroupRow
     {
+        public Guid AccountingId { get; set; }
         public short ProjectionCount { get; set; }
         public string PayloadHash { get; set; }
     }
@@ -659,9 +660,8 @@ public class ShareRepository : IShareRepository
                     x.NewReceiptNotBefore).ToArray(),
             }, tx, cancellationToken: ct))).ToHashSet();
 
-        foreach(var batch in batches.Where(x => !insertedIds.Contains(
-                    x.AccountingId)))
-            await VerifyCommittedAccountingBatchAsync(con, tx, batch, ct);
+        await VerifyCommittedAccountingBatchesAsync(con, tx,
+            batches.Where(x => !insertedIds.Contains(x.AccountingId)).ToArray(), ct);
 
         var insertedBatches = batches.Where(x => insertedIds.Contains(
                 x.AccountingId)).ToArray();
@@ -882,14 +882,34 @@ public class ShareRepository : IShareRepository
                 "PPS credit application did not update the complete batch");
     }
 
-    private static async Task VerifyCommittedAccountingBatchAsync(IDbConnection con,
-        IDbTransaction tx, ShareAccountingBatch batch, CancellationToken ct)
+    private static async Task VerifyCommittedAccountingBatchesAsync(IDbConnection con,
+        IDbTransaction tx, IReadOnlyList<ShareAccountingBatch> batches, CancellationToken ct)
     {
-        const string groupQuery = @"SELECT projectioncount, payloadhash
-            FROM share_accounting_groups WHERE accountingid = @AccountingId";
-        var group = await con.QuerySingleOrDefaultAsync<AccountingGroupRow>(
-            new CommandDefinition(groupQuery, new { batch.AccountingId }, tx,
-                cancellationToken: ct));
+        if(batches.Count == 0)
+            return;
+
+        // Sender/receiver races can make an entire recorder batch a replay. Fetch
+        // its evidence together rather than performing five round trips per share.
+        // Keep all identity, count and payload checks, including retained projections.
+        const string query = @"SELECT accountingid, projectioncount, payloadhash
+            FROM share_accounting_groups WHERE accountingid = ANY(@ids);
+            SELECT * FROM shares WHERE accountingid = ANY(@ids);
+            SELECT * FROM pps_share_credits WHERE accountingid = ANY(@ids)";
+        using var evidence = await con.QueryMultipleAsync(new CommandDefinition(query,
+            new { ids = batches.Select(x => x.AccountingId).ToArray() }, tx,
+            cancellationToken: ct));
+        var groups = (await evidence.ReadAsync<AccountingGroupRow>()).ToDictionary(x => x.AccountingId);
+        var shares = (await evidence.ReadAsync<Entities.Share>()).ToLookup(x => x.AccountingId);
+        var credits = (await evidence.ReadAsync<PpsCreditRow>()).ToLookup(x => x.AccountingId);
+
+        foreach(var batch in batches)
+            VerifyCommittedAccountingBatch(batch, groups.GetValueOrDefault(batch.AccountingId),
+                shares[batch.AccountingId].ToArray(), credits[batch.AccountingId].ToArray());
+    }
+
+    private static void VerifyCommittedAccountingBatch(ShareAccountingBatch batch,
+        AccountingGroupRow group, Entities.Share[] committedShares, PpsCreditRow[] committedCredits)
+    {
 
         if(group == null || group.ProjectionCount != batch.Shares.Length ||
            !string.Equals(group.PayloadHash, batch.PayloadHash,
@@ -903,33 +923,18 @@ public class ShareRepository : IShareRepository
                 $"Share accounting id {batch.AccountingId:N} conflicts with committed evidence");
         }
 
-        const string shareCountQuery = @"SELECT count(*) FROM shares
-            WHERE accountingid = @AccountingId";
-        var shareCount = await con.QuerySingleAsync<int>(new CommandDefinition(
-            shareCountQuery, new { batch.AccountingId }, tx, cancellationToken: ct));
-        const string creditCountQuery = @"SELECT count(*) FROM pps_share_credits
-            WHERE accountingid = @AccountingId";
-        var creditCount = await con.QuerySingleAsync<int>(new CommandDefinition(
-            creditCountQuery, new { batch.AccountingId }, tx, cancellationToken: ct));
-
         // Each pool prunes settled share rows on its own payout boundary. A paired group may
         // therefore retain any subset of its original projections. The group and all original
         // rows were inserted in one transaction, so the durable payload hash is proof that a
         // smaller current set is retention, not a partial initial commit. PPS credits are durable
         // replay evidence and must remain complete.
-        if(shareCount > batch.Shares.Length ||
-           creditCount != batch.PpsCredits.Length)
+        if(committedShares.Length > batch.Shares.Length ||
+           committedCredits.Length != batch.PpsCredits.Length)
             throw new InvalidDataException(
                 $"Share accounting id {batch.AccountingId:N} is incomplete; preserve recovery evidence and stop");
 
-        if(shareCount > 0)
+        if(committedShares.Length > 0)
         {
-            const string shareQuery = @"SELECT * FROM shares
-                WHERE accountingid = @AccountingId";
-            var committedShares = (await con.QueryAsync<Entities.Share>(
-                new CommandDefinition(shareQuery, new { batch.AccountingId }, tx,
-                    cancellationToken: ct))).ToArray();
-
             foreach(var actual in committedShares)
             {
                 var expected = batch.Shares.SingleOrDefault(x =>
@@ -955,12 +960,6 @@ public class ShareRepository : IShareRepository
                         $"Share accounting id {batch.AccountingId:N} conflicts with committed projection evidence");
             }
         }
-
-        const string creditQuery = @"SELECT * FROM pps_share_credits
-            WHERE accountingid = @AccountingId";
-        var committedCredits = (await con.QueryAsync<PpsCreditRow>(
-            new CommandDefinition(creditQuery, new { batch.AccountingId }, tx,
-                cancellationToken: ct))).ToArray();
 
         foreach(var expected in batch.PpsCredits)
         {
