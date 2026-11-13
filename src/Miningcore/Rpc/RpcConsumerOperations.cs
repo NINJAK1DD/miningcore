@@ -111,7 +111,6 @@ internal static class RpcConsumerOperations
         "CryptonotePool.SetupJobManager",
         "EquihashJobManager.SubmitVeruscoinBlockAsync",
         "EquihashJobManager.UpdateJob",
-        "EquihashPayoutHandler.DetectPayoutCapabilitiesAsync",
         "EquihashPayoutHandler.PayoutSendCurrencyAsync",
         "EquihashPayoutHandler.PayoutZSendManyAsync",
         "EquihashPayoutHandler.ShieldCoinbaseAsync",
