@@ -4,6 +4,14 @@ This mandatory control stops **new wallet payout batches** across cooperating
 Miningcore processes using one PostgreSQL database. It starts paused and has no
 configuration bypass. It supplements ownership, reconciliation and coordinated shutdown.
 
+This release also changes **PPS share acknowledgements independently of wallet pause**.
+A positive PPS response waits for a committed accounting receipt/liability or the
+authenticated, force-flushed recovery journal. A relay sender persists that evidence
+locally in the shared accounting database before acknowledging the miner. ZeroMQ
+publication is not the durability boundary. Non-PPS statistical shares retain their
+existing acknowledgement contract. Treat wallet admission and PPS durability as two
+separate operational contracts when deploying and monitoring this change.
+
 ## Scope and race boundary
 
 The administrator-owned `miningcore_payout_control` schema is database-wide,
@@ -21,6 +29,9 @@ finishes and accounting persists. Pause commits without waiting. Resume and furt
 admission refuse outstanding batches. Keep operator transactions short. Admission
 uses a two-second server lock timeout: a confirmed lock timeout defers the batch
 until the next cycle, without retaining ownership solely for that attempt.
+An explicit PostgreSQL statement cancellation (`57014`) also confirms rollback and
+defers admission. Client cancellation, transport timeouts and lost replies do not
+prove rollback and retain conservative ownership handling.
 Completion does not lock the state row, so an open pause transaction cannot prevent
 a conclusive payout from completing. Completion is idempotent for the same batch,
 owner and generation; at most three attempts use the original guard session.
@@ -371,3 +382,162 @@ cap PPS liabilities, pending blocks or disk growth indefinitely. Operators must 
 disk space, queue pressure and recovery evidence and stop admission before exhausting capacity.
 Keep all participating versions on the same protocol and accounting database. Direct coinbase,
 already admitted/broadcast work and external wallet tools retain the scope exclusions above.
+
+### Review hardening: bounded and authenticated relay transport
+
+PPS relay deployments now require a randomly generated `sharedEncryptionKey` of
+at least 32 characters on the publisher and every receiver endpoint. Generate at
+least 32 random bytes (for example, `openssl rand -base64 32`) and protect the
+configuration file. PPS publishers must bind; connect-mode publishers cannot use
+the required CURVE server identity. Configured PPS routes remain protected when
+payment processing is disabled. All peers need the same trusted publisher key;
+coordinate key rotation across the publisher and receivers.
+
+CURVE encrypts transport and pins the publisher identity at each receiver. It does
+not impose a subscriber allowlist: restrict relay listeners to the intended hosts
+or private network. The real ZeroMQ regression rejects an impersonating publisher
+with a different key before any share reaches accounting, then accepts the pinned
+publisher. See the upstream [CURVE authentication model](https://libzmq.readthedocs.io/en/zeromq4-1/zmq_curve.html).
+
+The relay queues immutable serialized frames, bounded to **4,096 messages and
+16 MiB of payload**, with a **1 MiB per-message limit**. Native socket high-water
+marks are 128 and the receiver's managed native-message queue is 128. These limits
+bound queued data, not total process memory or storage growth. Oversized input,
+serialization failure, queue saturation or publisher failure closes admission and
+requests fail-stop. A rejected publication cannot yield a positive miner response.
+Previously acknowledged PPS liabilities remain owned by the local recorder and
+can be replayed without another credit or statistical row.
+
+The six Prometheus series are `miningcore_share_relay_queue_depth`,
+`miningcore_share_relay_queue_high_watermark`, `miningcore_share_relay_queue_capacity`,
+`miningcore_share_relay_queue_bytes`, `miningcore_share_relay_queue_byte_capacity`,
+and `miningcore_share_relay_queue_rejected_total`. Alert on rising pressure and any
+rejection. PUB/SUB can discard network copies when a receiver is absent or slow;
+neither a successful socket send nor these queue gauges prove delivery. The local
+PPS receipt/journal, shared database and replay identity provide financial durability.
+
+Receiver-origin metadata is assigned locally and cannot be supplied by a protobuf
+publisher. Received replay copies retain the normal five-second recorder batching
+window; only locally acknowledged PPS shares bypass it. Startup uses enabled PPS
+configuration, while each share's actual credit evidence controls durability. This
+preserves already issued liabilities across configuration changes and avoids
+double-writing ordinary statistical traffic on mixed relay senders. The existing
+PPS API/configuration guards already reject ordinary runtime disable requests;
+the defensive regression also exercises a disabled-scheme object directly.
+
+Equihash caches only conclusive capability probes across handler recreation and
+invalidates them when wallet configuration changes. Failed probes are retried;
+ambiguous parameterized probes still require reconciliation. Privacy-policy-capable
+wallets calculate their conventional transaction fee instead of receiving a fixed
+legacy fee. Xelis activation supplies the configured daemon origin, which must be
+reachable from the wallet's network namespace; activation defers spending until a
+later cycle and the wallet's integer scan height must catch up to the daemon.
+
+Pool IDs longer than 200 characters are rejected at configuration load. A payout
+whose accounting succeeded but control completion could not be recorded emits a
+distinct `CompletionUnrecorded` financial incident, rather than a zero-amount
+payment failure. It does not authorize resending the payment.
+
+### Updated review verification (13 November 2026)
+
+The live matrix below passed all ten cases at implementation
+`4c1ea986fdb33109e98f7e9b57dd706d2f6f8c46`. The full Linux lab suite at that
+revision passed **6,456 tests, zero failures, nine opt-in skips** (6,465 total,
+32m31s), including all four additional Issue #291 scenarios. Its paused relay
+soak ran **624.3 seconds**, recording **5,950 unique credits**, exact **29.750 BTC
+regtest liability**, 64 pending blocks, two pause heartbeats, queue high-water
+**49/512**, **11,812,864 bytes** storage growth and zero wallet sends. Mixed
+local pause, 256-block backlog/restarts and PostgreSQL/journal interruption also
+passed. The earlier 12 November measurements above remain historical evidence.
+
+| Wallet family | Verified implementation | Live result |
+| --- | --- | --- |
+| CryptoNote | Monero 0.18.5.4 | Successful payment; accepted submission followed by response loss and cancellation retains uncertainty |
+| Conceal | 6.7.6 | Successful payment with the default anonymity policy; both ambiguous-outcome cases preserve liability/ownership |
+| Zano | 2.2.3.608 upstream testnet build | Unsupported split-transfer fallback and actual payment to a separate wallet; both ambiguous-outcome cases pass |
+| Equihash | Zcash 6.20.0 Sapling regtest | Unsupported `sendcurrency` fallback, shielding and conventional-fee payment; both ambiguous-outcome cases pass |
+| Xelis | 1.25.0 (`b149b57a`) devnet | Actual offline/online activation defers one cycle, injected stale scan height defers spending, normal height allows payment; both ambiguous-outcome cases pass |
+
+Each case verifies paused admission makes no spending call, then records exactly
+one successful payment and completed admission. After a second real accepted
+submission loses its response or is cancelled, no payment retry or balance reset
+is allowed: the liability, outstanding admission and payout ownership remain,
+and resume is rejected. The Xelis lag case injects stale metadata into the real
+wallet RPC response; it does not claim a live network catch-up experiment. These
+results cover the pinned products/versions, not every compatible wallet version.
+Private-chain funding, Debug peer-guard behavior and reproduction commands are
+in the [lab guide](../scripts/test-lab/README.md#wallet-compatibility-matrix).
+
+The final capacity investigation found a replay verification bottleneck when
+sender and receiver competed to commit the same receipt. Commit
+`1cd9d90797ebb5bc94bf85e9cd3709200490766d` replaces up to five queries per replayed
+share with three batched evidence reads in one database command. It retains
+receipt hashes, projection/credit identities, counts, exact values and retention
+checks. The regression reorders a full batch, includes pruned projections,
+rejects corrupt projection/credit evidence and rolls back newly registered
+receipts when any replay is invalid. The complete native/managed build passed
+its warning audit with zero warnings/errors; seven focused accounting/capacity
+cases passed without skips. [.NET CI](https://github.com/NINJAK1DD/miningcore/actions/runs/43446565130),
+[release CI](https://github.com/NINJAK1DD/miningcore/actions/runs/43446565032) and
+[listener portability](https://github.com/NINJAK1DD/miningcore/actions/runs/43446565158)
+all passed that implementation.
+
+#### Measured PPS capacity
+
+The independently sampled run used the same compiled implementation at checkout
+`d7e99a425f7` (only lab scripts changed), .NET SDK 10.0.404, Npgsql 9.0.3 and
+PostgreSQL 18 on Ubuntu/WSL2 kernel 6.18.54.1. Hardware exposed 32 logical CPUs
+on a Ryzen 9 5950X; PostgreSQL and the checkout used the WSL ext4 virtual disk.
+Each topology offered 60,000 shares over 60 seconds, then 10,000 shares as a burst.
+The relay case used real CURVE transport and a second recorder in the same database.
+
+| Topology / phase | Offered time | Ack p95 / p99 | Maximum ack | Ack drain after offering | Primary queue high-water / 65,536 |
+| --- | --- | --- | --- | --- | --- |
+| Local, 1,000/s | 59.998 s | 21.162 / 22.919 ms | 35.396 ms | 0.016 s | 19 |
+| Local, 10,000 burst | 0.041 s | 1,262.103 / 1,320.233 ms | 1,320.451 ms | 1.320 s | 9,743 |
+| Relay, 1,000/s | 60.001 s | 26.631 / 38.023 ms | 183.305 ms | 0.039 s | 128 |
+| Relay, 10,000 burst | 0.113 s | 1,584.363 / 1,651.744 ms | 1,652.122 ms | 1.651 s | 9,749 |
+
+| Topology / phase | Database commits | WAL bytes generated | Managed process CPU time |
+| --- | --- | --- | --- |
+| Local, 1,000/s | 11,271 (about 188/s) | 167,726,144 | 26.010 s |
+| Local, burst | 91 | 38,573,752 | 0.408 s |
+| Relay, 1,000/s | 10,926 (about 182/s) | 177,276,560 | 38.943 s |
+| Relay, burst | 155 | 27,200,264 | 1.295 s |
+
+All 70,001 acknowledged shares per topology (including warm-up) had exactly one
+statistical row and PPS credit and the exact total balance. Primary queues drained
+to zero; there was no overflow, recovery-journal fallback or fail-stop. Relay queue
+high-water was **18/4,096** sustained and **87/4,096** during the burst, with zero
+rejections and zero queued bytes at each measurement. Queue high-water is cumulative
+within a topology. Ack drain measures the financial acknowledgement boundary, not
+proof of delivery of every PUB/SUB network copy.
+
+Across 129 one-second samples, aggregate PostgreSQL CPU averaged **4.12% of one
+logical CPU** (peak 11%). Virtual-disk write-weighted `w_await` was **4.02 ms**,
+with a maximum sampled average of 10.60 ms and mean utilization 2.85%. These are
+shared-host observations: `pidstat` includes all matching PostgreSQL processes,
+`iostat` includes other activity on that virtual disk, and per-process disk byte
+counters were unavailable (`-1`). Raw PostgreSQL WAL/client-I/O timing snapshots
+are also retained in the TRX; those snapshots are cumulative, whereas the table's
+commit/WAL numbers are phase deltas. Virtualized flush timings are not physical
+power-loss guarantees or a production storage SLA.
+
+The unoptimized measured relay p99 was 6,644 ms and burst drain 7.921 s; retaining
+that evidence explains the additional optimization rather than concealing the
+initial capacity result. Separate saturation, wrong-publisher-key, 300-ms healthy
+SQL delay, explicit SQLSTATE 57014 rollback, disabled-PPS statistical traffic and
+uncertain-commit/waiter-failure regressions also passed in the full suite.
+
+Private evidence is retained under `build/test-lab`: `review-final-all.trx`,
+`review-wallet-matrix.trx`, `updated-review-batched-build.log`,
+`updated-review-batched.trx` and `pps-capacity-sLeUuDmo/` (TRX, CPU/kernel/filesystem,
+PostgreSQL CPU and device-I/O samples). The prior capacity run is
+`pps-capacity-bKuLF1oz/`. Wallet manifests/logs stay in restricted lab directories
+and must not be published. The Windows baseline validates 115 required regression
+cases, exactly 226 skips and a 6,247-test discovery floor; all 18 evidence-validator
+self-tests and documentation link checks passed. No production resources were used.
+
+Subsequent full-suite results and the exact tested revision are recorded in the
+[PR validation section](https://github.com/NINJAK1DD/miningcore/pull/292). Documentation-only
+commits do not change the compiled implementation identified in the lab evidence.
