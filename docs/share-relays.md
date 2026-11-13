@@ -12,7 +12,8 @@ guide before populating or deploying those files.
 
 - A **relay sender** accepts miners and publishes validated ordinary shares through `shareRelay`.
   Correlated merged-mining projections travel as one envelope, never two independent messages.
-  It does not run the local ordinary-share recorder.
+  A sender with PPS pools also runs a local recorder for PPS envelopes; other ordinary shares
+  remain the receiver's responsibility.
 - A **receiver/recorder** subscribes through `shareRelays`, writes ordinary shares to PostgreSQL and
   is normally the only payout/reconciliation owner.
 - A direct node can also subscribe to senders. When `shareRelays` is configured, internal Stratum
@@ -28,13 +29,13 @@ synchronously on the submitting node; see the [merged-mining guide](merged-minin
 
 The ordinary-share relay is ZeroMQ PUB/SUB, not an acknowledged durable queue:
 
-- a sender's positive Stratum response proves admission to its local in-memory relay queue;
+- for statistical, non-PPS shares, a positive Stratum response proves admission to the local in-memory relay queue;
 - it does not prove that the receiver or PostgreSQL stored the share;
 - shares published while the receiver or route is unavailable are not replayed; and
 - sender restart or sudden host loss can discard queued ordinary shares.
 
 The receiver's PostgreSQL queue and recovery journal protect shares only after the receiver has
-received them. Monitor the complete route and accept this loss boundary before using relays. Merged
+received them. Monitor the complete route and accept this statistical-share loss boundary before using relays. Merged
 block candidates use separate synchronous PostgreSQL/recovery-journal persistence and are not
 delegated to ordinary PUB/SUB delivery.
 
@@ -54,9 +55,19 @@ minutes in the future is rejected, and the recorder re-evaluates the replay hori
 before its database transaction. Keep
 `paymentProcessing.shareAccountingRetentionDays` identical on senders, receivers, recorders and the
 payout owner; mismatched values can cause one host to reject evidence another still considers live.
-Every PPS sender also requires PostgreSQL and both candidate/accounting migrations. Ordinary shares
-still travel through the relay, but an accepted direct block is synchronously persisted on its
-submitting node and falls back to that node's protected recovery journal if PostgreSQL fails.
+Every PPS sender also requires PostgreSQL, local share partitions and both candidate/accounting
+migrations. Before acknowledging a PPS share, its local recorder must commit the share receipt,
+liability and balance atomically, or force-flush the authenticated recovery journal and terminal
+anchor. This applies while local payouts are paused and to either PPS projection in a paired
+envelope. Failed database and journal durability closes admission, suppresses positive responses
+and retains a startup-blocking incident; database recovery alone cannot clear it. A lost commit
+response remains uncertain and requires reconciliation.
+
+PPS envelopes still travel through the relay. Senders and receivers must use the **same accounting
+database**: immutable receipt identities deduplicate those writes. Separate databases sharing a
+wallet are not one accounting or emergency-stop domain. Do not deploy a PPS relay sender without
+its local recorder or rely on PUB/SUB delivery as proof of a liability. An accepted direct block
+also retains its separate synchronous candidate-persistence boundary and protected journal fallback.
 
 ## Recommended bind mode
 

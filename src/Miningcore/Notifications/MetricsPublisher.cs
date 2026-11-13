@@ -17,15 +17,17 @@ namespace Miningcore.Notifications;
 public class MetricsPublisher : StartupGatedBackgroundService
 {
     public MetricsPublisher(IMessageBus messageBus,
-        ISharePersistenceQueueMetricsProvider sharePersistenceMetrics = null) :
+        ISharePersistenceQueueMetricsProvider sharePersistenceMetrics = null,
+        IShareRelayQueueMetricsProvider relayMetrics = null) :
         this(messageBus, sharePersistenceMetrics, Metrics.DefaultFactory,
-            Metrics.DefaultRegistry)
+            Metrics.DefaultRegistry, relayMetrics)
     {
     }
 
     internal MetricsPublisher(IMessageBus messageBus,
         ISharePersistenceQueueMetricsProvider sharePersistenceMetrics,
-        IMetricFactory metricFactory, CollectorRegistry registry)
+        IMetricFactory metricFactory, CollectorRegistry registry,
+        IShareRelayQueueMetricsProvider relayMetrics = null)
     {
         ArgumentNullException.ThrowIfNull(messageBus);
         ArgumentNullException.ThrowIfNull(metricFactory);
@@ -38,6 +40,28 @@ public class MetricsPublisher : StartupGatedBackgroundService
 
         if(sharePersistenceMetrics != null)
             registry.AddBeforeCollectCallback(PublishSharePersistenceMetrics);
+        if(relayMetrics != null)
+        {
+            var depth = metricFactory.CreateGauge("miningcore_share_relay_queue_depth", "Queued relay messages");
+            var high = metricFactory.CreateGauge("miningcore_share_relay_queue_high_watermark", "Maximum observed queued relay messages");
+            var capacity = metricFactory.CreateGauge("miningcore_share_relay_queue_capacity", "Relay message capacity");
+            var bytes = metricFactory.CreateGauge("miningcore_share_relay_queue_bytes", "Queued relay payload bytes");
+            var byteCapacity = metricFactory.CreateGauge("miningcore_share_relay_queue_byte_capacity", "Relay payload byte capacity");
+            var rejected = metricFactory.CreateCounter("miningcore_share_relay_queue_rejected_total", "Rejected relay publications; admission stops on rejection");
+            var publishGate = new object();
+            long published = 0;
+            registry.AddBeforeCollectCallback(() =>
+            {
+                lock(publishGate)
+                {
+                    var snapshot = relayMetrics.GetRelayQueueMetrics();
+                    depth.Set(snapshot.Depth); high.Set(snapshot.HighWatermark); capacity.Set(snapshot.Capacity);
+                    bytes.Set(relayMetrics.QueuedBytes); byteCapacity.Set(relayMetrics.ByteCapacity);
+                    if(snapshot.OverflowCount > published) rejected.Inc(snapshot.OverflowCount - published);
+                    published = Math.Max(published, snapshot.OverflowCount);
+                }
+            });
+        }
     }
 
     private static readonly ILogger logger = LogManager.GetCurrentClassLogger();

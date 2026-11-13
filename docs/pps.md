@@ -155,9 +155,14 @@ Litecoin Stratum endpoint and supply the Dogecoin beneficiary through the config
 parameter.
 
 Upgrade and migrate relay receivers/recorders before senders. Every sender that accepts PPS work
-also needs PostgreSQL, the candidate/accounting migrations and protected emergency-journal storage,
-because daemon-accepted direct candidates are persisted synchronously on the submitting node. Do
-not enable pooled merged mining or PPS during a mixed accounting-wire-version window.
+also needs PostgreSQL, local share partitions, the candidate/accounting migrations and protected
+emergency-journal storage. PPS responses wait for a local database commit or authenticated,
+force-flushed journal evidence, including while payouts are paused. A sender's local PPS recorder
+and the receiver deduplicate immutable receipts in the same accounting database; best-effort relay
+delivery is not a financial durability guarantee. If both storage paths fail, positive responses
+stop and a retained incident blocks restart pending reconciliation. Daemon-accepted direct candidates
+retain their synchronous persistence boundary. Do not enable pooled merged mining or PPS during a
+mixed accounting-wire-version window. See [relay durability](share-relays.md#durability-boundary).
 
 ## Pre-production checklist
 

@@ -324,6 +324,14 @@ public class NotificationService : StartupGatedBackgroundService,
     {
         var outcome = notification.Outcome;
 
+        if(outcome == PaymentNotificationOutcome.CompletionUnrecorded)
+        {
+            const string subject = "Payout Completion Unrecorded Notification";
+            const string guidance = "Database batch completion was not recorded. This is not a recipient payment failure or an unknown wallet outcome. Preserve payment receipts and reconcile the control record before restarting; do not resend payments based on this alert.";
+            return (subject, $"Pool {HtmlEncode(notification.PoolId)}: {guidance}",
+                $"Pool {notification.PoolId}: {guidance}", false);
+        }
+
         // Preserve the legacy object-initializer contract where Error alone represented failure.
         if(outcome == PaymentNotificationOutcome.Success && IsFinancialIncident(notification))
             outcome = PaymentNotificationOutcome.Failure;

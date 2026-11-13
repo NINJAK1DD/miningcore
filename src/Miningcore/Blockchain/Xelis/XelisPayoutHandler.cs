@@ -50,6 +50,7 @@ public class XelisPayoutHandler : PayoutHandlerBase,
     protected readonly IComponentContext ctx;
     private RpcClient rpcClient;
     private RpcClient rpcClientWallet;
+    private string walletDaemonAddress;
     private string network;
     private XelisPaymentProcessingConfigExtra extraPoolPaymentProcessingConfig;
     private int minConfirmations;
@@ -83,6 +84,9 @@ public class XelisPayoutHandler : PayoutHandlerBase,
             .ToArray();
 
         rpcClient = new RpcClient(daemonEndpoints.First(), jsonSerializerSettings, messageBus, pc.Id);
+        var daemonEndpoint = daemonEndpoints.First();
+        walletDaemonAddress = new UriBuilder(daemonEndpoint.Ssl ? "https" : "http",
+            daemonEndpoint.Host, daemonEndpoint.Port).Uri.AbsoluteUri;
 
         // configure wallet daemon
         var walletDaemonEndpoints = pc.Daemons
@@ -104,6 +108,11 @@ public class XelisPayoutHandler : PayoutHandlerBase,
 
         network = info.Response.Network;
 
+        minConfirmations = extraPoolPaymentProcessingConfig?.MinimumConfirmations ?? (network == "mainnet" ? 60 : 50);
+    }
+
+    private async Task<bool> EnsureWalletOnlineAsync(CancellationToken ct)
+    {
         // wallet daemon needs to be online
         var isOnline = await rpcClientWallet.ExecuteAsync<object>(logger, XelisWalletCommands.IsOnline, ct);
         if(isOnline.Error != null)
@@ -114,16 +123,19 @@ public class XelisPayoutHandler : PayoutHandlerBase,
         {
             logger.Warn(() => $"[{LogCategory}] '{XelisWalletCommands.DaemonName}' is offline...");
 
-            var setOnlineMode = await rpcClientWallet.ExecuteAsync<object>(logger, XelisWalletCommands.SetOnlineMode, ct);
+            var setOnlineMode = await rpcClientWallet.ExecuteAsync<object>(logger, XelisWalletCommands.SetOnlineMode, ct,
+                new SetOnlineModeRequest { DaemonAddress = walletDaemonAddress });
             if(setOnlineMode.Error != null)
                 throw new Exception($"'{XelisWalletCommands.SetOnlineMode}': {setOnlineMode.Error.Message} (Code {setOnlineMode.Error.Code})");
 
             // wallet daemon is online
             if((bool)setOnlineMode.Response)
                 logger.Info(() => $"[{LogCategory}] '{XelisWalletCommands.DaemonName}' is now online...");
+            // Activation is not a spend. Give the wallet a cycle to synchronize,
+            // then recheck online state before considering any payout.
+            return false;
         }
-
-        minConfirmations = extraPoolPaymentProcessingConfig?.MinimumConfirmations ?? (network == "mainnet" ? 60 : 50);
+        return true;
     }
 
     public virtual async Task<Block[]> ClassifyBlocksAsync(IMiningPool pool, Block[] blocks, CancellationToken ct)
@@ -254,6 +266,21 @@ public class XelisPayoutHandler : PayoutHandlerBase,
 
         if(amounts.Count == 0)
             return;
+
+        // Activating the wallet belongs to the admitted wallet batch, not accounting setup.
+        if(!await EnsureWalletOnlineAsync(ct))
+            return;
+        var chain = await rpcClient.ExecuteAsync<JObject>(logger, XelisCommands.GetChainInfo, ct);
+        var scanned = await rpcClientWallet.ExecuteAsync<JToken>(logger, XelisWalletCommands.GetTopoHeight, ct);
+        var chainHeight = chain.Response?["topoheight"];
+        if(chain.Error != null || chain.Response == null || scanned.Error != null ||
+            chainHeight?.Type != JTokenType.Integer || scanned.Response?.Type != JTokenType.Integer ||
+            !ulong.TryParse(chainHeight.ToString(), out var daemonHeight) ||
+            !ulong.TryParse(scanned.Response.ToString(), out var walletHeight) || walletHeight < daemonHeight)
+        {
+            logger.Warn(() => $"[{LogCategory}] Payout deferred until the online wallet has scanned the daemon topoheight");
+            return;
+        }
         
         var coin = poolConfig.Template.As<XelisCoinTemplate>();
 

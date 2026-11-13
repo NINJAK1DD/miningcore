@@ -20,6 +20,7 @@ internal sealed record PayoutOwnershipSnapshot
     public long? BatchRelationId { get; init; }
     public string EvidenceWarning { get; init; }
     public string ReleaseWarning { get; init; }
+    public string WalletControlWarning { get; init; }
     public long Generation { get; init; }
     public Guid? OwnerId { get; init; }
     public string OwnerHost { get; init; }
@@ -81,6 +82,7 @@ internal sealed class PostgresPayoutOwnershipRecovery(IConnectionFactory cf, Act
                 query, lockParameters, commandTimeout: 5, cancellationToken: ct));
             if(snapshot == null)
                 throw new PayoutRecoveryException(OwnershipMigration, ProcessExitCodes.GeneralFailure);
+            snapshot = snapshot with { WalletControlWarning = await WalletControlWarningAsync(con, null, ct) };
             if(snapshot.OwnerId == null || snapshot.LockHeld)
                 return snapshot;
 
@@ -142,6 +144,25 @@ internal sealed class PostgresPayoutOwnershipRecovery(IConnectionFactory cf, Act
         }
     }
 
+    private static async Task<string> WalletControlWarningAsync(IDbConnection con, IDbTransaction tx, CancellationToken ct)
+    {
+        try
+        {
+            // Legacy ownership recovery remains available before the control is
+            // installed; the new manager's mandatory preflight still blocks startup.
+            if(!await con.ExecuteScalarAsync<bool>(new CommandDefinition(
+                "SELECT to_regnamespace('miningcore_payout_control') IS NOT NULL",
+                transaction: tx, commandTimeout: 5, cancellationToken: ct)))
+                return null;
+            var control = await WalletPayoutControlState.ReadAsync(con, ct, tx);
+            return control.OutstandingBatches == 0 ? null : "Outstanding wallet-control batches block recovery. Stop and verify all wallet processes, pause, reconcile wallet/accounting evidence, then run reconcile_batch before releasing ownership or restarting. See docs/emergency-wallet-stop.md.";
+        }
+        catch(Exception) when(!ct.IsCancellationRequested)
+        {
+            return "Wallet-control evidence could not be read. Protection was kept; ask the control administrator to inspect outstanding batches before recovery.";
+        }
+    }
+
     public async Task<PayoutRecoveryReceipt> ReleaseAsync(PayoutOwnershipSnapshot inspected, string incidentReference, CancellationToken ct)
     {
         if(inspected.OwnerId == null || inspected.LockHeld)
@@ -159,6 +180,9 @@ internal sealed class PostgresPayoutOwnershipRecovery(IConnectionFactory cf, Act
                    "SELECT pg_try_advisory_xact_lock(@lockNamespace, @lockKey)", lockParameters, tx,
                    commandTimeout: 5, cancellationToken: ct)))
                 throw new PayoutRecoveryException("A payout manager now holds the database lock. Protection was kept.");
+            var walletWarning = await WalletControlWarningAsync(con, tx, ct);
+            if(walletWarning != null)
+                throw new PayoutRecoveryException(walletWarning);
             var table = Table(inspected.Schema, "payout_manager_ownership");
             await con.ExecuteAsync(new CommandDefinition(
                 $"SET LOCAL lock_timeout='5s'; LOCK TABLE {table} IN ROW EXCLUSIVE MODE",
@@ -287,6 +311,11 @@ internal static class PayoutOwnershipRecoveryAssistant
         while(true)
         {
             var snapshot = await recovery.InspectAsync(ct);
+            if(snapshot.WalletControlWarning != null)
+            {
+                await output.WriteLineAsync(snapshot.WalletControlWarning);
+                return await KeepAsync(output);
+            }
             if(snapshot.OwnerId == null && !snapshot.LockHeld)
             {
                 if(!quietIfUnowned)
@@ -334,6 +363,11 @@ internal static class PayoutOwnershipRecoveryAssistant
                 return PayoutRecoveryResult.Kept;
             }
             snapshot = fresh;
+            if(snapshot.WalletControlWarning != null)
+            {
+                await output.WriteLineAsync(snapshot.WalletControlWarning);
+                return await KeepAsync(output);
+            }
             await ShowOwnerAsync(snapshot, output);
             if(snapshot.ReleaseWarning != null)
             {

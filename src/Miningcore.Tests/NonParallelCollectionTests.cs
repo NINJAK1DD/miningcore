@@ -109,7 +109,8 @@ public class NonParallelCollectionTests
                 typeof(BitcoinVersionRollingRegtestTests), typeof(BitcoinBlake2bRegtestTests),
                 typeof(BitcoinBlake2bMaturityRegtestTests),
                 typeof(BitcoinBlake2bUpgradePaymentTests),
-                typeof(BitcoinBlake2bStartupTests), typeof(MergedMiningPayoutRegtestTests) } };
+                typeof(BitcoinBlake2bStartupTests), typeof(MergedMiningPayoutRegtestTests),
+                typeof(WalletPayoutControlIntegrationTests) } };
         yield return new object[] { typeof(WarthogWalletSecrecyCollection),
             new[] { typeof(WarthogWalletAddressTests) } };
         yield return new object[] { typeof(RpcDiagnosticCollection),

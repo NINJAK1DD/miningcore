@@ -15,9 +15,13 @@ public class Share
 {
     private Task persistenceAdmission = Task.CompletedTask;
 
+    // Receiver-owned provenance, never accepted from the wire.
+    [ProtoIgnore]
+    internal bool IsRelayed { get; set; }
+
     /// <summary>
-    /// Runtime-only completion used by the local Stratum admission path when a saturated
-    /// persistence queue diverts this share to the bounded emergency journal writer.
+    /// Runtime-only durability completion for PPS acceptance and for shares diverted
+    /// from a saturated persistence queue to the bounded emergency journal writer.
     /// </summary>
     [ProtoIgnore]
     internal Task PersistenceAdmission => Volatile.Read(ref persistenceAdmission);

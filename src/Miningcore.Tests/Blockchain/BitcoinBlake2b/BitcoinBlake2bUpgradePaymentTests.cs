@@ -47,9 +47,14 @@ public class BitcoinBlake2bUpgradePaymentTests : TestBase
         foreach(var broadcast in new[] { true, false })
         {
             await using var db = await BitcoinBlake2bLedgerProbe.CreateAsync(fullSchema: true);
+            // Knots can backdate a wallet transaction's anti-fee-sniping locktime
+            // by up to 99 blocks. At the shared fixture's default height 110,
+            // that can randomly hit its unrelated CAT21 rejection (locktime 21).
+            // Keep the released policy enabled and fund above that entire window.
             await using var node = await Node.StartAsync(broadcast,
                 Environment.GetEnvironmentVariable(BitcoinBlake2bIntegrationFactAttribute.BinaryEnvironmentVariable),
-                new[] { "-testactivationheight=blake2b@20", "-blake2b_headline=Miningcore BLAKE2b regtest", "-persistmempool=0" });
+                new[] { "-testactivationheight=blake2b@20", "-blake2b_headline=Miningcore BLAKE2b regtest", "-persistmempool=0" },
+                initialBlocks: 200);
             var address = await node.GetNewAddressAsync();
             var config = new PoolConfig
             {

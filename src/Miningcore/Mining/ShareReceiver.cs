@@ -64,7 +64,8 @@ public class ShareReceiver : BackgroundService
     private readonly ConcurrentDictionary<string, PoolContext> pools = new();
     private readonly ConcurrentDictionary<string, byte> offlineAccountingWarnings =
         new(StringComparer.Ordinal);
-    private readonly BufferBlock<(string Url, ZMessage Message)> queue = new();
+    private readonly BufferBlock<(string Url, ZMessage Message)> queue = new(
+        new DataflowBlockOptions { BoundedCapacity = 128 });
     internal int AttachedPoolCount => pools.Count;
 
     readonly JsonSerializer serializer = new()
@@ -101,6 +102,7 @@ public class ShareReceiver : BackgroundService
     public override async Task StartAsync(CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        ShareRelaySecurity.Validate(clusterConfig);
 
         if(clusterConfig.ShareRelays != null)
         {
@@ -173,7 +175,23 @@ public class ShareReceiver : BackgroundService
                                     {
                                         lastMessageReceived[i] = clock.Now;
 
-                                        queue.Post((relays[i].Url, msg));
+                                        // Bound retained native messages too. Block this socket
+                                        // poller, never a Stratum admission thread, when full.
+                                        try
+                                        {
+                                            if(!queue.SendAsync((relays[i].Url, msg), ct).GetAwaiter().GetResult())
+                                                msg.Dispose();
+                                        }
+                                        catch
+                                        {
+                                            msg.Dispose();
+                                            // PollIn transferred all returned native messages to us.
+                                            // Cancellation while waiting for queue space must also
+                                            // release messages from endpoints not yet visited.
+                                            for(var pending = i + 1; pending < messages.Length; pending++)
+                                                messages[pending]?.Dispose();
+                                            throw;
+                                        }
                                     }
 
                                     else if(clock.Now - lastMessageReceived[i] > reconnectTimeout)
@@ -235,6 +253,9 @@ public class ShareReceiver : BackgroundService
     private static ZSocket SetupSubSocket(ShareRelayEndpointConfig relay, bool silent = false)
     {
         var subSocket = new ZSocket(ZSocketType.SUB);
+        subSocket.ReceiveHighWatermark = 128;
+        subSocket.MaxMessageSize = ShareRelay.MaximumPayloadBytes;
+        subSocket.Linger = TimeSpan.Zero;
         subSocket.SetupCurveTlsClient(relay.SharedEncryptionKey, logger);
         subSocket.Connect(relay.Url);
         subSocket.SubscribeAll();
@@ -280,6 +301,8 @@ public class ShareReceiver : BackgroundService
 
     private void ProcessMessage(string url, ZMessage msg)
     {
+        if(msg.Count != 3 || msg[1].Length != sizeof(uint))
+            throw new InvalidDataException("Invalid share relay frame count or flags");
         // extract frames
         var topic = msg[0].ToString(Encoding.UTF8);
         var flags = msg[1].ReadUInt32();
@@ -455,6 +478,7 @@ public class ShareReceiver : BackgroundService
     {
         if(share == null)
             return;
+        share.IsRelayed = true;
 
         // Ordinary shares normally retain the receiver-local timestamp used by existing
         // hashrate accounting. A merged-parent statistical share or a share whose block record
@@ -489,6 +513,7 @@ public class ShareReceiver : BackgroundService
             finally
             {
                 disposables.Dispose();
+                while(queue.TryReceive(out var pending)) pending.Message.Dispose();
             }
         }
     }

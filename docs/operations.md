@@ -1,5 +1,9 @@
 # Miningcore operator handbook
 
+For a database-wide stop of new wallet payout batches, use the authenticated
+[emergency wallet control protocol](emergency-wallet-stop.md). Outstanding batches
+must finish or be explicitly reconciled; pause does not establish wallet idleness.
+
 This is the day-to-day checklist for a production Miningcore service. It deliberately links to the
 authoritative procedures instead of duplicating recovery SQL or release commands.
 
