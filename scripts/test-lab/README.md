@@ -63,6 +63,97 @@ The forced rebuild prevents `PreserveNewest` from retaining stale `coins.json`, 
 or example configuration after syncing older source timestamps. Do not remove it when
 reusing a persistent lab. NuGet auditing must remain enabled.
 
+## Wallet compatibility matrix
+
+The additional wallet fixtures use disposable private chains and production payout
+handlers, the real wallet RPCs, a real PostgreSQL control lease, and an HTTP proxy
+that can discard an accepted spending response or hold it until client cancellation.
+No production wallet, password or public-chain funding is needed.
+
+Install the pinned tools as the ordinary lab user in a private directory. The
+installer verifies SHA-256 before extraction and does not run package maintainer
+scripts or install wallets on the system PATH. Python 3.12+ is required for safe
+archive extraction. Zano needs a separate upstream **testnet** build: its mainnet
+release refuses fresh-chain spending below its built-in checkpoints.
+
+```bash
+sudo apt-get install -y g++-12 cmake git curl python3 libssl-dev libzstd-dev libjitterentropy3-dev
+wallet_root="$HOME/miningcore-test-lab/wallet-compatibility"
+python3 scripts/test-lab/install-wallet-compatibility.py "$wallet_root"
+bash scripts/test-lab/build-zano-testnet.sh "$wallet_root"
+python3 scripts/test-lab/with-wallets.py --root "$wallet_root" -- \
+  bash scripts/test-lab/with-postgres.sh dotnet test \
+  src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --no-restore \
+  --filter 'FullyQualifiedName~LiveWalletCompatibility' \
+  --logger 'trx;LogFileName=live-wallets.trx' --results-directory build/test-lab
+```
+
+These package names are for the documented Ubuntu 26.04 lab. Build Miningcore first
+with the verified SDK and export the ordinary lab daemon variables, including
+`MININGCORE_TEST_BITCOIND`, as described above. To include the matrix in the full
+suite, omit the filter. The wrapper sets `MININGCORE_TEST_WALLET_MANIFEST`, waits
+for funding, runs the command, then stops only the process groups it created.
+Without that opt-in, the wallet theory is explicitly skipped. Evidence, wallet
+files and logs remain under a mode-0700 run directory; do not publish its manifest
+or wallet logs, which may contain disposable wallet secrets.
+
+| Family | Pinned wallet | Private-chain setup |
+| --- | --- | --- |
+| CryptoNote | Monero 0.18.5.4 | Regression chain, fixed difficulty, offline daemon; only the lab `fakechain` network label is normalized for the handler |
+| Conceal | 6.7.6 | Testnet, loopback-exclusive peers, 40 normally validated difficulty-one blocks with target-spaced timestamps; default anonymity remains five |
+| Zano | 2.2.3.608, source `09c052615e8327aca7d8c849f80d97f3342cc3d4` | Upstream `TESTNET=ON`, GCC 12 and checksum-pinned Boost 1.83; only gold-to-BFD linker selection changes; 30 validated private blocks |
+| Equihash | Zcash 6.20.0 | Sapling regtest, no peers, legacy address RPCs explicitly enabled; blocks continue to mature asynchronous shielding/payments |
+| Xelis | 1.25.0 (`b149b57a`) | Devnet's explicit PoW-skip funding mode, loopback-exclusive peers, authenticated wallet RPC |
+
+Zcash is a legacy compatibility fixture; it does not establish compatibility with
+Zebra/Zallet or recommend deploying the retired wallet. See the upstream
+[zcashd retirement notice](https://github.com/zcash/zcash/blob/master/doc/book/src/user/end-of-life.md).
+Sapling parameters are bundled by this version; no Sprout parameter download is
+needed. These Debug lab tests retain the project's Debug peer-guard behavior for
+isolated networks. They do not claim production network synchronization or live
+TCP miner coverage.
+
+Each family verifies paused admission, a successful real payment and exact
+accounting, then accepted submission followed by response loss and cancellation.
+Uncertainty must preserve the unpaid liability and outstanding admission, retain
+ownership, and refuse resume. Xelis additionally goes offline through its actual
+wallet RPC, reactivates through Miningcore, and defers spending for that cycle.
+The stale-height case deliberately injects lagging scan metadata into the real
+wallet's response; the regular height read must subsequently permit payment.
+
+## PPS capacity and relay saturation
+
+The requested capacity target is 1,000 shares/second for 60 seconds, followed by
+a 10,000-share burst. `PpsCapacity_Sustains1000PerSecondAndRecovers10000ShareBurst`
+and `PpsRelayCapacity_Sustains1000PerSecondAndRecovers10000ShareBurst` exercise
+the production Stratum acknowledgement boundary and PostgreSQL recorder, including
+real CURVE publication/receiver deduplication in the second case. They record
+acknowledgement p95/p99/max, queue high-water marks, managed CPU, commit counts,
+WAL bytes and PostgreSQL I/O timing. Every acknowledged share must have exactly
+one statistical row and credit and the exact aggregate liability, with no overflow,
+journal fallback or fail-stop. The offered-rate and recovery deadlines are asserted.
+
+For process CPU and device latency, stop unrelated lab work first, install
+`sysstat`, retain the SDK/daemon environment, and run:
+
+```bash
+bash scripts/test-lab/measure-pps-capacity.sh
+```
+
+The private results directory contains the commit, CPU/kernel/filesystem identity,
+TRX, PostgreSQL `pidstat` samples and `iostat` device samples. Device measurements
+describe the WSL virtual disk and may include other host activity; they are not a
+production storage SLA. Repeat on the intended deployment hardware before sizing
+it beyond the measured workload.
+
+`PpsRelayOverload_BoundsMemoryAndPreservesAcknowledgedLiabilities` independently
+holds transport processing, saturates an eight-message test queue with no receiver,
+and proves bounded rejection/fail-stop plus recovery without losing or duplicating
+acknowledged PPS liabilities. `PpsHealthySlowDatabase_KeepsEveryResponsePendingUntilCommit`
+holds a real database lock for 300 ms and checks that all 100 responses remain
+pending until commit. The normal production recorder capacity remains 65,536;
+small capacities in saturation fixtures intentionally reach failure boundaries.
+
 ## Optional TCP Stratum payout-pause staging smoke
 
 Run this manually before adopting a release on an isolated LTC/DOGE staging deployment.
