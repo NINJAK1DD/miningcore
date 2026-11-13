@@ -1,7 +1,7 @@
 {
-  "source_commit": "f9b055e9c8e5177dbdfb38ea19019215a828698a",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43230058390",
-  "minimum_total": 6229,
+  "source_commit": "5e398e62e37155405dfefddfbbfd9a8b2616b857",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43405824198",
+  "minimum_total": 6247,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -527,6 +527,56 @@
       "class": "Miningcore.Tests.ProgramPoolTemplateTests",
       "method": "PpsRelaySender_RegistersRecorderAndRequiresSharePartitionsEvenWhilePaused",
       "case": "PpsRelaySender_RegistersRecorderAndRequiresSharePartitionsEvenWhilePaused"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "PoolIdFitsAuditedWalletBatchMetadata",
+      "case": "PoolIdFitsAuditedWalletBatchMetadata(length: 200, valid: True)"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "PoolIdFitsAuditedWalletBatchMetadata",
+      "case": "PoolIdFitsAuditedWalletBatchMetadata(length: 201, valid: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ShareRelayHardeningTests",
+      "method": "OversizedPayloadRejectsAdmissionWithoutQueuingIt",
+      "case": "OversizedPayloadRejectsAdmissionWithoutQueuingIt"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ShareRelayHardeningTests",
+      "method": "ReceiverProvenanceCannotBeSerializedByPublisher",
+      "case": "ReceiverProvenanceCannotBeSerializedByPublisher"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ShareRelayHardeningTests",
+      "method": "RelayQueueMetricsRemainAccurateAcrossRepeatedScrapes",
+      "case": "RelayQueueMetricsRemainAccurateAcrossRepeatedScrapes"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.PpsConfigurationTests",
+      "method": "PpsRelayRequiresAuthenticatedTransport",
+      "case": "PpsRelayRequiresAuthenticatedTransport(sender: False, disabled: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.PpsConfigurationTests",
+      "method": "PpsRelayRequiresAuthenticatedTransport",
+      "case": "PpsRelayRequiresAuthenticatedTransport(sender: False, disabled: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.PpsConfigurationTests",
+      "method": "PpsRelayRequiresAuthenticatedTransport",
+      "case": "PpsRelayRequiresAuthenticatedTransport(sender: True, disabled: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.PpsConfigurationTests",
+      "method": "PpsRelayRequiresAuthenticatedTransport",
+      "case": "PpsRelayRequiresAuthenticatedTransport(sender: True, disabled: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutSetupTests",
+      "method": "EquihashCapabilities_SurviveHandlerRecreationButRetryInconclusiveProbeAndConfigChange",
+      "case": "EquihashCapabilities_SurviveHandlerRecreationButRetryInconclusiveProbeAndConfigChange"
     }
   ],
   "expected_skips": [
@@ -1157,6 +1207,11 @@
     },
     {
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "ExplicitServerStatementTimeout_RollsBackAdmissionWithoutStrandingOwnership",
+      "case": "ExplicitServerStatementTimeout_RollsBackAdmissionWithoutStrandingOwnership"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
       "method": "ExtendedPausedRelay_PersistsPpsAndMonitorsBoundedQueuesAndBacklog",
       "case": "ExtendedPausedRelay_PersistsPpsAndMonitorsBoundedQueuesAndBacklog"
     },
@@ -1164,6 +1219,11 @@
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
       "method": "LargePausedBacklog_RestartsBetweenMaturityWavesWithoutDuplicateAllocationOrPayment",
       "case": "LargePausedBacklog_RestartsBetweenMaturityWavesWithoutDuplicateAllocationOrPayment"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "LiveWalletCompatibility_PauseSuccessAndLostSubmissionPreserveAccounting",
+      "case": "LiveWalletCompatibility_PauseSuccessAndLostSubmissionPreserveAccounting"
     },
     {
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
@@ -1209,6 +1269,31 @@
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
       "method": "PostgreSqlRestart_PreservesStopOutstandingBatchAndOwnership",
       "case": "PostgreSqlRestart_PreservesStopOutstandingBatchAndOwnership"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "PpsCapacity_Sustains1000PerSecondAndRecovers10000ShareBurst",
+      "case": "PpsCapacity_Sustains1000PerSecondAndRecovers10000ShareBurst"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "PpsHealthySlowDatabase_KeepsEveryResponsePendingUntilCommit",
+      "case": "PpsHealthySlowDatabase_KeepsEveryResponsePendingUntilCommit"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "PpsRelayAuthentication_RejectsImpersonatingPublisherAndAcceptsPinnedKey",
+      "case": "PpsRelayAuthentication_RejectsImpersonatingPublisherAndAcceptsPinnedKey"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "PpsRelayCapacity_Sustains1000PerSecondAndRecovers10000ShareBurst",
+      "case": "PpsRelayCapacity_Sustains1000PerSecondAndRecovers10000ShareBurst"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "PpsRelayOverload_BoundsMemoryAndPreservesAcknowledgedLiabilities",
+      "case": "PpsRelayOverload_BoundsMemoryAndPreservesAcknowledgedLiabilities"
     },
     {
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
