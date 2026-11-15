@@ -85,14 +85,15 @@ deployed shared frameworks patched.
 
 ## AutoMapper 16 licence decision
 
-Miningcore upgrades AutoMapper 12.0.1 to 16.2.0 because the previous version is affected by
-GHSA-rvv3-g6hj-g44x and no patched release exists before the AutoMapper 15 line. Version 16.2.0 is on a
-patched line and supports the standard environment-variable licence discovery documented in the
-README.
+Miningcore uses AutoMapper 16.3.0. The earlier 12.0.1 release is affected by
+GHSA-rvv3-g6hj-g44x; the initially selected 16.2.0 is also affected by the subsequently
+published GHSA-6vhm-j9h7-f9gh and GHSA-gpwp-5797-mjff recursion bypasses. Version 16.3.0
+patches both bypasses and retains standard environment-variable licence discovery.
+NuGet vulnerability auditing remains enabled and treats these advisories as build failures.
 
 AutoMapper's upstream licence states that its source and binaries are governed by the Reciprocal Public
 License 1.5 (RPL-1.5), unless they are used under the upstream commercial licence agreement. Miningcore
-maintainers accept including AutoMapper 16.2.0 under those upstream terms to replace the vulnerable
+maintainers accept including AutoMapper 16 under those upstream terms to replace the vulnerable
 version while preserving the existing mapping behavior. This records the dependency decision; it does
 not determine which option applies to a particular downstream deployment or provide legal advice.
 
@@ -131,6 +132,9 @@ References:
 
 - [AutoMapper 16.2.0 upstream licence](https://github.com/LuckyPennySoftware/AutoMapper/blob/dfa6dd587c5854b4beee5934beb39ba6e9569b84/LICENSE.md)
 - [AutoMapper uncontrolled-recursion advisory](https://github.com/advisories/GHSA-rvv3-g6hj-g44x)
+- [AutoMapper 16.3.0 security release](https://github.com/LuckyPennySoftware/AutoMapper/releases/tag/v16.3.0)
+- [Constructor recursion bypass](https://github.com/advisories/GHSA-6vhm-j9h7-f9gh)
+- [Runtime mapping recursion bypass](https://github.com/advisories/GHSA-gpwp-5797-mjff)
 - [AutoMapper licence configuration](https://docs.automapper.io/en/stable/License-configuration.html)
 - [BouncyCastle.Crypto 1.9.0 lifecycle statement](https://github.com/bcgit/bc-csharp/discussions/450)
 - [Example advisory package-ID mapping](https://github.com/advisories/GHSA-v435-xc8x-wvr9)
