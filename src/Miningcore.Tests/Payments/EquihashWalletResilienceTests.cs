@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Autofac;
 using AutoMapper;
 using Microsoft.AspNetCore.Http;
+using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Equihash;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
