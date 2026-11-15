@@ -23,7 +23,7 @@ public class RecoveryConfigurationTests
 {
     private const string MissingPoolPaymentProcessingMessage =
         "Pool 'recovery-pool': paymentProcessing configuration missing; " +
-        "keep the object and set enabled=false to disable payouts";
+        "retain the required pool accounting configuration and use cluster paymentProcessing.paused=true for a recovery pause";
 
     [Theory]
     [MemberData(nameof(ConfigurationContractTests.

@@ -11,6 +11,25 @@ namespace Miningcore.Tests.Payments;
 
 public class PpsConfigurationTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PauseRetainsPpsFinancialRequirements(bool sender)
+    {
+        var config = CreateConfig(CoinFamily.Bitcoin);
+        config.PaymentProcessing.Paused = true;
+        config.ShareRelay = sender ? new ShareRelayConfig() : null;
+        Program.ValidatePpsDeployment(config, requireAssignedTemplates: true);
+        Assert.False(Program.ShouldRunPaymentProcessor(config));
+        Assert.True(Program.RequiresShareAccountingPersistence(config));
+        Assert.True(Program.RequiresSynchronousBlockCandidatePersistence(config));
+        config.Pools[0].PaymentProcessing.Enabled = false;
+        Assert.Throws<PoolStartupException>(() => Program.ValidatePpsDeployment(config));
+        config.Pools[0].PaymentProcessing.Enabled = true;
+        config.Persistence = null;
+        Assert.Throws<PoolStartupException>(() => Program.ValidatePpsDeployment(config));
+    }
+
     [Fact]
     public void VersionOneChecksRetainedPrecisionWithoutChangingLegacyDomain()
     {

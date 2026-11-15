@@ -264,6 +264,12 @@ database are ready. If adopting the packaged systemd unit, compare it with the e
 preserve required environment variables and custom dependencies while retaining the packaged
 security settings and shutdown allowance.
 
+Retain `RestartPreventExitStatus=74 78` when updating the installed service. Configure the
+[actual PostgreSQL cluster ordering](systemd-postgresql-ordering.md) before restarting;
+changing a release symlink alone does not update the unit or its drop-ins. If exit status 78
+reports a retained owner, use the [guided assistant](database.md#guided-payout-ownership-recovery)
+after stopping the previous instance and reconciling wallet history.
+
 ```console
 sudo ln -sfn /opt/miningcore/releases/new-dotnet10 /opt/miningcore/current
 sudo systemctl daemon-reload

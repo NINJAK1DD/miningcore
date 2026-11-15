@@ -80,6 +80,7 @@ public class PpsArithmeticSchemaTests
         }
         finally
         {
+            await PostgresTestCleanup.DropRecoveryAuditAsync(db, schema);
             await db.ExecuteAsync($"SET search_path TO public; DROP SCHEMA {schema} CASCADE");
         }
     }
@@ -115,6 +116,7 @@ public class PpsArithmeticSchemaTests
             }
             finally
             {
+                await PostgresTestCleanup.DropRecoveryAuditAsync(db, schema);
                 await db.ExecuteAsync($"RESET SESSION AUTHORIZATION; RESET ROLE; SET search_path TO public; DROP SCHEMA IF EXISTS {schema} CASCADE; DROP ROLE {app}");
             }
         }
@@ -162,6 +164,7 @@ public class PpsArithmeticSchemaTests
         }
         finally
         {
+            await PostgresTestCleanup.DropRecoveryAuditAsync(db, schema);
             await db.ExecuteAsync($"SET search_path TO public; DROP SCHEMA {schema} CASCADE");
         }
     }
@@ -279,6 +282,7 @@ public class PpsArithmeticSchemaTests
             }
             finally
             {
+                await PostgresTestCleanup.DropRecoveryAuditAsync(db, schema);
                 await db.ExecuteAsync($@"RESET SESSION AUTHORIZATION; RESET ROLE; SET search_path TO public;
                     DROP SCHEMA IF EXISTS {schema} CASCADE;
                     DROP ROLE IF EXISTS {app}, {owner}, {activationLogin}, {escalation}");
@@ -448,6 +452,7 @@ public class PpsArithmeticSchemaTests
             }
             finally
             {
+                await PostgresTestCleanup.DropRecoveryAuditAsync(db, schema);
                 await db.ExecuteAsync($"RESET SESSION AUTHORIZATION; RESET ROLE; DROP TABLE IF EXISTS pg_temp.pps_arithmetic_transitions; SET search_path TO public; DROP SCHEMA IF EXISTS {schema} CASCADE; DROP ROLE {app}; DROP ROLE {thirdParty}; DROP ROLE IF EXISTS {adminMember}");
             }
         }

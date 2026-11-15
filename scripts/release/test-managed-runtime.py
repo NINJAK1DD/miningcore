@@ -20,7 +20,8 @@ PKCS = "System.Security.Cryptography.Pkcs"
 def run(command, expected=None, contains=None, env=None):
     result = subprocess.run(list(map(str, command)), text=True, capture_output=True, env=env, timeout=60)
     output = result.stdout + result.stderr
-    if (expected == 0 and result.returncode != 0 or expected == 1 and result.returncode == 0 or
+    if (expected is not None and expected != 1 and result.returncode != expected or
+            expected == 1 and result.returncode == 0 or
             contains and contains not in output):
         raise AssertionError(f"Unexpected process result {result.returncode}: {output}")
     print(output.strip())
@@ -113,6 +114,25 @@ def main():
         env.pop("DOTNET_ROLL_FORWARD", None)
         run(command(host=isolated / dotnet.name, source="package"), 0,
             str(runtime / (PKCS + ".dll")), env)
+        # A malformed managed image is an installation repair, not a retryable failure.
+        # Corrupt both candidates so host conflict resolution cannot select a valid copy.
+        images = [runtime / (PKCS + ".dll"), local_framework / (PKCS + ".dll")]
+        originals = [image.read_bytes() for image in images]
+        try:
+            for image in images:
+                image.write_bytes(b"invalid managed PE image")
+            for option in ("--version", "--recover-payout-ownership", "--acknowledge-share-recovery-state"):
+                run([isolated / dotnet.name, runtime / "Miningcore.dll", option, "-c", root / "missing.json"],
+                    78, "Runtime dependency validation failed", env)
+            diagnostic = root / "bad-image-diagnostic.json"
+            diagnostic.write_text(json.dumps({"pools": [], "shareRecoveryStateDirectory": str(root / "bad-image-state")}))
+            output = run([isolated / dotnet.name, runtime / "Miningcore.dll",
+                          "--verify-share-recovery-state", "-c", diagnostic], 0, "RESULT: no incidents found", env)
+            if "WARNING: This runtime is not accepted" not in output or (root / "bad-image-state").exists():
+                raise AssertionError("Malformed dependency diagnostic must warn and remain read-only")
+        finally:
+            for image, original in zip(images, originals):
+                image.write_bytes(original)
         # A newer framework may legitimately replace an older app copy.
         package_fixture("10.0.14", old / (PKCS + ".dll"))
         run(command(source="package", reference="10.0.14"), 0, str(current_aspnet))
@@ -122,7 +142,7 @@ def main():
         run(command(host=isolated / dotnet.name, source="package", reference="10.0.14"),
             1, f"PKCS 10.0.14 requires {version}", env)
         run([isolated / dotnet.name, runtime / "Miningcore.dll", "--version"],
-            1, f"PKCS 10.0.14 requires {version}", env)
+            78, f"PKCS 10.0.14 requires {version}", env)
 
         # Isolate host selection: Core stays serviced, but ASP.NET is genuinely old.
         shutil.rmtree(isolated / "shared/Microsoft.AspNetCore.App")
@@ -140,7 +160,7 @@ def main():
                 framework["version"] = "10.0.14"
         config.write_text(json.dumps(options))
         run(command(host=isolated / dotnet.name), 1, "Microsoft.AspNetCore.App 10.0.14 requires", env)
-        run([isolated / dotnet.name, runtime / "Miningcore.dll", "--version"], 1,
+        run([isolated / dotnet.name, runtime / "Miningcore.dll", "--version"], 78,
             "Runtime dependency validation failed", env)
         old_core = old.parents[1] / "Microsoft.NETCore.App/10.0.14"
         shutil.rmtree(isolated / "shared/Microsoft.NETCore.App")
@@ -149,7 +169,7 @@ def main():
             framework["version"] = "10.0.14"
         config.write_text(json.dumps(options))
         run(command(host=isolated / dotnet.name), 1, "Microsoft.NETCore.App 10.0.14 requires", env)
-        run([isolated / dotnet.name, runtime / "Miningcore.dll", "--version"], 1,
+        run([isolated / dotnet.name, runtime / "Miningcore.dll", "--version"], 78,
             "Runtime dependency validation failed", env)
 
         # An explicit offline diagnostic config may relax the host floor, but only
@@ -157,6 +177,12 @@ def main():
         offline = runtime / "offline.json"
         state = root / "incident-state"
         offline.write_text(json.dumps({"pools": [], "shareRecoveryStateDirectory": str(state)}))
+        # Mutation modes must fail at the runtime guard before even trying to read config.
+        for option in ("--recover-payout-ownership", "--acknowledge-share-recovery-state"):
+            run([isolated / dotnet.name, runtime / "Miningcore.dll", option, "-c", root / "missing.json"],
+                78, "Runtime dependency validation failed", env)
+        run([isolated / dotnet.name, runtime / "Miningcore.dll", "--recover-payout-ownership", "--version"],
+            1, "Use --recover-payout-ownership on its own", env)
         output = run([isolated / dotnet.name, runtime / "Miningcore.dll",
                       "--verify-share-recovery-state", "-c", offline], 0, "RESULT: no incidents found", env)
         if "WARNING: This runtime is not accepted" not in output or state.exists():
@@ -170,7 +196,7 @@ def main():
         if binary.count(resource) != 1:
             raise AssertionError("Expected exactly one embedded runtime-policy resource name")
         application.write_bytes(binary.replace(resource, b"Miningcore.RuntimeDependencyPolicy.broke\0"))
-        run([dotnet, application, "--version"], 1,
+        run([dotnet, application, "--version"], 78,
             "Runtime dependency policy could not be loaded. Reinstall the complete reviewed Miningcore release")
         print("Real runtime tests passed: package binding, newer framework, host floor and startup guard")
 

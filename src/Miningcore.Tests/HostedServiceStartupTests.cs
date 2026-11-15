@@ -31,6 +31,36 @@ namespace Miningcore.Tests;
 
 public class HostedServiceStartupTests
 {
+    [Theory]
+    [InlineData(true, false, true, true)]
+    [InlineData(false, false, true, false)]
+    [InlineData(true, true, false, false)]
+    [InlineData(true, true, true, true)]
+    public async Task PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor(
+        bool paused, bool relay, bool postgres, bool expected)
+    {
+        var config = new ClusterConfig
+        {
+            PaymentProcessing = new() { Enabled = true, Paused = paused },
+            Pools = [new() { Enabled = true, PaymentProcessing = new() { Enabled = true } }],
+            ShareRelay = relay ? new() : null,
+            Persistence = postgres ? new() { Postgres = new() } : null,
+        };
+        var registry = Metrics.NewCustomRegistry();
+        var warnings = new System.Collections.Generic.List<string>();
+        using var monitor = new Miningcore.Payments.PayoutPauseMonitor(config,
+            Metrics.WithCustomRegistry(registry), warnings.Add);
+        monitor.ReportPause();
+        monitor.ReportPause();
+        Assert.Equal(expected ? 2 : 0, warnings.Count);
+        await using var output = new MemoryStream();
+        await registry.CollectAndExportAsTextAsync(output);
+        Assert.Contains($"miningcore_payout_processor_paused {(expected ? 1 : 0)}", Encoding.UTF8.GetString(output.ToArray()));
+        Assert.Equal(expected, Program.IsPaymentProcessorPaused(config));
+        config.Pools[0].Enabled = false;
+        Assert.False(Program.IsPaymentProcessorPaused(config));
+    }
+
     [Fact]
     public async Task MetricsPublisher_Blake2bScanVisitsAreDistinctFromFinancialSettlements()
     {

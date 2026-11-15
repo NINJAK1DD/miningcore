@@ -1,7 +1,7 @@
 {
-  "source_commit": "d5a64505ddb6571290248b37ff80da3beeb7960f",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/42476001430",
-  "minimum_total": 5843,
+  "source_commit": "061170140193cee7a05381c38f60ab61a1facd58",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43133747784",
+  "minimum_total": 6188,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -137,6 +137,381 @@
       "class": "Miningcore.Tests.Stratum.StratumServerTests",
       "method": "RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake",
       "case": "RunAsync_WithPasswordProtectedPfx_CompletesTlsHandshake"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"error\", colors: False)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"error\", colors: True)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"fatal\", colors: False)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"fatal\", colors: True)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"info\", colors: False)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"info\", colors: True)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"off\", colors: False)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold",
+      "case": "RecoveryAuditReachesConsoleExactlyOnceRegardlessOfServiceThreshold(level: \"off\", colors: True)"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "ServiceModeRetainsConfiguredAuditThreshold",
+      "case": "ServiceModeRetainsConfiguredAuditThreshold(level: \"error\")"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "ServiceModeRetainsConfiguredAuditThreshold",
+      "case": "ServiceModeRetainsConfiguredAuditThreshold(level: \"fatal\")"
+    },
+    {
+      "class": "Miningcore.Tests.RecoveryLoggingTests",
+      "method": "ServiceModeRetainsConfiguredAuditThreshold",
+      "case": "ServiceModeRetainsConfiguredAuditThreshold(level: \"off\")"
+    },
+    {
+      "class": "Miningcore.Tests.Util.RuntimeDependencyGuardTests",
+      "method": "BadManagedImageRequiresOperatorWithoutMaskingDurabilityLoss",
+      "case": "BadManagedImageRequiresOperatorWithoutMaskingDurabilityLoss(previous: 0, expected: 78)"
+    },
+    {
+      "class": "Miningcore.Tests.Util.RuntimeDependencyGuardTests",
+      "method": "BadManagedImageRequiresOperatorWithoutMaskingDurabilityLoss",
+      "case": "BadManagedImageRequiresOperatorWithoutMaskingDurabilityLoss(previous: 1, expected: 78)"
+    },
+    {
+      "class": "Miningcore.Tests.Util.RuntimeDependencyGuardTests",
+      "method": "BadManagedImageRequiresOperatorWithoutMaskingDurabilityLoss",
+      "case": "BadManagedImageRequiresOperatorWithoutMaskingDurabilityLoss(previous: 74, expected: 74)"
+    },
+    {
+      "class": "Miningcore.Tests.Util.RuntimeDependencyGuardTests",
+      "method": "RuntimeBoundaryDoesNotReclassifyUnexpectedFailures",
+      "case": "RuntimeBoundaryDoesNotReclassifyUnexpectedFailures"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"aux-payment\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"missing-aux-template\", templateOnly: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "PausedProcess_RejectsEveryToggleWithoutMutatingPools",
+      "case": "PausedProcess_RejectsEveryToggleWithoutMutatingPools(bulk: False, enable: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"parent-coin\", templateOnly: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.PayoutManagerTests",
+      "method": "PausedManager_RejectsAccidentalStartupWithoutTouchingOwnershipOrWallets",
+      "case": "PausedManager_RejectsAccidentalStartupWithoutTouchingOwnershipOrWallets"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"aux-coin\", templateOnly: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"parent-payment\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.BitcoinDirectSoloConfigurationTests",
+      "method": "PausedMixedCluster_PreservesDirectCoinbaseRewardsAndAccounting",
+      "case": "PausedMixedCluster_PreservesDirectCoinbaseRewardsAndAccounting"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"missing-daemon\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "PausedProcess_RejectsEveryToggleWithoutMutatingPools",
+      "case": "PausedProcess_RejectsEveryToggleWithoutMutatingPools(bulk: False, enable: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"unknown-id\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"same-id\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.HostedServiceStartupTests",
+      "method": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor",
+      "case": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor(paused: False, relay: False, postgres: True, expected: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"aux-beneficiary\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.HostedServiceStartupTests",
+      "method": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor",
+      "case": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor(paused: True, relay: True, postgres: True, expected: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"missing-parent-template\", templateOnly: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"missing-id\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.HostedServiceStartupTests",
+      "method": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor",
+      "case": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor(paused: True, relay: True, postgres: False, expected: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.PayoutOwnershipRecoveryAssistantTests",
+      "method": "StartupPrompt_RequiresTerminalAndAllowsOptOut",
+      "case": "StartupPrompt_RequiresTerminalAndAllowsOptOut(terminal: True, disabled: False, paused: True, expected: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "PausedProcess_RejectsEveryToggleWithoutMutatingPools",
+      "case": "PausedProcess_RejectsEveryToggleWithoutMutatingPools(bulk: True, enable: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"aux-scheme\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"missing-address\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"aux-family\", templateOnly: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"address-parameter\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "ClusterPaymentSchema_RejectsUnknownSafetyControls",
+      "case": "ClusterPaymentSchema_RejectsUnknownSafetyControls"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"disabled-aux\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "PausedProcess_RejectsEveryToggleWithoutMutatingPools",
+      "case": "PausedProcess_RejectsEveryToggleWithoutMutatingPools(bulk: True, enable: True)"
+    },
+    {
+      "class": "Miningcore.Tests.HostedServiceStartupTests",
+      "method": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor",
+      "case": "PayoutPauseVisibility_ReportsOnlyAnOtherwiseConfiguredProcessor(paused: True, relay: False, postgres: True, expected: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Blockchain.Bitcoin.MergedMining.MergedMiningManagerReorgTests",
+      "method": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary",
+      "case": "InvalidMergedConfiguration_AgreesAcrossEveryStartupBoundary(invalid: \"parent-scheme\", templateOnly: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: PPS, auxiliaryScheme: SOLO)"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "PoolLevelPausedFlag_IsRejectedRatherThanIgnored",
+      "case": "PoolLevelPausedFlag_IsRejectedRatherThanIgnored(key: \"Paused\")"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "ClusterPaymentSchema_RequiresCanonicalPropertyCasing",
+      "case": "ClusterPaymentSchema_RequiresCanonicalPropertyCasing(canonical: \"enabled\", pascal: \"Enabled\")"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: PPS, auxiliaryScheme: PPLNS)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: PPS, auxiliaryScheme: PPS)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: PPLNS, auxiliaryScheme: PPLNS)"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "PoolLevelPausedFlag_IsRejectedRatherThanIgnored",
+      "case": "PoolLevelPausedFlag_IsRejectedRatherThanIgnored(key: \"paused\")"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: PROP, auxiliaryScheme: SOLO)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: SOLO, auxiliaryScheme: PROP)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: SOLO, auxiliaryScheme: PPLNS)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "InactiveMergedParent_DoesNotProtectOrdinaryAuxiliaryFromApiToggle",
+      "case": "InactiveMergedParent_DoesNotProtectOrdinaryAuxiliaryFromApiToggle"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "ClusterPaymentSchema_CasingAliasCannotBypassUnknownFieldRejection",
+      "case": "ClusterPaymentSchema_CasingAliasCannotBypassUnknownFieldRejection(alias: \"PAYMENTPROCESSING\")"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "RootLevelPausedFlag_IsRejectedRatherThanIgnored",
+      "case": "RootLevelPausedFlag_IsRejectedRatherThanIgnored(key: \"paused\")"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "RootLevelPausedFlag_IsRejectedRatherThanIgnored",
+      "case": "RootLevelPausedFlag_IsRejectedRatherThanIgnored(key: \"PAUSED\")"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: PPLNS, auxiliaryScheme: PPS)"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "ClusterPaymentSchema_CasingAliasCannotBypassUnknownFieldRejection",
+      "case": "ClusterPaymentSchema_CasingAliasCannotBypassUnknownFieldRejection(alias: \"PaymentProcessing\")"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "PoolLevelPausedFlag_IsRejectedRatherThanIgnored",
+      "case": "PoolLevelPausedFlag_IsRejectedRatherThanIgnored(key: \"PAUSED\")"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: PROP, auxiliaryScheme: PROP)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: PROP, auxiliaryScheme: PPLNS)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: SOLO, auxiliaryScheme: PPS)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: SOLO, auxiliaryScheme: SOLO)"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "RootLevelPausedFlag_IsRejectedRatherThanIgnored",
+      "case": "RootLevelPausedFlag_IsRejectedRatherThanIgnored(key: \"Paused\")"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "ClusterPaymentSchema_RequiresCanonicalPropertyCasing",
+      "case": "ClusterPaymentSchema_RequiresCanonicalPropertyCasing(canonical: \"paused\", pascal: \"Paused\")"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "ClusterPaymentSchema_RequiresCanonicalPropertyCasing",
+      "case": "ClusterPaymentSchema_RequiresCanonicalPropertyCasing(canonical: \"interval\", pascal: \"Interval\")"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: PPLNS, auxiliaryScheme: PROP)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: PROP, auxiliaryScheme: PPS)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: PPS, auxiliaryScheme: PROP)"
+    },
+    {
+      "class": "Miningcore.Tests.Api.Controllers.AdminApiPaymentProcessingTests",
+      "method": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes",
+      "case": "ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(parentScheme: PPLNS, auxiliaryScheme: SOLO)"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored",
+      "case": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored(key: \"PAUSED\")"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored",
+      "case": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored(key: \"Paused\")"
+    },
+    {
+      "class": "Miningcore.Tests.ConfigurationContractTests",
+      "method": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored",
+      "case": "PoolObjectPausedFlag_IsRejectedRatherThanIgnored(key: \"paused\")"
     }
   ],
   "expected_skips": [
@@ -737,6 +1112,11 @@
     },
     {
       "class": "Miningcore.Tests.Payments.MergedMiningPayoutRegtestTests",
+      "method": "PausedExample_RealStartupMiningPersistenceAndOwnershipRecovery",
+      "case": "PausedExample_RealStartupMiningPersistenceAndOwnershipRecovery"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.MergedMiningPayoutRegtestTests",
       "method": "PinnedDaemons_MatureRealRewardsAcrossEverySupportedScheme",
       "case": "PinnedDaemons_MatureRealRewardsAcrossEverySupportedScheme"
     },
@@ -804,6 +1184,136 @@
       "class": "Miningcore.Tests.Persistence.Postgres.PayoutManagerLeaseIntegrationTests",
       "method": "DisposeAsync_ReleasesAdvisoryLock",
       "case": "DisposeAsync_ReleasesAdvisoryLock"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ActiveLock_AndLockAcquiredDuringPrompt_BothRefuseRelease",
+      "case": "ActiveLock_AndLockAcquiredDuringPrompt_BothRefuseRelease"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ActiveLock_SkipsBlockedHistory_AndInspectorDoesNotAcquireLock",
+      "case": "ActiveLock_SkipsBlockedHistory_AndInspectorDoesNotAcquireLock"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "AuditAppend_RequiresOwnExclusiveTwoKeyLock_AndDuplicateReceiptKeepsOwner",
+      "case": "AuditAppend_RequiresOwnExclusiveTwoKeyLock_AndDuplicateReceiptKeepsOwner"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "AuditFailure_RollsBackRelease_AndAuditSurvivesNextLease",
+      "case": "AuditFailure_RollsBackRelease_AndAuditSurvivesNextLease"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "CancelledRelease_LeavesOwnerAndLockAvailable",
+      "case": "CancelledRelease_LeavesOwnerAndLockAvailable"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ChangedActualDatabaseTarget_WithSameSchemaAndOwner_IsRefused",
+      "case": "ChangedActualDatabaseTarget_WithSameSchemaAndOwner_IsRefused"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ChangedActualRole_AndMissingPrivileges_AreReportedSeparately",
+      "case": "ChangedActualRole_AndMissingPrivileges_AreReportedSeparately"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ChangedGenerationOrToken_AndRepeatedRelease_AreRefused",
+      "case": "ChangedGenerationOrToken_AndRepeatedRelease_AreRefused"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ConcurrentRecovery_OnlyOneReleaseSucceeds",
+      "case": "ConcurrentRecovery_OnlyOneReleaseSucceeds"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "DeadlineDuringRelease_RollsBackOwnerAndAudit",
+      "case": "DeadlineDuringRelease_RollsBackOwnerAndAudit"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "DifferentBatchSchema_IsIdentifiedAndNeverShownAsEvidence",
+      "case": "DifferentBatchSchema_IsIdentifiedAndNeverShownAsEvidence"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "DifferentResolvedSchema_CannotReleaseInspectedOwner",
+      "case": "DifferentResolvedSchema_CannotReleaseInspectedOwner"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "FreshProcesses_ApplyExplicitTimestampMode_AndMainReturns78ForBothDetectionFailures",
+      "case": "FreshProcesses_ApplyExplicitTimestampMode_AndMainReturns78ForBothDetectionFailures"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "GuardedRelease_AllowsNextGenerationAndStillExcludesSecondManager",
+      "case": "GuardedRelease_AllowsNextGenerationAndStillExcludesSecondManager"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "IdentityChanges_AreRefusedWithoutAuditOrMutation",
+      "case": "IdentityChanges_AreRefusedWithoutAuditOrMutation"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "LargeHistory_UsesIndex_AndReturnsLatestTen",
+      "case": "LargeHistory_UsesIndex_AndReturnsLatestTen"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "LostCommitResponse_ReinspectionDistinguishesCommittedAndRolledBack",
+      "case": "LostCommitResponse_ReinspectionDistinguishesCommittedAndRolledBack"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "LostGuardSession_RemainsBlockedUntilExplicitRecovery",
+      "case": "LostGuardSession_RemainsBlockedUntilExplicitRecovery"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "Migration_NonSuperuserRerunsWithoutTemporaryOwnerMembershipOrDatabaseCreate",
+      "case": "Migration_NonSuperuserRerunsWithoutTemporaryOwnerMembershipOrDatabaseCreate"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "Migration_RejectsApplicationOwnedAuditLookalikes",
+      "case": "Migration_RejectsApplicationOwnedAuditLookalikes"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "Migration_RejectsWrongIndex_AndPreservesLegacyAuditReceipts",
+      "case": "Migration_RejectsWrongIndex_AndPreservesLegacyAuditReceipts"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "Migration_RetiresOnlyObsoleteTrustedEndpoints_AndKeepsHistoryAndOtherLiveSchemas",
+      "case": "Migration_RetiresOnlyObsoleteTrustedEndpoints_AndKeepsHistoryAndOtherLiveSchemas"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "MissingOwnershipSchema_HasMigrationGuidance",
+      "case": "MissingOwnershipSchema_HasMigrationGuidance"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ReplacedHistoryAfterConfirmation_IsRefused",
+      "case": "ReplacedHistoryAfterConfirmation_IsRefused"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "ReplacedTable_WithIdenticalOwner_IsRefused",
+      "case": "ReplacedTable_WithIdenticalOwner_IsRefused"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PayoutOwnershipRecoveryIntegrationTests",
+      "method": "TimestampDetection_OnlyUsesCurrentSchema",
+      "case": "TimestampDetection_OnlyUsesCurrentSchema"
     },
     {
       "class": "Miningcore.Tests.Persistence.Postgres.PostgresCommandTimeoutIntegrationTests",

@@ -38,6 +38,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
     private bool financialOutcomeUncertain;
 
     public string AcquisitionFailure { get; private set; }
+    public bool RequiresRecovery { get; private set; }
 
     internal bool CanReleaseOwnership
     {
@@ -97,6 +98,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
                 return true;
 
             AcquisitionFailure = null;
+            RequiresRecovery = false;
 
             var candidate = await cf.OpenConnectionAsync();
             var advisoryLockHeld = false;
@@ -173,6 +175,7 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
 
                     if(generation == 0)
                     {
+                        RequiresRecovery = true;
                         currentOwner = await ReadOwnershipAsync(candidate, tx, ct);
                         tx.Rollback();
                         AcquisitionFailure = DescribeOwnershipConflict(currentOwner, false);
@@ -294,7 +297,8 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
             ? "Another payout manager currently holds the PostgreSQL advisory lock."
             : "A durable payout-manager ownership marker remains without the advisory lock.";
         var recovery = "Run exactly one payout/reconciliation processor per database. " +
-            "Clear a durable marker only after confirming the recorded process is dead and reconciling any wallet submission with an uncertain outcome.";
+            "Clear a durable marker only after confirming the recorded process is dead and reconciling any wallet submission with an uncertain outcome. " +
+            PayoutOwnershipRecoveryAssistant.RecoveryHint;
 
         if(owner?.OwnerId == null)
             return $"{conflict} {recovery}";

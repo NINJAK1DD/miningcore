@@ -30,6 +30,7 @@ using Miningcore.Api.Middlewares;
 using Miningcore.Api.Responses;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Configuration;
 using Miningcore.Rpc;
 using Miningcore.Rest;
@@ -179,6 +180,12 @@ public class Program : ProcessStatusBackgroundService
             AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
             var app = ParseCommandLine(args);
 
+            if(recoverPayoutOwnershipOption.HasValue() &&
+               (shareRecoveryOption.HasValue() || verifyShareRecoveryStateOption.HasValue() ||
+                acknowledgeShareRecoveryStateOption.HasValue() || versionOption.HasValue() ||
+                generateSchemaOption.HasValue() || noPayoutRecoveryPromptOption.HasValue()))
+                throw new PoolStartupException("Use --recover-payout-ownership on its own with -c <configfile>.");
+
             if(verifyShareRecoveryStateOption.HasValue())
             {
                 // This read-only incident command never starts services or acknowledges incidents.
@@ -187,7 +194,7 @@ public class Program : ProcessStatusBackgroundService
                     RuntimeDependencyGuard.Validate(TextWriter.Null);
                 }
                 catch(Exception ex) when(ex is InvalidOperationException or TypeInitializationException or
-                    System.IO.FileNotFoundException or System.IO.FileLoadException)
+                    System.IO.FileNotFoundException or System.IO.FileLoadException or BadImageFormatException)
                 {
                     Console.Error.WriteLine("WARNING: This runtime is not accepted for Miningcore services; continuing read-only share-recovery verification only.");
                 }
@@ -205,18 +212,8 @@ public class Program : ProcessStatusBackgroundService
                 return;
             }
 
-            try
-            {
-                RuntimeDependencyGuard.Validate(TextWriter.Null);
-            }
-            catch(TypeInitializationException)
-            {
-                throw new PoolStartupException("Runtime dependency policy could not be loaded. Reinstall the complete reviewed Miningcore release before starting services.");
-            }
-            catch(Exception ex) when(ex is InvalidOperationException or System.IO.FileNotFoundException or System.IO.FileLoadException)
-            {
-                throw new PoolStartupException($"Runtime dependency validation failed: {ex.Message}. Update both .NET and ASP.NET Core and restart Miningcore.");
-            }
+            processStatus = new ProcessStatus();
+            ValidateRuntimeDependencies(processStatus, () => RuntimeDependencyGuard.Validate(TextWriter.Null));
 
             if(versionOption.HasValue())
             {
@@ -266,7 +263,23 @@ public class Program : ProcessStatusBackgroundService
 
             if(!configFileOption.HasValue())
             {
+                if(recoverPayoutOwnershipOption.HasValue())
+                    throw new PoolStartupException("Payout ownership recovery requires -c <configfile>.");
                 app.ShowHelp();
+                return;
+            }
+
+            if(recoverPayoutOwnershipOption.HasValue())
+            {
+                clusterConfig = ReadConfig(configFileOption.Value(), true);
+                processStatus = new ProcessStatus();
+                ApplyExplicitPostgresTimestampBehavior(clusterConfig);
+                ConfigureLogging(recoveryMode: true);
+                var recoveryExitCode = await RecoverPayoutOwnershipAsync(clusterConfig);
+                if(recoveryExitCode != 0)
+                    processStatus.MarkFailed(recoveryExitCode);
+                else
+                    Console.WriteLine("Recovery completed. Start exactly one intended Miningcore instance or restart its service.");
                 return;
             }
 
@@ -277,7 +290,32 @@ public class Program : ProcessStatusBackgroundService
                 isShareRecoveryMode);
             var apiConfig = clusterConfig.Api;
 
+            ApplyExplicitPostgresTimestampBehavior(clusterConfig);
             ConfigureLogging();
+            // Prompt before any hosted services, listeners or wallet clients start. Services
+            // without a terminal retain the normal fail-closed lease acquisition path.
+            if(!isShareRecoveryMode && ShouldOfferPayoutRecovery(clusterConfig,
+                   HasInteractiveTerminal(), noPayoutRecoveryPromptOption.HasValue()))
+            {
+                int recoveryExitCode;
+                // Temporarily use the same console-only audit guarantee as standalone recovery.
+                // Restore service logging even when the assistant refuses or throws.
+                try
+                {
+                    ConfigureLogging(recoveryMode: true);
+                    recoveryExitCode = await RecoverPayoutOwnershipAsync(clusterConfig, true);
+                }
+                finally
+                {
+                    ConfigureLogging();
+                }
+                if(recoveryExitCode != 0)
+                {
+                    processStatus = new ProcessStatus();
+                    processStatus.MarkFailed(recoveryExitCode);
+                    return;
+                }
+            }
             LogSkippedStratumListenerValidation(clusterConfig);
             LogRuntimeInfo();
             ValidateRuntimeEnvironment();
@@ -493,9 +531,11 @@ public class Program : ProcessStatusBackgroundService
             services.AddHostedService<MetricsPublisher>();
 
         // Payment processing
-        if(ShouldRunPaymentProcessor(clusterConfig))
-            services.AddHostedService<PayoutManager>();
-        else
+        ConfigurePaymentProcessingHostedService(services, clusterConfig);
+        services.AddHostedService<PayoutPauseMonitor>();
+        if(IsPaymentProcessorPaused(clusterConfig))
+            logger.Warn("Payment processing is paused: wallet payouts, block reconciliation and payout retention are suspended; mining-side accounting remains enabled");
+        else if(!ShouldRunPaymentProcessor(clusterConfig))
             logger.Info("Payment processing is not enabled");
 
         if(clusterConfig.ShareRelay == null)
@@ -515,6 +555,8 @@ public class Program : ProcessStatusBackgroundService
     private static CommandOption shareRecoveryOption;
     private static CommandOption verifyShareRecoveryStateOption;
     private static CommandOption acknowledgeShareRecoveryStateOption;
+    private static CommandOption recoverPayoutOwnershipOption;
+    private static CommandOption noPayoutRecoveryPromptOption;
     private static CommandOption generateSchemaOption;
     private static bool isShareRecoveryMode;
     private static ClusterConfig clusterConfig;
@@ -608,6 +650,7 @@ public class Program : ProcessStatusBackgroundService
             // templates but before any Stratum listener is reserved or pool is started.
             // PpsTemplateFamily_IsCheckedAfterProductionAssignment pins this ordering.
             ValidatePpsDeployment(clusterConfig, requireAssignedTemplates: true);
+            ValidateMergedMiningDeployment(clusterConfig, requireAssignedTemplates: true);
             ValidateBitcoinConfirmationDeployment(clusterConfig);
             // This check intentionally has no earlier ValidateConfig pass: its only
             // additional contract is the resolved runtime-template identity, which
@@ -1018,6 +1061,25 @@ public class Program : ProcessStatusBackgroundService
     internal static bool ListenAddressesOverlap(IPAddress first,
         IPAddress second) =>
         ListenerAddressUtils.Overlaps(first, second);
+
+    internal static void ValidateRuntimeDependencies(IProcessStatus processStatus, Action validate)
+    {
+        try
+        {
+            validate();
+        }
+        catch(TypeInitializationException)
+        {
+            processStatus.MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
+            throw new PoolStartupException("Runtime dependency policy could not be loaded. Reinstall the complete reviewed Miningcore release before starting services.");
+        }
+        catch(Exception ex) when(ex is InvalidOperationException or System.IO.FileNotFoundException or
+            System.IO.FileLoadException or BadImageFormatException)
+        {
+            processStatus.MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
+            throw new PoolStartupException($"Runtime dependency validation failed: {ex.Message}. Update both .NET and ASP.NET Core and restart Miningcore.");
+        }
+    }
 
     internal static async Task<int> RunStartupBoundaryAsync(Func<Task> run,
         Func<Exception, Task> reportFailure, Func<int> getExitCode = null)
@@ -1432,6 +1494,19 @@ public class Program : ProcessStatusBackgroundService
 
         var document = JObject.Parse(generator.Generate(typeof(ClusterConfig)).ToString());
         PostgresConnectionPolicy.AddSchemaRules(document);
+        var paymentSchema = document.SelectToken("definitions.ClusterPaymentProcessingConfig") as JObject ??
+            throw new InvalidOperationException("Generated schema is missing cluster payment processing");
+        // Unknown future safety controls must fail closed on rollback to this binary.
+        paymentSchema["additionalProperties"] = false;
+        // Reject misplaced root flags, including casing variants, without closing
+        // unrelated configuration extension points.
+        var rootPatterns = document["patternProperties"] as JObject ?? new JObject();
+        rootPatterns["^[pP][aA][uU][sS][eE][dD]$"] = new JObject { ["not"] = new JObject() };
+        // Newtonsoft accepts casing aliases for the enclosing object. They must
+        // not bypass the strict schema for the fields inside that object.
+        rootPatterns["^[pP][aA][yY][mM][eE][nN][tT][pP][rR][oO][cC][eE][sS][sS][iI][nN][gG]$"] =
+            new JObject { ["$ref"] = "#/definitions/ClusterPaymentProcessingConfig" };
+        document["patternProperties"] = rootPatterns;
         Miningcore.Blockchain.Pearl.PearlPoolConfig.AddSchemaRules(document);
         var activationSchema = document.SelectToken(
             "definitions.PoolPaymentProcessingConfig.properties.ppsBinary64Activation") as JObject ??
@@ -1439,6 +1514,51 @@ public class Program : ProcessStatusBackgroundService
         activationSchema["pattern"] =
             @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$";
         return document;
+    }
+
+    private static bool HasInteractiveTerminal() =>
+        !Console.IsInputRedirected && !Console.IsOutputRedirected;
+
+    internal static bool ShouldOfferPayoutRecovery(ClusterConfig config, bool interactive, bool disabled) =>
+        interactive && !disabled && ShouldRunPaymentProcessor(config);
+
+    internal static void ApplyExplicitPostgresTimestampBehavior(ClusterConfig config)
+    {
+        if(config.Persistence?.Postgres?.EnableLegacyTimestamps is bool legacy)
+            AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", legacy);
+    }
+
+    private static async Task<int> RecoverPayoutOwnershipAsync(ClusterConfig config, bool quietIfUnowned = false)
+    {
+        var connectionString = PostgresConnectionPolicy.Build(config.Persistence?.Postgres);
+        var recovery = new PostgresPayoutOwnershipRecovery(new PgConnectionFactory(connectionString.ToString()));
+        using var cancellation = new CancellationTokenSource();
+        ConsoleCancelEventHandler cancel = (_, args) =>
+        {
+            args.Cancel = true;
+            cancellation.Cancel();
+        };
+        Console.CancelKeyPress += cancel;
+        try
+        {
+            return (int) await PayoutOwnershipRecoveryAssistant.RunAsync(recovery, Console.In,
+                Console.Out, HasInteractiveTerminal(), cancellation.Token, quietIfUnowned);
+        }
+        catch(OperationCanceledException) when(cancellation.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Recovery cancelled. Inspect ownership again before retrying if cancellation occurred during release.");
+            return ProcessExitCodes.PayoutOwnershipBlocked;
+        }
+        catch(PayoutRecoveryException ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            logger?.Warn(ex.Message);
+            return ex.ExitCode;
+        }
+        finally
+        {
+            Console.CancelKeyPress -= cancel;
+        }
     }
 
     private static CommandLineApplication ParseCommandLine(string[] args,
@@ -1472,6 +1592,11 @@ public class Program : ProcessStatusBackgroundService
             "--acknowledge-share-recovery-state",
             "After database reconciliation, verify and durably acknowledge fatal share-recovery evidence",
             CommandOptionType.NoValue);
+        recoverPayoutOwnershipOption = app.Option("--recover-payout-ownership",
+            "Interactively inspect and recover payout ownership, then exit without starting services",
+            CommandOptionType.NoValue);
+        noPayoutRecoveryPromptOption = app.Option("--no-payout-recovery-prompt",
+            "Disable automatic startup recovery prompts (retained owners still block payouts)", CommandOptionType.NoValue);
         generateSchemaOption = app.Option("-gcs|--generate-config-schema <outputfile>", "Generate JSON schema from configuration options", CommandOptionType.SingleValue);
         app.HelpOption("-? | -h | --help");
 
@@ -1981,14 +2106,15 @@ public class Program : ProcessStatusBackgroundService
         return result.ToString();
     }
 
-    private static void ConfigureLogging()
+    private static void ConfigureLogging(bool recoveryMode = false)
     {
         // Recovery must remain visible even when an operator deliberately supplies the smallest
         // accepted import configuration or constructs it outside the JSON sanitization path.
+        recoveryMode |= isShareRecoveryMode;
         var config = clusterConfig.Logging ??
-            (isShareRecoveryMode ? new ClusterLoggingConfig() : null);
+            (recoveryMode ? new ClusterLoggingConfig() : null);
         LogManager.Configuration = CreateLoggingConfiguration(config,
-            isShareRecoveryMode, clusterConfig.Pools);
+            recoveryMode, clusterConfig.Pools);
 
         logger = LogManager.GetLogger("Core");
     }
@@ -2061,6 +2187,7 @@ public class Program : ProcessStatusBackgroundService
                     ConsoleOutputColor.DarkRed, ConsoleOutputColor.White));
 
                     loggingConfig.AddTarget(target);
+                    AddRecoveryAuditConsoleRule(loggingConfig, target, recoveryMode);
                     // This wildcard route must continue to include dedicated
                     // startup categories such as PaymentExtraDiagnostics.
                     loggingConfig.AddRule(level, NLog.LogLevel.Fatal, target);
@@ -2074,6 +2201,7 @@ public class Program : ProcessStatusBackgroundService
                     };
 
                     loggingConfig.AddTarget(target);
+                    AddRecoveryAuditConsoleRule(loggingConfig, target, recoveryMode);
                     // This wildcard route must continue to include dedicated
                     // startup categories such as PaymentExtraDiagnostics.
                     loggingConfig.AddRule(level, NLog.LogLevel.Fatal, target);
@@ -2104,6 +2232,16 @@ public class Program : ProcessStatusBackgroundService
         }
 
         return loggingConfig;
+    }
+
+    private static void AddRecoveryAuditConsoleRule(LoggingConfiguration config,
+        Target target, bool recoveryMode)
+    {
+        // A copied service threshold must not hide the release receipt. Final prevents
+        // the ordinary console rule from emitting the same audit event a second time.
+        if(recoveryMode)
+            config.AddRule(NLog.LogLevel.Warn, NLog.LogLevel.Fatal, target,
+                typeof(PostgresPayoutOwnershipRecovery).FullName, true);
     }
 
     internal static FileTarget CreateFileTarget(string targetName, Layout fileName, string layout)
@@ -2342,17 +2480,24 @@ public class Program : ProcessStatusBackgroundService
             if(columnType != null)
                 enableLegacyTimestampBehavior = columnType.ToLower().Contains("without time zone");
             else
-                logger.Warn(() => "Unable to auto-detect Npgsql Legacy Timestamp Behavior. Please set 'EnableLegacyTimestamps' in your Miningcore Database configuration to'true' or 'false' to bypass auto-detection in case of problems");
+            {
+                services.GetRequiredService<IProcessStatus>().MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
+                throw new PoolStartupException("Unable to determine the PostgreSQL timestamp type. Check the shares schema and explicitly set persistence.postgres.enableLegacyTimestamps to true or false before restarting.");
+            }
         }
 
         else
             enableLegacyTimestampBehavior = clusterConfig.Persistence.Postgres.EnableLegacyTimestamps.Value;
 
+        if(enableLegacyTimestampBehavior && !clusterConfig.Persistence.Postgres.EnableLegacyTimestamps.HasValue)
+        {
+            services.GetRequiredService<IProcessStatus>().MarkFailed(ProcessExitCodes.ConfigurationRequiresOperator);
+            throw new PoolStartupException("Legacy PostgreSQL timestamps detected. Set persistence.postgres.enableLegacyTimestamps to true and restart; timestamp behavior must be configured before the first database connection.");
+        }
+
         if(enableLegacyTimestampBehavior)
         {
             logger.Info(()=> "Enabling Npgsql Legacy Timestamp Behavior");
-
-            AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
         }
     }
 
@@ -2498,7 +2643,8 @@ public class Program : ProcessStatusBackgroundService
 
     internal static void ValidateBitcoinConfirmationDeployment(ClusterConfig config)
     {
-        if(!ShouldRunPaymentProcessor(config))
+        // A pause suspends execution, not the configured financial contract.
+        if(!HasPaymentProcessorConfiguration(config))
             return;
         // Templates are assigned before this production startup boundary, and no
         // Stratum listener has been reserved. Payout-cycle validation is too late.
@@ -2645,7 +2791,20 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
-    internal static bool ShouldRunPaymentProcessor(ClusterConfig config)
+    internal static void ConfigurePaymentProcessingHostedService(IServiceCollection services,
+        ClusterConfig config)
+    {
+        if(ShouldRunPaymentProcessor(config))
+            services.AddHostedService<PayoutManager>();
+    }
+
+    internal static bool ShouldRunPaymentProcessor(ClusterConfig config) =>
+        HasPaymentProcessorConfiguration(config) && !config.PaymentProcessing.Paused;
+
+    internal static bool IsPaymentProcessorPaused(ClusterConfig config) =>
+        HasPaymentProcessorConfiguration(config) && config.PaymentProcessing.Paused;
+
+    private static bool HasPaymentProcessorConfiguration(ClusterConfig config)
     {
         var paymentEnabled = config?.PaymentProcessing?.Enabled == true &&
             config.Pools?.Any(x => x.Enabled && x.PaymentProcessing?.Enabled == true) == true;
@@ -2656,7 +2815,8 @@ public class Program : ProcessStatusBackgroundService
         return config.ShareRelay == null || config.Persistence?.Postgres != null;
     }
 
-    internal static void ValidateMergedMiningDeployment(ClusterConfig config)
+    internal static void ValidateMergedMiningDeployment(ClusterConfig config,
+        bool requireAssignedTemplates = false)
     {
         if(!RequiresMergedMiningPersistence(config))
             return;
@@ -2668,6 +2828,9 @@ public class Program : ProcessStatusBackgroundService
         if(config.ShareRelay == null && config.PaymentProcessing?.Enabled != true)
             throw new PoolStartupException(
                 "Litecoin-Dogecoin merged mining requires cluster-level payment processing on direct and share-relay receiver/recorder nodes so accepted and uncertain blocks are reconciled.");
+
+        foreach(var pool in config.Pools.Where(pool => pool.Enabled))
+            MergedMiningPayoutPolicy.Validate(pool, config, requireAssignedTemplates);
     }
 
     internal static async Task EnsureMergedMiningSchemaAsync(ClusterConfig config,
@@ -2731,9 +2894,9 @@ public class Program : ProcessStatusBackgroundService
                 "Bitcoin direct SOLO coinbase payout requires the direct-settlement block schema. Apply add_bitcoin_direct_solo.sql before starting canonical Bitcoin SOLO, or explicitly set soloCoinbasePayout to false to retain custodial settlement.");
     }
 
-    private static async Task<string> GetPostgresColumnType(IConnectionFactory cf, string table, string column)
+    internal static async Task<string> GetPostgresColumnType(IConnectionFactory cf, string table, string column)
     {
-        const string query = "SELECT data_type FROM information_schema.columns WHERE table_name = @table AND column_name = @column";
+        const string query = "SELECT data_type FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = @table AND column_name = @column";
 
         return await cf.Run(async con => await con.ExecuteScalarAsync<string>(query, new { table, column }));
     }

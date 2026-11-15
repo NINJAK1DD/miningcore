@@ -32,6 +32,26 @@ public class PayoutManagerTests
     private static readonly TimeSpan HostTestTimeout = TimeSpan.FromSeconds(10);
 
     [Fact]
+    public async Task PausedManager_RejectsAccidentalStartupWithoutTouchingOwnershipOrWallets()
+    {
+        var lease = Substitute.For<IPayoutManagerLease>();
+        var context = Substitute.For<ILifetimeScope>();
+        var connections = Substitute.For<IConnectionFactory>();
+        var status = new ProcessStatus();
+        using var manager = new PayoutManager(context, connections,
+            Substitute.For<IBlockRepository>(), Substitute.For<IShareRepository>(),
+            Substitute.For<IBalanceRepository>(),
+            new ClusterConfig { PaymentProcessing = new ClusterPaymentProcessingConfig { Enabled = true, Paused = true } },
+            Substitute.For<IMessageBus>(), lease, status);
+
+        await Assert.ThrowsAsync<TrustedPoolStartupException>(() => manager.StartAsync(CancellationToken.None));
+        Assert.Equal(ProcessExitCodes.ConfigurationRequiresOperator, status.ExitCode);
+        Assert.Empty(lease.ReceivedCalls());
+        Assert.Empty(connections.ReceivedCalls());
+        Assert.Empty(context.ReceivedCalls());
+    }
+
+    [Fact]
     public async Task PayoutCycles_ResolveDisposableHandlersInChildScopes()
     {
         var probe = new PayoutScopeProbe();
@@ -559,20 +579,27 @@ public class PayoutManagerTests
             fixture.Manager.StartAsync(CancellationToken.None));
 
         Assert.Contains("Another payout manager", ex.Message);
+        Assert.Equal(ProcessExitCodes.GeneralFailure, fixture.ProcessStatus.ExitCode);
     }
 
-    [Fact]
-    public async Task StartAsync_ReportsLeaseAcquisitionFailure()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StartAsync_ReportsLeaseAcquisitionFailure(bool earlierServiceFailed)
     {
         var fixture = CreateFixture();
+        if(earlierServiceFailed)
+            fixture.ProcessStatus.MarkFailed();
         const string reason = "A durable payout-manager ownership marker remains for host pool-1 process 42";
         fixture.PayoutLease.TryAcquireAsync(Arg.Any<CancellationToken>()).Returns(false);
         fixture.PayoutLease.AcquisitionFailure.Returns(reason);
+        fixture.PayoutLease.RequiresRecovery.Returns(true);
 
         var ex = await Assert.ThrowsAsync<PoolStartupException>(() =>
             fixture.Manager.StartAsync(CancellationToken.None));
 
         Assert.Equal(reason, ex.Message);
+        Assert.Equal(ProcessExitCodes.PayoutOwnershipBlocked, fixture.ProcessStatus.ExitCode);
     }
 
     [Fact]
