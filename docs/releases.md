@@ -75,6 +75,9 @@ of the wallet pause:
   financial identity, including old null-source receipts, without modifying shared share objects.
 - Equihash caches are revalidated on the next admitted payout after a conclusive unsupported
   method/argument response. Unknown wallet outcomes never enable an automatic fallback or retry.
+  Native shielding also stops the payout cycle on response loss, missing operation/transaction
+  identifiers, unavailable results or unknown statuses. Operators must reconcile uncertain
+  shielding before releasing the retained payout admission.
   Privacy-policy-capable wallets choose their conventional fee; the balance precheck reserves
   5,000 zatoshis times `max(2, recipients + 1)` for a page (0.00255 ZEC for 50 recipients).
   This output/change estimate can still be exceeded by input selection. Fees rise with page size;
@@ -84,6 +87,10 @@ Review the [relay upgrade procedure](share-relays.md#required-pps-transport-prot
 before resuming admission. Live wallet evidence covers the pinned versions in the
 [compatibility matrix](../scripts/test-lab/README.md#wallet-compatibility-matrix); other versions
 still require deployment validation. These changes do not recall already admitted wallet work.
+
+AutoMapper is updated to 16.3.0 for the constructor and runtime-mapping recursion
+vulnerabilities GHSA-6vhm-j9h7-f9gh and GHSA-gpwp-5797-mjff. Dependency vulnerability
+checks remain enforced; see the [dependency security record](dependency-security.md).
 
 Include these operator steps in the next candidate's deployment checklist (including RC.2 if this
 change ships there). Normal upgrades must preserve ownership markers and financial records.

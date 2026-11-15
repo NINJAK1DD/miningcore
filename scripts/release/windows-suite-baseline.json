@@ -1,7 +1,7 @@
 {
-  "source_commit": "5e398e62e37155405dfefddfbbfd9a8b2616b857",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43405824198",
-  "minimum_total": 6247,
+  "source_commit": "75e57cd6f841d1feddf223677ac0d70bb9fe3014",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43774898165",
+  "minimum_total": 6267,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -577,6 +577,101 @@
       "class": "Miningcore.Tests.Payments.WalletPayoutSetupTests",
       "method": "EquihashCapabilities_SurviveHandlerRecreationButRetryInconclusiveProbeAndConfigChange",
       "case": "EquihashCapabilities_SurviveHandlerRecreationButRetryInconclusiveProbeAndConfigChange"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ShareRelayHardeningTests",
+      "method": "FinancialSnapshotPreservesIdentityWithoutMutatingEitherProjection",
+      "case": "FinancialSnapshotPreservesIdentityWithoutMutatingEitherProjection(source: \"committed-source\")"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ShareRelayHardeningTests",
+      "method": "FinancialSnapshotPreservesIdentityWithoutMutatingEitherProjection",
+      "case": "FinancialSnapshotPreservesIdentityWithoutMutatingEitherProjection(source: null)"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ShareRelayHardeningTests",
+      "method": "NonPpsRelayFailureStopsAdmission",
+      "case": "NonPpsRelayFailureStopsAdmission(scheme: PPLNS, publisherFailure: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ShareRelayHardeningTests",
+      "method": "NonPpsRelayFailureStopsAdmission",
+      "case": "NonPpsRelayFailureStopsAdmission(scheme: PPLNS, publisherFailure: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ShareRelayHardeningTests",
+      "method": "NonPpsRelayFailureStopsAdmission",
+      "case": "NonPpsRelayFailureStopsAdmission(scheme: PROP, publisherFailure: False)"
+    },
+    {
+      "class": "Miningcore.Tests.Mining.ShareRelayHardeningTests",
+      "method": "NonPpsRelayFailureStopsAdmission",
+      "case": "NonPpsRelayFailureStopsAdmission(scheme: PROP, publisherFailure: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "BackendReplacementReprobesOnlyAfterConclusiveRejectionAndOnNextCycle",
+      "case": "BackendReplacementReprobesOnlyAfterConclusiveRejectionAndOnNextCycle(changed: \"privacy\")"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "BackendReplacementReprobesOnlyAfterConclusiveRejectionAndOnNextCycle",
+      "case": "BackendReplacementReprobesOnlyAfterConclusiveRejectionAndOnNextCycle(changed: \"sendcurrency\")"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "BackendReplacementReprobesOnlyAfterConclusiveRejectionAndOnNextCycle",
+      "case": "BackendReplacementReprobesOnlyAfterConclusiveRejectionAndOnNextCycle(changed: \"z_shieldcoinbase\")"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "ShieldedBalanceReservesConventionalPageFeeBeforeSubmission",
+      "case": "ShieldedBalanceReservesConventionalPageFeeBeforeSubmission"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "UncertainShieldingNeverContinuesToPayoutOrReprobes",
+      "case": "UncertainShieldingNeverContinuesToPayoutOrReprobes(native: False, failure: \"lost-result\")"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "UncertainShieldingNeverContinuesToPayoutOrReprobes",
+      "case": "UncertainShieldingNeverContinuesToPayoutOrReprobes(native: False, failure: \"unknown-status\")"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "UncertainShieldingNeverContinuesToPayoutOrReprobes",
+      "case": "UncertainShieldingNeverContinuesToPayoutOrReprobes(native: False, failure: \"unsupported-result\")"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "UncertainShieldingNeverContinuesToPayoutOrReprobes",
+      "case": "UncertainShieldingNeverContinuesToPayoutOrReprobes(native: True, failure: \"lost-result\")"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "UncertainShieldingNeverContinuesToPayoutOrReprobes",
+      "case": "UncertainShieldingNeverContinuesToPayoutOrReprobes(native: True, failure: \"lost-submit\")"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "UncertainShieldingNeverContinuesToPayoutOrReprobes",
+      "case": "UncertainShieldingNeverContinuesToPayoutOrReprobes(native: True, failure: \"missing-operation\")"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "UncertainShieldingNeverContinuesToPayoutOrReprobes",
+      "case": "UncertainShieldingNeverContinuesToPayoutOrReprobes(native: True, failure: \"missing-transaction\")"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "UncertainShieldingNeverContinuesToPayoutOrReprobes",
+      "case": "UncertainShieldingNeverContinuesToPayoutOrReprobes(native: True, failure: \"unknown-status\")"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "UncertainShieldingNeverContinuesToPayoutOrReprobes",
+      "case": "UncertainShieldingNeverContinuesToPayoutOrReprobes(native: True, failure: \"unsupported-result\")"
     }
   ],
   "expected_skips": [
@@ -1709,6 +1804,12 @@
       "class": "Miningcore.Tests.StratumListenerConfigurationTests",
       "method": "DistinctSpecificAddresses_MatchRealLinuxSocketBinding",
       "case": "DistinctSpecificAddresses_MatchRealLinuxSocketBinding"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "PearlPpsAcceptanceKeepsCommittedIdentityAcrossRelayDuplicatesAndRestart",
+      "case": "PearlPpsAcceptanceKeepsCommittedIdentityAcrossRelayDuplicatesAndRestart"
     }
-  ]
+  ],
+  "source_note": "Discovery, all 134 required passes and 227 skips observed in this artifact. One unrelated existing relay assertion failed because it expected rewriting a financial Source; the assertion is corrected to require preservation. Complete-suite success is separately required by the validator on the new head."
 }

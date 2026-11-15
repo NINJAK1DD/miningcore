@@ -541,3 +541,46 @@ self-tests and documentation link checks passed. No production resources were us
 Subsequent full-suite results and the exact tested revision are recorded in the
 [PR validation section](https://github.com/NINJAK1DD/miningcore/pull/292). Documentation-only
 commits do not change the compiled implementation identified in the lab evidence.
+
+### Review hardening — 15 November 2026
+
+The Pearl producer now assigns `Source` before its first candidate/accounting commit.
+Relay serialization snapshots the share and its paired projection, preserves committed
+financial fields (including historical null sources), and sets wire-only reward values
+on the copies. It no longer rewrites the object concurrently consumed by the recorder.
+
+`PearlPpsAcceptanceKeepsCommittedIdentityAcrossRelayDuplicatesAndRestart` verifies a
+captured real proof with the native Pearl worker and invokes the production submit and
+candidate-store paths. The same retained candidate is delivered repeatedly through real
+CURVE sockets and the production receiver/recorder into one PostgreSQL database. Two
+fresh OS processes reopen that evidence. Assertions cover matching payload hashes, one
+receipt/share/credit, exact liability plus remainder, and no journal, quarantine or fail-stop.
+This is a captured-proof acceptance test, not fresh GPU mining or an operating-system reboot.
+The worker SHA-256 is `046f44eddc4f2b16b2f1ef373bc7454d5ec61a9d5c9f084469f67869e195498e`.
+
+Equihash capability caches are cleared only after conclusive unsupported-method/argument
+rejection; re-probing is deferred to the next admitted payout. Backend-replacement tests
+retain the same configuration object and endpoint and verify that no fallback spend occurs
+in the rejected cycle. Native shielding response loss and ambiguous operation results stop
+the cycle, as do unavailable/unknown emulated-shielding results. They do not authorize retry
+or clear payout ownership. The new uncertainty cases assert no subsequent payout submission.
+Privacy-policy wallets reserve 5,000 zatoshis × `max(2, positive recipients + 1)` before
+submission; one-zatoshi-below and exact-boundary tests cover one- and fifty-recipient pages
+and the unchanged legacy fixed fee. The wallet still determines the actual conventional fee.
+
+PPLNS and PROP tests cover both local queue saturation and publisher exceptions. All schemes
+retain the node-wide fail-stop policy: silently dropping a known rejected ordinary share can
+affect payout weighting. This does not eliminate PUB/SUB loss after successful local enqueue.
+The [relay guide](share-relays.md#bounded-transport-fail-stop-and-monitoring) documents native
+buffer limits, independent sender/receiver accounting monitoring, and a PPS submit-latency
+alert. Upgrade notes require key rotation when older public-key logs exist and explain the
+PPS bind/key checks and durability-delayed acknowledgement contract.
+
+The dependency audit identified two newly published AutoMapper recursion advisories during
+CI restore. AutoMapper 16.3.0 addresses both; auditing was not suppressed. See the
+[dependency record](dependency-security.md#automapper-16-licence-decision).
+
+The [lab guide](../scripts/test-lab/README.md#pearl-precommitted-pps-relay-regression) reproduces
+the Pearl case. Current-head test counts, complete CI status and the six review acceptance
+checks are maintained in the PR validation section; the measurements above remain the earlier
+dated capacity baseline until replaced by a measured run.

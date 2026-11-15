@@ -130,7 +130,7 @@ requires the legacy assembly. Until then, keep the dependency runtime-only and d
 
 References:
 
-- [AutoMapper 16.2.0 upstream licence](https://github.com/LuckyPennySoftware/AutoMapper/blob/dfa6dd587c5854b4beee5934beb39ba6e9569b84/LICENSE.md)
+- [AutoMapper 16.3.0 upstream licence](https://github.com/LuckyPennySoftware/AutoMapper/blob/9c31182a3eb99d5191ccc71ee90105846830917f/LICENSE.md)
 - [AutoMapper uncontrolled-recursion advisory](https://github.com/advisories/GHSA-rvv3-g6hj-g44x)
 - [AutoMapper 16.3.0 security release](https://github.com/LuckyPennySoftware/AutoMapper/releases/tag/v16.3.0)
 - [Constructor recursion bypass](https://github.com/advisories/GHSA-6vhm-j9h7-f9gh)
