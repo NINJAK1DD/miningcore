@@ -21,7 +21,7 @@ guide before populating or deploying those files.
   also accept miners itself.
 
 Only one process may own payouts for a database/pool set. A non-merged relay sender can be
-database-free when payment processing is disabled there. A Litecoin–Dogecoin merged-mining sender
+database-free when payment processing is disabled there and no enabled pool uses PPS. A Litecoin–Dogecoin merged-mining sender
 must have PostgreSQL because financially significant parent and auxiliary candidates are persisted
 synchronously on the submitting node; see the [merged-mining guide](merged-mining-litecoin-dogecoin.md).
 
@@ -39,7 +39,7 @@ received them. Monitor the complete route and accept this statistical-share loss
 block candidates use separate synchronous PostgreSQL/recovery-journal persistence and are not
 delegated to ordinary PUB/SUB delivery.
 
-An accounting envelope is atomic only after the receiver commits it: transport loss can discard the
+At the receiver, an accounting envelope commits atomically: transport loss can discard the
 whole envelope, but cannot commit one chain without the other. Upgrade and migrate receivers before
 senders, then stop old senders before enabling PPS or pooled merged mining. New senders use a new
 protobuf wire discriminator; old receivers reject it, and new receivers reject accounting fields in

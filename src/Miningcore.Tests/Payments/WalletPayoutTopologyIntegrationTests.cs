@@ -190,12 +190,13 @@ public partial class WalletPayoutControlIntegrationTests
         private bool stopped;
         private TopologyProcess(Process process) { this.process = process; errors = process.StandardError.ReadToEndAsync(); }
         public int ExitCode => process.ExitCode;
-        public static async Task<TopologyProcess> Start(Database db, ClusterConfig cluster, bool blocked = false)
+        public static async Task<TopologyProcess> Start(Database db, ClusterConfig cluster, bool blocked = false,
+            string mode = "payout-topology-node")
         {
             var start = new ProcessStartInfo("dotnet") { UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
             start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.ProcessHost.dll"));
-            start.ArgumentList.Add("payout-topology-node");
+            start.ArgumentList.Add(mode);
             start.Environment["MININGCORE_TEST_POSTGRES"] = db.ConnectionString;
             start.Environment["MININGCORE_TEST_CLUSTER"] = JsonConvert.SerializeObject(cluster);
             var child = new TopologyProcess(Process.Start(start));

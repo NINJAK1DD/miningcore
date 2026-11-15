@@ -193,7 +193,34 @@ public partial class WalletPayoutControlIntegrationTests
                 "SELECT (SELECT sum(amount) FROM balances) + (SELECT sum(amount) FROM pps_credit_remainders)"));
         }
         Assert.False(sender.Coordinator.IsFailStopRequested);
-        output.WriteLine("Native-verified Pearl PPS acceptance committed before acknowledgement; two restarted CURVE receiver/recorder lifetimes deduplicated the same candidate receipt and liability with identical hashes and no quarantine/fail-stop.");
+        var childConfig = JsonConvert.DeserializeObject<ClusterConfig>(JsonConvert.SerializeObject(config));
+        var childDirectory = Directory.CreateTempSubdirectory("pearl-relay-child-");
+        childConfig.ShareRecoveryFile = Path.Combine(childDirectory.FullName, "shares.json");
+        childConfig.ShareRecoveryStateDirectory = Path.Combine(childDirectory.FullName, "state");
+        var processes = new HashSet<int>();
+        try
+        {
+            for(var restart = 0; restart < 2; restart++)
+            {
+                await using var child = await TopologyProcess.Start(db, childConfig, mode: "pearl-relay-replay");
+                var state = await child.State();
+                Assert.True(processes.Add(state.Value<int>("processId")));
+                Assert.True(state.Value<int>("deliveries") >= 3);
+                Assert.Equal(hash, Assert.Single(state["hashes"].Values<string>()));
+                Assert.Equal("canonical-pearl-source", Assert.Single(state["sources"].Values<string>()));
+                Assert.False(state.Value<bool>("failStop"));
+                Assert.False(state.Value<bool>("journal"));
+                Assert.Equal(0, state.Value<int>("quarantines"));
+                await child.Stop();
+                Assert.Equal(1, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM share_accounting_groups"));
+                Assert.Equal(1, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM pps_share_credits"));
+                Assert.Equal(1, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM shares"));
+                Assert.Equal(accepted.PpsCalculatedAmount.Value, await db.Admin.ExecuteScalarAsync<decimal>(
+                    "SELECT (SELECT sum(amount) FROM balances) + (SELECT sum(amount) FROM pps_credit_remainders)"));
+            }
+        }
+        finally { childDirectory.Delete(true); }
+        output.WriteLine("Native-verified Pearl PPS acceptance committed before acknowledgement; duplicate CURVE deliveries across two fresh OS processes retained one receipt and liability with identical hashes and no quarantine/fail-stop.");
     }
 }
 

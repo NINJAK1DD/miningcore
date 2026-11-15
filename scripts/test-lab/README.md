@@ -138,10 +138,11 @@ bash scripts/test-lab/with-postgres.sh dotnet test src/Miningcore.Tests/Miningco
 This opt-in case assigns the captured real SRBMiner proof to an isolated job, executes
 the production native verifier and Pearl submission/candidate-store path, and acknowledges
 only after accounting. It then recreates the publisher, receiver, recorder and candidate-store
-objects twice and delivers duplicates over real CURVE sockets into the same PostgreSQL database.
+objects twice, then launches two fresh OS processes that reload the durable candidate and
+deliver duplicates over real CURVE sockets into the same PostgreSQL database.
 It checks exact payload hashes, one receipt/share/credit, liability plus remainder conservation,
-and no quarantine or fail-stop. It does not claim fresh GPU mining or restarting the operating
-system. Preserve the pinned worker provenance and the TRX with the tested revision.
+and no quarantine or fail-stop. It does not claim fresh GPU mining or an operating-system
+reboot. Preserve the pinned worker provenance and the TRX with the tested revision.
 
 ### Capacity and failure boundaries
 

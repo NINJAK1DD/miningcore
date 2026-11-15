@@ -51,6 +51,9 @@ if(args.Length > 0 && string.Equals(args[0], "hold",
 if(args.Length == 1 && args[0] == "payout-topology-node")
     return await PayoutTopologyNode.RunAsync();
 
+if(args.Length == 1 && args[0] == "pearl-relay-replay")
+    return await PearlRelayReplay.RunAsync();
+
 if(args.Length == 1 && args[0] == "wallet-control-probe")
 {
     await using var lease = new Miningcore.Payments.PostgresPayoutManagerLease(
