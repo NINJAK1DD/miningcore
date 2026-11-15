@@ -12,6 +12,7 @@ using Miningcore.Blockchain.Equihash;
 using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
+using Miningcore.Payments;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
@@ -44,6 +45,68 @@ public class EquihashWalletResilienceTests : TestBase
         Template = ModuleInitializer.CoinTemplates["zcash"], Daemons = new[] { server.Endpoint() },
         Extra = new Dictionary<string, object> { ["z-address"] = "z-address" }, PaymentProcessing = new(),
     };
+
+    [Theory]
+    [InlineData(true, "lost-submit")]
+    [InlineData(true, "missing-operation")]
+    [InlineData(true, "lost-result")]
+    [InlineData(true, "unsupported-result")]
+    [InlineData(true, "unknown-status")]
+    [InlineData(true, "missing-transaction")]
+    [InlineData(false, "lost-result")]
+    [InlineData(false, "unsupported-result")]
+    [InlineData(false, "unknown-status")]
+    public async Task UncertainShieldingNeverContinuesToPayoutOrReprobes(bool native, string failure)
+    {
+        var probes = 0;
+        var shielding = 0;
+        var payouts = 0;
+        await using var server = await RpcDiagnosticTests.Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JObject.Parse(await reader.ReadToEndAsync());
+            var method = request.Value<string>("method");
+            var args = request["params"] as JArray;
+            var probe = (method is "sendcurrency" or "z_shieldcoinbase") && (args == null || args.Count == 0) ||
+                method == "z_sendmany" && args?.Last?.Value<string>() == "WrongPrivacyPolicy";
+            JToken result = method switch
+            {
+                "getblockchaininfo" => new JObject { ["chain"] = "main" },
+                "listunspent" => new JArray(new JObject { ["spendable"] = true, ["address"] = "t-address", ["amount"] = 10 }),
+                "z_getbalance" => new JValue(100d),
+                _ => JValue.CreateNull(),
+            };
+            int? code = null;
+            if(probe)
+            {
+                probes++;
+                code = method switch { "sendcurrency" => -32601, "z_shieldcoinbase" => native ? -1 : -32601, _ => -8 };
+            }
+            else if(method == "z_shieldcoinbase" || method == "z_sendmany" && args?[0]?.Value<string>() == "t-address")
+            {
+                shielding++;
+                code = failure == "lost-submit" ? -500 : null;
+                result = native ? new JObject { ["opid"] = failure == "missing-operation" ? null : "shield-operation" } : new JValue("shield-operation");
+            }
+            else if(method == "z_getoperationresult")
+            {
+                code = failure switch { "lost-result" => -500, "unsupported-result" => -32601, _ => null };
+                result = new JArray(new JObject { ["id"] = "shield-operation",
+                    ["status"] = failure == "unknown-status" ? "unrecognized" : "success",
+                    ["result"] = new JObject() });
+            }
+            else if(method == "z_sendmany") { payouts++; code = -6; }
+            await context.Response.WriteAsync(new JObject
+            {
+                ["id"] = request["id"], ["result"] = result,
+                ["error"] = code.HasValue ? new JObject { ["code"] = code.Value, ["message"] = "injected shielding outcome" } : null,
+            }.ToString());
+        });
+        await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => Cycle(Config(server)));
+        Assert.Equal(3, probes);
+        Assert.Equal(1, shielding);
+        Assert.Equal(0, payouts);
+    }
 
     [Theory]
     [InlineData("sendcurrency")]

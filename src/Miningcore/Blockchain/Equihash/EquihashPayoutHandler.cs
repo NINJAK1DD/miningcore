@@ -659,6 +659,15 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
     /// </summary>
     private async Task ShieldCoinbaseAsync(CancellationToken ct)
     {
+        try { await ShieldCoinbaseCoreAsync(ct); }
+        catch(Exception ex) when(WalletSubmissionOutcome.IsTransportFailure(ex))
+        {
+            throw new PayoutOutcomeUncertainException("Native shielding was interrupted before its outcome was known", ex);
+        }
+    }
+
+    private async Task ShieldCoinbaseCoreAsync(CancellationToken ct)
+    {
         logger.Info(() => $"[{LogCategory}] Shielding ZCash Coinbase funds");
 
         var args = new object[]
@@ -669,6 +678,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
         var response = await rpcClient.ExecuteAsync<ZCashShieldingResponse>(logger, EquihashCommands.ZShieldCoinbase, ct, args);
 
+        WalletSubmissionOutcome.ThrowIfUnknown(response.Error, EquihashCommands.ZShieldCoinbase);
         if(await InvalidateUnsupportedCapabilitiesAsync(response.Error?.Code))
             return;
 
@@ -682,7 +692,8 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             return;
         }
 
-        var operationId = response.Response.OperationId;
+        var operationId = WalletSubmissionOutcome.RequireTransactionId(response.Response?.OperationId,
+            EquihashCommands.ZShieldCoinbase + " operation");
 
         logger.Info(() => $"[{LogCategory}] {EquihashCommands.ZShieldCoinbase} operation id: {operationId}");
 
@@ -693,20 +704,24 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             var operationResultResponse = await rpcClient.ExecuteAsync<ZCashAsyncOperationStatus[]>(logger,
                 EquihashCommands.ZGetOperationResult, ct, new object[] { new object[] { operationId } });
 
+            if(operationResultResponse.Error != null)
+                throw new PayoutOutcomeUncertainException($"Shielding operation {operationId} result is unavailable");
+
             if(operationResultResponse.Error == null &&
                operationResultResponse.Response?.Any(x => x.OperationId == operationId) == true)
             {
                 var operationResult = operationResultResponse.Response.First(x => x.OperationId == operationId);
 
-                if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status))
+                if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status) || !Enum.IsDefined(status))
                 {
-                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.ShieldCoinbaseAsync");
-                    break;
+                    throw new PayoutOutcomeUncertainException($"Shielding operation {operationId} returned an unknown status");
                 }
 
                 switch(status)
                 {
                     case ZOperationStatus.Success:
+                        WalletSubmissionOutcome.RequireTransactionId(operationResult.Result?.Value<string>("txid"),
+                            EquihashCommands.ZShieldCoinbase + " result");
                         logger.Info(() => $"[{LogCategory}] {EquihashCommands.ZShieldCoinbase} successful");
 
                         continueWaiting = false;
@@ -797,18 +812,17 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             var operationResultResponse = await rpcClient.ExecuteAsync<ZCashAsyncOperationStatus[]>(logger,
                 EquihashCommands.ZGetOperationResult, ct, new object[] { new object[] { operationId } });
 
-            WalletSubmissionOutcome.ThrowIfUnknown(operationResultResponse.Error,
-                $"{EquihashCommands.ZSendMany} shielding operation {operationId}");
+            if(operationResultResponse.Error != null)
+                throw new PayoutOutcomeUncertainException($"Shielding transfer {operationId} result is unavailable");
 
             if(operationResultResponse.Error == null &&
                operationResultResponse.Response?.Any(x => x.OperationId == operationId) == true)
             {
                 var operationResult = operationResultResponse.Response.First(x => x.OperationId == operationId);
 
-                if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status))
+                if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status) || !Enum.IsDefined(status))
                 {
-                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.ShieldCoinbaseEmulatedAsync");
-                    break;
+                    throw new PayoutOutcomeUncertainException($"Shielding transfer {operationId} returned an unknown status");
                 }
 
                 switch(status)
