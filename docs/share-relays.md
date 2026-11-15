@@ -69,6 +69,28 @@ wallet are not one accounting or emergency-stop domain. Do not deploy a PPS rela
 its local recorder or rely on PUB/SUB delivery as proof of a liability. An accepted direct block
 also retains its separate synchronous candidate-persistence boundary and protected journal fallback.
 
+## Required PPS transport protection and upgrade
+
+An enabled pool configured with the PPS scheme requires a bind-mode publisher and a
+`sharedEncryptionKey` of at least **32 characters after trimming whitespace** on the sender
+and every receiver endpoint. This check also applies when that pool's payment processing
+is disabled. Generate at least 32 random bytes, as below; length alone is not entropy.
+PPS connect-mode senders are rejected even if an external VPN or broker protects the link.
+
+Before upgrading an existing PPS relay, inventory all participating versions and keys,
+stop admission, and rotate `sharedEncryptionKey` on the publisher and its receivers if
+older logs containing the CURVE public key exist. Earlier versions logged that public
+key; anyone with it and network access could subscribe and read addresses, workers and IPs
+without knowing the secret. The public key does not permit publisher impersonation, but
+removing old log lines does not revoke a copy. Rotate the secret to change the publisher
+identity, protect retained logs, restrict listener access and verify the new route before
+resuming admission. Do not reprint either key in incident records.
+
+Set the originating `clusterName` before admitting work. Source identity is part of the
+accounting receipt. Pearl records it before its first durable commit; relay serialization
+uses a separate copy and preserves identified financial envelopes, including historical
+receipts whose source is null. Republishing from another cluster must not rewrite them.
+
 ## Recommended bind mode
 
 In the usual topology, each sender binds one protected relay endpoint and the central recorder
@@ -129,6 +151,61 @@ Miningcore intentionally rejects `sharedEncryptionKey` on a connect-mode sender 
 Curve setup assumes that the sender is the Curve server. If a broker topology is required, protect
 and authenticate that transport outside this built-in bind-mode arrangement and validate it in the
 actual deployment lab.
+
+This connect-mode option is available only for non-PPS deployments. A configured PPS
+route must use the protected bind-mode arrangement above.
+
+## Bounded transport, fail-stop and monitoring
+
+**All relay senders, including PPLNS/PROP, stop mining admission** on an oversized frame,
+serialization failure, local queue saturation or publisher exception. The rejected share
+cannot receive a positive response. This intentionally avoids continued admission through
+a known broken route: missing ordinary PPLNS/PROP shares can affect payout weighting.
+Preserve recovery evidence and restore the route before restarting; ordinary network copies
+lost before failure are not automatically replayed.
+
+The local publisher queue holds at most **4,096 messages / 16 MiB of serialized payload**,
+with a **1 MiB per-frame limit**. PUB and SUB native high-water marks are **128**, and the
+receiver's managed native-message queue is **128**. Compared with ZeroMQ's usual 1,000-message
+native default, these bounds reduce memory exposure but can increase silent loss during
+ordinary-share bursts. They are queue bounds, not a total-process-memory guarantee.
+
+Monitor these publisher series separately from receiver health:
+
+- `miningcore_share_relay_queue_depth` and `miningcore_share_relay_queue_capacity`;
+- `miningcore_share_relay_queue_high_watermark`;
+- `miningcore_share_relay_queue_bytes` and `miningcore_share_relay_queue_byte_capacity`;
+- `miningcore_share_relay_queue_rejected_total`.
+
+Alert on rising occupancy and any rejection. Also compare sender accepted-share rates with
+receiver `miningcore_valid_shares_total` rates per pool, inspect recorder queue/recovery
+state, and reconcile accounting receipts/credits in the shared database. An empty publisher
+queue proves neither network delivery nor receiver processing. PPS local receipts protect
+liabilities; they do not make receiver-side telemetry complete. PPLNS/PROP weighting retains
+the documented ordinary-share loss boundary.
+
+For PPS pools, alert on submission latency as well as queue pressure. The existing
+`miningcore_stratum_request_execution_time` summary measures complete request duration in
+milliseconds, including validation and the acknowledgement durability wait. For example,
+adapt this five-minute **mean** latency alert to your pool IDs and workload:
+
+```yaml
+- alert: PpsSubmitLatency
+  expr: >-
+    rate(miningcore_stratum_request_execution_time_sum{pool=~"pps-pool-a|pps-pool-b",method="mining.submit"}[5m])
+    / rate(miningcore_stratum_request_execution_time_count{pool=~"pps-pool-a|pps-pool-b",method="mining.submit"}[5m]) > 250
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "PPS submit latency exceeds the configured operating threshold"
+```
+
+Use the protocol's actual submit method label for other coin families. This is not a p99
+or pure database-latency measurement; native proof verification can dominate Pearl requests.
+The measured capacity p95/p99 values and hardware limitations are in the
+[wallet-stop evidence](emergency-wallet-stop.md#measured-pps-capacity). Validate thresholds
+on the deployment hardware rather than treating the example as a universal SLA.
 
 ## Receiver and database configuration
 

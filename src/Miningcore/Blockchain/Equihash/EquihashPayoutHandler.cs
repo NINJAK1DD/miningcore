@@ -61,6 +61,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
     // Handlers are recreated each payout cycle. Cache only conclusive probe
     // results for this process/configuration, without retaining retired pools.
     private static readonly ConditionalWeakTable<PoolConfig, CapabilityCache> capabilities = new();
+    private CapabilityCache payoutCapabilities;
+    private string capabilityConfiguration;
+    private bool capabilitiesInvalidated;
     private sealed class CapabilityCache
     {
         public readonly SemaphoreSlim Gate = new(1, 1);
@@ -128,8 +131,35 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                 cache.Privacy = response.Error.Code == (int) BitcoinRPCErrorCode.RPC_INVALID_PARAMETER;
             }
             supportsZSendManyPrivacyPolicy = cache.Privacy.Value;
+            payoutCapabilities = cache;
+            capabilityConfiguration = configuration;
+            capabilitiesInvalidated = false;
         }
         finally { cache.Gate.Release(); }
+    }
+
+    private async Task<bool> InvalidateUnsupportedCapabilitiesAsync(int? code, bool privacyArguments = false)
+    {
+        if(code != (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND &&
+           !(privacyArguments && code == (int) BitcoinRPCErrorCode.RPC_INVALID_PARAMS))
+            return false;
+
+        // Only conclusive rejection permits another capability probe. Never turn
+        // a timeout, lost response or unknown async result into an automatic retry.
+        var cache = payoutCapabilities;
+        if(cache != null)
+        {
+            await cache.Gate.WaitAsync();
+            try
+            {
+                if(cache.Configuration == capabilityConfiguration)
+                    cache.NativeShielding = cache.SendCurrency = cache.Privacy = null;
+            }
+            finally { cache.Gate.Release(); }
+        }
+        capabilitiesInvalidated = true;
+        logger.Warn("Wallet rejected a cached RPC capability; revalidation is deferred to the next admitted payout cycle");
+        return true;
     }
 
     public override async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
@@ -233,6 +263,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         else
             await ShieldCoinbaseEmulatedAsync(ct);
 
+        if(capabilitiesInvalidated)
+            return;
+
         // send in batches with no more than 50 recipients to avoid running into tx size limits
         var pageSize = 50;
         var pageCount = (int) Math.Ceiling(balances.Length / (double) pageSize);
@@ -265,12 +298,18 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                 ZMinConfirmations, // only spend funds covered by this many confirmations
             });
 
-            if(balanceResponse.Error != null || (decimal) (double) balanceResponse.Response - TransferFee < pageAmount)
+            // Reserve the ZIP 317 output/change action estimate. The wallet still
+            // selects inputs and calculates its actual fee; fragmented notes may
+            // require more. Legacy wallets retain their explicit fixed fee.
+            var feeReserve = supportsZSendManyPrivacyPolicy
+                ? 0.00005m * Math.Max(2, amounts.Count + 1)
+                : TransferFee;
+            if(balanceResponse.Error != null || (decimal) (double) balanceResponse.Response - feeReserve < pageAmount)
             {
                 if(balanceResponse.Error != null)
                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "EquihashPayoutHandler.PayoutZSendManyAsync", code: balanceResponse.Error?.Code);
                 else
-                    logger.Info(() => $"[{LogCategory}] Insufficient shielded balance for payment of {FormatAmount(pageAmount)}");
+                    logger.Info(() => $"[{LogCategory}] Insufficient shielded balance for payment of {FormatAmount(pageAmount)} plus fee reserve {FormatAmount(feeReserve)}");
 
                 return;
             }
@@ -311,6 +350,12 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
             WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
                 EquihashCommands.ZSendMany);
+
+            if(await InvalidateUnsupportedCapabilitiesAsync(response.Error?.Code, supportsZSendManyPrivacyPolicy))
+            {
+                TrackPayoutSubmissionNotStarted(page);
+                return;
+            }
 
             if(response.Error == null)
             {
@@ -480,6 +525,12 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
                 EquihashCommands.SendCurrency);
 
+            if(await InvalidateUnsupportedCapabilitiesAsync(response.Error?.Code))
+            {
+                TrackPayoutSubmissionNotStarted(page);
+                return;
+            }
+
             if(response.Error == null)
             {
                 var operationId = WalletSubmissionOutcome.RequireTransactionId(
@@ -617,6 +668,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         };
 
         var response = await rpcClient.ExecuteAsync<ZCashShieldingResponse>(logger, EquihashCommands.ZShieldCoinbase, ct, args);
+
+        if(await InvalidateUnsupportedCapabilitiesAsync(response.Error?.Code))
+            return;
 
         if(response.Error != null)
         {

@@ -76,16 +76,10 @@ public sealed class ShareRelay : IHostedService, IDisposable, IShareRelayQueueMe
         {
             if(Volatile.Read(ref failed) != 0)
                 throw new IOException("Share relay admission is closed");
-            share.Source = clusterConfig.ClusterName;
-            share.BlockRewardDouble = (double) share.BlockReward;
-            if(share.PairedShare != null)
-            {
-                share.PairedShare.Source = clusterConfig.ClusterName;
-                share.PairedShare.BlockRewardDouble = (double) share.PairedShare.BlockReward;
-            }
+            var snapshot = share.CreateRelaySnapshot(clusterConfig.ClusterName);
             using var stream = new LimitedPayloadStream();
-            Serializer.Serialize(stream, share);
-            var frame = new Frame(share.PoolId, (int) (string.IsNullOrEmpty(share.AccountingId)
+            Serializer.Serialize(stream, snapshot);
+            var frame = new Frame(snapshot.PoolId, (int) (string.IsNullOrEmpty(snapshot.AccountingId)
                 ? WireFormat.ProtocolBuffers : WireFormat.ProtocolBuffersAccounting), stream.ToArray());
             lock(gate)
             {
@@ -162,7 +156,7 @@ public sealed class ShareRelay : IHostedService, IDisposable, IShareRelayQueueMe
         failStopCoordinator?.BeginFailStop(ProcessExitCodes.GeneralFailure);
         queue.Writer.TryComplete();
         RpcConsumerDiagnostics.Write(logger, LogLevel.Fatal, "ShareRelay.Publication", failure: error);
-        logger.Fatal("Relay admission stopped. PPS evidence remains owned by the local recorder; preserve accounting and recovery evidence before restart.");
+        logger.Fatal("Relay admission stopped for all payout schemes. Preserve accounting and recovery evidence before restart; PPS liabilities remain owned by the local recorder, and ordinary relay delivery may be incomplete.");
     }
 
     public async Task StopAsync(CancellationToken ct)

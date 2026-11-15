@@ -51,6 +51,40 @@ Wallet payout admission now requires the separate, initially paused
 Deploy all wallet-capable binaries before relying on it. Older versions ignore the
 marker; rollback requires coordinated shutdown and wallet reconciliation.
 
+This release also introduces **breaking PPS acknowledgement and relay behavior**, independent
+of the wallet pause:
+
+- Positive PPS Stratum responses wait for a committed receipt/liability or an authenticated,
+  force-flushed recovery journal. PPS relay senders require their own recorder, share partitions
+  and the same accounting database as receivers. Transport publication is not financial durability.
+- Enabled pools configured for PPS require a bind-mode sender and a `sharedEncryptionKey` of at
+  least 32 characters on the sender and every receiver endpoint, even with payment processing
+  disabled. PPS connect mode is rejected; external transport protection does not bypass this check.
+- **Every relay sender, including PPLNS/PROP, fail-stops** on oversized/invalid serialization,
+  local queue saturation or publisher failure. Limits are 4,096 messages / 16 MiB queued payload,
+  1 MiB per frame, 128-message native PUB/SUB high-water marks and a 128-message receiver queue.
+  Smaller native buffers can increase best-effort ordinary-share loss during bursts, affecting
+  PPLNS/PROP weighting. An empty sender queue is not delivery confirmation.
+- Rotate the shared key during upgrade if older logs containing the publisher's CURVE public
+  key exist. That key plus network reachability allows subscription to private share metadata;
+  CURVE does not supply a subscriber allowlist. Restrict listeners and protect retained logs.
+- Monitor all six `miningcore_share_relay_queue_*` pressure/rejection series, receiver share
+  rates and database/recovery health separately. The [relay guide](share-relays.md#bounded-transport-fail-stop-and-monitoring)
+  names the exact series and provides a PPS submission-latency alert example.
+- Pearl assigns its canonical source before its first receipt commit. Relay copies preserve
+  financial identity, including old null-source receipts, without modifying shared share objects.
+- Equihash caches are revalidated on the next admitted payout after a conclusive unsupported
+  method/argument response. Unknown wallet outcomes never enable an automatic fallback or retry.
+  Privacy-policy-capable wallets choose their conventional fee; the balance precheck reserves
+  5,000 zatoshis times `max(2, recipients + 1)` for a page (0.00255 ZEC for 50 recipients).
+  This output/change estimate can still be exceeded by input selection. Fees rise with page size;
+  legacy wallets retain the explicit 0.0001 fee. See [ZIP 317](https://zips.z.cash/zip-0317).
+
+Review the [relay upgrade procedure](share-relays.md#required-pps-transport-protection-and-upgrade)
+before resuming admission. Live wallet evidence covers the pinned versions in the
+[compatibility matrix](../scripts/test-lab/README.md#wallet-compatibility-matrix); other versions
+still require deployment validation. These changes do not recall already admitted wallet work.
+
 Include these operator steps in the next candidate's deployment checklist (including RC.2 if this
 change ships there). Normal upgrades must preserve ownership markers and financial records.
 

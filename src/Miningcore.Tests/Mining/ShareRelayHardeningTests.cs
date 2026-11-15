@@ -10,6 +10,7 @@ using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications;
+using Microsoft.Extensions.Hosting;
 using NSubstitute;
 using Prometheus;
 using ProtoBuf;
@@ -19,6 +20,80 @@ namespace Miningcore.Tests.Mining;
 
 public class ShareRelayHardeningTests
 {
+    [Theory]
+    [InlineData(null)]
+    [InlineData("committed-source")]
+    public void FinancialSnapshotPreservesIdentityWithoutMutatingEitherProjection(string source)
+    {
+        var paired = new Share { Source = source, AccountingId = Guid.NewGuid().ToString("N"), BlockReward = 2.5m };
+        var original = new Share { Source = source, AccountingId = paired.AccountingId,
+            BlockReward = 1.25m, PairedShare = paired };
+        var snapshot = original.CreateRelaySnapshot("different-publisher");
+        Assert.NotSame(original, snapshot);
+        Assert.NotSame(paired, snapshot.PairedShare);
+        Assert.Equal(source, snapshot.Source);
+        Assert.Equal(source, snapshot.PairedShare.Source);
+        Assert.Equal(source, original.Source);
+        Assert.Equal(source, paired.Source);
+        Assert.Equal(0, original.BlockRewardDouble);
+        Assert.Equal(0, paired.BlockRewardDouble);
+        Assert.Equal(1.25, snapshot.BlockRewardDouble);
+        Assert.Equal(2.5, snapshot.PairedShare.BlockRewardDouble);
+        var ordinary = new Share { Source = "original" };
+        Assert.Equal("publisher", ordinary.CreateRelaySnapshot("publisher").Source);
+        Assert.Equal("original", ordinary.Source);
+    }
+
+    [Theory]
+    [InlineData(PayoutScheme.PPLNS, false)]
+    [InlineData(PayoutScheme.PROP, false)]
+    [InlineData(PayoutScheme.PPLNS, true)]
+    [InlineData(PayoutScheme.PROP, true)]
+    public async Task NonPpsRelayFailureStopsAdmission(PayoutScheme scheme, bool publisherFailure)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var url = $"tcp://127.0.0.1:{((IPEndPoint) listener.LocalEndpoint).Port}";
+        listener.Stop();
+        using var coordinator = new MiningFailStopCoordinator(new ProcessStatus(), Substitute.For<IHostApplicationLifetime>());
+        var bus = new MessageBus(coordinator);
+        using var sending = new ManualResetEventSlim();
+        using var resume = new ManualResetEventSlim();
+        using var relay = new ShareRelay(new ClusterConfig
+        {
+            ShareRelay = new() { PublishUrl = url },
+            Pools = new[] { new PoolConfig { Id = "ordinary", Enabled = true,
+                PaymentProcessing = new() { Enabled = true, PayoutScheme = scheme } } },
+        }, bus, coordinator)
+        {
+            QueueCapacity = 2,
+            BeforeSend = ct =>
+            {
+                sending.Set();
+                resume.Wait(ct);
+                if(publisherFailure) throw new IOException("Injected publisher failure");
+            },
+        };
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            bus.SendMessage(new Share { PoolId = "ordinary" });
+            Assert.True(sending.Wait(TimeSpan.FromSeconds(5)));
+            if(!publisherFailure)
+            {
+                bus.SendMessage(new Share { PoolId = "ordinary" });
+                bus.SendMessage(new Share { PoolId = "ordinary" });
+                Assert.ThrowsAny<IOException>(() => bus.SendMessage(new Share { PoolId = "ordinary" }));
+                Assert.Equal(2, relay.GetRelayQueueMetrics().Depth);
+                Assert.Equal(1, relay.GetRelayQueueMetrics().OverflowCount);
+            }
+            resume.Set();
+            Assert.True(SpinWait.SpinUntil(() => coordinator.IsFailStopRequested, TimeSpan.FromSeconds(5)));
+            Assert.ThrowsAny<Exception>(() => bus.SendMessage(new Share { PoolId = "ordinary" }));
+        }
+        finally { resume.Set(); await relay.StopAsync(CancellationToken.None); }
+    }
+
     [Fact]
     public void ReceiverProvenanceCannotBeSerializedByPublisher()
     {

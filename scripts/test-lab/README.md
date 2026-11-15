@@ -123,6 +123,28 @@ wallet's response; the regular height read must subsequently permit payment.
 
 ## PPS capacity and relay saturation
 
+### Pearl precommitted PPS relay regression
+
+After building the same source in the Linux checkout, export `MININGCORE_TEST_PEARL_WORKER`
+as the absolute path to the checksum-verified worker from the documented
+[Pearl build](../../docs/pearl-development.md). Then run:
+
+```bash
+bash scripts/test-lab/with-postgres.sh dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj \
+  --no-build --no-restore --filter 'FullyQualifiedName~PearlPpsAcceptanceKeepsCommittedIdentity' \
+  --logger 'trx;LogFileName=pearl-pps-relay.trx' --results-directory build/test-lab
+```
+
+This opt-in case assigns the captured real SRBMiner proof to an isolated job, executes
+the production native verifier and Pearl submission/candidate-store path, and acknowledges
+only after accounting. It then recreates the publisher, receiver, recorder and candidate-store
+objects twice and delivers duplicates over real CURVE sockets into the same PostgreSQL database.
+It checks exact payload hashes, one receipt/share/credit, liability plus remainder conservation,
+and no quarantine or fail-stop. It does not claim fresh GPU mining or restarting the operating
+system. Preserve the pinned worker provenance and the TRX with the tested revision.
+
+### Capacity and failure boundaries
+
 The requested capacity target is 1,000 shares/second for 60 seconds, followed by
 a 10,000-share burst. `PpsCapacity_Sustains1000PerSecondAndRecovers10000ShareBurst`
 and `PpsRelayCapacity_Sustains1000PerSecondAndRecovers10000ShareBurst` exercise

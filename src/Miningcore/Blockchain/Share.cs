@@ -19,6 +19,24 @@ public class Share
     [ProtoIgnore]
     internal bool IsRelayed { get; set; }
 
+    internal Share CreateRelaySnapshot(string source)
+    {
+        // Publication must not race the recorder or rewrite an already committed
+        // receipt. In particular, legacy financial receipts may have a null Source.
+        var copy = (Share) MemberwiseClone();
+        if(string.IsNullOrEmpty(AccountingId))
+            copy.Source = source;
+        copy.BlockRewardDouble = (double) BlockReward;
+        if(PairedShare != null)
+        {
+            copy.PairedShare = (Share) PairedShare.MemberwiseClone();
+            if(string.IsNullOrEmpty(AccountingId) && string.IsNullOrEmpty(PairedShare.AccountingId))
+                copy.PairedShare.Source = source;
+            copy.PairedShare.BlockRewardDouble = (double) PairedShare.BlockReward;
+        }
+        return copy;
+    }
+
     /// <summary>
     /// Runtime-only durability completion for PPS acceptance and for shares diverted
     /// from a saturated persistence queue to the bounded emergency journal writer.
