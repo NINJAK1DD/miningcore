@@ -29,10 +29,10 @@ def main():
         root = Path(temporary)
         env = os.environ.copy()
         env.update(KRB5_CONFIG=str(root / 'krb5.conf'), KRB5_KDC_PROFILE=str(root / 'kdc.conf'),
-                   KRB5CCNAME='FILE:' + str(root / 'client.ccache'), KRB5RCACHEDIR=str(root))
+                   KRB5CCNAME='FILE:' + str(root / 'client.ccache'), KRB5RCACHEDIR=str(root),
+                   KRB5_CLIENT_KTNAME='FILE:' + str(root / 'no-default-client.keytab'),
+                   KRB5_KTNAME='FILE:' + str(root / 'no-default-server.keytab'))
         env.pop('KRB5_TRACE', None)
-        env.pop('KRB5_CLIENT_KTNAME', None)
-        env.pop('KRB5_KTNAME', None)
         env.pop('LISTEN_PID', None)
         env.pop('LISTEN_FDS', None)
         env['LD_LIBRARY_PATH'] = str(tools / 'usr/lib/x86_64-linux-gnu') + (
