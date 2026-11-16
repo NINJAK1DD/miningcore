@@ -76,6 +76,8 @@ public class EquihashWalletResilienceTests : TestBase
         var funded = true;
         var success = false;
         var privacyProbes = 0;
+        var privacySupported = repeatedRejection;
+        var paymentArguments = 0;
         var notifications = new List<PaymentNotification>();
         var bus = new MessageBus();
         using var observed = bus.Listen<PaymentNotification>().Subscribe(notifications.Add);
@@ -94,11 +96,12 @@ public class EquihashWalletResilienceTests : TestBase
             {
                 probes++;
                 if(method == "z_sendmany") privacyProbes++;
-                code = method switch { "z_shieldcoinbase" => upgraded ? -1 : -32601, "sendcurrency" => -32601, _ => -8 };
+                code = method switch { "z_shieldcoinbase" => upgraded ? -1 : -32601, "sendcurrency" => -32601, _ => privacySupported ? -8 : -32602 };
             }
             else if(method == "z_shieldcoinbase") { nativeSubmissions++; code = -6; }
             else if(method == "z_sendmany")
             {
+                paymentArguments = args.Count;
                 code = success ? null : repeatedRejection && rejected ? -32602 : -6;
                 if(success) result = new JValue("operation");
             }
@@ -156,9 +159,12 @@ public class EquihashWalletResilienceTests : TestBase
             time.Ticks = EquihashPayoutHandler.PrivacyRefreshInterval.Ticks - 1;
             await Cycle(config, time: time, bus: bus);
             Assert.Equal(1, privacyProbes);
+            Assert.Equal(4, paymentArguments);
+            privacySupported = true;
             time.Ticks++;
             await Cycle(config, time: time, bus: bus);
             Assert.Equal(2, privacyProbes);
+            Assert.Equal(5, paymentArguments);
         }
     }
 
