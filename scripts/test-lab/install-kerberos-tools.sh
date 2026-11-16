@@ -17,12 +17,13 @@ cd "$root/packages"
 # apt verifies downloads against authenticated repository metadata. Keep the .debs
 # and their checksums as exact-version evidence; no dpkg maintainer script runs.
 apt-get download krb5-kdc krb5-user krb5-admin-server libverto1t64 libverto-libevent1t64 liblmdb0 libevent-core-2.1-7t64
+: > "$root/packages.txt"
 for package in ./*.deb; do
   dpkg-deb -x "$package" "$root/tools"
+  dpkg-deb -W "$package" >> "$root/packages.txt"
 done
 for name in kinit klist; do
   ln -s "$name.mit" "$root/tools/usr/bin/$name"
 done
 sha256sum ./*.deb > "$root/packages.sha256"
-dpkg-deb -W ./*.deb > "$root/packages.txt"
 echo "Private Kerberos tools installed under $root/tools"
