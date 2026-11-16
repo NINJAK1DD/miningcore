@@ -1282,6 +1282,14 @@ public partial class PoolPaymentProcessingConfig
 public partial class ClusterPaymentProcessingConfig
 {
     public bool Enabled { get; set; }
+
+    /// <summary>
+    /// Restart-only pause of the entire payout processor, including reconciliation and retention.
+    /// Mining-side accounting remains enabled. Does not acquire or clear payout ownership.
+    /// </summary>
+    [DefaultValue(false)]
+    public bool Paused { get; set; }
+
     public int Interval { get; set; }
 
     /// <summary>

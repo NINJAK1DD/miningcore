@@ -262,10 +262,26 @@ field. BlockChainCoinX requires this setting; startup fails with a pool-specific
 missing or malformed.
 
 Every configured pool entry, including a disabled pool, must retain a non-null per-pool
-`paymentProcessing` object. Set that object's `enabled` value to `false` when the pool must not
-submit payouts; do not remove the object or replace it with JSON `null`. Normal startup rejects a
+`paymentProcessing` object. Its `enabled` flag selects the pool's accounting/payout contract;
+it is not a general recovery pause. LTC/DOGE merged mining, PPS and direct SOLO require it enabled.
+For other pools it may disable payment participation; do not remove the object or replace it with JSON `null`. Normal startup rejects a
 missing object before pool, API or payout services start. The `-rs` share-recovery command does not
 consume or validate this live-service setting.
+
+Cluster payment-processing states (changes require a stop and restart):
+
+| Cluster settings | Contract |
+| --- | --- |
+| `enabled: true, paused: false` (pause defaults to false) | Run payouts/reconciliation when at least one enabled pool participates and topology permits it. Disabled pools cannot activate the processor. |
+| `enabled: true, paused: true` | Suspend the entire processor for every pool in this process; preserve enabled pool accounting and all persistence checks. |
+| `enabled: false, paused: false` | No local processor; supported only where the deployment permits it. Not a substitute for required merged-mining/PPS/direct-SOLO processing. |
+| `enabled: false, paused: true` | Invalid live configuration. |
+
+Paused processing suspends wallet payouts, block classification/reward allocation and retention.
+Ordinary shares, PROP/PPLNS effort, synchronous PPS liability/balance credits, block candidates and
+recovery journals continue. The pause never acquires or clears payout ownership. It cannot stop
+another process using the wallets; follow the [restart and recovery sequence](database.md#restart-only-payout-pause)
+on all payout-capable nodes. Resume retains the normal durable-marker and advisory-lock checks.
 
 The generated JSON schema deliberately leaves the per-pool object structurally optional because
 the same schema is used after recovery has discarded unused live-service settings. Normal startup's
@@ -1035,3 +1051,15 @@ before importing or restarting.
 4. Check `/api/health-check` and `/api/pools`.
 5. Connect a test miner at low risk before moving production traffic.
 6. For merged mining, repeat the documented regtest and schema preflight when topology changes.
+
+## PostgreSQL timestamp compatibility
+
+If `persistence.postgres.enableLegacyTimestamps` is explicitly set, Miningcore applies it before
+opening any database connection, including foreground and standalone payout recovery. Use `true`
+for a legacy timestamp-without-time-zone schema and `false` for the current timestamptz schema.
+Without an explicit setting, startup may inspect the schema, but it cannot safely change Npgsql's
+process-wide timestamp mode after that connection. A detected legacy schema therefore stops with
+instructions to set `enableLegacyTimestamps: true` and restart. An indeterminate schema also stops;
+check the schema and explicitly select the correct mode. Detection uses only the current schema,
+not an unrelated `shares` table elsewhere in the database. Both cases exit 78, so the packaged
+service waits for configuration repair rather than repeatedly restarting. Do not rely on late auto-enabling.

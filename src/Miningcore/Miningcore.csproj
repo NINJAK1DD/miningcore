@@ -104,7 +104,7 @@
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
         <PackageReference Include="NLog.Extensions.Hosting" Version="5.3.8" />
-        <PackageReference Include="AutoMapper" Version="16.2.0" />
+        <PackageReference Include="AutoMapper" Version="16.3.0" />
         <PackageReference Include="Dapper" Version="2.1.89" />
         <PackageReference Include="FluentValidation" Version="12.2.0" />
         <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.1" />
@@ -120,7 +120,7 @@
         <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.15" />
         <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.15" />
         <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.15" />
-        <PackageReference Include="NBitcoin" Version="10.0.19" />
+        <PackageReference Include="NBitcoin" Version="10.0.20" />
         <PackageReference Include="NBitcoin.Altcoins" Version="6.0.12" />
         <PackageReference Include="NBitcoin.Zcash" Version="3.0.0" />
         <PackageReference Include="NBitcoin.Secp256k1" Version="3.1.6" />

@@ -78,6 +78,7 @@ public class PearlAuditPrivilegeTests
             }
             finally
             {
+                await PostgresTestCleanup.DropRecoveryAuditAsync(db, schema);
                 await db.ExecuteAsync($"ROLLBACK; RESET SESSION AUTHORIZATION; RESET ROLE; SET search_path TO public; DROP SCHEMA IF EXISTS {schema} CASCADE; DROP ROLE IF EXISTS {app}; DROP ROLE IF EXISTS {inherited}");
             }
         }

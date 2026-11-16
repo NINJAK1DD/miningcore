@@ -134,6 +134,33 @@ public class ProgramLoggingTests
             status.ExitCode);
     }
 
+    [Theory]
+    [InlineData(1, 78, 78)]
+    [InlineData(78, 1, 78)]
+    [InlineData(78, 74, 74)]
+    [InlineData(74, 78, 74)]
+    [InlineData(1, 74, 74)]
+    [InlineData(74, 1, 74)]
+    [InlineData(17, 23, 17)]
+    public void ProcessStatus_OperatorFailuresTakePriority(int first, int second, int expected)
+    {
+        var status = new ProcessStatus();
+        status.MarkFailed(first);
+        status.MarkFailed(second);
+        Assert.Equal(expected, status.ExitCode);
+    }
+
+    [Fact]
+    public void ProcessStatus_ConcurrentFailuresCannotDowngradeOperatorStatus()
+    {
+        foreach(var highest in new[] { 78, 74 })
+        {
+            var status = new ProcessStatus();
+            System.Threading.Tasks.Parallel.For(0, 256, i => status.MarkFailed(i % 3 == 0 ? highest : i % 3 == 1 ? 78 : 1));
+            Assert.Equal(highest, status.ExitCode);
+        }
+    }
+
     private static void WriteRecordSession(string activeFile, string record)
     {
         using var factory = new LogFactory();

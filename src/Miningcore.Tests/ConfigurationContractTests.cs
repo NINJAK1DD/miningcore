@@ -36,6 +36,138 @@ namespace Miningcore.Tests;
 
 public class ConfigurationContractTests
 {
+    [Theory]
+    [InlineData(true, true, true)]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, false)]
+    public void ClusterPause_UsesExplicitLiveStateContract(bool enabled, bool paused, bool valid)
+    {
+        var config = Program.ReadConfig(Path.Combine(AppContext.BaseDirectory, "config.example.json"));
+        config.PaymentProcessing.Enabled = enabled;
+        config.PaymentProcessing.Paused = paused;
+        var result = new ClusterConfigValidator().Validate(config);
+        Assert.Equal(valid, result.IsValid);
+        if(!valid)
+            Assert.Contains(result.Errors, error => error.ErrorMessage.Contains("paused requires enabled=true"));
+    }
+
+    [Theory]
+    [InlineData("\"true\"")]
+    [InlineData("null")]
+    [InlineData("1")]
+    public void PauseSchema_RejectsCoercedOrNullValues(string value)
+    {
+        var document = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.example.json")));
+        document["paymentProcessing"]["paused"] = JToken.Parse(value);
+        var path = WriteTemporaryConfig(document);
+        try { Assert.Throws<PoolStartupException>(() => Program.ReadConfig(path)); }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void ClusterPaymentSchema_RejectsUnknownSafetyControls()
+    {
+        var document = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.example.json")));
+        document["paymentProcessing"]["futurePauseControl"] = true;
+        var path = WriteTemporaryConfig(document);
+        try { Assert.Throws<PoolStartupException>(() => Program.ReadConfig(path)); }
+        finally { File.Delete(path); }
+        var schema = Program.GenerateJsonConfigSchemaDocument();
+        Assert.False(schema.SelectToken("definitions.ClusterPaymentProcessingConfig.additionalProperties").Value<bool>());
+        Assert.False(schema.SelectToken("definitions.ClusterPaymentProcessingConfig.properties.paused.default").Value<bool>());
+    }
+
+    [Theory]
+    [InlineData("paused")]
+    [InlineData("Paused")]
+    [InlineData("PAUSED")]
+    public void PoolLevelPausedFlag_IsRejectedRatherThanIgnored(string key)
+    {
+        var document = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.example.json")));
+        document["pools"][0]["paymentProcessing"][key] = true;
+        var path = WriteTemporaryConfig(document);
+        try
+        {
+            var config = Program.ReadConfig(path);
+            var result = new ClusterConfigValidator().Validate(config);
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Errors, error => error.ErrorMessage.Contains("paused is not a pool setting") &&
+                error.ErrorMessage.Contains("cluster-level paymentProcessing.paused=true"));
+            Assert.Throws<PoolStartupException>(() => Program.ReadAndValidateConfig(path, false));
+            // Explicit recovery consumes a deliberately narrower configuration and starts no payouts.
+            Program.ReadConfig(path, true);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Theory]
+    [InlineData("paused")]
+    [InlineData("Paused")]
+    [InlineData("PAUSED")]
+    public void PoolObjectPausedFlag_IsRejectedRatherThanIgnored(string key)
+    {
+        var document = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.example.json")));
+        document["pools"][0][key] = true;
+        var path = WriteTemporaryConfig(document);
+        try
+        {
+            var config = Program.ReadConfig(path);
+            var result = new ClusterConfigValidator().Validate(config);
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Errors, error => error.ErrorMessage.Contains($"Pool '{config.Pools[0].Id}'") &&
+                error.ErrorMessage.Contains("paused is not a pool setting") &&
+                error.ErrorMessage.Contains("cluster-level paymentProcessing.paused=true"));
+            Assert.Throws<PoolStartupException>(() => Program.ReadAndValidateConfig(path, false));
+            Program.ReadConfig(path, true);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Theory]
+    [InlineData("paused")]
+    [InlineData("Paused")]
+    [InlineData("PAUSED")]
+    public void RootLevelPausedFlag_IsRejectedRatherThanIgnored(string key)
+    {
+        var document = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.example.json")));
+        document[key] = true;
+        var path = WriteTemporaryConfig(document);
+        try { Assert.Throws<PoolStartupException>(() => Program.ReadConfig(path)); }
+        finally { File.Delete(path); }
+    }
+
+    [Theory]
+    [InlineData("enabled", "Enabled")]
+    [InlineData("interval", "Interval")]
+    [InlineData("paused", "Paused")]
+    public void ClusterPaymentSchema_RequiresCanonicalPropertyCasing(string canonical, string pascal)
+    {
+        var document = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.example.json")));
+        var payment = (JObject) document["paymentProcessing"];
+        payment[pascal] = canonical == "paused" ? JToken.FromObject(true) : payment[canonical].DeepClone();
+        payment.Remove(canonical);
+        var path = WriteTemporaryConfig(document);
+        try { Assert.Throws<PoolStartupException>(() => Program.ReadConfig(path)); }
+        finally { File.Delete(path); }
+    }
+
+    [Theory]
+    [InlineData("PaymentProcessing")]
+    [InlineData("PAYMENTPROCESSING")]
+    public void ClusterPaymentSchema_CasingAliasCannotBypassUnknownFieldRejection(string alias)
+    {
+        var document = JObject.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.example.json")));
+        document[alias] = document["paymentProcessing"];
+        document.Remove("paymentProcessing");
+        var valid = WriteTemporaryConfig(document);
+        try { Program.ReadConfig(valid); }
+        finally { File.Delete(valid); }
+        document[alias]["futurePauseControl"] = true;
+        var invalid = WriteTemporaryConfig(document);
+        try { Assert.Throws<PoolStartupException>(() => Program.ReadConfig(invalid)); }
+        finally { File.Delete(invalid); }
+    }
+
     private const string MissingExamplesDirectoryMarker =
         "<missing-examples-directory>";
 
