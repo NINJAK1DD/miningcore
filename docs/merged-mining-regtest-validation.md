@@ -1,6 +1,6 @@
 # Litecoin–Dogecoin merged-mining regtest validation
 
-This file records live validation performed against PR #18. It complements the automated tests; it
+This file records historical PR #18 validation and subsequent automated live checks. It complements the unit tests; it
 is not a promise that an arbitrary mainnet deployment is production-safe.
 
 ## Environment
@@ -31,6 +31,41 @@ ledger, replays each PPS identity, and verifies one credit plus a positive balan
 executes a mixed Litecoin PPLNS / Dogecoin PROP pairing. Focused proof-projection, candidate-outcome,
 relay, recovery and reorganisation tests cover the boundaries that do not require repeatedly mining
 another 220 daemon blocks.
+
+## Payout-pause regression gate (7 November 2026)
+
+Issue [#261](https://github.com/NINJAK1DD/miningcore/issues/261) adds the explicit
+[restart-only payout pause](database.md#restart-only-payout-pause). Validation used an isolated
+Ubuntu 26.04 WSL lab, .NET SDK 10.0.114, Litecoin Core 0.21.5.8, Dogecoin Core 1.14.9 and
+PostgreSQL 18.6. A task-specific PostgreSQL cluster and generated schemas allowed the complete
+current schema to be installed by a migration administrator without changing the persistent lab
+database or production. Coin daemons used fresh regtest directories and loopback RPC ports.
+
+`PausedExample_RealStartupMiningPersistenceAndOwnershipRecovery` loads the shipped merged-mining
+example with lab endpoints and addresses, runs deployment and schema preflight, and starts the
+actual merged-mining job manager. Real CPU Scrypt proofs exercise SOLO/SOLO and PPS/PROP while
+paused. Assertions cover ordinary shares, active-chain LTC and DOGE candidates, beneficiary
+attribution, idempotent candidate replay, positive PPS credits/balances, no wallet sends, unchanged
+durable payout ownership, stale-owner refusal, exclusive ownership after explicit recovery, and
+job publication after the pause is lifted.
+
+The fixture invokes the job manager directly and supplies the transport IP metadata normally
+provided by Stratum. It is not a TCP Stratum or physical-miner test. The resumed lifecycle uses
+separate pool IDs for each accounting pair, matures the real candidates and starts the actual hosted
+payout manager. It checks reward/liability conservation, wallet transaction IDs and repeated cycles
+without duplicate sends. An injected lost reply after a real wallet broadcast must retain both the
+unsettled balance and payout ownership, and a replacement manager must refuse startup. This does
+not automatically reconcile an ambiguous payment; an operator still needs wallet evidence.
+A configuration matrix also runs all
+16 supported payout pairs through deployment validation and real manager configuration in direct,
+relay sender and receiver/recorder modes.
+
+To repeat the live gate, provide `MININGCORE_TEST_LITECOIND`, `MININGCORE_TEST_DOGECOIND` and
+`MININGCORE_TEST_POSTGRES` for isolated test services, build normally, then run:
+
+```console
+dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --filter FullyQualifiedName~PausedExample_RealStartupMiningPersistenceAndOwnershipRecovery
+```
 
 ## Results
 

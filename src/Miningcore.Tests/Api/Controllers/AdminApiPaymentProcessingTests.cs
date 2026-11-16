@@ -15,6 +15,88 @@ namespace Miningcore.Tests.Api.Controllers;
 
 public class AdminApiPaymentProcessingTests
 {
+    public static IEnumerable<object[]> MergedPaymentSchemes()
+    {
+        foreach(var parent in new[] { PayoutScheme.SOLO, PayoutScheme.PROP, PayoutScheme.PPLNS, PayoutScheme.PPS })
+        foreach(var auxiliary in new[] { PayoutScheme.SOLO, PayoutScheme.PROP, PayoutScheme.PPLNS, PayoutScheme.PPS })
+            yield return new object[] { parent, auxiliary };
+    }
+
+    [Theory]
+    [MemberData(nameof(MergedPaymentSchemes))]
+    public void ActiveMergedMining_RejectsParentAndAuxiliaryPaymentDisableAcrossApiRoutes(
+        PayoutScheme parentScheme, PayoutScheme auxiliaryScheme)
+    {
+        foreach(var route in new[] { "ltc", "doge", "bulk" })
+        {
+            var parent = Pool("ltc", parentScheme, true);
+            var auxiliary = Pool("doge", auxiliaryScheme, true);
+            auxiliary.EnableInternalStratum = false;
+            parent.Extra = new Dictionary<string, object> { ["mergedMining"] =
+                new Dictionary<string, object> { ["enabled"] = true, ["auxPoolId"] = "DOGE" } };
+            var ordinary = Pool("ordinary", PayoutScheme.PPLNS, true);
+            var controller = CreateController(true, ordinary, parent, auxiliary);
+            var error = Assert.Throws<ApiException>(() =>
+            {
+                if(route == "bulk") controller.DisablePoolsPaymentProcessing();
+                else controller.DisablePoolPaymentProcessing(route);
+            });
+            Assert.Equal(409, error.ResponseStatusCode);
+            Assert.Contains("active merged-mining", error.Message);
+            Assert.Contains("controlled restart", error.Message);
+            Assert.Contains("other pools remain individually controllable through their per-pool routes", error.Message);
+            Assert.Contains("paymentProcessing.paused=true", error.Message);
+            Assert.True(parent.PaymentProcessing.Enabled);
+            Assert.True(auxiliary.PaymentProcessing.Enabled);
+            Assert.True(ordinary.PaymentProcessing.Enabled);
+            Assert.Equal("Ok", controller.DisablePoolPaymentProcessing(ordinary.Id).Value);
+        }
+    }
+
+    [Fact]
+    public void InactiveMergedParent_DoesNotProtectOrdinaryAuxiliaryFromApiToggle()
+    {
+        var parent = Pool("ltc", PayoutScheme.SOLO, true);
+        parent.Enabled = false;
+        parent.Extra = new Dictionary<string, object> { ["mergedMining"] =
+            new Dictionary<string, object> { ["enabled"] = true, ["auxPoolId"] = "doge" } };
+        var auxiliary = Pool("doge", PayoutScheme.PROP, true);
+        var controller = CreateController(true, parent, auxiliary);
+        Assert.Equal("Ok", controller.DisablePoolPaymentProcessing(auxiliary.Id).Value);
+        Assert.False(auxiliary.PaymentProcessing.Enabled);
+        Assert.True(parent.PaymentProcessing.Enabled);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public void PausedProcess_RejectsEveryToggleWithoutMutatingPools(bool bulk, bool enable)
+    {
+        var pools = new[] { Pool("pps", PayoutScheme.PPS, true), Pool("ordinary", PayoutScheme.PPLNS, true) };
+        var controller = CreateController(new ClusterConfig
+        {
+            PaymentProcessing = new() { Enabled = true, Paused = true }, Pools = pools,
+        });
+        foreach(var pool in pools)
+        {
+            var error = Assert.Throws<ApiException>(() =>
+            {
+                if(bulk)
+                {
+                    if(enable) controller.EnablePoolsPaymentProcessing();
+                    else controller.DisablePoolsPaymentProcessing();
+                }
+                else if(enable) controller.EnablePoolPaymentProcessing(pool.Id);
+                else controller.DisablePoolPaymentProcessing(pool.Id);
+            });
+            Assert.Equal(409, error.ResponseStatusCode);
+            Assert.Contains("controlled restart", error.Message);
+            Assert.All(pools, x => Assert.True(x.PaymentProcessing.Enabled));
+        }
+    }
+
     [Fact]
     public void BulkEnable_RejectsPpsWithoutClusterSchedulerBeforeMutatingAnyPool()
     {
@@ -160,14 +242,19 @@ public class AdminApiPaymentProcessingTests
     private static AdminApiController CreateController(bool clusterPaymentEnabled,
         params PoolConfig[] poolConfigs)
     {
-        var clusterConfig = new ClusterConfig
+        return CreateController(new ClusterConfig
         {
             PaymentProcessing = new ClusterPaymentProcessingConfig
             {
                 Enabled = clusterPaymentEnabled,
             },
             Pools = poolConfigs,
-        };
+        });
+    }
+
+    private static AdminApiController CreateController(ClusterConfig clusterConfig)
+    {
+        var poolConfigs = clusterConfig.Pools;
         var pools = new ConcurrentDictionary<string, IMiningPool>();
         foreach(var config in poolConfigs)
         {

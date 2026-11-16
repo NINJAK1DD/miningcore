@@ -30,6 +30,7 @@ using Miningcore.Api.Middlewares;
 using Miningcore.Api.Responses;
 using Miningcore.Blockchain.Bitcoin;
 using Miningcore.Blockchain.Bitcoin.Configuration;
+using Miningcore.Blockchain.Bitcoin.MergedMining;
 using Miningcore.Configuration;
 using Miningcore.Rpc;
 using Miningcore.Rest;
@@ -530,9 +531,11 @@ public class Program : ProcessStatusBackgroundService
             services.AddHostedService<MetricsPublisher>();
 
         // Payment processing
-        if(ShouldRunPaymentProcessor(clusterConfig))
-            services.AddHostedService<PayoutManager>();
-        else
+        ConfigurePaymentProcessingHostedService(services, clusterConfig);
+        services.AddHostedService<PayoutPauseMonitor>();
+        if(IsPaymentProcessorPaused(clusterConfig))
+            logger.Warn("Payment processing is paused: wallet payouts, block reconciliation and payout retention are suspended; mining-side accounting remains enabled");
+        else if(!ShouldRunPaymentProcessor(clusterConfig))
             logger.Info("Payment processing is not enabled");
 
         if(clusterConfig.ShareRelay == null)
@@ -647,6 +650,7 @@ public class Program : ProcessStatusBackgroundService
             // templates but before any Stratum listener is reserved or pool is started.
             // PpsTemplateFamily_IsCheckedAfterProductionAssignment pins this ordering.
             ValidatePpsDeployment(clusterConfig, requireAssignedTemplates: true);
+            ValidateMergedMiningDeployment(clusterConfig, requireAssignedTemplates: true);
             ValidateBitcoinConfirmationDeployment(clusterConfig);
             // This check intentionally has no earlier ValidateConfig pass: its only
             // additional contract is the resolved runtime-template identity, which
@@ -1490,6 +1494,19 @@ public class Program : ProcessStatusBackgroundService
 
         var document = JObject.Parse(generator.Generate(typeof(ClusterConfig)).ToString());
         PostgresConnectionPolicy.AddSchemaRules(document);
+        var paymentSchema = document.SelectToken("definitions.ClusterPaymentProcessingConfig") as JObject ??
+            throw new InvalidOperationException("Generated schema is missing cluster payment processing");
+        // Unknown future safety controls must fail closed on rollback to this binary.
+        paymentSchema["additionalProperties"] = false;
+        // Reject misplaced root flags, including casing variants, without closing
+        // unrelated configuration extension points.
+        var rootPatterns = document["patternProperties"] as JObject ?? new JObject();
+        rootPatterns["^[pP][aA][uU][sS][eE][dD]$"] = new JObject { ["not"] = new JObject() };
+        // Newtonsoft accepts casing aliases for the enclosing object. They must
+        // not bypass the strict schema for the fields inside that object.
+        rootPatterns["^[pP][aA][yY][mM][eE][nN][tT][pP][rR][oO][cC][eE][sS][sS][iI][nN][gG]$"] =
+            new JObject { ["$ref"] = "#/definitions/ClusterPaymentProcessingConfig" };
+        document["patternProperties"] = rootPatterns;
         Miningcore.Blockchain.Pearl.PearlPoolConfig.AddSchemaRules(document);
         var activationSchema = document.SelectToken(
             "definitions.PoolPaymentProcessingConfig.properties.ppsBinary64Activation") as JObject ??
@@ -2626,7 +2643,8 @@ public class Program : ProcessStatusBackgroundService
 
     internal static void ValidateBitcoinConfirmationDeployment(ClusterConfig config)
     {
-        if(!ShouldRunPaymentProcessor(config))
+        // A pause suspends execution, not the configured financial contract.
+        if(!HasPaymentProcessorConfiguration(config))
             return;
         // Templates are assigned before this production startup boundary, and no
         // Stratum listener has been reserved. Payout-cycle validation is too late.
@@ -2773,7 +2791,20 @@ public class Program : ProcessStatusBackgroundService
         }
     }
 
-    internal static bool ShouldRunPaymentProcessor(ClusterConfig config)
+    internal static void ConfigurePaymentProcessingHostedService(IServiceCollection services,
+        ClusterConfig config)
+    {
+        if(ShouldRunPaymentProcessor(config))
+            services.AddHostedService<PayoutManager>();
+    }
+
+    internal static bool ShouldRunPaymentProcessor(ClusterConfig config) =>
+        HasPaymentProcessorConfiguration(config) && !config.PaymentProcessing.Paused;
+
+    internal static bool IsPaymentProcessorPaused(ClusterConfig config) =>
+        HasPaymentProcessorConfiguration(config) && config.PaymentProcessing.Paused;
+
+    private static bool HasPaymentProcessorConfiguration(ClusterConfig config)
     {
         var paymentEnabled = config?.PaymentProcessing?.Enabled == true &&
             config.Pools?.Any(x => x.Enabled && x.PaymentProcessing?.Enabled == true) == true;
@@ -2784,7 +2815,8 @@ public class Program : ProcessStatusBackgroundService
         return config.ShareRelay == null || config.Persistence?.Postgres != null;
     }
 
-    internal static void ValidateMergedMiningDeployment(ClusterConfig config)
+    internal static void ValidateMergedMiningDeployment(ClusterConfig config,
+        bool requireAssignedTemplates = false)
     {
         if(!RequiresMergedMiningPersistence(config))
             return;
@@ -2796,6 +2828,9 @@ public class Program : ProcessStatusBackgroundService
         if(config.ShareRelay == null && config.PaymentProcessing?.Enabled != true)
             throw new PoolStartupException(
                 "Litecoin-Dogecoin merged mining requires cluster-level payment processing on direct and share-relay receiver/recorder nodes so accepted and uncertain blocks are reconciled.");
+
+        foreach(var pool in config.Pools.Where(pool => pool.Enabled))
+            MergedMiningPayoutPolicy.Validate(pool, config, requireAssignedTemplates);
     }
 
     internal static async Task EnsureMergedMiningSchemaAsync(ClusterConfig config,

@@ -17,6 +17,18 @@ binaries must be installed under `/usr/lib/postgresql/*/bin` (or selected with
 
 ## Run the suite
 
+### Persistent Windows native toolchain
+
+The Windows lab also has Visual Studio 2022 with the persistent MSVC v143 x64/x86
+component (`Microsoft.VisualStudio.Component.VC.Tools.x86.x64`) and Windows 11 SDK
+26100 installed. The 11 November 2026 installation provides MSVC 14.44.35207.
+The Odocrypt build helper discovers it through `vswhere`; no per-session toolset
+override or `BuildOdoCryptWindows=false` is needed. Preserve these components when
+servicing Visual Studio. Use the normal Windows build to verify native compilation,
+then the repository's Odocrypt tests to verify loading and hash vectors.
+
+### Ubuntu managed and live fixtures
+
 Validate an exact committed revision in a separate Linux checkout. From the source
 checkout in PowerShell, export a bundle (including Git history for GitVersion):
 
@@ -50,6 +62,54 @@ environment variables exported by `run-tests.sh`.
 The forced rebuild prevents `PreserveNewest` from retaining stale `coins.json`, schema
 or example configuration after syncing older source timestamps. Do not remove it when
 reusing a persistent lab. NuGet auditing must remain enabled.
+
+## Optional TCP Stratum payout-pause staging smoke
+
+Run this manually before adopting a release on an isolated LTC/DOGE staging deployment.
+Use disposable regtest wallets/datadirs and a disposable database, unique pool IDs and
+test beneficiary addresses. Never reuse production wallets, credentials or ownership rows.
+Bind Stratum and daemon RPC to loopback or an isolated lab network. Use a real Stratum
+client capable of submitting valid Scrypt work; an RPC call directly to a job manager
+does not satisfy this smoke test. Record the release commit, client version, config hashes,
+pool IDs and test interval in a private incident record, without wallet credentials.
+
+1. **Before pause:** start the validated unpaused LTC/DOGE pair, connect the client through
+   TCP Stratum and record successful subscription/authorization, job notifications and
+   accepted shares. Mine regtest candidates and confirm parent/auxiliary records and
+   beneficiary attribution in PostgreSQL. Capture wallet transaction IDs and accounting
+   totals as the starting point. Keep payout schemes unchanged for the entire run.
+2. **Enter pause:** stop every payout-capable process in the isolated deployment, let
+   in-flight work finish and retain any durable ownership marker. Set only cluster
+   `paymentProcessing.paused=true`, keeping enabled accounting switches and the same pool
+   IDs. Follow the [pre-start and recovery procedure](../../docs/database.md#guided-payout-ownership-recovery)
+   and verify each selected binary/configuration before restarting. Reconnect the client;
+   pause is restart-only, so a reconnect is expected rather than uninterrupted TCP service.
+3. **During pause:** submit accepted shares and mine parent/auxiliary candidates through
+   the TCP client. Confirm durable share/candidate records and the expected scheme-specific
+   accounting (including liabilities for a separately provisioned PPS/PROP run). Check the
+   pause warning/gauge, preserve ownership and verify there are no new pool-originated wallet
+   payout sends over at least two configured payout intervals. Regtest coinbase maturation
+   and unrelated wallet transactions are not evidence of a payout; compare transaction IDs
+   and recipients, not only wallet balances. Fail if shares are acknowledged without the
+   required durable accounting or if any payout is sent while this process is paused.
+4. **Resume:** stop the client and service, reconcile candidates and uncertain wallet outcomes,
+   and use the explicit guarded ownership recovery only when the runbook permits it. Remove
+   the temporary pause-only service override, clear the cluster pause and restart on the
+   same history. Reconnect the TCP client and confirm accepted shares and new jobs again.
+   Mature the staged backlog and observe at least two actual payout-manager cycles. Verify
+   recorded wallet transaction IDs, balance/reward conservation and no duplicate allocation
+   or sends for the same obligations.
+5. **Evidence and cleanup:** retain redacted client protocol logs, timestamps, database
+   counts/accounting totals, wallet transaction IDs and the pre-start receipts for all three
+   phases. Mark the smoke failed or incomplete if any required observation is missing; merely
+   connecting or receiving a job is insufficient. Stop the isolated processes and remove only
+   their disposable resources after evidence capture.
+
+This is an opt-in manual acceptance procedure, not a claim that TCP staging ran in CI.
+The automated `PausedExample_RealStartupMiningPersistenceAndOwnershipRecovery` fixture
+exercises production job managers directly. Multi-node emergency-stop, prolonged-pause,
+large-backlog and database-failure scenarios remain separately tracked in
+[issue #291](https://github.com/NINJAK1DD/miningcore/issues/291).
 
 ## Live payout recovery and shutdown checks
 
