@@ -22,6 +22,15 @@ public class PgConnectionFactory : IConnectionFactory, ICancellableConnectionFac
     public Task<IDbConnection> OpenConnectionAsync(CancellationToken ct) =>
         OpenConnectionAsync(() => new NpgsqlConnection(connectionString), ct);
 
+    // The payout guard's backend identity is completion authority. Never return
+    // it to a pool where another logical connection could inherit that authority.
+    internal Task<IDbConnection> OpenDedicatedConnectionAsync(CancellationToken ct) =>
+        OpenConnectionAsync(() => new NpgsqlConnection(new NpgsqlConnectionStringBuilder(connectionString)
+        {
+            Pooling = false,
+            Multiplexing = false,
+        }.ConnectionString), ct);
+
     // Keep construction, opening and failed-open cleanup inside one sanitization boundary.
     // The internal seam permits deterministic fault injection, including failing disposal.
     internal static async Task<IDbConnection> OpenConnectionAsync(Func<DbConnection> create, CancellationToken ct)

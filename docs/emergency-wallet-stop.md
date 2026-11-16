@@ -40,6 +40,8 @@ and checks both inside the trusted completion function. Readable batch identitie
 and a newly acquired advisory lock cannot authorize a replacement session to finish
 an unresolved batch, including after PID reuse. A disconnected session's batch
 requires explicit operator reconciliation; neither restart nor reconnect completes it.
+The payout guard uses a dedicated, non-pooled connection so disposal cannot transfer
+its session identity to a later borrower. Ordinary accounting connections remain pooled.
 
 The gap between admission and a wallet request cannot be atomic. A suspended or
 partitioned process can begin an admitted request much later. A dead database

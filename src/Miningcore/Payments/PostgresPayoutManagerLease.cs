@@ -2,6 +2,7 @@ using Miningcore.Rpc;
 using System.Data;
 using Dapper;
 using Miningcore.Persistence;
+using Miningcore.Persistence.Postgres;
 using NLog;
 using Npgsql;
 
@@ -198,7 +199,9 @@ public sealed class PostgresPayoutManagerLease : IPayoutManagerLease
             AcquisitionFailure = null;
             RequiresRecovery = false;
 
-            var candidate = await cf.OpenConnectionAsync();
+            var candidate = cf is PgConnectionFactory postgres
+                ? await postgres.OpenDedicatedConnectionAsync(ct)
+                : await cf.OpenConnectionAsync();
             var advisoryLockHeld = false;
             var retainCandidate = false;
 

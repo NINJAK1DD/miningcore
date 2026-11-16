@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Dapper;
 using Miningcore.Payments;
+using Miningcore.Persistence.Postgres;
 using Miningcore.Tests.Util.Postgres;
 using Npgsql;
 using Xunit;
@@ -19,6 +20,45 @@ public partial class WalletPayoutControlIntegrationTests
         SELECT miningcore_payout_control.finish_batch(batch_id,owner_id,generation)
         FROM miningcore_payout_control.batches WHERE batch_id=@token
         """;
+
+    [WalletControlFact]
+    public async Task DisposedGuardClosesBackendInsteadOfReturningCompletionAuthorityToPool()
+    {
+        await using var db = await Database.Create();
+        await db.SetPaused(false);
+        var pooled = new NpgsqlConnectionStringBuilder(db.ConnectionString) { Pooling = true, MaxPoolSize = 1 };
+        var factory = new PgConnectionFactory(pooled.ConnectionString);
+        var lease = new PostgresPayoutManagerLease(factory);
+        int pid;
+        Guid token;
+        await using(lease)
+        {
+            Assert.True(await lease.TryAcquireAsync(CancellationToken.None));
+            Assert.True(await lease.TryBeginWalletPayoutAsync(CancellationToken.None, new WalletPayoutBatch("pooled", new string('b',64))));
+            pid = await db.Admin.ExecuteScalarAsync<int>("SELECT admitting_pid FROM miningcore_payout_control.batches");
+            token = await db.Admin.ExecuteScalarAsync<Guid>("SELECT batch_id FROM miningcore_payout_control.batches");
+        } // Outstanding work keeps durable ownership, but the physical guard must close.
+        // pg_stat_activity can briefly still see a disconnect being processed by the server.
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while(await db.Admin.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT FROM pg_stat_activity WHERE pid=@pid)", new { pid }))
+        {
+            Assert.True(DateTime.UtcNow < deadline, "Disposed payout guard backend remained available for pooling");
+            await Task.Delay(20);
+        }
+        using var next = await factory.OpenConnectionAsync();
+        try
+        {
+            await next.ExecuteAsync("SELECT pg_advisory_lock(19779,5259609)");
+            await Assert.ThrowsAsync<PostgresException>(() => next.ExecuteAsync(FinishSessionBatch, new { token }));
+            Assert.Equal(1, (await db.State()).OutstandingBatches);
+            await next.ExecuteAsync("SELECT pg_advisory_unlock(19779,5259609)");
+        }
+        finally
+        {
+            // Evict only this fixture's pool, never unrelated test pools.
+            NpgsqlConnection.ClearPool((NpgsqlConnection) next);
+        }
+    }
 
     [WalletControlFact]
     public async Task CompletionRequiresOriginalBackend_EvenWithReadableIdentityAndReacquiredLock()
@@ -109,6 +149,20 @@ public partial class WalletPayoutControlIntegrationTests
         await Assert.ThrowsAsync<PostgresException>(() => db.Admin.ExecuteAsync(upgrade));
         await db.Admin.ExecuteAsync("ROLLBACK");
         await original.CloseAsync();
+        // Reproduce the reported exploit against the archived protocol-1 SQL:
+        // a replacement runtime login can complete a batch it did not admit.
+        await using(var attacker = new NpgsqlConnection(db.ConnectionString))
+        {
+            await attacker.OpenAsync();
+            await attacker.ExecuteAsync("SELECT pg_advisory_lock(19779,5259609)");
+            await attacker.ExecuteAsync(FinishSessionBatch, pending);
+            Assert.Equal("completed", await attacker.ExecuteScalarAsync<string>(
+                "SELECT resolution FROM miningcore_payout_control.batches WHERE batch_id=@token", pending));
+            Assert.Equal(0, await attacker.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM miningcore_payout_control.events WHERE action='reconcile'"));
+            pending = new { token = Guid.NewGuid(), owner = Guid.NewGuid() };
+            Assert.True(await attacker.ExecuteScalarAsync<bool>(AdmitSessionBatch, pending));
+        }
         await Assert.ThrowsAsync<PostgresException>(() => db.Admin.ExecuteAsync(upgrade));
         await db.Admin.ExecuteAsync("ROLLBACK");
         Assert.Equal(1, await db.Admin.ExecuteScalarAsync<int>("SELECT protocol_version FROM miningcore_payout_control.state"));
@@ -147,7 +201,7 @@ public partial class WalletPayoutControlIntegrationTests
         await db.Admin.ExecuteAsync("ROLLBACK");
         Assert.Equal(0, (await db.State()).OutstandingBatches);
         Assert.Equal(6, (await db.State()).Revision);
-        Assert.Equal(3, await replacement.ExecuteScalarAsync<int>("SELECT count(*) FROM miningcore_payout_control.batches"));
+        Assert.Equal(4, await replacement.ExecuteScalarAsync<int>("SELECT count(*) FROM miningcore_payout_control.batches"));
     }
 
     [Fact]
