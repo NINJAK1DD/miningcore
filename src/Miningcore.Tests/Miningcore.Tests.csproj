@@ -38,7 +38,7 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
     <PackageReference Include="Microsoft.Reactive.Testing" Version="5.0.0" />
     <PackageReference Include="NLog" Version="5.4.0" />
-    <PackageReference Include="Npgsql" Version="9.0.3" />
+    <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="NSubstitute" Version="4.4.0" />
     <!-- ConfigurationContractTests requires the public
          XunitException(message, innerException) constructor added in xUnit 2.4.2. -->
