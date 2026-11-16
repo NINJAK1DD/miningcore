@@ -45,15 +45,23 @@ public partial class WalletPayoutControlIntegrationTests
         async Task Complete(string operation)
         {
             using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+            string txid;
             while(true)
             {
                 var result = (JArray) await Rpc("z_getoperationresult", new object[] { new[] { operation } });
-                if(result.Count != 0) { Assert.True(result[0].Value<string>("status") == "success", result[0].ToString()); break; }
+                if(result.Count != 0)
+                {
+                    Assert.True(result[0].Value<string>("status") == "success", result[0].ToString());
+                    txid = result[0]["result"].Value<string>("txid");
+                    break;
+                }
                 await Task.Delay(200, deadline.Token);
             }
             // Sapling's default anchor lags the tip by ten blocks; eleven
             // confirmations ensure the new note is included in that anchor.
             await Rpc("generate", 11);
+            var transaction = await Rpc("gettransaction", txid);
+            Assert.True(transaction.Value<int>("confirmations") >= 10, transaction.ToString());
         }
         var funding = fixture.Value<string>("zAddress");
         if((await Rpc("z_getbalance", funding, 1)).Value<decimal>() < 2m)
@@ -64,6 +72,8 @@ public partial class WalletPayoutControlIntegrationTests
         var source = (await Rpc("z_getnewaddress", "sapling")).Value<string>();
         async Task Fund(decimal amount)
         {
+            var fundingNotes = await Rpc("z_listunspent", 1, 9999999, false, new[] { funding });
+            Assert.True((await Rpc("z_getbalance", funding, 1)).Value<decimal>() >= amount + .001m, fundingNotes.ToString());
             var operation = await Rpc("z_sendmany", funding, new[] { new { address = source, amount } }, 1, null, "AllowRevealedAmounts");
             await Complete(operation.Value<string>());
         }
