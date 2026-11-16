@@ -63,6 +63,42 @@ The forced rebuild prevents `PreserveNewest` from retaining stale `coins.json`, 
 or example configuration after syncing older source timestamps. Do not remove it when
 reusing a persistent lab. NuGet auditing must remain enabled.
 
+## Wallet-control session security and protocol upgrade
+
+With the ordinary lab environment exported, run the security, ownership and transport
+regressions against disposable PostgreSQL using the freshly built revision:
+
+```bash
+bash scripts/test-lab/with-postgres.sh dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj \
+  --no-build --no-restore \
+  --filter 'FullyQualifiedName~WalletPayoutControlIntegrationTests|FullyQualifiedName~PostgresConnectionPolicyTests|FullyQualifiedName~PostgresTlsIntegrationTests|FullyQualifiedName~PayoutManagerLeaseIntegrationTests|FullyQualifiedName~PayoutOwnershipRecoveryIntegrationTests' \
+  --logger 'trx;LogFileName=wallet-session-security.trx' --results-directory build/test-lab
+```
+
+`CompletionRequiresOriginalBackend_EvenWithReadableIdentityAndReacquiredLock` opens
+distinct runtime sessions, copies readable identities, transfers the advisory lock,
+disconnects the original and tests a simulated reused PID with a different backend
+start time. Each unauthorized completion must fail; only an audited operator
+reconciliation may resolve the batch. Same-session completion retries must work.
+
+`DisposedGuardClosesBackendInsteadOfReturningCompletionAuthorityToPool` enables
+pooling for ordinary connections and verifies that disposing an unresolved payout
+guard actually closes its backend. A later connection cannot inherit its authority.
+
+`ProtocolOneUpgrade_PreservesOutstandingHistoryAndRequiresOperatorReconciliation`
+reproduces the original replacement-session exploit using the archived **test-only**
+protocol-1 fixture, then tests the real atomic migration. Active owners, unpaused state,
+runtime callers and repeat upgrades must fail without altering history. New startup
+rejects protocol 1; protocol 2 preserves legacy batches and requires reconciliation.
+The unconditional parity test checks fresh-install and upgrade function definitions.
+
+The connection-policy tests check GSS preference for omitted/optional TLS and GSS
+disablement for mandatory TLS. The live TLS matrix checks encryption and rejects
+missing TLS, wrong trust and hostname mismatch where required. This matrix does
+not establish live Kerberos/KDC interoperability; GSS negotiation itself is delegated
+to Npgsql. To include the wallet cases, run this filter through `with-wallets.py` and
+export the pinned Pearl worker as below. Keep manifests and wallet logs private.
+
 ## Wallet compatibility matrix
 
 The additional wallet fixtures use disposable private chains and production payout

@@ -677,10 +677,11 @@ it never retries an operation merely because the wallet view has not caught up.
 
 The `dev` merge updates the tested dependency graph, including Npgsql 10.0.3,
 protobuf-net 3.4.40, NBitcoin.Altcoins 6.0.12 and NBitcoin.Secp256k1 4.0.4. The
-[PostgreSQL policy](postgres-tls.md) now explicitly disables GSS session encryption
-to preserve the configured TLS policy, and documents Npgsql 10's configured-CA trust
-behavior. GSS authentication is unaffected. Connection policy and golden-output tests
-cover the explicit setting.
+[PostgreSQL policy](postgres-tls.md) preserves GSS session encryption preference when
+TLS is optional and disables it only when TLS is mandatory, so a requested certificate
+policy cannot be bypassed. It documents Npgsql 10's configured-CA trust behavior.
+GSS authentication is unaffected. Connection policy and golden-output tests cover
+both optional and mandatory TLS settings.
 
 The [PR validation section](https://github.com/NINJAK1DD/miningcore/pull/292) records the
 exact tested revision, full isolated matrix and CI status for this dependency graph.
