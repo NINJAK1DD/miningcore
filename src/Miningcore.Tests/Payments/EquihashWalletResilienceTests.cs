@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Data;
 using System.Linq;
 using System.Reactive.Linq;
 using System.Threading;
@@ -30,9 +31,16 @@ public class EquihashWalletResilienceTests : TestBase
 {
     private async Task Cycle(PoolConfig config, int recipients = 1, TimeProvider time = null, IMessageBus bus = null)
     {
-        var handler = new EquihashPayoutHandler(container, Substitute.For<IConnectionFactory>(), container.Resolve<IMapper>(),
+        var cf = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        var transaction = Substitute.For<IDbTransaction>();
+        connection.BeginTransaction(Arg.Any<IsolationLevel>()).Returns(transaction);
+        cf.OpenConnectionAsync().Returns(connection);
+        var paymentRepo = Substitute.For<IPaymentRepository>();
+        paymentRepo.TryBeginPaymentBatchAsync(connection, transaction, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<DateTime>()).Returns(true);
+        var handler = new EquihashPayoutHandler(container, cf, container.Resolve<IMapper>(),
             Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(), Substitute.For<IBalanceRepository>(),
-            Substitute.For<IPaymentRepository>(), Substitute.For<IMasterClock>(), bus ?? Substitute.For<IMessageBus>(),
+            paymentRepo, Substitute.For<IMasterClock>(), bus ?? Substitute.For<IMessageBus>(),
             new ActiveBlockGracePeriodTracker()) { CapabilityClock = time ?? TimeProvider.System };
         await handler.ConfigureAsync(new ClusterConfig(), config, CancellationToken.None);
         var pool = Substitute.For<IMiningPool>();
@@ -65,6 +73,9 @@ public class EquihashWalletResilienceTests : TestBase
         var probes = 0;
         var nativeSubmissions = 0;
         var rejected = true;
+        var funded = true;
+        var success = false;
+        var privacyProbes = 0;
         var notifications = new List<PaymentNotification>();
         var bus = new MessageBus();
         using var observed = bus.Listen<PaymentNotification>().Subscribe(notifications.Add);
@@ -77,15 +88,22 @@ public class EquihashWalletResilienceTests : TestBase
             var probe = (method is "sendcurrency" or "z_shieldcoinbase") && (args == null || args.Count == 0) ||
                 method == "z_sendmany" && args?.Last?.Value<string>() == "WrongPrivacyPolicy";
             JToken result = method switch { "getblockchaininfo" => new JObject { ["chain"] = "main" },
-                "listunspent" => new JArray(), "z_getbalance" => new JValue(100d), _ => JValue.CreateNull() };
+                "listunspent" => new JArray(), "z_getbalance" => new JValue(funded ? 100d : 0d), _ => JValue.CreateNull() };
             int? code = null;
             if(probe)
             {
                 probes++;
+                if(method == "z_sendmany") privacyProbes++;
                 code = method switch { "z_shieldcoinbase" => upgraded ? -1 : -32601, "sendcurrency" => -32601, _ => -8 };
             }
             else if(method == "z_shieldcoinbase") { nativeSubmissions++; code = -6; }
-            else if(method == "z_sendmany") code = repeatedRejection && rejected ? -32602 : -6;
+            else if(method == "z_sendmany")
+            {
+                code = success ? null : repeatedRejection && rejected ? -32602 : -6;
+                if(success) result = new JValue("operation");
+            }
+            else if(method == "z_getoperationresult")
+                result = new JArray(new JObject { ["id"] = "operation", ["status"] = "success", ["result"] = new JObject { ["txid"] = "transaction" } });
             await context.Response.WriteAsync(new JObject { ["id"] = request["id"], ["result"] = result,
                 ["error"] = code.HasValue ? new JObject { ["code"] = code.Value, ["message"] = "rejected" } : null }.ToString());
         });
@@ -95,14 +113,31 @@ public class EquihashWalletResilienceTests : TestBase
         if(repeatedRejection)
         {
             Assert.DoesNotContain(notifications, x => x.Error?.Contains("repeatedly") == true);
+            funded = false;
+            await Cycle(config, time: time, bus: bus); // Skipping must preserve the first rejection.
+            funded = true;
             await Cycle(config, time: time, bus: bus);
             Assert.Equal(6, probes);
             Assert.Single(notifications.Where(x => x.Error?.Contains("repeatedly") == true));
             rejected = false;
-            await Cycle(config, time: time, bus: bus); // A conclusive ordinary rejection resets the streak.
+            await Cycle(config, time: time, bus: bus); // An ordinary rejection must not reset the streak.
             rejected = true;
             await Cycle(config, time: time, bus: bus);
             Assert.Single(notifications.Where(x => x.Error?.Contains("repeatedly") == true));
+            time.Ticks = EquihashPayoutHandler.CapabilityAlertInterval.Ticks - 1;
+            await Cycle(config, time: time, bus: bus);
+            Assert.Single(notifications.Where(x => x.Error?.Contains("repeatedly") == true));
+            time.Ticks++;
+            await Cycle(config, time: time, bus: bus);
+            Assert.Equal(2, notifications.Count(x => x.Error?.Contains("repeatedly") == true));
+            success = true;
+            await Cycle(config, time: time, bus: bus);
+            Assert.Contains(notifications, x => x.Outcome == PaymentNotificationOutcome.Success);
+            success = false;
+            await Cycle(config, time: time, bus: bus);
+            Assert.Equal(2, notifications.Count(x => x.Error?.Contains("repeatedly") == true));
+            await Cycle(config, time: time, bus: bus);
+            Assert.Equal(3, notifications.Count(x => x.Error?.Contains("repeatedly") == true));
         }
         else
         {
@@ -113,10 +148,17 @@ public class EquihashWalletResilienceTests : TestBase
             Assert.Equal(0, nativeSubmissions);
             time.Ticks++;
             await Cycle(config, time: time, bus: bus);
-            Assert.Equal(6, probes);
+            Assert.Equal(5, probes);
+            Assert.Equal(1, privacyProbes);
             Assert.Equal(1, nativeSubmissions);
             await Cycle(config, time: time, bus: bus);
-            Assert.Equal(6, probes); // Cached again, not probed on every cycle.
+            Assert.Equal(5, probes); // Cached again, not probed on every cycle.
+            time.Ticks = EquihashPayoutHandler.PrivacyRefreshInterval.Ticks - 1;
+            await Cycle(config, time: time, bus: bus);
+            Assert.Equal(1, privacyProbes);
+            time.Ticks++;
+            await Cycle(config, time: time, bus: bus);
+            Assert.Equal(2, privacyProbes);
         }
     }
 

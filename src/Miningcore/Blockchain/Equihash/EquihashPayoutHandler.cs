@@ -66,6 +66,8 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
     private bool capabilitiesInvalidated;
     internal TimeProvider CapabilityClock { get; init; } = TimeProvider.System;
     internal static readonly TimeSpan CapabilityRefreshInterval = TimeSpan.FromMinutes(15);
+    internal static readonly TimeSpan PrivacyRefreshInterval = TimeSpan.FromHours(24);
+    internal static readonly TimeSpan CapabilityAlertInterval = TimeSpan.FromHours(24);
     private sealed class CapabilityCache
     {
         public readonly SemaphoreSlim Gate = new(1, 1);
@@ -74,6 +76,8 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         public bool? SendCurrency;
         public bool? Privacy;
         public long? LastValidated;
+        public long? PrivacyLastValidated;
+        public long? LastAlert;
         public int ConsecutiveInvalidations;
     }
 
@@ -108,15 +112,21 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                 cache.NativeShielding = cache.SendCurrency = cache.Privacy = null;
                 cache.LastValidated = null;
                 cache.ConsecutiveInvalidations = 0;
+                cache.PrivacyLastValidated = cache.LastAlert = null;
             }
             // Expiration is checked only inside an admitted payout. No background
             // timer may invoke spending-method capability probes while paused.
             if(cache.LastValidated.HasValue &&
                CapabilityClock.GetElapsedTime(cache.LastValidated.Value) >= CapabilityRefreshInterval)
             {
-                cache.NativeShielding = cache.SendCurrency = cache.Privacy = null;
+                cache.NativeShielding = cache.SendCurrency = null;
                 cache.LastValidated = null;
             }
+            // Argument-bearing privacy probes retain fail-closed uncertainty semantics.
+            // Refresh them much less often than the harmless no-argument probes.
+            if(cache.PrivacyLastValidated.HasValue &&
+               CapabilityClock.GetElapsedTime(cache.PrivacyLastValidated.Value) >= PrivacyRefreshInterval)
+                cache.Privacy = null;
             if(!cache.NativeShielding.HasValue)
             {
                 var response = await rpcClient.ExecuteAsync<JObject>(logger, EquihashCommands.ZShieldCoinbase, ct);
@@ -143,6 +153,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                         ZMinConfirmations, TransferFee, "WrongPrivacyPolicy" });
                 WalletSubmissionOutcome.RequireRejectedProbe(response.Error, EquihashCommands.ZSendMany);
                 cache.Privacy = response.Error.Code == (int) BitcoinRPCErrorCode.RPC_INVALID_PARAMETER;
+                cache.PrivacyLastValidated = CapabilityClock.GetTimestamp();
             }
             supportsZSendManyPrivacyPolicy = cache.Privacy.Value;
             payoutCapabilities = cache;
@@ -173,7 +184,9 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                     cache.NativeShielding = cache.SendCurrency = cache.Privacy = null;
                     cache.LastValidated = null;
                     cache.ConsecutiveInvalidations = Math.Min(2, cache.ConsecutiveInvalidations + 1);
-                    notify = cache.ConsecutiveInvalidations >= 2;
+                    notify = cache.ConsecutiveInvalidations >= 2 &&
+                        (!cache.LastAlert.HasValue || CapabilityClock.GetElapsedTime(cache.LastAlert.Value) >= CapabilityAlertInterval);
+                    if(notify) cache.LastAlert = CapabilityClock.GetTimestamp();
                 }
             }
             finally { cache.Gate.Release(); }
@@ -196,12 +209,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         {
             await TrackPayoutAsync(balances, () =>
                 PayoutTrackedAsync(pool, balances, ct));
-            if(!capabilitiesInvalidated && payoutCapabilities != null)
-            {
-                await payoutCapabilities.Gate.WaitAsync();
-                try { if(payoutCapabilities.Configuration == capabilityConfiguration) payoutCapabilities.ConsecutiveInvalidations = 0; }
-                finally { payoutCapabilities.Gate.Release(); }
-            }
+
         }
         finally
         {
@@ -212,6 +220,22 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                 await RelockPayoutWalletSafelyAsync(LockWallet);
             }
         }
+    }
+
+    private async Task RecordSuccessfulPayoutAsync()
+    {
+        var cache = payoutCapabilities;
+        if(cache == null) return;
+        await cache.Gate.WaitAsync();
+        try
+        {
+            if(cache.Configuration == capabilityConfiguration)
+            {
+                cache.ConsecutiveInvalidations = 0;
+                cache.LastAlert = null;
+            }
+        }
+        finally { cache.Gate.Release(); }
     }
 
     protected virtual async Task PayoutTrackedAsync(IMiningPool pool, Balance[] balances,
@@ -429,6 +453,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                                     logger.Info(() => $"[{LogCategory}] {EquihashCommands.ZSendMany} completed with transaction id: {txId}");
 
                                     await PersistPaymentsAsync(page, txId);
+                                    await RecordSuccessfulPayoutAsync();
                                     NotifyPayoutSuccess(poolConfig.Id, page, new[] { txId }, null);
 
                                     continueWaiting = false;
@@ -603,6 +628,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                                     logger.Info(() => $"[{LogCategory}] {EquihashCommands.SendCurrency} completed with transaction id: {txId}");
 
                                     await PersistPaymentsAsync(page, txId);
+                                    await RecordSuccessfulPayoutAsync();
                                     NotifyPayoutSuccess(poolConfig.Id, page, new[] { txId }, null);
 
                                     continueWaiting = false;

@@ -88,7 +88,18 @@ With Npgsql 10, a configured CA replaces the system trust store rather than augm
 Miningcore explicitly disables GSS session encryption, keeping the configured TLS policy
 authoritative and avoiding an extra Kerberos negotiation on each physical connection.
 This does not disable GSS authentication; GSS session encryption is not exposed by Miningcore's
-configuration. See the [Npgsql 10 release notes](https://www.npgsql.org/doc/release-notes/10.0.html).
+configuration. Deployments relying on GSS encryption must migrate deliberately: `Allow`,
+`Prefer` and `Disable` can permit plaintext when GSS encryption is disabled. For remote
+financial databases, use `VerifyFull`, a trusted CA and the certificate's matching hostname.
+Before rollout, validate under the actual service identity and confirm TLS on that connection:
+
+```sql
+SELECT ssl, version, cipher FROM pg_stat_ssl WHERE pid = pg_backend_pid();
+```
+
+Require `ssl = true`; this query verifies transport encryption, while `VerifyFull` supplies
+server identity verification. Checking a different administrator session does not verify
+Miningcore's connection. See the [Npgsql 10 release notes](https://www.npgsql.org/doc/release-notes/10.0.html).
 An empty/whitespace-only explicit or construction-time environment CA path is rejected.
 The new `tlsRootCert` path is preserved exactly, including meaningful spaces.
 In non-verifying modes `PGSSLROOTCERT` does not upgrade security; its value is

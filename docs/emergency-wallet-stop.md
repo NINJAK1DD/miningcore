@@ -587,13 +587,15 @@ dated capacity baseline until replaced by a measured run.
 
 ### Review hardening — 16 November 2026
 
-Equihash also expires conclusive capability results after 15 minutes using a monotonic
-clock. This includes cached unsupported capabilities, allowing a replacement wallet at
+Equihash expires no-argument capability results after 15 minutes using a monotonic
+clock. The argument-bearing privacy probe has a separate 24-hour interval to reduce
+the frequency of probes whose lost responses require manual reconciliation. This includes cached unsupported capabilities, allowing a replacement wallet at
 the same endpoint to enable native functionality. Expiration is checked only inside
 admitted payout work, never by a background timer. Tests cover the exact expiry boundary,
 reuse between probes, an unsupported-to-supported transition, and repeated `-32602`
 rejections. A second consecutive capability invalidation emits a payout failure alert;
-a completed cycle without invalidation resets the streak. Lost or ambiguous responses
+reminders are limited to once per 24 hours. Only a successfully recorded payout resets
+the streak; skipped, unfunded and rejected cycles preserve it. Lost or ambiguous responses
 still cannot enable a fallback spend or release retained payout ownership.
 
 The additional [real Zcash fee scenario](../scripts/test-lab/README.md#fragmented-zcash-conventional-fees)
