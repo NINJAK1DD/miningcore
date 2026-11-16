@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reactive.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Autofac;
@@ -13,6 +14,7 @@ using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Payments;
+using Miningcore.Notifications.Messages;
 using Miningcore.Persistence;
 using Miningcore.Persistence.Model;
 using Miningcore.Persistence.Repositories;
@@ -26,12 +28,12 @@ namespace Miningcore.Tests.Payments;
 
 public class EquihashWalletResilienceTests : TestBase
 {
-    private async Task Cycle(PoolConfig config, int recipients = 1)
+    private async Task Cycle(PoolConfig config, int recipients = 1, TimeProvider time = null, IMessageBus bus = null)
     {
         var handler = new EquihashPayoutHandler(container, Substitute.For<IConnectionFactory>(), container.Resolve<IMapper>(),
             Substitute.For<IShareRepository>(), Substitute.For<IBlockRepository>(), Substitute.For<IBalanceRepository>(),
-            Substitute.For<IPaymentRepository>(), Substitute.For<IMasterClock>(), Substitute.For<IMessageBus>(),
-            new ActiveBlockGracePeriodTracker());
+            Substitute.For<IPaymentRepository>(), Substitute.For<IMasterClock>(), bus ?? Substitute.For<IMessageBus>(),
+            new ActiveBlockGracePeriodTracker()) { CapabilityClock = time ?? TimeProvider.System };
         await handler.ConfigureAsync(new ClusterConfig(), config, CancellationToken.None);
         var pool = Substitute.For<IMiningPool>();
         pool.Config.Returns(config);
@@ -45,6 +47,78 @@ public class EquihashWalletResilienceTests : TestBase
         Template = ModuleInitializer.CoinTemplates["zcash"], Daemons = new[] { server.Endpoint() },
         Extra = new Dictionary<string, object> { ["z-address"] = "z-address" }, PaymentProcessing = new(),
     };
+
+    private sealed class CapabilityTime : TimeProvider
+    {
+        public long Ticks;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => Ticks;
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CapabilityRefreshAdoptsNewSupportAndRepeatedRejectionAlerts(bool repeatedRejection)
+    {
+        var time = new CapabilityTime();
+        var upgraded = false;
+        var probes = 0;
+        var nativeSubmissions = 0;
+        var rejected = true;
+        var notifications = new List<PaymentNotification>();
+        var bus = new MessageBus();
+        using var observed = bus.Listen<PaymentNotification>().Subscribe(notifications.Add);
+        await using var server = await RpcDiagnosticTests.Server.Start(async context =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var request = JObject.Parse(await reader.ReadToEndAsync());
+            var method = request.Value<string>("method");
+            var args = request["params"] as JArray;
+            var probe = (method is "sendcurrency" or "z_shieldcoinbase") && (args == null || args.Count == 0) ||
+                method == "z_sendmany" && args?.Last?.Value<string>() == "WrongPrivacyPolicy";
+            JToken result = method switch { "getblockchaininfo" => new JObject { ["chain"] = "main" },
+                "listunspent" => new JArray(), "z_getbalance" => new JValue(100d), _ => JValue.CreateNull() };
+            int? code = null;
+            if(probe)
+            {
+                probes++;
+                code = method switch { "z_shieldcoinbase" => upgraded ? -1 : -32601, "sendcurrency" => -32601, _ => -8 };
+            }
+            else if(method == "z_shieldcoinbase") { nativeSubmissions++; code = -6; }
+            else if(method == "z_sendmany") code = repeatedRejection && rejected ? -32602 : -6;
+            await context.Response.WriteAsync(new JObject { ["id"] = request["id"], ["result"] = result,
+                ["error"] = code.HasValue ? new JObject { ["code"] = code.Value, ["message"] = "rejected" } : null }.ToString());
+        });
+        var config = Config(server);
+        await Cycle(config, time: time, bus: bus);
+        Assert.Equal(3, probes);
+        if(repeatedRejection)
+        {
+            Assert.DoesNotContain(notifications, x => x.Error?.Contains("repeatedly") == true);
+            await Cycle(config, time: time, bus: bus);
+            Assert.Equal(6, probes);
+            Assert.Single(notifications.Where(x => x.Error?.Contains("repeatedly") == true));
+            rejected = false;
+            await Cycle(config, time: time, bus: bus); // A conclusive ordinary rejection resets the streak.
+            rejected = true;
+            await Cycle(config, time: time, bus: bus);
+            Assert.Single(notifications.Where(x => x.Error?.Contains("repeatedly") == true));
+        }
+        else
+        {
+            upgraded = true;
+            time.Ticks = EquihashPayoutHandler.CapabilityRefreshInterval.Ticks - 1;
+            await Cycle(config, time: time, bus: bus);
+            Assert.Equal(3, probes);
+            Assert.Equal(0, nativeSubmissions);
+            time.Ticks++;
+            await Cycle(config, time: time, bus: bus);
+            Assert.Equal(6, probes);
+            Assert.Equal(1, nativeSubmissions);
+            await Cycle(config, time: time, bus: bus);
+            Assert.Equal(6, probes); // Cached again, not probed on every cycle.
+        }
+    }
 
     [Theory]
     [InlineData(true, "lost-submit")]

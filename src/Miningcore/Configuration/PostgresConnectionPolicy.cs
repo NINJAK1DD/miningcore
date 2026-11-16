@@ -240,6 +240,9 @@ internal static class PostgresConnectionPolicy
             // environment/passfile fallback explicitly instead of emitting an empty key.
             Password = string.IsNullOrEmpty(config.Password) ? null : config.Password,
             SslMode = settings.Mode,
+            // Miningcore's public policy selects TLS explicitly; do not let the
+            // Npgsql 10 GSS preference replace it or add Kerberos negotiation.
+            GssEncryptionMode = GssEncryptionMode.Disable,
             RootCertificate = settings.Root,
             SslCertificate = settings.Cert,
             SslKey = settings.Key,

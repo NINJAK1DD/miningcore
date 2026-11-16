@@ -40,6 +40,7 @@ public class PostgresConnectionPolicyTests
         config.TlsNoValidate = noValidate;
         var connection = PostgresConnectionPolicy.Build(config, "ignored-legacy-environment-ca");
         Assert.Equal(expected, connection.SslMode);
+        Assert.Equal(GssEncryptionMode.Disable, connection.GssEncryptionMode);
         Assert.Null(connection.RootCertificate);
         Assert.DoesNotContain("Trust Server Certificate", connection.ConnectionString);
         Assert.Equal(300, connection.CommandTimeout);
@@ -58,6 +59,7 @@ public class PostgresConnectionPolicyTests
         config.SslMode = mode;
         var connection = new NpgsqlConnectionStringBuilder(PostgresConnectionPolicy.Build(config, null).ConnectionString);
         Assert.Equal(expected, connection.SslMode);
+        Assert.Equal(GssEncryptionMode.Disable, connection.GssEncryptionMode);
         Assert.Equal(mode, JsonConvert.DeserializeObject<PostgresConfig>(
             JsonConvert.SerializeObject(config)).SslMode);
     }
