@@ -203,6 +203,14 @@ WHERE schemaname = 'miningcore_payout_control'
 ORDER BY relname;
 ```
 
+With PostgreSQL's default catalog and size-function permissions, this inventory
+requires only a login that can connect to the database. It needs no grants on
+`miningcore_payout_control`: do not grant schema `USAGE`, table `SELECT`, control
+function execution, `pg_monitor`, `pg_read_all_stats` or superuser rights solely
+for this query. It reads catalog statistics and sizes, not financial rows. If local
+policy restricts catalog/function access, review that restriction separately rather
+than granting access to the control schema.
+
 Row estimates can lag activity; they are not an outstanding-batch count. Compare
 byte growth over several days with filesystem free space, WAL usage and backup
 capacity. Set an operator-owned warning threshold that leaves time to expand storage
