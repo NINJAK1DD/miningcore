@@ -1,7 +1,7 @@
 {
   "source_commit": "ae606320038ea52f288a52916617f8461640182e",
   "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43850106259",
-  "minimum_total": 6274,
+  "minimum_total": 6281,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -1844,7 +1844,42 @@
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
       "method": "DisposedGuardClosesBackendInsteadOfReturningCompletionAuthorityToPool",
       "case": "DisposedGuardClosesBackendInsteadOfReturningCompletionAuthorityToPool"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresGssIntegrationTests",
+      "method": "LiveKerberos_TransportMatchesPolicyAndAuthenticatesPrincipal",
+      "case": "LiveKerberos_TransportMatchesPolicyAndAuthenticatesPrincipal"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresGssIntegrationTests",
+      "method": "LiveKerberos_LegacyTlsAndDedicatedGuardPreserveTransport",
+      "case": "LiveKerberos_LegacyTlsAndDedicatedGuardPreserveTransport"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresGssIntegrationTests",
+      "method": "LiveKerberos_AvailableGssCannotBypassMandatoryTls",
+      "case": "LiveKerberos_AvailableGssCannotBypassMandatoryTls"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresGssIntegrationTests",
+      "method": "LiveKerberos_MissingOrUnmappedCredentialsCannotAuthenticate",
+      "case": "LiveKerberos_MissingOrUnmappedCredentialsCannotAuthenticate"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresGssIntegrationTests",
+      "method": "LiveKerberos_WrongServerKeytabCannotAuthenticate",
+      "case": "LiveKerberos_WrongServerKeytabCannotAuthenticate"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresGssIntegrationTests",
+      "method": "LiveKerberos_OptionalPolicyFallsBackOnlyWhenServerAllowsIt",
+      "case": "LiveKerberos_OptionalPolicyFallsBackOnlyWhenServerAllowsIt"
+    },
+    {
+      "class": "Miningcore.Tests.Persistence.Postgres.PostgresGssIntegrationTests",
+      "method": "LiveKerberos_RegressionControlDemonstratesForcedDisableLosesEncryption",
+      "case": "LiveKerberos_RegressionControlDemonstratesForcedDisableLosesEncryption"
     }
   ],
-  "source_note": "Discovery and new capability passes/fragmented-wallet skip observed in this artifact. Its legacy TLS golden assertion omitted the now-explicit GSS disable policy; that assertion is corrected separately. The validator still requires complete-suite success, every retained required regression, and the exact skip set on the new head. Protocol-2 security coverage adds three explicit WalletControlFact opt-ins for the isolated PostgreSQL/Bitcoin lab and one mandatory install/upgrade function-parity test. The Windows lane must pass parity and retain exactly these additional opt-in skips; the isolated lab must execute the three database cases."
+  "source_note": "Discovery and new capability passes/fragmented-wallet skip observed in this artifact. Its legacy TLS golden assertion omitted the now-explicit GSS disable policy; that assertion is corrected separately. The validator still requires complete-suite success, every retained required regression, and the exact skip set on the new head. Protocol-2 security coverage adds three explicit WalletControlFact opt-ins for the isolated PostgreSQL/Bitcoin lab and one mandatory install/upgrade function-parity test. The Windows lane must pass parity and retain exactly these additional opt-in skips; the isolated lab must execute the three database cases. Seven explicitly opted-in Kerberos methods require a disposable MIT realm and PostgreSQL and remain expected skips on ordinary Windows CI. Their expanded cases must run in the documented Linux GSS lab."
 }

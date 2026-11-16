@@ -108,6 +108,9 @@ Miningcore's connection. See the [Npgsql 10 release notes](https://www.npgsql.or
 For an existing GSS deployment, check `encrypted` in `pg_stat_gssapi` for
 `pg_backend_pid()` under the actual service identity; checking only `pg_stat_ssl`
 cannot detect GSS encryption. See [Npgsql's transport policy](https://www.npgsql.org/doc/security.html).
+The [disposable Kerberos lab](../scripts/test-lab/README.md#live-kerberosgss-and-tls-matrix)
+exercises real MIT tickets, server-observed encryption, GSS authentication over TLS,
+credential rejection and mandatory-TLS failure boundaries through this connection policy.
 An empty/whitespace-only explicit or construction-time environment CA path is rejected.
 The new `tlsRootCert` path is preserved exactly, including meaningful spaces.
 In non-verifying modes `PGSSLROOTCERT` does not upgrade security; its value is

@@ -94,10 +94,61 @@ The unconditional parity test checks fresh-install and upgrade function definiti
 
 The connection-policy tests check GSS preference for omitted/optional TLS and GSS
 disablement for mandatory TLS. The live TLS matrix checks encryption and rejects
-missing TLS, wrong trust and hostname mismatch where required. This matrix does
-not establish live Kerberos/KDC interoperability; GSS negotiation itself is delegated
-to Npgsql. To include the wallet cases, run this filter through `with-wallets.py` and
+missing TLS, wrong trust and hostname mismatch where required. For live Kerberos
+negotiation, run the separate realm-backed matrix below. To include the wallet cases,
+run this filter through `with-wallets.py` and
 export the pinned Pearl worker as below. Keep manifests and wallet logs private.
+
+## Live Kerberos/GSS and TLS matrix
+
+The Ubuntu lab can run a real MIT KDC and PostgreSQL with fresh principals, keytabs
+and credential caches. No production realm, credentials, DNS configuration, system
+keytab or system service is used. Install the missing tools as the ordinary lab user
+into a **fresh** private directory (reuse that verified installation for later runs):
+
+```bash
+kerberos_root="$HOME/miningcore-test-lab/kerberos"
+bash scripts/test-lab/install-kerberos-tools.sh "$kerberos_root"
+```
+
+The installer downloads packages from the lab's authenticated Ubuntu repositories,
+extracts them without executing maintainer scripts, and retains exact package
+versions and SHA-256 checksums. It does not install or start a system KDC. Package
+names target Ubuntu 26.04 amd64; update repository metadata through normal lab
+maintenance before installing tools. The host needs the ordinary MIT GSS/Kerberos
+runtime libraries and the existing PostgreSQL/native-build prerequisites.
+
+After an audited build of the committed revision with the verified private SDK:
+
+```bash
+export MININGCORE_TEST_POSTGRES_BIN=/usr/lib/postgresql/18/bin
+python3 scripts/test-lab/with-kerberos.py --tools "$kerberos_root/tools" -- \
+  dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --no-restore \
+  --filter 'FullyQualifiedName~PostgresGssIntegrationTests|FullyQualifiedName~PostgresTlsIntegrationTests|FullyQualifiedName~PostgresConnectionPolicyTests' \
+  --logger 'trx;LogFileName=kerberos-gss.trx' --results-directory build/test-lab
+```
+
+The wrapper binds the KDC to a random loopback port and creates only a private
+`MININGCORE.TEST` realm. PostgreSQL binds loopback too and requires GSS authentication
+with an exact realm-qualified principal mapping. Each connection is checked using
+`pg_stat_gssapi` and `pg_stat_ssl` for its own backend, then transfers a 100 KB payload.
+This distinguishes authentication from actual transport encryption.
+
+The matrix covers omitted and all six explicit TLS modes, legacy TLS flags, ordinary
+and dedicated guard connections, trusted TLS with GSS authentication, and rejection
+of missing/unmapped client credentials or an incorrect server keytab. With working
+GSS encryption first established on the same endpoint, mandatory TLS must reject
+disabled TLS, an untrusted/expired certificate or hostname mismatch. A negative
+control reproduces the old forced-GSS-disable plaintext regression. Deliberate
+loopback-trust cases verify that optional modes can fall back to TLS or plaintext
+when no GSS credentials exist; optional preference is not an encryption requirement.
+
+Tests restore process-wide cache selection and run in the serialized PostgreSQL
+policy collection. The wrapper stops its own process groups and removes temporary
+realm keys/caches on exit. Keep test diagnostics private; never publish keytabs,
+credential caches or Kerberos traces. Without the opt-in environment, the seven
+methods are explicitly skipped; a successful ordinary CI run is not live GSS evidence.
+This qualifies MIT Kerberos on Linux, not Windows SSPI, Active Directory or cross-realm trust.
 
 ## Wallet compatibility matrix
 
