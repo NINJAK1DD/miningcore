@@ -558,7 +558,7 @@ receipt/share/credit, exact liability plus remainder, and no journal, quarantine
 This is a captured-proof acceptance test, not fresh GPU mining or an operating-system reboot.
 The worker SHA-256 is `046f44eddc4f2b16b2f1ef373bc7454d5ec61a9d5c9f084469f67869e195498e`.
 
-Equihash capability caches are cleared only after conclusive unsupported-method/argument
+Equihash capability caches are cleared after conclusive unsupported-method/argument
 rejection; re-probing is deferred to the next admitted payout. Backend-replacement tests
 retain the same configuration object and endpoint and verify that no fallback spend occurs
 in the rejected cycle. Native shielding response loss and ambiguous operation results stop
@@ -584,3 +584,36 @@ The [lab guide](../scripts/test-lab/README.md#pearl-precommitted-pps-relay-regre
 the Pearl case. Current-head test counts, complete CI status and the six review acceptance
 checks are maintained in the PR validation section; the measurements above remain the earlier
 dated capacity baseline until replaced by a measured run.
+
+### Review hardening — 16 November 2026
+
+Equihash also expires conclusive capability results after 15 minutes using a monotonic
+clock. This includes cached unsupported capabilities, allowing a replacement wallet at
+the same endpoint to enable native functionality. Expiration is checked only inside
+admitted payout work, never by a background timer. Tests cover the exact expiry boundary,
+reuse between probes, an unsupported-to-supported transition, and repeated `-32602`
+rejections. A second consecutive capability invalidation emits a payout failure alert;
+a completed cycle without invalidation resets the streak. Lost or ambiguous responses
+still cannot enable a fallback spend or release retained payout ownership.
+
+The additional [real Zcash fee scenario](../scripts/test-lab/README.md#fragmented-zcash-conventional-fees)
+creates eight separately confirmed Sapling notes, pays multiple recipient pages, and
+exercises a conventional fee larger than the preliminary output/change reserve. A real
+wallet rejection must leave the affected liabilities unpaid and complete the admission
+conclusively. Funding followed by a later cycle must pay the remaining recipients exactly
+once. Fixture setup waits for wallet confirmation notifications as well as block generation;
+it never retries an operation merely because the wallet view has not caught up.
+
+The `dev` merge updates the tested dependency graph, including Npgsql 10.0.3,
+protobuf-net 3.4.40, NBitcoin.Altcoins 6.0.12 and NBitcoin.Secp256k1 4.0.4. The
+[PostgreSQL policy](postgres-tls.md) now explicitly disables GSS session encryption
+to preserve the configured TLS policy, and documents Npgsql 10's configured-CA trust
+behavior. GSS authentication is unaffected. Connection policy and golden-output tests
+cover the explicit setting.
+
+The [PR validation section](https://github.com/NINJAK1DD/miningcore/pull/292) records the
+exact tested revision, full isolated matrix and CI status for this dependency graph.
+The matrix includes PostgreSQL statement-timeout and token-cancellation admission,
+all five pinned wallet families, native Pearl acceptance/replay, encrypted relays,
+PPS outage/recovery and the 1,000-shares/s plus 10,000-share burst workload. Earlier
+dated measurements above remain historical evidence, not measurements of newer dependencies.

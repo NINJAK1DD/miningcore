@@ -121,8 +121,6 @@ wallet RPC, reactivates through Miningcore, and defers spending for that cycle.
 The stale-height case deliberately injects lagging scan metadata into the real
 wallet's response; the regular height read must subsequently permit payment.
 
-## PPS capacity and relay saturation
-
 ### Fragmented Zcash conventional fees
 
 The full wallet matrix also includes
@@ -134,6 +132,8 @@ and complete admission. After funding, a later payout must settle the remaining 
 without repeating earlier payments (101 distinct recipients across the scenario).
 Run it with `with-wallets.py` and `with-postgres.sh`, using the same invocation as the
 wallet matrix and filter `FullyQualifiedName~LiveZcashFragmentedFunds`.
+
+## PPS capacity and relay saturation
 
 ### Pearl precommitted PPS relay regression
 
