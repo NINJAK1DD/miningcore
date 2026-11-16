@@ -188,6 +188,29 @@ as having uncertain wallet outcomes.
 
 ## Retention and archival
 
+Sample the following read-only inventory daily using the monitoring login, retaining
+the timestamp, database identity and raw byte values in protected monitoring storage:
+
+```sql
+SELECT clock_timestamp() AS sampled_at, current_database() AS database_name,
+       relname, n_live_tup AS estimated_rows,
+       pg_table_size(relid) AS table_bytes,
+       pg_indexes_size(relid) AS index_bytes,
+       pg_total_relation_size(relid) AS total_bytes
+FROM pg_stat_user_tables
+WHERE schemaname = 'miningcore_payout_control'
+  AND relname IN ('batches', 'events')
+ORDER BY relname;
+```
+
+Row estimates can lag activity; they are not an outstanding-batch count. Compare
+byte growth over several days with filesystem free space, WAL usage and backup
+capacity. Set an operator-owned warning threshold that leaves time to expand storage
+or review an archival migration. The outstanding-batch partial index bounds its lookup;
+it does not bound completed history or total disk consumption. See PostgreSQL's
+[size functions](https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADMIN-DBSIZE)
+and [table statistics](https://www.postgresql.org/docs/current/monitoring-stats.html#MONITORING-PG-STAT-ALL-TABLES-VIEW).
+
 Retain completed batches and all events indefinitely by default. Do not delete or
 expire outstanding batches. Monitor table/index size, oldest outstanding admission,
 backup age and restore results. Plan capacity for one row per admitted handler call.
@@ -200,6 +223,11 @@ stop every writer, obtain a reviewed administrator-only archival migration that
 retains the verified audit trail and financial references, and test restore and
 reconciliation before rollout. Application/operator roles must never receive DELETE
 or TRUNCATE for retention purposes.
+The archival review must also preserve completion idempotency: completed batch identities
+are used to recognize repeated completion requests. An exported copy alone does not
+authorize removing those identities from the live database. Keep incident references,
+ownership generations and audit events together, restrict archive access, and record
+the responsible administrator and restore-verification evidence.
 
 ## State and alerts
 

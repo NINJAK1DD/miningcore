@@ -81,6 +81,11 @@ of the wallet pause:
   only inside admitted payout work. A second consecutive invalidation raises a payout failure
   notification, with at most one reminder per 24 hours. Only a successfully recorded payout
   resets the alert streak; skipped, unfunded and rejected cycles preserve it.
+  Restart Miningcore after upgrading the wallet daemon to adopt new capabilities immediately.
+  Follow the [coordinated stop and reconciliation procedure](emergency-wallet-stop.md#coordinated-installation-upgrade-and-rollback);
+  a restart does not clear uncertain payouts or authorize resubmission. Without a restart,
+  newly supported privacy arguments may take up to 24 hours to be detected, during which
+  a ZIP 317 wallet can conclusively reject legacy fixed-fee payments.
   Native shielding also stops the payout cycle on response loss, missing operation/transaction
   identifiers, unavailable results or unknown statuses. Operators must reconcile uncertain
   shielding before releasing the retained payout admission.

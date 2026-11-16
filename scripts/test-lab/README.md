@@ -113,6 +113,15 @@ needed. These Debug lab tests retain the project's Debug peer-guard behavior for
 isolated networks. They do not claim production network synchronization or live
 TCP miner coverage.
 
+Before deploying a different wallet version or fork, pin its exact version/source and
+checksum in a disposable lab and repeat this matrix: paused admission, capability
+probes, successful submission and accounting, response loss, cancellation, and
+restart/reconciliation. For Equihash, also run the capability-transition and fragmented-fee
+cases. Record the tested Miningcore commit, wallet identity and results; the existing
+pinned results do not qualify an untested replacement. After the coordinated wallet
+upgrade, restart Miningcore to adopt new capabilities immediately, preserving any
+outstanding ownership/reconciliation requirements.
+
 Each family verifies paused admission, a successful real payment and exact
 accounting, then accepted submission followed by response loss and cancellation.
 Uncertainty must preserve the unpaid liability and outstanding admission, retain
