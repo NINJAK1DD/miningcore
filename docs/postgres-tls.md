@@ -45,7 +45,7 @@ undefined enum values.
 
 | Configuration | Effective policy |
 | --- | --- |
-| Mode omitted/null, `tls` omitted/null/false | `Prefer`, preserving Npgsql 10's previous default |
+| Mode omitted/null, `tls` omitted/null/false | `Prefer`, preserving the existing connection policy |
 | Mode omitted/null, `tls: true` | `Require`, whether `tlsNoValidate` is omitted, false or true |
 | Explicit mode with either non-null legacy flag (even false) | Rejected; remove both legacy flags |
 | `tlsNoValidate: true` without `tls: true` | Rejected |

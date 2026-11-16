@@ -42,6 +42,17 @@ public partial class WalletPayoutControlIntegrationTests
             Assert.True(envelope["error"] == null || envelope["error"].Type == JTokenType.Null, method + ": " + envelope["error"]);
             return envelope["result"];
         }
+        async Task Confirm(string txid)
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+            // Sapling's default anchor lags the tip by ten blocks; eleven
+            // confirmations ensure the new note is included in that anchor.
+            await Rpc("generate", 11);
+            // Block generation returns before the wallet notification queue has
+            // caught up. Poll confirmation state; never resubmit the operation.
+            while((await Rpc("gettransaction", txid)).Value<int>("confirmations") < 10)
+                await Task.Delay(200, deadline.Token);
+        }
         async Task Complete(string operation)
         {
             using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
@@ -57,13 +68,7 @@ public partial class WalletPayoutControlIntegrationTests
                 }
                 await Task.Delay(200, deadline.Token);
             }
-            // Sapling's default anchor lags the tip by ten blocks; eleven
-            // confirmations ensure the new note is included in that anchor.
-            await Rpc("generate", 11);
-            // Block generation returns before the wallet notification queue has
-            // caught up. Poll confirmation state; never resubmit the operation.
-            while((await Rpc("gettransaction", txid)).Value<int>("confirmations") < 10)
-                await Task.Delay(200, deadline.Token);
+            await Confirm(txid);
         }
         var funding = fixture.Value<string>("zAddress");
         if((await Rpc("z_getbalance", funding, 1)).Value<decimal>() < 2m)
@@ -119,7 +124,7 @@ public partial class WalletPayoutControlIntegrationTests
         await Add(50, .5m);
         await manager.PayoutPoolBalancesAsync(pool, config, handler, CancellationToken.None);
         Assert.Equal(50, await PaymentCount(db));
-        await Rpc("generate", 11);
+        await Confirm(await db.Admin.ExecuteScalarAsync<string>("SELECT transactionconfirmationdata FROM payments LIMIT 1"));
         var available = (await Rpc("z_getbalance", source, 8)).Value<decimal>();
         notes = (JArray) await Rpc("z_listunspent", 8, 9999999, false, new[] { source });
         Assert.True(notes.Count > 1);
@@ -129,8 +134,10 @@ public partial class WalletPayoutControlIntegrationTests
         var perRecipient = decimal.Floor((available - .00255m) / 50 * 100_000_000m) / 100_000_000m;
         await Add(51, perRecipient * 51);
         await manager.PayoutPoolBalancesAsync(pool, config, handler, CancellationToken.None);
-        Assert.Contains(notices, x => x.Error?.Contains("insufficient", StringComparison.OrdinalIgnoreCase) == true ||
-            x.Error?.Contains("fee", StringComparison.OrdinalIgnoreCase) == true);
+        var rejection = Assert.Single(notices.Where(x => x.Error?.Contains("insufficient", StringComparison.OrdinalIgnoreCase) == true ||
+            x.Error?.Contains("fee", StringComparison.OrdinalIgnoreCase) == true));
+        Assert.Equal(PaymentNotificationOutcome.Failure, rejection.Outcome);
+        Assert.Equal(50, rejection.RecipientsCount);
         Assert.InRange(await PaymentCount(db), 50, 51);
         Assert.Equal(0, (await db.State()).OutstandingBatches);
         Assert.True(lease.CanReleaseOwnership);
@@ -143,6 +150,7 @@ public partial class WalletPayoutControlIntegrationTests
         Assert.Equal(0m, await db.Admin.ExecuteScalarAsync<decimal>("SELECT sum(amount) FROM balances"));
         Assert.Equal(0, (await db.State()).OutstandingBatches);
         Assert.Equal(101, await db.Admin.ExecuteScalarAsync<int>("SELECT count(DISTINCT address) FROM payments"));
+        output.WriteLine($"Real wallet rejection: {rejection.Error}");
         output.WriteLine($"Zcash: eight real shielded notes; paged fee rejection retained liability and completed admission; funding/retry grew payment receipts from {before} to 101 distinct recipients without replaying earlier payments.");
     }
 }

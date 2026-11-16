@@ -1,7 +1,7 @@
 {
-  "source_commit": "75e57cd6f841d1feddf223677ac0d70bb9fe3014",
-  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43774898165",
-  "minimum_total": 6267,
+  "source_commit": "ae606320038ea52f288a52916617f8461640182e",
+  "source_run": "https://github.com/NINJAK1DD/miningcore/actions/runs/43850106259",
+  "minimum_total": 6270,
   "required_passes": [
     {
       "class": "Miningcore.Tests.Blockchain.Pearl.PearlConsensusTests",
@@ -672,6 +672,16 @@
       "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
       "method": "UncertainShieldingNeverContinuesToPayoutOrReprobes",
       "case": "UncertainShieldingNeverContinuesToPayoutOrReprobes(native: True, failure: \"unsupported-result\")"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "CapabilityRefreshAdoptsNewSupportAndRepeatedRejectionAlerts",
+      "case": "CapabilityRefreshAdoptsNewSupportAndRepeatedRejectionAlerts(repeatedRejection: True)"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.EquihashWalletResilienceTests",
+      "method": "CapabilityRefreshAdoptsNewSupportAndRepeatedRejectionAlerts",
+      "case": "CapabilityRefreshAdoptsNewSupportAndRepeatedRejectionAlerts(repeatedRejection: False)"
     }
   ],
   "expected_skips": [
@@ -1809,7 +1819,12 @@
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
       "method": "PearlPpsAcceptanceKeepsCommittedIdentityAcrossRelayDuplicatesAndRestart",
       "case": "PearlPpsAcceptanceKeepsCommittedIdentityAcrossRelayDuplicatesAndRestart"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "LiveZcashFragmentedFunds_MultiplePagesRejectConclusiveFeeShortfallThenRetry",
+      "case": "LiveZcashFragmentedFunds_MultiplePagesRejectConclusiveFeeShortfallThenRetry"
     }
   ],
-  "source_note": "Discovery, all 134 required passes and 227 skips observed in this artifact. One unrelated existing relay assertion failed because it expected rewriting a financial Source; the assertion is corrected to require preservation. Complete-suite success is separately required by the validator on the new head."
+  "source_note": "Discovery and new capability passes/fragmented-wallet skip observed in this artifact. Its legacy TLS golden assertion omitted the now-explicit GSS disable policy; that assertion is corrected separately. The validator still requires complete-suite success, every retained required regression, and the exact skip set on the new head."
 }

@@ -75,6 +75,10 @@ of the wallet pause:
   financial identity, including old null-source receipts, without modifying shared share objects.
 - Equihash caches are revalidated on the next admitted payout after a conclusive unsupported
   method/argument response. Unknown wallet outcomes never enable an automatic fallback or retry.
+  Cached results also expire after 15 minutes, including unsupported capabilities, so a wallet
+  upgrade can enable native functionality without a configuration change. Expiration is checked
+  only inside admitted payout work. A second consecutive invalidation raises a payout failure
+  notification; a cycle without invalidation resets the alert streak.
   Native shielding also stops the payout cycle on response loss, missing operation/transaction
   identifiers, unavailable results or unknown statuses. Operators must reconcile uncertain
   shielding before releasing the retained payout admission.

@@ -123,6 +123,18 @@ wallet's response; the regular height read must subsequently permit payment.
 
 ## PPS capacity and relay saturation
 
+### Fragmented Zcash conventional fees
+
+The full wallet matrix also includes
+`LiveZcashFragmentedFunds_MultiplePagesRejectConclusiveFeeShortfallThenRetry`.
+It creates eight confirmed Sapling notes, pays an initial page, then deliberately leaves
+a subsequent 50-recipient page enough for the preliminary reserve but insufficient for
+the real wallet's input-dependent fee. A real conclusive rejection must retain liabilities
+and complete admission. After funding, a later payout must settle the remaining recipients
+without repeating earlier payments (101 distinct recipients across the scenario).
+Run it with `with-wallets.py` and `with-postgres.sh`, using the same invocation as the
+wallet matrix and filter `FullyQualifiedName~LiveZcashFragmentedFunds`.
+
 ### Pearl precommitted PPS relay regression
 
 After building the same source in the Linux checkout, export `MININGCORE_TEST_PEARL_WORKER`
