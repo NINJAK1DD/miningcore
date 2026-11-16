@@ -29,7 +29,7 @@ public sealed class WalletPayoutControlState
                 (SELECT count(*) FROM miningcore_payout_control.batches WHERE completed IS NULL) AS OutstandingBatches
             FROM miningcore_payout_control.state WHERE id=1
             """, transaction: transaction, commandTimeout: 5, cancellationToken: ct));
-        if(result.ProtocolVersion != 1 || result.Revision < 1)
+        if(result.ProtocolVersion != 2 || result.Revision < 1)
             throw new InvalidOperationException("Wallet payout control state is not supported");
         return result;
     }
@@ -53,7 +53,7 @@ public sealed class WalletPayoutControlState
         }
         catch(Exception ex) when(!ct.IsCancellationRequested)
         {
-            throw new InvalidOperationException("Wallet payout control preflight failed. Apply add_wallet_payout_control.sql as a separate administrator with the exact runtime role and verify its least-privilege grants before starting payment processing.", ex);
+            throw new InvalidOperationException("Wallet payout control preflight failed. Install protocol 2 with add_wallet_payout_control.sql, or upgrade protocol 1 with upgrade_wallet_payout_control_v2.sql, as a separate administrator with the exact runtime role. Verify least-privilege grants before starting payment processing.", ex);
         }
     }
 }

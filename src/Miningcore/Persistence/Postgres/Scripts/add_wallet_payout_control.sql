@@ -23,28 +23,34 @@ CREATE SCHEMA miningcore_payout_control;
 REVOKE ALL ON SCHEMA miningcore_payout_control FROM PUBLIC;
 CREATE TABLE miningcore_payout_control.state (
     id integer PRIMARY KEY CHECK(id=1),
-    protocol_version integer NOT NULL CHECK(protocol_version=1),
+    protocol_version integer NOT NULL CHECK(protocol_version=2),
     revision bigint NOT NULL CHECK(revision>0),
     paused boolean NOT NULL
 );
-INSERT INTO miningcore_payout_control.state VALUES(1,1,1,true);
+INSERT INTO miningcore_payout_control.state VALUES(1,2,1,true);
 CREATE TABLE miningcore_payout_control.batches (
     batch_id uuid PRIMARY KEY,
     owner_id uuid NOT NULL,
     generation bigint NOT NULL CHECK(generation>0),
     pool_id text NOT NULL CHECK(length(pool_id) BETWEEN 1 AND 200),
     payout_digest text NOT NULL CHECK(payout_digest ~ '^[0-9a-f]{64}$'),
+    -- PostgreSQL assigns both values; readable batch tokens are not authority.
+    -- NULL pairs are reserved for history imported by the protocol-1 upgrade.
+    admitting_pid integer,
+    admitting_backend_start timestamptz,
     admitted timestamptz NOT NULL DEFAULT clock_timestamp(),
     completed timestamptz,
     resolution text CHECK(resolution IN ('completed','reconciled')),
-    CHECK((completed IS NULL) = (resolution IS NULL))
+    CHECK((completed IS NULL) = (resolution IS NULL)),
+    CHECK((admitting_pid IS NULL AND admitting_backend_start IS NULL)
+        OR (admitting_pid > 0 AND admitting_pid IS NOT NULL AND admitting_backend_start IS NOT NULL))
 );
 CREATE INDEX ON miningcore_payout_control.batches(admitted) WHERE completed IS NULL;
 CREATE TABLE miningcore_payout_control.events (
     revision bigint PRIMARY KEY,
     occurred timestamptz NOT NULL DEFAULT clock_timestamp(),
     database_role text NOT NULL DEFAULT session_user,
-    action text NOT NULL CHECK(action IN ('initialize','pause','resume','reconcile')),
+    action text NOT NULL CHECK(action IN ('initialize','pause','resume','reconcile','upgrade')),
     incident text NOT NULL CHECK(length(btrim(incident)) BETWEEN 1 AND 200),
     batch_id uuid
 );
@@ -77,20 +83,35 @@ DECLARE control miningcore_payout_control.state;
 BEGIN
     PERFORM miningcore_payout_control.require_owner_lock();
     SELECT * INTO STRICT control FROM miningcore_payout_control.state WHERE id=1 FOR UPDATE;
-    IF control.protocol_version<>1 THEN RAISE EXCEPTION 'Unsupported wallet control protocol'; END IF;
+    IF control.protocol_version<>2 THEN RAISE EXCEPTION 'Unsupported wallet control protocol'; END IF;
     IF control.paused THEN RETURN false; END IF;
     IF EXISTS(SELECT FROM miningcore_payout_control.batches WHERE completed IS NULL) THEN
         RAISE EXCEPTION 'An outstanding wallet batch requires completion or explicit reconciliation' USING ERRCODE='55000';
     END IF;
-    INSERT INTO miningcore_payout_control.batches(batch_id,owner_id,generation,pool_id,payout_digest)
-        VALUES(token,owner_token,owner_generation,pool,snapshot_digest);
+    INSERT INTO miningcore_payout_control.batches(batch_id,owner_id,generation,pool_id,payout_digest,
+        admitting_pid,admitting_backend_start)
+        VALUES(token,owner_token,owner_generation,pool,snapshot_digest,pg_backend_pid(),
+            (SELECT backend_start FROM pg_stat_activity WHERE pid=pg_backend_pid()));
+    IF NOT EXISTS(SELECT FROM miningcore_payout_control.batches WHERE batch_id=token
+        AND admitting_backend_start IS NOT NULL) THEN
+        RAISE EXCEPTION 'Cannot establish the admitting PostgreSQL session' USING ERRCODE='55000';
+    END IF;
     RETURN true;
 END $$;
 
 CREATE FUNCTION miningcore_payout_control.finish_batch(token uuid, owner_token uuid, owner_generation bigint)
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+DECLARE session_start timestamptz;
 BEGIN
     PERFORM miningcore_payout_control.require_owner_lock();
+    SELECT backend_start INTO STRICT session_start FROM pg_stat_activity WHERE pid=pg_backend_pid();
+    -- A replacement runtime session may read all identities and acquire the lock,
+    -- but cannot complete an unresolved batch. PID alone is unsafe after reuse.
+    IF NOT EXISTS(SELECT FROM miningcore_payout_control.batches
+        WHERE batch_id=token AND owner_id=owner_token AND generation=owner_generation
+            AND admitting_pid=pg_backend_pid() AND admitting_backend_start=session_start) THEN
+        RAISE EXCEPTION 'Wallet batch completion requires its admitting PostgreSQL session' USING ERRCODE='55000';
+    END IF;
     -- Completion does not take the operator's state lock. A concurrent resume
     -- may conservatively see the batch as outstanding and refuse. Reconciliation
     -- requires our advisory lock, so it cannot race this update.
@@ -112,7 +133,7 @@ BEGIN
         RAISE EXCEPTION 'State, expected revision and incident reference are required';
     END IF;
     SELECT * INTO STRICT control FROM miningcore_payout_control.state WHERE id=1 FOR UPDATE;
-    IF control.protocol_version<>1 OR control.revision<>expected_revision THEN
+    IF control.protocol_version<>2 OR control.revision<>expected_revision THEN
         RAISE EXCEPTION 'Wallet control protocol or revision changed; read state again' USING ERRCODE='40001';
     END IF;
     IF NOT stop AND EXISTS(SELECT FROM miningcore_payout_control.batches WHERE completed IS NULL) THEN
@@ -136,7 +157,7 @@ BEGIN
         RAISE EXCEPTION 'Batch identity, expected revision and incident reference are required';
     END IF;
     SELECT * INTO STRICT control FROM miningcore_payout_control.state WHERE id=1 FOR UPDATE;
-    IF control.protocol_version<>1 OR NOT control.paused OR control.revision<>expected_revision THEN
+    IF control.protocol_version<>2 OR NOT control.paused OR control.revision<>expected_revision THEN
         RAISE EXCEPTION 'Reconciliation requires paused state and the current revision' USING ERRCODE='40001';
     END IF;
     UPDATE miningcore_payout_control.batches SET completed=clock_timestamp(),resolution='reconciled'

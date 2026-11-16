@@ -65,7 +65,7 @@ public partial class WalletPayoutControlIntegrationTests : TestBase
         var controller = Api.Controllers.AdminApiPaymentProcessingTests.CreateController(db.Factory, true);
         var paused = (await controller.GetWalletPayoutControl(CancellationToken.None)).Value;
         Assert.True(paused.Paused);
-        Assert.Equal(1, paused.ProtocolVersion);
+        Assert.Equal(2, paused.ProtocolVersion);
         Assert.Equal(1, paused.Revision);
         Assert.Equal(0, paused.OutstandingBatches);
         await db.SetPaused(false);
@@ -91,7 +91,7 @@ public partial class WalletPayoutControlIntegrationTests : TestBase
         {
             await using var db = await Database.Create(installControl: failure != "missing");
             if(failure == "denied") await db.RevokeAdmission();
-            if(failure == "version") await db.Admin.ExecuteAsync("ALTER TABLE miningcore_payout_control.state DROP CONSTRAINT state_protocol_version_check; UPDATE miningcore_payout_control.state SET protocol_version=2");
+            if(failure == "version") await db.Admin.ExecuteAsync("ALTER TABLE miningcore_payout_control.state DROP CONSTRAINT state_protocol_version_check; UPDATE miningcore_payout_control.state SET protocol_version=1");
             if(failure == "write") await db.Admin.ExecuteAsync($"GRANT pg_write_all_data TO {db.AppRole}");
             if(failure == "operator") await db.Admin.ExecuteAsync($"GRANT {db.OperatorRole} TO {db.AppRole}");
             await using var lease = new PostgresPayoutManagerLease(db.Factory);
@@ -153,13 +153,13 @@ public partial class WalletPayoutControlIntegrationTests : TestBase
         }
         Assert.Equal(0, (await db.State()).OutstandingBatches);
         await lease.DisposeAsync();
-        // Identical completion is idempotent; foreign identity and reconciliation
-        // cannot be reinterpreted as a completed handler batch.
+        // A different session cannot complete even with readable matching identities.
+        // Same-session idempotence is covered by the session-binding regression.
         await db.Admin.ExecuteAsync("SELECT pg_advisory_lock(19779,5259609)");
-        await db.Admin.ExecuteAsync("""
+        await Assert.ThrowsAsync<PostgresException>(() => db.Admin.ExecuteAsync("""
             SELECT miningcore_payout_control.finish_batch(batch_id,owner_id,generation)
             FROM miningcore_payout_control.batches WHERE pool_id='load'
-            """);
+            """));
         await Assert.ThrowsAsync<PostgresException>(() => db.Admin.ExecuteAsync("""
             SELECT miningcore_payout_control.finish_batch(batch_id,gen_random_uuid(),generation)
             FROM miningcore_payout_control.batches WHERE pool_id='load' LIMIT 1
@@ -491,7 +491,7 @@ public partial class WalletPayoutControlIntegrationTests : TestBase
             else if(failure == "denied")
                 await db.RevokeAdmission();
             else if(failure == "version")
-                await db.Admin.ExecuteAsync("ALTER TABLE miningcore_payout_control.state DROP CONSTRAINT state_protocol_version_check; UPDATE miningcore_payout_control.state SET protocol_version=2");
+                await db.Admin.ExecuteAsync("ALTER TABLE miningcore_payout_control.state DROP CONSTRAINT state_protocol_version_check; UPDATE miningcore_payout_control.state SET protocol_version=1");
             else
             {
                 // Hold admission at the database boundary until its command is cancelled.

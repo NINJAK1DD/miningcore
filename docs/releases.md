@@ -1,5 +1,20 @@
 # Installing a prebuilt Miningcore release
 
+## Emergency wallet control protocol 2
+
+Wallet batch completion now requires the PostgreSQL session that admitted it,
+identified by both backend PID and start time. Replacement runtime sessions cannot
+clear an unresolved batch using readable identities and a reacquired advisory lock.
+Pre-release protocol-1 installations need the [coordinated protocol-2 migration](emergency-wallet-stop.md#upgrading-a-pre-release-protocol-1-installation);
+new binaries reject the old protocol. Preserve all history and reconcile outstanding
+legacy batches explicitly before resuming.
+
+The PostgreSQL connection policy preserves Npgsql 10's preferred GSS encryption when
+TLS is optional, including omitted TLS configuration. Mandatory TLS modes disable
+GSS encryption so certificate policy cannot be bypassed and plaintext fallback is
+impossible. See the [transport policy](postgres-tls.md); optional modes still do not
+guarantee encryption.
+
 ## RC.2 payout pause: deployment and rollback warning
 
 **RC.1 ignores `paymentProcessing.paused` and can resume wallet payouts with that flag present.**

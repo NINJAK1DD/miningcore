@@ -1,4 +1,4 @@
-# Database emergency wallet payout stop (protocol 1)
+# Database emergency wallet payout stop (protocol 2)
 
 This mandatory control stops **new wallet payout batches** across cooperating
 Miningcore processes using one PostgreSQL database. It starts paused and has no
@@ -34,7 +34,12 @@ defers admission. Client cancellation, transport timeouts and lost replies do no
 prove rollback and retain conservative ownership handling.
 Completion does not lock the state row, so an open pause transaction cannot prevent
 a conclusive payout from completing. Completion is idempotent for the same batch,
-owner and generation; at most three attempts use the original guard session.
+owner, generation and original PostgreSQL session; at most three attempts use that
+guard session. The database records the admitting backend PID **and start time**,
+and checks both inside the trusted completion function. Readable batch identities
+and a newly acquired advisory lock cannot authorize a replacement session to finish
+an unresolved batch, including after PID reuse. A disconnected session's batch
+requires explicit operator reconciliation; neither restart nor reconnect completes it.
 
 The gap between admission and a wallet request cannot be atomic. A suspended or
 partitioned process can begin an admitted request much later. A dead database
@@ -110,7 +115,7 @@ Mining-side direct allocation and block submission are outside this wallet contr
    and direct DML must fail; operator direct DML must fail. Administrators remain
    trusted and can alter/drop controls; export audit events to independent protected
    storage for that threat model.
-4. Deploy protocol-1 binaries everywhere before relying on the marker. Missing,
+4. Deploy protocol-2 binaries everywhere before relying on the marker. Missing,
    denied, unsupported or unreadable control state fails closed. Verify exact
    binaries, grants and paused state in staging before live startup. Ambiguous
    admission retains ownership even though no new wallet batch was started.
@@ -127,6 +132,32 @@ preserve history/outstanding batches and reconcile wallets. Return to coordinate
 shutdown as the safety procedure for older binaries; do not drop the marker to make
 them run or describe them as protected. Restore requires stopped processes, preserved
 evidence, reviewed role ownership/ACLs and paused control before reconciliation/resume.
+
+### Upgrading a pre-release protocol-1 installation
+
+Protocol 1 allowed a replacement runtime session holding the advisory lock and
+readable batch identities to complete an unresolved batch. Protocol 2 closes that
+path. New binaries reject protocol 1 during preflight; a binary-only update is
+insufficient. Do not delete or recreate the schema to bypass this check.
+
+Stop and verify every wallet-capable process, back up the database, and use the
+existing operator function to **pause** protocol 1 at its current revision. As the
+original trusted schema/object owner, supply the runtime role and apply:
+
+```sql
+SELECT set_config('miningcore.wallet_control_app_role', 'miningcore_service', false);
+\i src/Miningcore/Persistence/Postgres/Scripts/upgrade_wallet_payout_control_v2.sql
+```
+
+Use `psql -X -v ON_ERROR_STOP=1`. The atomic upgrade refuses an active advisory-lock
+holder, unpaused state, a different protocol or unsafe runtime privileges. It
+preserves existing grants, batches and audit events, increments the revision and
+records an `upgrade` event while remaining paused. Existing batches deliberately
+receive no session identity: **every outstanding protocol-1 batch requires explicit
+operator reconciliation**, even when its old owner/generation are known. Completed
+history remains intact. Follow the reconciliation and ownership-recovery procedure
+below before resuming. Verify protocol 2 and least-privilege grants under the actual
+runtime login. Re-running the upgrade fails without changing history.
 
 ## Authenticated and audited operator protocol
 
