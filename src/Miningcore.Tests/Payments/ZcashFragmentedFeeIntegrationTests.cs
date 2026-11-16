@@ -60,8 +60,10 @@ public partial class WalletPayoutControlIntegrationTests
             // Sapling's default anchor lags the tip by ten blocks; eleven
             // confirmations ensure the new note is included in that anchor.
             await Rpc("generate", 11);
-            var transaction = await Rpc("gettransaction", txid);
-            Assert.True(transaction.Value<int>("confirmations") >= 10, transaction.ToString());
+            // Block generation returns before the wallet notification queue has
+            // caught up. Poll confirmation state; never resubmit the operation.
+            while((await Rpc("gettransaction", txid)).Value<int>("confirmations") < 10)
+                await Task.Delay(200, deadline.Token);
         }
         var funding = fixture.Value<string>("zAddress");
         if((await Rpc("z_getbalance", funding, 1)).Value<decimal>() < 2m)
