@@ -48,10 +48,12 @@ public partial class WalletPayoutControlIntegrationTests
             while(true)
             {
                 var result = (JArray) await Rpc("z_getoperationresult", new object[] { new[] { operation } });
-                if(result.Count != 0) { Assert.Equal("success", result[0].Value<string>("status")); break; }
+                if(result.Count != 0) { Assert.True(result[0].Value<string>("status") == "success", result[0].ToString()); break; }
                 await Task.Delay(200, deadline.Token);
             }
-            await Rpc("generate", 10);
+            // Sapling's default anchor lags the tip by ten blocks; eleven
+            // confirmations ensure the new note is included in that anchor.
+            await Rpc("generate", 11);
         }
         var funding = fixture.Value<string>("zAddress");
         if((await Rpc("z_getbalance", funding, 1)).Value<decimal>() < 2m)
@@ -105,7 +107,7 @@ public partial class WalletPayoutControlIntegrationTests
         await Add(50, .5m);
         await manager.PayoutPoolBalancesAsync(pool, config, handler, CancellationToken.None);
         Assert.Equal(50, await PaymentCount(db));
-        await Rpc("generate", 10);
+        await Rpc("generate", 11);
         var available = (await Rpc("z_getbalance", source, 8)).Value<decimal>();
         notes = (JArray) await Rpc("z_listunspent", 8, 9999999, false, new[] { source });
         Assert.True(notes.Count > 1);
