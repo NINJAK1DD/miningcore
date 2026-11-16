@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -7,6 +8,7 @@ using Miningcore.Configuration;
 using Miningcore.Persistence.Postgres;
 using Miningcore.Tests.Util.Postgres;
 using Npgsql;
+using Newtonsoft.Json.Linq;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -65,7 +67,8 @@ public sealed class PostgresGssIntegrationTests(ITestOutputHelper output)
         if(authenticated)
             Assert.Equal("miningcore@MININGCORE.TEST", actual.Principal);
         // Exercise real protocol data (including a payload larger than a GSS frame).
-        Assert.Equal(new string('x', 100000), await connection.ExecuteScalarAsync<string>("SELECT repeat('x',100000)"));
+        var payload = new string('x', 100000);
+        Assert.Equal(payload, await connection.ExecuteScalarAsync<string>("SELECT @payload::text", new { payload }));
         output.WriteLine($"Server-observed GSS authenticated={actual.Authenticated}, encrypted={actual.Encrypted}, TLS={actual.Tls}");
     }
 
@@ -114,7 +117,8 @@ public sealed class PostgresGssIntegrationTests(ITestOutputHelper output)
         await AssertTransport(Connection(server, PostgresSslMode.Prefer, host: host), true, false);
         var root = mode == PostgresSslMode.Require ? null : certificate == "untrusted" ? server.OtherRoot : server.Root;
         var factory = new PgConnectionFactory(Connection(server, mode, root, host).ConnectionString);
-        await Assert.ThrowsAsync<PostgresConnectionException>(() => factory.OpenConnectionAsync());
+        var failure = await Assert.ThrowsAsync<PostgresConnectionException>(() => factory.OpenConnectionAsync());
+        Assert.Equal(certificate == "off" ? PostgresConnectFailure.Other : PostgresConnectFailure.TlsHandshake, failure.Category);
     }
 
     [GssPostgresTheory]
@@ -125,15 +129,16 @@ public sealed class PostgresGssIntegrationTests(ITestOutputHelper output)
     public async Task LiveKerberos_MissingOrUnmappedCredentialsCannotAuthenticate(string cache, PostgresSslMode mode)
     {
         await using var server = await Server();
-        var prior = Environment.GetEnvironmentVariable("KRB5CCNAME");
-        try
-        {
-            Environment.SetEnvironmentVariable("KRB5CCNAME", "FILE:" + Path.Combine(RealmRoot, cache));
-            var factory = new PgConnectionFactory(Connection(server, mode,
-                mode == PostgresSslMode.VerifyFull ? server.Root : null).ConnectionString);
-            await Assert.ThrowsAsync<PostgresConnectionException>(() => factory.OpenConnectionAsync());
-        }
-        finally { Environment.SetEnvironmentVariable("KRB5CCNAME", prior); }
+        var builder = Connection(server, mode, mode == PostgresSslMode.VerifyFull ? server.Root : null);
+        var valid = await FreshClient(builder, "client.ccache");
+        Assert.Equal(0, valid.Code);
+        var transport = JObject.Parse(valid.Output);
+        Assert.True(transport["authenticated"].Value<bool>());
+        Assert.Equal(mode == PostgresSslMode.Prefer, transport["encrypted"].Value<bool>());
+        Assert.Equal(mode == PostgresSslMode.VerifyFull, transport["tls"].Value<bool>());
+        var rejected = await FreshClient(builder, cache);
+        Assert.Equal(2, rejected.Code);
+        Assert.StartsWith("rejected:", rejected.Output);
         await AssertTransport(Connection(server, PostgresSslMode.Prefer), true, false);
     }
 
@@ -155,13 +160,12 @@ public sealed class PostgresGssIntegrationTests(ITestOutputHelper output)
     {
         await using var server = await Server(gssAuthentication: false); // Loopback trust is deliberate here.
         await server.UseCertificate(certificate);
-        var prior = Environment.GetEnvironmentVariable("KRB5CCNAME");
-        try
-        {
-            Environment.SetEnvironmentVariable("KRB5CCNAME", "FILE:" + Path.Combine(RealmRoot, "missing.ccache"));
-            await AssertTransport(Connection(server, PostgresSslMode.Prefer), false, tls, authenticated: false);
-        }
-        finally { Environment.SetEnvironmentVariable("KRB5CCNAME", prior); }
+        var result = await FreshClient(Connection(server, PostgresSslMode.Prefer), "missing.ccache");
+        Assert.Equal(0, result.Code);
+        var transport = JObject.Parse(result.Output);
+        Assert.False(transport["authenticated"].Value<bool>());
+        Assert.False(transport["encrypted"].Value<bool>());
+        Assert.Equal(tls, transport["tls"].Value<bool>());
     }
 
     [GssPostgresFact]
@@ -175,6 +179,26 @@ public sealed class PostgresGssIntegrationTests(ITestOutputHelper output)
         // Authentication alone does not encrypt application data.
         builder.GssEncryptionMode = GssEncryptionMode.Disable;
         await AssertTransport(builder, false, false);
+    }
+
+    private static async Task<(int Code, string Output)> FreshClient(NpgsqlConnectionStringBuilder builder, string cache)
+    {
+        // Changing managed Environment after native GSS initialization does not
+        // reliably replace acquired credentials. Start each identity in a fresh OS process.
+        var start = new ProcessStartInfo("dotnet")
+        { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+        start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Miningcore.Tests.ProcessHost.dll"));
+        start.ArgumentList.Add("postgres-gss-probe");
+        start.Environment["KRB5CCNAME"] = "FILE:" + Path.Combine(RealmRoot, cache);
+        start.Environment["MININGCORE_TEST_GSS_CONNECTION"] = builder.ConnectionString;
+        using var process = Process.Start(start);
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        try { await process.WaitForExitAsync(timeout.Token); }
+        catch { process.Kill(true); await process.WaitForExitAsync(); throw; }
+        Assert.True(process.ExitCode is 0 or 2, "Unexpected GSS probe exit: " + await stderr);
+        return (process.ExitCode, (await stdout).Trim());
     }
 
     private sealed class Transport

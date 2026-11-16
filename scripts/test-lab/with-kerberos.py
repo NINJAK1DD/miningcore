@@ -50,6 +50,7 @@ def main():
  dns_lookup_realm = false
  rdns = false
  dns_canonicalize_hostname = false
+ qualify_shortname = ""
  udp_preference_limit = 1
 [realms]
  {REALM} = {{

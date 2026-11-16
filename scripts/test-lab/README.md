@@ -143,8 +143,12 @@ control reproduces the old forced-GSS-disable plaintext regression. Deliberate
 loopback-trust cases verify that optional modes can fall back to TLS or plaintext
 when no GSS credentials exist; optional preference is not an encryption requirement.
 
-Tests restore process-wide cache selection and run in the serialized PostgreSQL
-policy collection. The wrapper stops its own process groups and removes temporary
+Credential-negative cases select their native cache before starting a fresh client
+process; changing managed environment variables after GSS initialization does not
+reliably replace acquired credentials. Tests run in the serialized PostgreSQL policy
+collection. The private realm disables short-name domain qualification as well as
+DNS canonicalization, keeping its synthetic localhost principal independent of the
+host's resolver search suffix. The wrapper stops its own process groups and removes temporary
 realm keys/caches on exit. Keep test diagnostics private; never publish keytabs,
 credential caches or Kerberos traces. Without the opt-in environment, the seven
 methods are explicitly skipped; a successful ordinary CI run is not live GSS evidence.
