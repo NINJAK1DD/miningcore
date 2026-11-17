@@ -539,6 +539,7 @@ public partial class WalletPayoutControlIntegrationTests : TestBase
         public string AppRole => name + "_app";
         private string OwnerRole => name + "_owner";
         public string OperatorRole => name + "_op";
+        public string ControlOwnerRole => name + "_control";
         private NpgsqlConnection root;
         public NpgsqlConnection Admin { get; private set; }
         public NpgsqlConnection Operator { get; private set; }
@@ -599,6 +600,16 @@ public partial class WalletPayoutControlIntegrationTests : TestBase
             catch { await db.DisposeAsync(); throw; }
         }
         public Task<WalletPayoutControlState> State() => WalletPayoutControlState.ReadAsync(Factory, CancellationToken.None);
+        public async Task<NpgsqlConnection> CreateControlOwner()
+        {
+            var password = Guid.NewGuid().ToString("N");
+            await Admin.ExecuteAsync($"CREATE ROLE {ControlOwnerRole} LOGIN PASSWORD '{password}'; GRANT CREATE ON DATABASE {name} TO {ControlOwnerRole}");
+            var settings = new NpgsqlConnectionStringBuilder(appConnectionString)
+                { Username = ControlOwnerRole, Password = password };
+            var owner = new NpgsqlConnection(settings.ConnectionString);
+            try { await owner.OpenAsync(); return owner; }
+            catch { await owner.DisposeAsync(); throw; }
+        }
         public async Task InstallControl()
         {
             await Admin.ExecuteAsync("SELECT set_config('miningcore.wallet_control_app_role',@role,false)", new { role = AppRole });
@@ -626,7 +637,7 @@ public partial class WalletPayoutControlIntegrationTests : TestBase
             if(root != null)
             {
                 await root.ExecuteAsync($"DROP DATABASE IF EXISTS {name} WITH (FORCE)");
-                await root.ExecuteAsync($"DROP ROLE IF EXISTS {AppRole}; DROP ROLE IF EXISTS {OperatorRole}; DROP ROLE IF EXISTS {OwnerRole}");
+                await root.ExecuteAsync($"DROP ROLE IF EXISTS {AppRole}; DROP ROLE IF EXISTS {OperatorRole}; DROP ROLE IF EXISTS {OwnerRole}; DROP ROLE IF EXISTS {ControlOwnerRole}");
                 await root.DisposeAsync();
             }
         }

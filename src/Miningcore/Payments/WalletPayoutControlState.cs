@@ -41,6 +41,19 @@ public sealed class WalletPayoutControlState
             using var connection = cf is ICancellableConnectionFactory cancellable
                 ? await cancellable.OpenConnectionAsync(ct) : await cf.OpenConnectionAsync();
             await ReadAsync(connection, ct); // Intentionally paused is compatible.
+            // Inspect the actual SECURITY DEFINER owners, not the runtime login's
+            // view of its own backend. USAGE requires inherited privileges; an
+            // assumable but non-inherited membership does not expose backend_start.
+            var ownersReady = await connection.ExecuteScalarAsync<bool>(new CommandDefinition("""
+                SELECT count(*)=2 AND coalesce(bool_and(p.prosecdef AND
+                    (r.rolsuper OR pg_has_role(r.oid,'pg_read_all_stats','USAGE'))),false)
+                FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_roles r ON r.oid=p.proowner
+                WHERE p.oid IN (
+                    to_regprocedure('miningcore_payout_control.begin_batch(uuid,uuid,bigint,text,text)'),
+                    to_regprocedure('miningcore_payout_control.finish_batch(uuid,uuid,bigint)'))
+                """, commandTimeout: 5, cancellationToken: ct));
+            if(!ownersReady)
+                throw new InvalidOperationException("Wallet control function owners require effective pg_read_all_stats privileges (or superuser) for session binding");
             var ready = await connection.ExecuteScalarAsync<bool>(new CommandDefinition("""
                 SELECT miningcore_payout_control.runtime_role_safe(current_user::name)
                     AND has_function_privilege(current_user,
@@ -53,7 +66,7 @@ public sealed class WalletPayoutControlState
         }
         catch(Exception ex) when(!ct.IsCancellationRequested)
         {
-            throw new InvalidOperationException("Wallet payout control preflight failed. Install protocol 2 with add_wallet_payout_control.sql, or upgrade protocol 1 with upgrade_wallet_payout_control_v2.sql, as a separate administrator with the exact runtime role. Verify least-privilege grants before starting payment processing.", ex);
+            throw new InvalidOperationException("Wallet payout control preflight failed. Install protocol 2 with add_wallet_payout_control.sql, or upgrade protocol 1 with upgrade_wallet_payout_control_v2.sql, as a separate administrator with the exact runtime role. The control function owners must be superusers or have effective pg_read_all_stats privileges. Verify owner visibility and least-privilege runtime grants before starting payment processing.", ex);
         }
     }
 }

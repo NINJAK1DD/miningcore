@@ -83,7 +83,28 @@ Mining-side direct allocation and block submission are outside this wallet contr
    The migration rejects that relationship, removes default ACLs, grants runtime
    read/admit/complete rights and starts **paused**. Existing schemas are rejected:
    rerunning never resets history, adopts lookalikes or unpauses the control.
-   Supply the exact runtime login explicitly (it need not own the payout tables):
+   Supply the exact runtime login explicitly (it need not own the payout tables).
+
+   The schema/function owner must be a superuser or have **effective, inherited
+   `pg_read_all_stats` privileges**. Both fresh installation and protocol-1 upgrade
+   reject an owner without that visibility before changing storage. A non-superuser
+   trusted owner is supported, but membership available only through `SET ROLE`
+   is insufficient: the `SECURITY DEFINER` functions cannot assume another role.
+   An authorized role administrator can provision a dedicated owner as follows:
+
+   ```sql
+   -- Use a dedicated trusted owner with inherited membership; never the runtime login.
+   GRANT pg_read_all_stats TO wallet_control_owner;
+   SELECT pg_has_role('wallet_control_owner', 'pg_read_all_stats', 'USAGE'); -- must be true
+   ```
+
+   Review role/membership inheritance if that check is false (including per-membership
+   `INHERIT` on PostgreSQL 16+). The privilege exposes cluster-wide session statistics,
+   potentially including query text; restrict this trusted identity accordingly.
+   Do not grant it to the runtime, operator or storage-monitoring login for this purpose.
+   A managed service that cannot supply this owner privilege cannot install this protocol.
+
+   In the owner session, select the runtime login and apply the migration:
 
    ```sql
    -- In the same administrator psql session, before \i of the migration:
@@ -97,6 +118,10 @@ Mining-side direct allocation and block submission are outside this wallet contr
    Missing state, incompatible protocol or missing admission/completion permissions
    fail preflight **before acquiring durable ownership**. Intentionally paused
    state passes. Fresh installations require this separate administrator step too.
+   Startup also checks the actual owners of **both** admission and completion functions
+   for effective statistics privileges. Admission/completion validate a non-null backend
+   start time before using it, so a later privilege loss fails closed with an explicit
+   owner-visibility error, without inserting a partial batch or clearing outstanding work.
 3. Provision an individually attributable operator LOGIN through your credential
    manager, using SCRAM and verified TLS or a secured local socket. Keep credentials
    out of application configuration, logs and command lines. As administrator, grant
@@ -144,7 +169,7 @@ insufficient. Do not delete or recreate the schema to bypass this check.
 
 Stop and verify every wallet-capable process, back up the database, and use the
 existing operator function to **pause** protocol 1 at its current revision. As the
-original trusted schema/object owner, supply the runtime role and apply:
+original trusted schema/object owner with the statistics privilege above, supply the runtime role and apply:
 
 ```sql
 SELECT set_config('miningcore.wallet_control_app_role', 'miningcore_service', false);
@@ -160,6 +185,18 @@ operator reconciliation**, even when its old owner/generation are known. Complet
 history remains intact. Follow the reconciliation and ownership-recovery procedure
 below before resuming. Verify protocol 2 and least-privilege grants under the actual
 runtime login. Re-running the upgrade fails without changing history.
+
+### Existing protocol-2 owners without statistics visibility
+
+After coordinated shutdown, an authorized role administrator must grant the existing
+trusted control owner effective `pg_read_all_stats` privileges, then verify startup
+preflight under the actual runtime login. No protocol bump, schema recreation, history
+deletion or repeat protocol-1 upgrade is needed. The new preflight also catches this
+misconfiguration in previously installed protocol-2 functions. Existing SQL may report
+a constraint error instead of the clearer new admission error if visibility is later
+revoked; the same owner-grant repair applies. Retain any outstanding batch and reconcile
+it explicitly if its original guard session has disconnected. Restoring visibility is
+not reconciliation or permission to resend payments.
 
 ## Authenticated and audited operator protocol
 

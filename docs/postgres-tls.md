@@ -86,8 +86,10 @@ Use a PEM CA certificate file supported by Npgsql 10. An explicit missing,
 unreadable or invalid file does not fall back to the environment or system store.
 With Npgsql 10, a configured CA replaces the system trust store rather than augmenting it.
 With optional TLS (`Allow`, `Prefer`, `Disable`, including omitted TLS configuration),
-Miningcore preserves Npgsql 10's `GssEncryptionMode=Prefer`. It must not silently
-disable encryption for an existing GSS deployment. `Disable` disables **TLS**, not
+Miningcore preserves Npgsql 10's `GssEncryptionMode=Prefer` for opportunistic
+encryption when Kerberos credentials and server support are available. GSS session
+encryption was introduced in Npgsql 10; this is not a claim about Npgsql 9 builds.
+`Disable` disables **TLS**, not
 GSS. GSS preference is opportunistic: unavailable credentials or server support can
 still permit plaintext. It is not an encryption requirement.
 

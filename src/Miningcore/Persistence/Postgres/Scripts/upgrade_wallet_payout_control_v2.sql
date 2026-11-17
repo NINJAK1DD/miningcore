@@ -2,11 +2,16 @@
 -- Stop all wallet-capable processes and pause the control first. Never discard
 -- outstanding batches: their sessions cannot be established retroactively.
 -- Set miningcore.wallet_control_app_role to the exact runtime login first.
+-- The owner must be a superuser or inherit pg_read_all_stats for session binding.
 BEGIN;
 SET LOCAL ROLE NONE;
 DO $upgrade$
 DECLARE app_role name; control miningcore_payout_control.state;
 BEGIN
+    IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname=session_user AND rolsuper)
+        AND NOT pg_has_role(session_user,'pg_read_all_stats','USAGE') THEN
+        RAISE EXCEPTION 'Wallet control owner requires effective pg_read_all_stats privileges (or superuser) for session binding' USING ERRCODE='55000';
+    END IF;
     IF NOT pg_try_advisory_xact_lock(19779,5259609) THEN
         RAISE EXCEPTION 'Stop payout managers before upgrading wallet control';
     END IF;
@@ -52,7 +57,7 @@ INSERT INTO miningcore_payout_control.events(revision,action,incident)
 CREATE OR REPLACE FUNCTION miningcore_payout_control.begin_batch(token uuid, owner_token uuid, owner_generation bigint,
     pool text, snapshot_digest text)
 RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp SET lock_timeout='2s' AS $$
-DECLARE control miningcore_payout_control.state;
+DECLARE control miningcore_payout_control.state; session_start timestamptz;
 BEGIN
     PERFORM miningcore_payout_control.require_owner_lock();
     SELECT * INTO STRICT control FROM miningcore_payout_control.state WHERE id=1 FOR UPDATE;
@@ -61,14 +66,13 @@ BEGIN
     IF EXISTS(SELECT FROM miningcore_payout_control.batches WHERE completed IS NULL) THEN
         RAISE EXCEPTION 'An outstanding wallet batch requires completion or explicit reconciliation' USING ERRCODE='55000';
     END IF;
+    SELECT backend_start INTO STRICT session_start FROM pg_stat_activity WHERE pid=pg_backend_pid();
+    IF session_start IS NULL THEN
+        RAISE EXCEPTION 'Wallet control owner cannot read backend_start; restore effective pg_read_all_stats privileges' USING ERRCODE='55000';
+    END IF;
     INSERT INTO miningcore_payout_control.batches(batch_id,owner_id,generation,pool_id,payout_digest,
         admitting_pid,admitting_backend_start)
-        VALUES(token,owner_token,owner_generation,pool,snapshot_digest,pg_backend_pid(),
-            (SELECT backend_start FROM pg_stat_activity WHERE pid=pg_backend_pid()));
-    IF NOT EXISTS(SELECT FROM miningcore_payout_control.batches WHERE batch_id=token
-        AND admitting_backend_start IS NOT NULL) THEN
-        RAISE EXCEPTION 'Cannot establish the admitting PostgreSQL session' USING ERRCODE='55000';
-    END IF;
+        VALUES(token,owner_token,owner_generation,pool,snapshot_digest,pg_backend_pid(),session_start);
     RETURN true;
 END $$;
 
@@ -78,6 +82,9 @@ DECLARE session_start timestamptz;
 BEGIN
     PERFORM miningcore_payout_control.require_owner_lock();
     SELECT backend_start INTO STRICT session_start FROM pg_stat_activity WHERE pid=pg_backend_pid();
+    IF session_start IS NULL THEN
+        RAISE EXCEPTION 'Wallet control owner cannot read backend_start; restore effective pg_read_all_stats privileges' USING ERRCODE='55000';
+    END IF;
     -- A replacement runtime session may read all identities and acquire the lock,
     -- but cannot complete an unresolved batch. PID alone is unsafe after reuse.
     IF NOT EXISTS(SELECT FROM miningcore_payout_control.batches
