@@ -71,6 +71,41 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertEqual('mode=max', builds[1]['with']['provenance'])
         self.assertEqual('true', builds[1]['with']['sbom'])
 
+    def test_registry_digest_inspection_precedes_every_release_promotion(self):
+        release = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
+        steps = release['jobs']['publish-release']['steps']
+        record = next(s for s in steps if s.get('id') == 'recorded-container')
+        gate = next(s for s in steps if s['name'] == 'Verify staged registry image contents before release promotion')
+        self.assertEqual('${{ steps.image.outputs.name }}', gate['env']['IMAGE_NAME'])
+        self.assertEqual('${{ steps.recorded-container.outputs.digest }}', gate['env']['IMAGE_DIGEST'])
+        self.assertIn('--registry-image "$IMAGE_NAME@$IMAGE_DIGEST"', gate['run'])
+        self.assertGreater(steps.index(gate), steps.index(record))
+        self.assertNotIn('if', gate, 'Resumed publications must recheck the recorded digest too')
+        self.assertNotIn('continue-on-error', gate)
+        for name in ('Publish and verify durable GitHub Release', 'Promote and verify release container tags'):
+            promotion = next(s for s in steps if s['name'] == name)
+            self.assertGreater(steps.index(promotion), steps.index(gate))
+            self.assertNotIn('if', promotion)
+            self.assertNotIn('continue-on-error', promotion)
+
+        hub = yaml.load((ROOT / '.github/workflows/docker-image.yml').read_text(), Loader=yaml.BaseLoader)
+        steps = hub['jobs']['build']['steps']
+        build = next(s for s in steps if s.get('id') == 'push')
+        self.assertEqual('theretromike/miningcore:staged-${{ github.run_id }}-${{ github.run_attempt }}', build['with']['tags'])
+        self.assertEqual('linux/amd64', build['with']['platforms'])
+        gate = next(s for s in steps if s['name'] == 'Verify staged Docker Hub image contents')
+        promotion = next(s for s in steps if s['name'] == 'Promote and record verified Docker Hub image digest')
+        self.assertLess(steps.index(build), steps.index(gate))
+        self.assertLess(steps.index(gate), steps.index(promotion))
+        for step in (gate, promotion):
+            self.assertEqual("github.event_name == 'workflow_dispatch'", step['if'])
+            self.assertNotIn('continue-on-error', step)
+            self.assertEqual('${{ steps.push.outputs.digest }}', step['env']['IMAGE_DIGEST'])
+        self.assertIn('--registry-image "theretromike/miningcore@$IMAGE_DIGEST"', gate['run'])
+        self.assertIn('imagetools create --prefer-index=false --tag theretromike/miningcore:latest', promotion['run'])
+        self.assertIn('"theretromike/miningcore@$IMAGE_DIGEST"', promotion['run'])
+        self.assertIn('test "$published_digest" = "$IMAGE_DIGEST"', promotion['run'])
+
     def test_container_servicing_tags_match_reviewed_policy(self):
         policy = ET.parse(ROOT / 'src/Miningcore/RuntimeDependencyPolicy.props')
         minimum = policy.findtext('./PropertyGroup/MiningcoreRuntimeMinimum')

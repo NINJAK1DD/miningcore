@@ -4,7 +4,13 @@ Keep these reproducibility tools in source control and source archives, not in p
 binary packages or runtime images. Release CI runs
 `scripts/release/verify-production-contents.py` against both Ubuntu archives and every
 layer of the source-built and packaged runtime images. The standalone Docker Hub workflow
-also checks its local image before manual publication. A file deleted by a later image
+also checks its local image before manual publication. Both publishers then pull the actual
+staged registry image by its immutable SHA-256 digest and inspect every linux/amd64 layer
+before release/tag promotion. This check runs on resumed GHCR publications too. Docker Hub
+uses a run-specific staging tag and copies the verified image index to `latest` without a
+rebuild, retaining provenance/SBOM and checking the promoted digest. A rejected staged
+image remains available by its staging identity for investigation; it is never promoted.
+A file deleted by a later image
 layer still fails. Package assembly and asset collection enforce the same archive policy.
 
 The policy rejects lab directories, test result/coverage files, Miningcore test assemblies,
@@ -14,7 +20,25 @@ Normal OS logs, operator documentation, example configs and migrations remain pe
 This path-based check supplements secret scanning; it cannot identify an arbitrary secret
 renamed to a permitted filename. Generated lab data belongs in temporary directories or
 ignored `build/test-lab`, never in a publish directory. The scanner inspects tar headers
-without extracting or executing archive contents; only the image-save operation needs Docker.
+without extracting or executing archive contents; image pulls/saves need Docker. Zstd
+layers fail closed with an explicit diagnostic: export uncompressed or gzip layers for
+inspection. The signature check follows [RFC 8878](https://www.rfc-editor.org/rfc/rfc8878.html).
+Index promotion follows Docker's [single-source copy semantics](https://docs.docker.com/reference/cli/docker/buildx/imagetools/create/).
+
+To reproduce registry identity enforcement, run as the ordinary Linux lab user:
+
+```bash
+python3 -B scripts/test-lab/validate-registry-content-gate.py
+```
+
+This opt-in check requires Docker/Buildx and PyYAML. It starts a digest-pinned registry
+on an ephemeral loopback port with disposable storage, builds non-executable clean and
+contaminated fixtures, and executes both workflows' actual registry inspection commands.
+It verifies that contamination blocks Docker Hub promotion, that `latest` retains the
+clean digest, and that clean promotion preserves the image index plus provenance and SBOM.
+It removes its registry and local fixture images on exit. It never uses production registry
+credentials or publishes outside the disposable registry. The initial registry and BuildKit
+SBOM-generator downloads require network access.
 
 The documented local lab is WSL2 `Ubuntu` (Ubuntu 26.04.1), running as the ordinary
 `ubuntu` user. Keep Linux source and build outputs separate from Windows outputs.

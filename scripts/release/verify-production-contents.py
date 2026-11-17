@@ -9,6 +9,7 @@ import argparse
 import json
 from pathlib import PurePosixPath
 import posixpath
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -96,15 +97,37 @@ def verify_saved_image(path):
             entry = saved.getmember(normalized(layer))
             if not entry.isfile():
                 raise ValueError('Image layer is not a regular file')
-            with saved.extractfile(entry) as stream, tarfile.open(fileobj=stream, mode='r|*') as archive:
-                for member in archive:
-                    name = check_member(member, image=True)
-                    app |= member.isfile() and name == 'app/Miningcore'
-                    count += 1
-                    archive.members.clear()
+            with saved.extractfile(entry) as stream:
+                # RFC 8878: ordinary and skippable frame signatures. Keep the
+                # policy consistent on runners with different Python versions.
+                magic = int.from_bytes(stream.read(4), 'little')
+                if magic == 0xFD2FB528 or 0x184D2A50 <= magic <= 0x184D2A5F:
+                    raise ValueError('Unsupported zstd Docker layer; export uncompressed or gzip layers for inspection')
+                stream.seek(0)
+                with tarfile.open(fileobj=stream, mode='r|*') as archive:
+                    for member in archive:
+                        name = check_member(member, image=True)
+                        app |= member.isfile() and name == 'app/Miningcore'
+                        count += 1
+                        archive.members.clear()
     if not app:
         raise ValueError('Saved image does not contain /app/Miningcore')
     return len(layers), count
+
+
+def verify_image(reference, pull=False):
+    if not reference or reference.startswith('-'):
+        raise ValueError('Invalid image reference')
+    if pull:
+        if not re.fullmatch(r'[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}', reference):
+            raise ValueError('Registry inspection requires an immutable image@sha256 digest')
+        # All production images are linux/amd64. Pull and save the same digest,
+        # never a mutable staging tag or the previously checked preview image.
+        subprocess.run(['docker', 'pull', '--platform', 'linux/amd64', reference], check=True, timeout=600)
+    with tempfile.TemporaryDirectory(prefix='miningcore-content-check-') as directory:
+        path = directory + '/image.tar'
+        subprocess.run(['docker', 'image', 'save', '--output', path, reference], check=True, timeout=600)
+        return verify_saved_image(path)
 
 
 def main():
@@ -112,20 +135,15 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--archive', help='production .tar.gz release archive')
     group.add_argument('--image', help='locally built Docker image to inspect, without starting it')
+    group.add_argument('--registry-image', help='pull and inspect an immutable image@sha256 digest (linux/amd64)')
     args = parser.parse_args()
     try:
         if args.archive:
             count = verify_archive(args.archive)
             print(f'Production archive contents passed: {count} entries')
         else:
-            if not args.image or args.image.startswith('-'):
-                raise ValueError('Invalid image reference')
-            with tempfile.TemporaryDirectory(prefix='miningcore-content-check-') as directory:
-                path = directory + '/image.tar'
-                subprocess.run(['docker', 'image', 'save', '--output', path, args.image],
-                               check=True, timeout=600)
-                layers, count = verify_saved_image(path)
-                print(f'Production image contents passed: {layers} layers, {count} entries')
+            layers, count = verify_image(args.registry_image or args.image, pull=bool(args.registry_image))
+            print(f'Production image contents passed: {layers} layers, {count} entries')
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, subprocess.SubprocessError) as error:
         parser.exit(1, f'Production contents check failed: {error}\n')
 

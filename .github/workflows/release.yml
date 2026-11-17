@@ -1016,6 +1016,13 @@ jobs:
         shell: bash
         run: bash scripts/release/publish-release-state.sh record
 
+      - name: Verify staged registry image contents before release promotion
+        timeout-minutes: 15
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.recorded-container.outputs.digest }}
+        run: python3 -B scripts/release/verify-production-contents.py --registry-image "$IMAGE_NAME@$IMAGE_DIGEST"
+
       - name: Attest container provenance
         if: steps.publication.outputs.release_state != 'published'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2

@@ -19,7 +19,7 @@ jobs:
     # Docker supplies the Ubuntu 26.04 build userspace. Pin orchestration to
     # Ubuntu 24.04 so ubuntu-latest migrations do not change the release host.
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Check out the repo
@@ -51,6 +51,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          platforms: linux/amd64
           build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420
           load: true
           push: false
@@ -64,7 +65,7 @@ jobs:
 
       # Reuse the same builder/cache and inputs only after its filesystem passed.
       # The registry build retains provenance/SBOM, unsupported by the local load.
-      - name: Publish verified Docker image on manual dispatch
+      - name: Publish staged Docker image on manual dispatch
         if: github.event_name == 'workflow_dispatch'
         id: push
         timeout-minutes: 5
@@ -72,14 +73,22 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          platforms: linux/amd64
           build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420
           push: true
-          tags: theretromike/miningcore
+          tags: theretromike/miningcore:staged-${{ github.run_id }}-${{ github.run_attempt }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: mode=max
           sbom: true
 
-      - name: Record published image digest
+      - name: Verify staged Docker Hub image contents
+        if: github.event_name == 'workflow_dispatch'
+        timeout-minutes: 15
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        run: python3 -B scripts/release/verify-production-contents.py --registry-image "theretromike/miningcore@$IMAGE_DIGEST"
+
+      - name: Promote and record verified Docker Hub image digest
         if: github.event_name == 'workflow_dispatch'
         env:
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
@@ -87,5 +96,10 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          # Copy the inspected index, including its provenance/SBOM, without rebuilding.
+          docker buildx imagetools create --prefer-index=false --tag theretromike/miningcore:latest \
+            "theretromike/miningcore@$IMAGE_DIGEST"
+          published_digest=$(docker buildx imagetools inspect theretromike/miningcore:latest --format '{{.Manifest.Digest}}')
+          test "$published_digest" = "$IMAGE_DIGEST"
           printf 'Published `theretromike/miningcore@%s` with provenance and SBOM.\n' \
             "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"

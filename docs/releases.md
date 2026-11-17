@@ -3522,12 +3522,23 @@ major upgrades for independent review. There is no major-version ignore rule.
 The legacy Docker Hub publisher retains its manual destination and credentials. Pull requests
 changing that workflow build with the same metadata/Buildx actions but cannot log in or push;
 only `workflow_dispatch` enables those steps. Published images include BuildKit provenance and
-an SBOM, and the run summary records the immutable image digest. This does not attest that Docker
+an SBOM, and the run summary records the immutable image digest. Manual publication first pushes
+a run-specific `staged-<run-id>-<attempt>` tag. The workflow pulls that exact digest and checks all
+linux/amd64 filesystem layers before copying the verified index to `latest`, without rebuilding.
+It then verifies that `latest` matches the inspected digest. A rejected staged image remains
+available for investigation, but cannot replace `latest`. This does not attest that Docker
 Hub credentials or registry publication work during a PR build; those require an authorized
 manual publication. GHCR release publication remains the canonical release path.
 The Docker PR check is path-filtered and must not be required by branch protection. Its Buildx
-docker-container driver supports the attestation inputs; PR builds exercise those inputs even
-though their cache-only output does not export the image or attestations.
+docker-container driver supports publication attestations; PR builds load and inspect a local
+preview, while registry publication, attestations and digest inspection run only on manual dispatch.
+The disposable [registry lab](../scripts/test-lab/README.md) tests those gate and promotion commands
+without publishing to Docker Hub or GHCR.
+
+GHCR publication also pulls and inspects the recorded staged digest before making the GitHub
+Release durable or promoting any release tags. Resumed publication re-runs the check against the
+recorded digest. A failed pull, unsupported layer compression or forbidden artifact stops promotion;
+the earlier preview check cannot substitute for this registry check.
 
 The PostgreSQL 17 service containers deliberately retain serviced major tags for disposable
 integration-test databases. They are outside the archive-build pin/monitor contract; test jobs

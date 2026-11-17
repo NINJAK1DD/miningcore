@@ -104,6 +104,63 @@ class ProductionContentsTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             policy.verify_saved_image(self.path)
 
+    def test_zstd_layers_have_actionable_diagnostic(self):
+        for magic in (0xFD2FB528, 0x184D2A50, 0x184D2A5F):
+            self.path.write_bytes(tar_bytes([
+                ('manifest.json', b'[{"Layers":["layer.tar"]}]'),
+                ('layer.tar', magic.to_bytes(4, 'little') + b'fixture')]))
+            with self.subTest(magic=magic), self.assertRaisesRegex(ValueError, 'Unsupported zstd.*uncompressed or gzip'):
+                policy.verify_saved_image(self.path)
+
+    def test_registry_requires_digest_before_any_docker_call(self):
+        for reference in ('image:latest', 'image@sha256:short', '-option@sha256:' + 'a'*64,
+                          'image@sha256:' + 'z'*64, 'image@sha256:' + 'a'*64 + '\n'):
+            with self.subTest(reference=reference), patch.object(policy.subprocess, 'run') as docker:
+                with self.assertRaisesRegex(ValueError, 'image reference|immutable'):
+                    policy.verify_image(reference, pull=True)
+                docker.assert_not_called()
+
+    def test_registry_pull_failure_cannot_fall_back_to_preview(self):
+        reference = 'example/image@sha256:' + 'a'*64
+        with patch.object(policy.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'docker')) as docker:
+            with self.assertRaises(subprocess.CalledProcessError):
+                policy.verify_image(reference, pull=True)
+            self.assertEqual(1, docker.call_count)
+            self.assertEqual(['docker', 'pull', '--platform', 'linux/amd64', reference], docker.call_args.args[0])
+
+    def test_registry_inspects_actual_digest_even_when_preview_was_clean(self):
+        self.image([[('app/Miningcore', b'clean preview')]])
+        preview = self.path.read_bytes()
+        reference = 'example/image@sha256:' + 'b'*64
+        for contaminated in (False, True):
+            self.image([[('app/Miningcore', b'different registry build')]])
+            if contaminated:
+                # Simulate an independent second build with a deleted leak.
+                with self.assertRaises(ValueError):
+                    self.image([[('app/Miningcore', b'different registry build'), ('tmp/leak.trx', b'private')],
+                                [('tmp/.wh.leak.trx', b'')]])
+            registry = self.path.read_bytes()
+            self.assertNotEqual(preview, registry)
+            calls = []
+
+            def docker(command, **kwargs):
+                calls.append(command)
+                self.assertTrue(kwargs['check'])
+                self.assertEqual(600, kwargs['timeout'])
+                if command[:3] == ['docker', 'image', 'save']:
+                    Path(command[4]).write_bytes(registry)
+
+            with self.subTest(contaminated=contaminated), patch.object(policy.subprocess, 'run', side_effect=docker):
+                if contaminated:
+                    with self.assertRaisesRegex(ValueError, 'Forbidden production artifact'):
+                        policy.verify_image(reference, pull=True)
+                else:
+                    self.assertEqual((1, 1), policy.verify_image(reference, pull=True))
+            self.assertEqual(['docker', 'pull', '--platform', 'linux/amd64', reference], calls[0])
+            self.assertEqual(['docker', 'image', 'save', '--output'], calls[1][:4])
+            self.assertEqual(reference, calls[1][-1])
+            self.assertFalse(Path(calls[1][4]).exists(), 'Temporary export must be removed on success and failure')
+
     def test_image_export_failure_is_not_a_pass(self):
         with patch.object(sys, 'argv', [str(SCRIPT), '--image', 'fixture:local']), \
              patch.object(policy.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'docker')), \
