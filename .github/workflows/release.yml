@@ -89,6 +89,7 @@ jobs:
           python3 -B scripts/release/test-container-runtime-build.py
           python3 -B scripts/release/test-source-container-validation.py
           python3 -B scripts/release/test-container-workflow-policy.py
+          python3 -B scripts/release/test-production-contents.py
           shellcheck scripts/release/container-apt-install.sh
 
       - name: Setup Docker Buildx
@@ -120,6 +121,9 @@ jobs:
           # Imported cache hits can retain lazy remote blobs. Every consuming
           # solve needs the remote provider, even when the same builder is reused.
           cache-from: type=gha,scope=source-container-dependencies,timeout=1m
+
+      - name: Reject lab artifacts in source container layers
+        run: python3 -B scripts/release/verify-production-contents.py --image "miningcore-source-test:$SOURCE_SHA"
 
       - name: Smoke-test source container
         run: docker run --rm "miningcore-source-test:$SOURCE_SHA" --version
@@ -739,6 +743,7 @@ jobs:
           (cd dist && sha256sum --check SHA256SUMS)
           archive="miningcore-${{ needs.resolve-release.outputs.version }}"
           archive+="-linux-x64-ubuntu-${{ matrix.ubuntu }}.tar.gz"
+          python3 -B scripts/release/verify-production-contents.py --archive "dist/$archive"
           tar -tzf "dist/$archive"
           extracted=$(mktemp -d)
           trap 'rm -rf -- "$extracted"' EXIT
@@ -850,6 +855,9 @@ jobs:
           tags: miningcore-release-test:${{ github.sha }}
           cache-from: type=gha,scope=release-container
           cache-to: type=gha,mode=max,scope=release-container
+
+      - name: Reject lab artifacts in packaged container layers
+        run: python3 -B scripts/release/verify-production-contents.py --image "miningcore-release-test:${{ github.sha }}"
 
       - name: Smoke-test packaged container
         run: docker run --rm miningcore-release-test:${{ github.sha }} --version

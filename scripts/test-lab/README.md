@@ -1,5 +1,21 @@
 # Persistent Ubuntu test lab
 
+Keep these reproducibility tools in source control and source archives, not in production
+binary packages or runtime images. Release CI runs
+`scripts/release/verify-production-contents.py` against both Ubuntu archives and every
+layer of the source-built and packaged runtime images. The standalone Docker Hub workflow
+also checks its local image before manual publication. A file deleted by a later image
+layer still fails. Package assembly and asset collection enforce the same archive policy.
+
+The policy rejects lab directories, test result/coverage files, Miningcore test assemblies,
+wallet/keytab/credential-cache artifacts and Git metadata. Application payloads additionally
+reject build/cache/log directories, dumps, bundles, private configs and recovery journals.
+Normal OS logs, operator documentation, example configs and migrations remain permitted.
+This path-based check supplements secret scanning; it cannot identify an arbitrary secret
+renamed to a permitted filename. Generated lab data belongs in temporary directories or
+ignored `build/test-lab`, never in a publish directory. The scanner inspects tar headers
+without extracting or executing archive contents; only the image-save operation needs Docker.
+
 The documented local lab is WSL2 `Ubuntu` (Ubuntu 26.04.1), running as the ordinary
 `ubuntu` user. Keep Linux source and build outputs separate from Windows outputs.
 The system installation has .NET SDK 10.0.114/runtime 10.0.14, which is below the current

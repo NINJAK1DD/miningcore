@@ -32,6 +32,45 @@ def serviced_image(docker, family, minimum, stage=None):
 
 
 class WorkflowPolicyTests(unittest.TestCase):
+    def test_production_contents_gates_cannot_skip_or_follow_publication(self):
+        workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
+        for job_name, build_name, check_name in [
+            ('source-container-check', 'Build source container', 'Reject lab artifacts in source container layers'),
+            ('container-check', 'Build packaged container', 'Reject lab artifacts in packaged container layers')]:
+            steps = workflow['jobs'][job_name]['steps']
+            check = next(s for s in steps if s['name'] == check_name)
+            build = next(s for s in steps if s['name'] == build_name)
+            self.assertGreater(steps.index(check), steps.index(build))
+            self.assertNotIn('if', check)
+            self.assertNotIn('continue-on-error', check)
+            self.assertIn('verify-production-contents.py --image', check['run'])
+        steps = workflow['jobs']['build-release']['steps']
+        inspection = next(s for s in steps if s['name'] == 'Inspect release archive')
+        upload = next(s for s in steps if s['name'] == 'Upload tested release archive')
+        self.assertLess(steps.index(inspection), steps.index(upload))
+        self.assertIn('verify-production-contents.py --archive', inspection['run'])
+        self.assertNotIn('if', inspection)
+        self.assertNotIn('continue-on-error', inspection)
+        source_steps = workflow['jobs']['source-container-check']['steps']
+        self.assertTrue(any('test-production-contents.py' in s.get('run', '') for s in source_steps))
+        for script in ('package-linux-x64.sh', 'collect-linux-release-assets.sh'):
+            self.assertIn('verify-production-contents.py', (ROOT / 'scripts/release' / script).read_text())
+        hub = yaml.load((ROOT / '.github/workflows/docker-image.yml').read_text(), Loader=yaml.BaseLoader)
+        steps = hub['jobs']['build']['steps']
+        check = next(s for s in steps if 'verify-production-contents.py --image' in s.get('run', ''))
+        self.assertNotIn('if', check)
+        self.assertNotIn('continue-on-error', check)
+        builds = [s for s in steps if 'docker/build-push-action@' in s.get('uses', '')]
+        self.assertEqual(2, len(builds))
+        self.assertEqual('false', builds[0]['with']['push'])
+        self.assertEqual('true', builds[0]['with']['load'])
+        self.assertLess(steps.index(builds[0]), steps.index(check))
+        self.assertLess(steps.index(check), steps.index(builds[1]))
+        self.assertEqual("github.event_name == 'workflow_dispatch'", builds[1]['if'])
+        self.assertEqual('true', builds[1]['with']['push'])
+        self.assertEqual('mode=max', builds[1]['with']['provenance'])
+        self.assertEqual('true', builds[1]['with']['sbom'])
+
     def test_container_servicing_tags_match_reviewed_policy(self):
         policy = ET.parse(ROOT / 'src/Miningcore/RuntimeDependencyPolicy.props')
         minimum = policy.findtext('./PropertyGroup/MiningcoreRuntimeMinimum')

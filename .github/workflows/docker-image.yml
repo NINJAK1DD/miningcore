@@ -45,15 +45,35 @@ jobs:
         with:
           images: theretromike/miningcore
 
-      - name: Build Docker image (publish only on manual dispatch)
-        id: push
+      - name: Build Docker image for content verification
         timeout-minutes: 38
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ./Dockerfile
           build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420
-          push: ${{ github.event_name == 'workflow_dispatch' }}
+          load: true
+          push: false
+          tags: theretromike/miningcore
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
+
+      - name: Reject lab artifacts in Docker Hub image layers
+        run: python3 -B scripts/release/verify-production-contents.py --image theretromike/miningcore
+
+      # Reuse the same builder/cache and inputs only after its filesystem passed.
+      # The registry build retains provenance/SBOM, unsupported by the local load.
+      - name: Publish verified Docker image on manual dispatch
+        if: github.event_name == 'workflow_dispatch'
+        id: push
+        timeout-minutes: 5
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420
+          push: true
           tags: theretromike/miningcore
           labels: ${{ steps.meta.outputs.labels }}
           provenance: mode=max

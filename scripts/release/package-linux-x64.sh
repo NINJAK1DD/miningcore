@@ -107,6 +107,8 @@ tar --sort=name \
     -C "$work_dir" -cf - "$package_name" |
     gzip -n -9 > "$archive_path"
 
+python3 -B "$repository_root/scripts/release/verify-production-contents.py" --archive "$archive_path"
+
 (
     cd "$output_dir"
     sha256sum "$archive_name" > SHA256SUMS
