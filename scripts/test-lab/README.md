@@ -111,9 +111,14 @@ kerberos_root="$HOME/miningcore-test-lab/kerberos"
 bash scripts/test-lab/install-kerberos-tools.sh "$kerberos_root"
 ```
 
-The installer downloads packages from the lab's authenticated Ubuntu repositories,
-extracts them without executing maintainer scripts, and retains exact package
-versions and SHA-256 checksums. It does not install or start a system KDC. Package
+The installer downloads pinned versions from the lab's authenticated Ubuntu repositories,
+verifies the committed [SHA-256 manifest](kerberos-packages.sha256) **before extraction**,
+extracts them without executing maintainer scripts, and retains package provenance.
+Unavailable versions or changed artifacts fail the installation; there is no fallback
+to the repository's latest version. Review version/hash updates together and rerun
+the full live matrix before qualifying new artifacts. The pins cover the extracted
+tools, not the host OS/runtime libraries; record those versions with every result.
+It does not install or start a system KDC. Package
 names target Ubuntu 26.04 amd64; update repository metadata through normal lab
 maintenance before installing tools. The host needs the ordinary MIT GSS/Kerberos
 runtime libraries and the existing PostgreSQL/native-build prerequisites.

@@ -6,6 +6,7 @@ if [[ $(id -u) == 0 || $# != 1 ]]; then
   echo 'Usage (ordinary lab user): install-kerberos-tools.sh PRIVATE_ROOT' >&2
   exit 64
 fi
+manifest=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/kerberos-packages.sha256
 mkdir -p "$1"
 root=$(cd "$1" && pwd)
 if [[ -e $root/tools || -e $root/packages ]]; then
@@ -14,9 +15,19 @@ if [[ -e $root/tools || -e $root/packages ]]; then
 fi
 mkdir -p "$root/packages" "$root/tools"
 cd "$root/packages"
-# apt verifies downloads against authenticated repository metadata. Keep the .debs
-# and their checksums as exact-version evidence; no dpkg maintainer script runs.
-apt-get download krb5-kdc krb5-user krb5-admin-server libverto1t64 libverto-libevent1t64 liblmdb0 libevent-core-2.1-7t64
+# Pin the qualified Ubuntu 26.04 amd64 artifacts. If a repository retires a
+# version, fail rather than silently qualifying different tools. Review new pins
+# and hashes together and rerun the live matrix before adopting an update.
+apt-get download \
+  krb5-kdc:amd64=1.22.1-2ubuntu4.1 \
+  krb5-user:amd64=1.22.1-2ubuntu4.1 \
+  krb5-admin-server:amd64=1.22.1-2ubuntu4.1 \
+  libverto1t64:amd64=0.3.1-1.2ubuntu4 \
+  libverto-libevent1t64:amd64=0.3.1-1.2ubuntu4 \
+  liblmdb0:amd64=0.9.31-1build2 \
+  libevent-core-2.1-7t64:amd64=2.1.12-stable-10ubuntu0.2
+sha256sum --strict --check "$manifest"
+# Verify every artifact before extraction; no dpkg maintainer script runs.
 : > "$root/packages.txt"
 for package in ./*.deb; do
   dpkg-deb -x "$package" "$root/tools"
