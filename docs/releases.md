@@ -3532,7 +3532,12 @@ Docker Hub receives `latest` directly, with a final digest check; no public stag
 Rejected candidates are discarded with the private registry at job cleanup. This does not attest that Docker
 Hub credentials or registry publication work during a PR build; those require an authorized
 manual publication. GHCR release publication remains the canonical release path.
-The Docker PR check is path-filtered and must not be required by branch protection. Its Buildx
+The Docker PR check covers its workflow, the Release workflow, Dockerfile, `.dockerignore`,
+shared release scripts/tests and the registry lab validator. It remains path-filtered and must
+not be required by branch protection. The publication and registry-test job summaries record
+`skopeo --version` and the installed Ubuntu package versions, including `python3-yaml` where
+used. These packages follow signed Ubuntu archive updates rather than fixed version pins.
+Its Buildx
 docker-container driver supports publication attestations; PR builds load and inspect a local
 preview. The disposable [registry lab](../scripts/test-lab/README.md) runs automatically before
 publication and in a mandatory Release CI job. It proves that rejected candidate manifests and
@@ -3544,6 +3549,13 @@ of the recoverable publication protocol. GHCR also pulls and inspects the record
 Release durable or promoting any release tags. Resumed publication re-runs the check against the
 recorded digest. A failed pull, unsupported layer compression or forbidden artifact stops promotion;
 the earlier preview check cannot substitute for this registry check.
+
+On the first authorized public release, verify registry authentication/access controls, confirm
+the destination digest matches the inspected candidate, and retrieve both provenance and SBOM
+from the destination. Disposable-registry tests do not qualify production registry permissions.
+Continue content-based secret scanning alongside the artifact-path checks: review build arguments
+and provenance metadata for credentials, and use BuildKit secret mounts for build credentials.
+An allowed filename or attestation can still contain sensitive data that the path policy cannot detect.
 
 The PostgreSQL 17 service containers deliberately retain serviced major tags for disposable
 integration-test databases. They are outside the archive-build pin/monitor contract; test jobs

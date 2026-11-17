@@ -63,13 +63,11 @@ def main():
             hub = yaml.load((ROOT / '.github/workflows/docker-image.yml').read_text(), Loader=yaml.BaseLoader)
             release = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
             hub_steps = hub['jobs']['build']['steps']
-            gate = next(s['run'] for s in hub_steps if s['name'] == 'Verify staged Docker Hub image contents')
             promote = next(s['run'] for s in hub_steps if s['name'] == 'Promote and record verified Docker Hub image digest')
             ghcr_gate = next(s['run'] for s in release['jobs']['publish-release']['steps']
                              if s['name'] == 'Inspect private candidate and publish verified staged container')
             # Execute the real gate/promotion commands against only this private
             # fixture repository. No external registry credentials or tags are used.
-            gate = gate.replace('127.0.0.1:5000/miningcore', repository)
             promote = promote.replace('127.0.0.1:5000/miningcore', repository).replace('docker.io/theretromike/miningcore', destination)
             ghcr_gate = ghcr_gate.replace('127.0.0.1:5000/miningcore', repository)
             env = dict(os.environ, DESTINATION_IMAGE=destination + ':ghcr', GITHUB_STEP_SUMMARY=str(scratch / 'summary'),
@@ -93,9 +91,9 @@ def main():
                 digests[kind] = digest
                 images.append(repository + '@' + digest)
                 env['IMAGE_DIGEST'] = digest
-                # Bash's errexit mirrors Actions' default success dependency:
-                # a failed inspection must prevent the following promotion.
-                result = subprocess.run(['bash', '-euo', 'pipefail', '-c', gate + '\n' + promote],
+                # Exercise the publisher itself: failed inspection must prevent
+                # public writes without relying on a redundant preceding gate.
+                result = subprocess.run(['bash', '-euo', 'pipefail', '-c', promote],
                                         cwd=ROOT, env=env, text=True, capture_output=True, timeout=600)
                 ghcr = subprocess.run(['bash', '-euo', 'pipefail', '-c', ghcr_gate],
                                       cwd=ROOT, env=env, text=True, capture_output=True, timeout=600)

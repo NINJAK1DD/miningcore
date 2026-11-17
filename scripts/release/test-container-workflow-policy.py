@@ -93,18 +93,41 @@ class WorkflowPolicyTests(unittest.TestCase):
         build = next(s for s in steps if s.get('id') == 'push')
         self.assertEqual('127.0.0.1:5000/miningcore:candidate', build['with']['tags'])
         self.assertEqual('linux/amd64', build['with']['platforms'])
-        gate = next(s for s in steps if s['name'] == 'Verify staged Docker Hub image contents')
         promotion = next(s for s in steps if s['name'] == 'Promote and record verified Docker Hub image digest')
-        self.assertLess(steps.index(build), steps.index(gate))
-        self.assertLess(steps.index(gate), steps.index(promotion))
-        for step in (gate, promotion):
-            self.assertEqual("github.event_name == 'workflow_dispatch'", step['if'])
-            self.assertNotIn('continue-on-error', step)
-            self.assertEqual('${{ steps.push.outputs.digest }}', step['env']['IMAGE_DIGEST'])
-        self.assertIn('--registry-image "127.0.0.1:5000/miningcore@$IMAGE_DIGEST"', gate['run'])
+        self.assertLess(steps.index(build), steps.index(promotion))
+        self.assertEqual("github.event_name == 'workflow_dispatch'", promotion['if'])
+        self.assertNotIn('continue-on-error', promotion)
+        self.assertEqual('${{ steps.push.outputs.digest }}', promotion['env']['IMAGE_DIGEST'])
+        self.assertFalse(any('--registry-image' in s.get('run', '') for s in steps),
+                         'The publisher owns private inspection; do not duplicate the pull')
         self.assertIn('publish-verified-image.py', promotion['run'])
         self.assertIn('--source "127.0.0.1:5000/miningcore@$IMAGE_DIGEST"', promotion['run'])
         self.assertIn('--destination docker.io/theretromike/miningcore:latest', promotion['run'])
+
+    def test_docker_hub_trigger_covers_publication_inputs(self):
+        workflow = yaml.load((ROOT / '.github/workflows/docker-image.yml').read_text(), Loader=yaml.BaseLoader)
+        paths = workflow['on']['pull_request']['paths']
+        for path in ('Dockerfile', '.dockerignore', '.github/workflows/release.yml',
+                     '.github/workflows/docker-image.yml', 'scripts/release/publish-verified-image.py',
+                     'scripts/release/verify-production-contents.py', 'scripts/release/test-publish-verified-image.py',
+                     'scripts/release/test-production-contents.py', 'scripts/release/test-container-workflow-policy.py',
+                     'scripts/test-lab/validate-registry-content-gate.py'):
+            with self.subTest(path=path):
+                self.assertTrue(any(fnmatchcase(path, pattern) for pattern in paths))
+
+    def test_publication_tool_versions_are_recorded_in_summaries(self):
+        for filename, jobs in (('release.yml', ('registry-content-check', 'publish-release')),
+                               ('docker-image.yml', ('build',))):
+            workflow = yaml.load((ROOT / '.github/workflows' / filename).read_text(), Loader=yaml.BaseLoader)
+            for job_name in jobs:
+                step = next(s for s in workflow['jobs'][job_name]['steps']
+                            if 'install -y --no-install-recommends skopeo' in s.get('run', ''))
+                self.assertNotIn('if', step)
+                self.assertNotIn('continue-on-error', step)
+                self.assertIn('skopeo --version | tee -a "$GITHUB_STEP_SUMMARY"', step['run'])
+                self.assertIn("dpkg-query --show --showformat='${Package} ${Version}\\n' skopeo", step['run'])
+                if 'install -y --no-install-recommends skopeo python3-yaml' in step['run']:
+                    self.assertIn('skopeo python3-yaml | tee -a "$GITHUB_STEP_SUMMARY"', step['run'])
 
     def test_candidates_are_private_and_live_boundary_test_is_mandatory(self):
         release = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
