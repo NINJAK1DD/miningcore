@@ -879,6 +879,26 @@ jobs:
             --entrypoint sh miningcore-release-test:${{ github.sha }} \
             /probe/run-container-dependency-smoke.sh
 
+  registry-content-check:
+    name: Test private registry publication boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+      - name: Install registry test tools
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo python3-yaml
+      - name: Test private candidate publication boundary
+        run: |
+          python3 -B scripts/release/test-publish-verified-image.py
+          python3 -B scripts/test-lab/validate-registry-content-gate.py
+
   publish-release:
     name: Publish GitHub Release and GHCR image
     if: startsWith(github.ref, 'refs/tags/v')
@@ -894,9 +914,18 @@ jobs:
       - source-container-check
       - collect-release-assets
       - container-check
+      - registry-content-check
     runs-on: ubuntu-24.04
     # Bound head-of-line blocking for the repository-wide publication queue.
     timeout-minutes: 60
+    services:
+      candidate-registry:
+        image: registry@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+        ports:
+          - 127.0.0.1:5000:5000
+        options: >-
+          --read-only --cap-drop=ALL --security-opt=no-new-privileges --user=1000:1000
+          --tmpfs=/var/lib/registry:rw,nosuid,nodev,size=4294967296,mode=1777
     permissions:
       contents: write
       packages: write
@@ -946,6 +975,17 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
 
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."127.0.0.1:5000"]
+              http = true
+
+      - name: Install verified publication tools
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo
+
       - name: Prepare or resume release publication
         id: publication
         env:
@@ -977,7 +1017,7 @@ jobs:
         id: metadata
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ${{ steps.image.outputs.name }}
+          images: 127.0.0.1:5000/miningcore
           flavor: latest=false
           tags: |
             type=raw,value=${{ steps.publication.outputs.staging_tag }}
@@ -985,9 +1025,9 @@ jobs:
             org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.revision=${{ needs.resolve-release.outputs.source_commit }}
 
-      - name: Publish version-scoped staged container
+      - name: Build runner-private release candidate
         if: steps.publication.outputs.needs_container_build == 'true'
-        id: container
+        id: local-container
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: container-context
@@ -1002,6 +1042,18 @@ jobs:
           sbom: true
           cache-from: type=gha,scope=release-container
           cache-to: type=gha,mode=max,scope=release-container
+
+      - name: Inspect private candidate and publish verified staged container
+        if: steps.publication.outputs.needs_container_build == 'true'
+        id: container
+        timeout-minutes: 20
+        env:
+          IMAGE_DIGEST: ${{ steps.local-container.outputs.digest }}
+          DESTINATION_IMAGE: ${{ steps.image.outputs.name }}:${{ steps.publication.outputs.staging_tag }}
+        run: >-
+          python3 -B scripts/release/publish-verified-image.py
+          --source "127.0.0.1:5000/miningcore@$IMAGE_DIGEST"
+          --destination "$DESTINATION_IMAGE"
 
       - name: Record and verify staged container digest
         id: recorded-container

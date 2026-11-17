@@ -91,7 +91,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         hub = yaml.load((ROOT / '.github/workflows/docker-image.yml').read_text(), Loader=yaml.BaseLoader)
         steps = hub['jobs']['build']['steps']
         build = next(s for s in steps if s.get('id') == 'push')
-        self.assertEqual('theretromike/miningcore:staged-${{ github.run_id }}-${{ github.run_attempt }}', build['with']['tags'])
+        self.assertEqual('127.0.0.1:5000/miningcore:candidate', build['with']['tags'])
         self.assertEqual('linux/amd64', build['with']['platforms'])
         gate = next(s for s in steps if s['name'] == 'Verify staged Docker Hub image contents')
         promotion = next(s for s in steps if s['name'] == 'Promote and record verified Docker Hub image digest')
@@ -101,10 +101,45 @@ class WorkflowPolicyTests(unittest.TestCase):
             self.assertEqual("github.event_name == 'workflow_dispatch'", step['if'])
             self.assertNotIn('continue-on-error', step)
             self.assertEqual('${{ steps.push.outputs.digest }}', step['env']['IMAGE_DIGEST'])
-        self.assertIn('--registry-image "theretromike/miningcore@$IMAGE_DIGEST"', gate['run'])
-        self.assertIn('imagetools create --prefer-index=false --tag theretromike/miningcore:latest', promotion['run'])
-        self.assertIn('"theretromike/miningcore@$IMAGE_DIGEST"', promotion['run'])
-        self.assertIn('test "$published_digest" = "$IMAGE_DIGEST"', promotion['run'])
+        self.assertIn('--registry-image "127.0.0.1:5000/miningcore@$IMAGE_DIGEST"', gate['run'])
+        self.assertIn('publish-verified-image.py', promotion['run'])
+        self.assertIn('--source "127.0.0.1:5000/miningcore@$IMAGE_DIGEST"', promotion['run'])
+        self.assertIn('--destination docker.io/theretromike/miningcore:latest', promotion['run'])
+
+    def test_candidates_are_private_and_live_boundary_test_is_mandatory(self):
+        release = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
+        hub = yaml.load((ROOT / '.github/workflows/docker-image.yml').read_text(), Loader=yaml.BaseLoader)
+        for job in (release['jobs']['publish-release'], hub['jobs']['build']):
+            service = job['services']['candidate-registry']
+            self.assertEqual(['127.0.0.1:5000:5000'], service['ports'])
+            self.assertRegex(service['image'], r'^registry@sha256:[0-9a-f]{64}$')
+            for option in ('--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--tmpfs='):
+                self.assertIn(option, service['options'])
+            builder = next(s for s in job['steps'] if 'docker/setup-buildx-action@' in s.get('uses', ''))
+            self.assertEqual('network=host', builder['with']['driver-opts'])
+            self.assertIn('[registry."127.0.0.1:5000"]', builder['with']['buildkitd-config-inline'])
+        steps = release['jobs']['publish-release']['steps']
+        build = next(s for s in steps if s.get('id') == 'local-container')
+        metadata = next(s for s in steps if s.get('id') == 'metadata')
+        self.assertEqual('127.0.0.1:5000/miningcore', metadata['with']['images'])
+        copy = next(s for s in steps if s.get('id') == 'container')
+        self.assertNotIn('uses', copy, 'Public publication must not build again')
+        self.assertIn('publish-verified-image.py', copy['run'])
+        self.assertIn('--source "127.0.0.1:5000/miningcore@$IMAGE_DIGEST"', copy['run'])
+        self.assertEqual('${{ steps.local-container.outputs.digest }}', copy['env']['IMAGE_DIGEST'])
+        self.assertLess(steps.index(build), steps.index(copy))
+        self.assertEqual(build['if'], copy['if'])
+        self.assertNotIn('continue-on-error', copy)
+        self.assertIn('registry-content-check', release['jobs']['publish-release']['needs'])
+        test_job = release['jobs']['registry-content-check']
+        self.assertNotIn('if', test_job)
+        self.assertNotIn('continue-on-error', test_job)
+        for job in (test_job, hub['jobs']['build']):
+            test = next(s for s in job['steps'] if 'validate-registry-content-gate.py' in s.get('run', ''))
+            self.assertNotIn('if', test)
+            self.assertNotIn('continue-on-error', test)
+        tests = next(s for s in test_job['steps'] if 'test-publish-verified-image.py' in s.get('run', ''))
+        self.assertNotIn('if', tests)
 
     def test_container_servicing_tags_match_reviewed_policy(self):
         policy = ET.parse(ROOT / 'src/Miningcore/RuntimeDependencyPolicy.props')

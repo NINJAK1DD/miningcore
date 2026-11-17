@@ -4,12 +4,14 @@ Keep these reproducibility tools in source control and source archives, not in p
 binary packages or runtime images. Release CI runs
 `scripts/release/verify-production-contents.py` against both Ubuntu archives and every
 layer of the source-built and packaged runtime images. The standalone Docker Hub workflow
-also checks its local image before manual publication. Both publishers then pull the actual
-staged registry image by its immutable SHA-256 digest and inspect every linux/amd64 layer
-before release/tag promotion. This check runs on resumed GHCR publications too. Docker Hub
-uses a run-specific staging tag and copies the verified image index to `latest` without a
-rebuild, retaining provenance/SBOM and checking the promoted digest. A rejected staged
-image remains available by its staging identity for investigation; it is never promoted.
+also checks its local image before manual publication. Both publishers build the final candidate
+into a digest-pinned registry bound only to the runner's `127.0.0.1`, with ephemeral storage.
+`publish-verified-image.py` pulls the private digest, inspects every linux/amd64 layer, refuses
+additional runtime platforms, and only then copies the complete index to the public destination.
+Skopeo preserves every digest, provenance and SBOM; the published digest is checked again.
+Docker Hub copies directly to `latest`, so no public staging tags accumulate. GHCR retains only
+already-inspected version-scoped staging images for its recovery protocol, and rechecks their
+digests on resumed publication. Rejected candidates remain private and disappear with the runner.
 A file deleted by a later image
 layer still fails. Package assembly and asset collection enforce the same archive policy.
 
@@ -23,7 +25,7 @@ ignored `build/test-lab`, never in a publish directory. The scanner inspects tar
 without extracting or executing archive contents; image pulls/saves need Docker. Zstd
 layers fail closed with an explicit diagnostic: export uncompressed or gzip layers for
 inspection. The signature check follows [RFC 8878](https://www.rfc-editor.org/rfc/rfc8878.html).
-Index promotion follows Docker's [single-source copy semantics](https://docs.docker.com/reference/cli/docker/buildx/imagetools/create/).
+Index copying uses Skopeo's [`--all --preserve-digests` contract](https://github.com/containers/skopeo/blob/main/docs/skopeo-copy.1.md).
 
 To reproduce registry identity enforcement, run as the ordinary Linux lab user:
 
@@ -31,14 +33,16 @@ To reproduce registry identity enforcement, run as the ordinary Linux lab user:
 python3 -B scripts/test-lab/validate-registry-content-gate.py
 ```
 
-This opt-in check requires Docker/Buildx and PyYAML. It starts a digest-pinned registry
-on an ephemeral loopback port with disposable storage, builds non-executable clean and
-contaminated fixtures, and executes both workflows' actual registry inspection commands.
-It verifies that contamination blocks Docker Hub promotion, that `latest` retains the
-clean digest, and that clean promotion preserves the image index plus provenance and SBOM.
-It removes its registry and local fixture images on exit. It never uses production registry
-credentials or publishes outside the disposable registry. The initial registry and BuildKit
-SBOM-generator downloads require network access.
+This check requires Docker/Buildx, Skopeo and PyYAML (`sudo apt-get install skopeo python3-yaml`).
+It runs automatically in a mandatory Release job and before manual Docker Hub publication;
+it can also be run locally. Two digest-pinned registries on ephemeral loopback ports model
+the private candidate store and the public destination. The test builds non-executable clean
+and contaminated fixtures and executes both workflows' actual publication commands. It verifies
+that a rejected candidate's manifest and contaminated layer are absent from the destination,
+that `latest` retains the clean digest, and that clean publication preserves the image index,
+provenance and SBOM. The test removes its registries, builder and local fixture images on exit.
+It never publishes to Docker Hub or GHCR. Registry, BuildKit and SBOM-generator downloads require
+network access; actual publication testing remains confined to the two disposable registries.
 
 The documented local lab is WSL2 `Ubuntu` (Ubuntu 26.04.1), running as the ordinary
 `ubuntu` user. Keep Linux source and build outputs separate from Windows outputs.
