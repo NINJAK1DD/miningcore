@@ -92,6 +92,20 @@ runtime callers and repeat upgrades must fail without altering history. New star
 rejects protocol 1; protocol 2 preserves legacy batches and requires reconciliation.
 The unconditional parity test checks fresh-install and upgrade function definitions.
 
+The three non-superuser owner-visibility regressions require only
+`MININGCORE_TEST_POSTGRES`, independently of the Bitcoin daemon opt-in. They exercise
+fresh installation and protocol-1 upgrade, inherited versus non-inherited statistics
+privileges, revocation/restoration and both actual function owners during startup.
+The PostgreSQL 15–18 CI matrix runs these same tests and requires all three to execute
+and pass without skips, covering the role-inheritance differences between majors.
+To rerun them in a disposable lab cluster after the audited build:
+
+```bash
+bash scripts/test-lab/with-postgres.sh dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj \
+  --no-build --no-restore \
+  --filter 'FullyQualifiedName~NonSuperuserControlOwner_|FullyQualifiedName~PreflightChecksBothActualFunctionOwnersForStatisticsVisibility'
+```
+
 The connection-policy tests check GSS preference for omitted/optional TLS and GSS
 disablement for mandatory TLS. The live TLS matrix checks encryption and rejects
 missing TLS, wrong trust and hostname mismatch where required. For live Kerberos

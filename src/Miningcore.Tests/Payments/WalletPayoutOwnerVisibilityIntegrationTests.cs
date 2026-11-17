@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Dapper;
 using Miningcore.Payments;
+using Miningcore.Tests.Persistence.Postgres;
 using Miningcore.Tests.Util.Postgres;
 using Npgsql;
 using Xunit;
@@ -12,7 +13,8 @@ namespace Miningcore.Tests.Payments;
 
 public partial class WalletPayoutControlIntegrationTests
 {
-    [WalletControlFact]
+    // These cases need PostgreSQL only; run them on every supported major in CI.
+    [PostgresIntegrationFact]
     public async Task NonSuperuserControlOwner_InstallAndUpgradeRequireInheritedStatisticsPrivileges()
     {
         foreach(var upgrade in new[] { false, true })
@@ -67,7 +69,7 @@ public partial class WalletPayoutControlIntegrationTests
         }
     }
 
-    [WalletControlFact]
+    [PostgresIntegrationFact]
     public async Task NonSuperuserControlOwner_RevocationFailsPreflightAndPreservesOutstandingBatch()
     {
         await using var db = await Database.Create(installControl: false);
@@ -112,7 +114,7 @@ public partial class WalletPayoutControlIntegrationTests
         Assert.Equal(0, (await db.State()).OutstandingBatches);
     }
 
-    [WalletControlFact]
+    [PostgresIntegrationFact]
     public async Task PreflightChecksBothActualFunctionOwnersForStatisticsVisibility()
     {
         foreach(var signature in new[] { "begin_batch(uuid,uuid,bigint,text,text)", "finish_batch(uuid,uuid,bigint)" })
