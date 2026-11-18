@@ -71,6 +71,9 @@ class ProductionContentsTests(unittest.TestCase):
     def test_binary_symbols_are_not_assignments_but_generic_credentials_are(self):
         value = 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hI6'
         self.release([('release/Miningcore.pdb', ('linkedTokenSource>' + value + '\ncbPasswordDigest > ' + value + '\n').encode())])
+        self.image([[('app/Miningcore', b'host'), ('etc/ssl/openssl.cnf', b'private_key = $dir/private/cakey.pem\n')]])
+        with self.assertRaisesRegex(ValueError, 'secret scan'):
+            self.release([('release/settings.txt', b'password = $dir/private/cakey.pem\n')])
         for name in ('API_KEY', 'password', 'rpcPassword', 'sharedEncryptionKey', 'client_secret'):
             for syntax in (name + '=' + value + ';', '"' + name + '": "' + value + '"'):
                 with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'secret scan'):

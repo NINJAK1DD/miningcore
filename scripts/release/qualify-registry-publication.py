@@ -21,10 +21,14 @@ spec.loader.exec_module(publisher)
 
 
 def upload_location(location, repository):
+    if any(part in ('.', '..') for part in urllib.parse.unquote(urllib.parse.urlsplit(location).path).split('/')):
+        raise ValueError('Refusing a traversing upload location')
     location = urllib.parse.urljoin('https://ghcr.io', location)
     parsed = urllib.parse.urlsplit(location)
+    suffix = parsed.path.removeprefix('/v2/' + repository + '/blobs/uploads/')
     if (parsed.scheme != 'https' or parsed.netloc != 'ghcr.io' or parsed.fragment or
-            not parsed.path.startswith('/v2/' + repository + '/blobs/uploads/')):
+            not parsed.path.startswith('/v2/' + repository + '/blobs/uploads/') or
+            not re.fullmatch(r'[A-Za-z0-9_-]+', suffix)):
         raise ValueError('Refusing an upload location outside the qualification repository')
     return location
 

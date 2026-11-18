@@ -12,3 +12,8 @@ regex = '''(?i)(?:^|[^\w])(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[
 secretGroup = 1
 entropy = 3.5
 keywords = ["key", "token", "secret", "password", "passwd"]
+
+[[rules.allowlists]]
+description = "OpenSSL-style variable-relative key file reference, not embedded key material"
+regexTarget = "match"
+regexes = ['''(?i)^\s*private[_-]?key["']?\s*[:=]\s*["']?\$[A-Za-z_][A-Za-z0-9_]*(?:/[A-Za-z0-9_.-]+)+["']?\s*$''']

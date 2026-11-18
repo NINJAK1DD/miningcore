@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Reject lab tooling and generated test/private artifacts in production distributions.
 
-Inspect tar headers without extraction. For Docker images inspect every saved layer,
-including files hidden or deleted by later layers. This is a distribution policy,
-not a replacement for secret scanning or a content-based malware scan.
+Inspect tar headers and file contents without extraction. For Docker images inspect
+every saved layer, including files hidden or deleted by later layers. Pinned pattern
+scanning supplements path policy; it is not proof that every secret or malware is absent.
 """
 import argparse
 import importlib.util

@@ -19,10 +19,12 @@ The policy rejects lab directories, test result/coverage files, Miningcore test 
 wallet/keytab/credential-cache artifacts and Git metadata. Application payloads additionally
 reject build/cache/log directories, dumps, bundles, private configs and recovery journals.
 Normal OS logs, operator documentation, example configs and migrations remain permitted.
-This path-based check supplements secret scanning; it cannot identify an arbitrary secret
-renamed to a permitted filename. Generated lab data belongs in temporary directories or
-ignored `build/test-lab`, never in a publish directory. The scanner inspects tar headers
-without extracting or executing archive contents; image pulls/saves need Docker. Zstd
+The gate combines path policy with a checksum-pinned Gitleaks scan of allowed file contents,
+including binary/UTF-16 strings, image configuration and digest-verified attestation payloads.
+Pattern scanning cannot prove the absence of every possible secret or malware. Generated lab
+data belongs in temporary directories or ignored `build/test-lab`, never in a publish directory.
+The scanner reads tar headers and regular-file streams without extracting archive-controlled
+paths or executing contents; image pulls/saves need Docker. Zstd
 layers fail closed with an explicit diagnostic: export uncompressed or gzip layers for
 inspection. The signature check follows [RFC 8878](https://www.rfc-editor.org/rfc/rfc8878.html).
 Index copying uses Skopeo's [`--all --preserve-digests` contract](https://github.com/containers/skopeo/blob/main/docs/skopeo-copy.1.md).
@@ -60,6 +62,43 @@ binaries must be installed under `/usr/lib/postgresql/*/bin` (or selected with
 `MININGCORE_TEST_POSTGRES_BIN`).
 
 ## Run the suite
+
+### Admission and relay review verification — 18 November 2026
+
+Production revision `443871bc0` and corrected test revision
+`6f9e11e9d2c398d6c363321611f30a60601b66a3` were verified in the documented Ubuntu lab.
+The non-incremental native/application build passed; the test-attribute import was then
+corrected and tests rebuilt against those unchanged application/native outputs. Both build
+warning audits passed. The focused recorder, admission, relay, payout and capacity suite passed
+**227 tests, no failures/skips**. The complete wallet/control/TLS/Kerberos matrix then passed
+**248 tests, no failures/skips**, in 21m06s. Private matrix TRX SHA-256:
+`ca1a74111f0fc22899307154f3c6ff3f69930d041cf5207b15039ef8f77b1a47`.
+
+The live-maturity companion test matured 128 Bitcoin blocks while the payout process continued
+cycling. Four distinct recorded payment batches matched wallet transactions, with no pending
+blocks, duplicate receipts or lost rewards. The assertion permits any legitimate count >= 2.
+
+The native relay fixture used 256-byte user-agent payloads, 10,000 offered shares, native
+send/receive HWM 128, and an explicitly stalled receiver. PPLNS persisted 4,965 unique rows
+(5,035 missing); PROP persisted 4,901 (5,099 missing), despite successful native sends and zero
+managed queue rejections. A persisted FIFO tail marker preceded shutdown. All 32 shares sent
+without a subscriber were absent in each scheme. These measurements demonstrate a loss
+boundary under this controlled workload; OS buffers/timing change the threshold and HWM 128
+does not mean that the 129th share is necessarily dropped. See the relay guide's deployment
+risk acceptance and discrepancy alerts. No durable remote acknowledgement is claimed.
+
+With 64 simultaneous near-1 MiB submissions and a blocked publisher, 16 were admitted and 48
+refused; queued payloads stayed at 16,761,088 bytes. Managed allocation delta was 53,569,512
+bytes; GC deltas were 1/1/1. The shared test process's lifetime peak RSS was 522,629,120 bytes,
+including other tests: this is not an isolated relay-memory ceiling. Concurrent publication now
+waits for its subscriber, latches subscriber failure and prevents later callers silently skipping
+an observer that Rx detached after an exception.
+
+Both PPS topologies again sustained 1,000 shares/s for 60 seconds and recovered 10,000-share
+bursts with exact durable liabilities and no overflow/fallback/fail-stop. Local/relay sustained
+acknowledgement p99 was 22.763/29.630 ms; burst drain after offering was 1.220/1.092 seconds.
+Current release-tool tests, real-registry qualification and exact-head CI are recorded in PR #292
+separately; the figures above do not imply production publication or Docker Hub qualification.
 
 ### Explicit GHCR qualification
 
