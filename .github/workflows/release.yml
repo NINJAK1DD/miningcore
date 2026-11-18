@@ -9,6 +9,11 @@ on:
     # Test source container is a required dev check. Every PR must report it,
     # including changes outside application/build paths; do not path-filter it.
   workflow_dispatch:
+    inputs:
+      qualify_ghcr:
+        description: 'Publish only a synthetic fixture to the dedicated GHCR qualification repository'
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -902,6 +907,7 @@ jobs:
       - name: Test private candidate publication boundary
         run: |
           python3 -B scripts/release/test-publish-verified-image.py
+          python3 -B scripts/release/test-registry-qualification.py
           python3 -B scripts/test-lab/validate-registry-content-gate.py
 
   publish-release:
@@ -1122,3 +1128,75 @@ jobs:
           MININGCORE_SOURCE_COMMIT: ${{ needs.resolve-release.outputs.source_commit }}
         shell: bash
         run: bash scripts/release/publish-release-state.sh promote
+
+  qualify-ghcr:
+    name: Qualify dedicated GHCR repository
+    if: github.event_name == 'workflow_dispatch' && inputs.qualify_ghcr && !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    services:
+      candidate-registry:
+        image: registry@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+        ports:
+          - 127.0.0.1:5000:5000
+        options: >-
+          --read-only --cap-drop=ALL --security-opt=no-new-privileges --user=1000:1000
+          --tmpfs=/var/lib/registry:rw,nosuid,nodev,size=67108864,mode=1777
+    steps:
+      - name: Checkout reviewed qualification tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."127.0.0.1:5000"]
+              http = true
+      - name: Install qualification tools
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo
+          skopeo --version | tee -a "$GITHUB_STEP_SUMMARY"
+          dpkg-query --show --showformat='${Package} ${Version}\n' skopeo | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Prepare non-executable fixture
+        run: |
+          mkdir -p build/registry-qualification
+          printf 'non-executable publication fixture\n' > build/registry-qualification/Miningcore
+          printf 'FROM scratch\nCOPY Miningcore /app/Miningcore\n' > build/registry-qualification/Dockerfile
+      - name: Build private qualification candidate
+        id: candidate
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: build/registry-qualification
+          platforms: linux/amd64
+          push: true
+          tags: 127.0.0.1:5000/qualification:candidate
+          provenance: mode=max
+          sbom: true
+      - name: Log in to GHCR with repository workflow identity
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Verify GHCR upload recovery and independently retrieve attestations
+        env:
+          IMAGE_DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: |
+          set -euo pipefail
+          destination="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/miningcore-release-qualification"
+          destination+=":qualification-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python3 -B scripts/release/qualify-registry-publication.py \
+            --source "127.0.0.1:5000/qualification@$IMAGE_DIGEST" \
+            --destination "$destination" --report qualification-evidence.json
+      - name: Retain qualification evidence for operator review
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ghcr-qualification-evidence
+          path: qualification-evidence.json
+          if-no-files-found: error

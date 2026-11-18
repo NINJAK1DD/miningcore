@@ -61,6 +61,26 @@ binaries must be installed under `/usr/lib/postgresql/*/bin` (or selected with
 
 ## Run the suite
 
+### Explicit GHCR qualification
+
+The Release workflow's manual `qualify_ghcr` input defaults to false. On an authorized
+branch run, enabling it publishes only a non-executable synthetic fixture to
+`ghcr.io/<repository-owner>/miningcore-release-qualification:qualification-<sha>-<run>-<attempt>`.
+It uses the repository's Actions identity with only `contents:read` and `packages:write`,
+the same registry identity/permission model as production publication. No Docker Hub account
+is needed. It does not alter package visibility or production aliases.
+
+The helper checks the private image and all attestations, injects a lost response after the
+registry copy completes, retries the same immutable source/tag, then independently downloads
+all OCI data with Skopeo and verifies the index and provenance/SBOM payload hashes. The
+`ghcr-qualification-evidence` artifact records those identities and the exact workflow source.
+Keep it with the operator's package-access/permission review before enabling production.
+This recovery test covers interruption after completed upload; it explicitly does **not**
+claim to interrupt a partial blob upload. Production flags remain disabled until the required
+qualification and any outstanding interruption tests are reviewed. Qualification tags are
+retained as evidence; delete only the identified disposable package versions after review,
+using a separately authorized operator identity. The workflow has no package-delete grant.
+
 ### Persistent Windows native toolchain
 
 The Windows lab also has Visual Studio 2022 with the persistent MSVC v143 x64/x86

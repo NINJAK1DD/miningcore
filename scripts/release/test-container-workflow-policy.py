@@ -32,6 +32,17 @@ def serviced_image(docker, family, minimum, stage=None):
 
 
 class WorkflowPolicyTests(unittest.TestCase):
+    def test_ghcr_qualification_is_opt_in_and_has_only_registry_write_permission(self):
+        workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual('false', workflow['on']['workflow_dispatch']['inputs']['qualify_ghcr']['default'])
+        job = workflow['jobs']['qualify-ghcr']
+        self.assertEqual("github.event_name == 'workflow_dispatch' && inputs.qualify_ghcr && !startsWith(github.ref, 'refs/tags/')", job['if'])
+        self.assertEqual({'contents': 'read', 'packages': 'write'}, job['permissions'])
+        run = next(s for s in job['steps'] if 'qualify-registry-publication.py' in s.get('run', ''))
+        self.assertIn('/miningcore-release-qualification', run['run'])
+        self.assertNotIn(':latest', run['run'])
+        self.assertNotIn('continue-on-error', run)
+
     def test_publication_requires_explicit_registry_qualification(self):
         for filename, job, step_name, variable in (
             ('release.yml', 'publish-release', 'Require completed GHCR qualification', 'GHCR_PUBLICATION_QUALIFIED'),

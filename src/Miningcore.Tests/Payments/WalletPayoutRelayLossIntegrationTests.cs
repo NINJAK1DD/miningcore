@@ -8,7 +8,7 @@ using Miningcore.Configuration;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
-using Miningcore.Tests.Util.Postgres;
+using Miningcore.Tests.Persistence.Postgres;
 using Miningcore.Time;
 using NSubstitute;
 using Xunit;
