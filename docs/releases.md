@@ -3580,6 +3580,15 @@ SBOM negatives exercise this boundary. This is pattern-based detection, not a pr
 possible credentials, encrypted data or malware are absent; review build arguments and use
 BuildKit secret mounts for build credentials. No raw scanner input/report is uploaded.
 
+The checked Ubuntu GnuTLS library contains public cryptographic self-test keys, and libssh2
+contains PEM parser marker strings. `production-public-fixtures.json` records their exact
+OS paths, package versions, full library hashes and upstream source. Only those public
+constants are masked in the scanner's temporary input after the entire library hash matches;
+the shipped library is unchanged and all remaining bytes are scanned. GnuTLS constants also
+require individual SHA-256 matches against the upstream self-test arrays. A changed library,
+another path, an unknown key or an added credential is not exempt. Distro updates that change
+these binaries require a new source/hash review; do not broadly exclude a library or rule.
+
 The PostgreSQL 17 service containers deliberately retain serviced major tags for disposable
 integration-test databases. They are outside the archive-build pin/monitor contract; test jobs
 therefore exercise current PostgreSQL 17 maintenance releases rather than a reproducible database

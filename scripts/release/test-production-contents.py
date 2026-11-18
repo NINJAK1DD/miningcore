@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise production-content checks with clean and contaminated tar/image fixtures."""
 import importlib.util
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -88,6 +89,40 @@ class ProductionContentsTests(unittest.TestCase):
             'build/ci/receipt.json', '.git/config', 'miningcore-gss-123/principal']:
             with self.subTest(suffix=suffix), self.assertRaises(ValueError):
                 self.release([('release/'+suffix, b'private')])
+
+    def test_public_system_fixtures_require_exact_path_binary_and_key_hash(self):
+        header = '-----' + 'BEGIN PRIVATE KEY' + '-----'
+        footer = '-----' + 'END PRIVATE KEY' + '-----'
+        key = (header + '\n' + 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF' * 4 + '\n' + footer).encode()
+        data = b'library fixture\0' + key + b'\0public suffix'
+        path = 'usr/lib/reviewed.so'
+        reviewed = {'sha256': hashlib.sha256(data).hexdigest(),
+                    'public_key_fixtures': {'synthetic': hashlib.sha256(key).hexdigest()}}
+        with patch.dict(policy.secrets.PUBLIC_FIXTURES, {path: reviewed}):
+            self.image([[('app/Miningcore', b'host'), (path, data)]])
+            for name, content in ((path, data + b'changed'), ('app/reviewed.so', data),
+                                  (path, data.replace(b'aB3d', b'cD5f'))):
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'secret scan'):
+                    self.image([[('app/Miningcore', b'host'), (name, content)]])
+            # Even a reviewed binary still scans all bytes outside its exact
+            # public fixture; accepting its hash is not a file exemption.
+            contaminated = data + ('ghp_' + 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hI6').encode()
+            reviewed['sha256'] = hashlib.sha256(contaminated).hexdigest()
+            with self.assertRaisesRegex(ValueError, 'secret scan'):
+                self.image([[('app/Miningcore', b'host'), (path, contaminated)]])
+        with self.assertRaisesRegex(ValueError, 'secret scan'):
+            self.release([('release/key.txt', key)])
+
+    def test_parser_marker_projection_does_not_exempt_changed_libraries(self):
+        label = 'OPENSSH PRIVATE KEY'
+        data = ('-----' + 'BEGIN ' + label + '-----\0' + 'public parser message! ' * 5 +
+                '\0-----' + 'END ' + label + '-----').encode()
+        path = 'usr/lib/parser.so'
+        reviewed = {'sha256': hashlib.sha256(data).hexdigest(), 'parser_labels': [label]}
+        with patch.dict(policy.secrets.PUBLIC_FIXTURES, {path: reviewed}):
+            self.image([[('app/Miningcore', b'host'), (path, data)]])
+            with self.assertRaisesRegex(ValueError, 'secret scan'):
+                self.image([[('app/Miningcore', b'host'), (path, data + b'changed')]])
 
     def test_links_cannot_hide_forbidden_targets(self):
         for kind in [tarfile.SYMTYPE, tarfile.LNKTYPE]:

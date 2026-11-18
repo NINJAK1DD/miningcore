@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import platform
 import subprocess
@@ -26,6 +27,24 @@ PINS = {
                 'gitleaks.exe', '17157e2ee8b76fc8b1d8bee607a250e34b8a8023c8bc81822d4b5ee4d78fcb7c'),
 }
 ROOT = Path(__file__).resolve().parents[2]
+PUBLIC_FIXTURES = json.loads(Path(__file__).with_name('production-public-fixtures.json').read_text())
+
+
+def project_public_fixtures(data, system_path):
+    """Mask only reviewed public constants in an exact trusted OS library."""
+    reviewed = PUBLIC_FIXTURES.get(system_path)
+    if not reviewed or hashlib.sha256(data).hexdigest() != reviewed['sha256']:
+        return data
+    keys = set(reviewed.get('public_key_fixtures', {}).values())
+    # Same match boundary as the pinned scanner. No unknown key is suppressed.
+    pem = rb'-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\s\S-]{64,}?KEY(?: BLOCK)?-----'
+    data = re.sub(pem, lambda match: b' ' * len(match[0])
+                  if hashlib.sha256(match[0]).hexdigest() in keys else match[0], data, flags=re.I)
+    for label in reviewed.get('parser_labels', []):
+        for boundary in ('BEGIN', 'END'):
+            marker = ('-----' + boundary + ' ' + label + '-----').encode('ascii')
+            data = data.replace(marker, b' ' * len(marker))
+    return data
 
 
 def scanner():
@@ -86,7 +105,15 @@ class SecretScan:
         self.bytes = 0
         return self
 
-    def add(self, source):
+    def add(self, source, system_path=None):
+        if system_path in PUBLIC_FIXTURES:
+            # Image-only, exact path plus full binary hash; never a whole-file
+            # exemption. New distro builds require review, and all other bytes
+            # still reach every scanner rule. Preserve length for budget checks.
+            data = source.read(4 * 1024 * 1024 + 1)
+            if len(data) > 4 * 1024 * 1024:
+                raise ValueError('Reviewed system-library scan budget exceeded')
+            source = io.BytesIO(project_public_fixtures(data, system_path))
         previous = b''
         while chunk := source.read(64 * 1024):
             self.bytes += len(chunk)

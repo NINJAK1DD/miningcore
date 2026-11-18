@@ -124,7 +124,7 @@ def verify_saved_image(path):
                         name = check_member(member, image=True)
                         if member.isfile():
                             with archive.extractfile(member) as content:
-                                scan.add(content)
+                                scan.add(content, system_path=name)
                         app |= member.isfile() and name == 'app/Miningcore'
                         count += 1
                         archive.members.clear()
