@@ -81,7 +81,7 @@ class ProductionContentsTests(unittest.TestCase):
 
     def test_lab_and_generated_artifacts_are_rejected(self):
         for suffix in ['scripts/test-lab/README.md', './scripts/test-lab/run.py',
-            'BUILD/TEST-LAB/result.json', 'TestResults/result.xml', 'result.trx',
+            'BUILD/TEST-LAB/result.json', 'docs/fixtures/devnet-proof.json', 'TestResults/result.xml', 'result.trx',
             'Miningcore.Tests.ProcessHost.dll', 'client.keytab', 'client.ccache', 'wallet.dat',
             '.env.lab', 'logs/run.log', 'private.dump', 'source.bundle', '__pycache__/x.pyc',
             'wallet.sqlite', 'private.keys', 'config.json', 'pool.json', 'recovered-shares.txt',

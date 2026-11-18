@@ -38,6 +38,7 @@ def check_path(name, application):
     # OS packages legitimately ship logs/caches. These additional restrictions
     # apply to the entire binary archive and to /app in container layers.
     app_generated = application and (any(p in {'logs', 'build', 'obj', '__pycache__', '.pytest_cache'} for p in parts) or
+        any(parts[i:i+2] == ('docs', 'fixtures') for i in range(len(parts)-1)) or
         leaf in {'config.json', 'pool.json', 'recovered-shares.txt'} or
         leaf.endswith(('.log', '.dump', '.bundle', '.pyc', '.pfx', '.p12', '.sqlite', '.db')))
     if lab or generated or app_generated:

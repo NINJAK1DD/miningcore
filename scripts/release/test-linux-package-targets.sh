@@ -167,6 +167,12 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
 
   test -f "$output_dir/$archive"
   (cd "$output_dir" && sha256sum --check SHA256SUMS)
+  if tar -tzf "$output_dir/$archive" | grep -F "$package_root/docs/fixtures/" >/dev/null; then
+    echo "$archive contains test proof fixtures" >&2
+    exit 1
+  fi
+  tar -xOf "$output_dir/$archive" "$package_root/scripts/ops/wallet-payout-reconciliation.py" |
+    cmp - "$repository_root/scripts/ops/wallet-payout-reconciliation.py"
 
   target=$(tar -xOf "$output_dir/$archive" "$package_root/BUILD-INFO" |
     sed -n 's/^Target: //p')

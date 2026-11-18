@@ -18,6 +18,7 @@ import urllib.request
 spec = importlib.util.spec_from_file_location('publisher', Path(__file__).with_name('publish-verified-image.py'))
 publisher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publisher)
+phase = 'initialization'
 
 
 def upload_location(location, repository):
@@ -36,6 +37,8 @@ def upload_location(location, repository):
 @contextmanager
 def incomplete_upload(source, destination):
     """Interrupt a real chunked upload, then let the normal publisher recover."""
+    global phase
+    phase = 'obtain-repository-token'
     repository = destination.split(':', 1)[0].removeprefix('ghcr.io/')
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), publisher.NoRedirect())
     credentials = (os.environ['GITHUB_ACTOR'] + ':' + os.environ['REGISTRY_TOKEN']).encode()
@@ -67,10 +70,12 @@ def incomplete_upload(source, destination):
         except urllib.error.HTTPError as error:
             if error.code != 404:
                 raise
+    phase = 'check-fresh-blob-absence'
     require_absent()
     location = None
     evidence = {'blob_digest': layer['digest'], 'blob_bytes': len(data), 'upload_cancelled': False}
     try:
+        phase = 'start-partial-upload'
         with request('POST', f'https://ghcr.io/v2/{repository}/blobs/uploads/', b'') as response:
             if response.status != 202:
                 raise ValueError('Registry did not start a chunked upload')
@@ -78,11 +83,13 @@ def incomplete_upload(source, destination):
             length = max(len(data) // 2, int(response.headers.get('OCI-Chunk-Min-Length', '1')))
         if length >= len(data):
             raise ValueError('Synthetic layer is too small for the registry minimum chunk size')
+        phase = 'send-partial-upload'
         with request('PATCH', location, data[:length], {'Content-Type': 'application/octet-stream',
                      'Content-Range': f'0-{length - 1}'}) as response:
             if response.status != 202 or response.headers.get('Range') != f'0-{length - 1}':
                 raise ValueError('Registry did not confirm the expected incomplete byte range')
             location = upload_location(response.headers['Location'], repository)
+        phase = 'verify-uncommitted-blob-absence'
         require_absent()  # No closing PUT: uploaded bytes must not form a visible blob.
         evidence['partial_bytes_accepted'] = length
         yield evidence
@@ -129,10 +136,12 @@ def inspect_download(directory, digest):
 
 
 def qualify(source, destination):
+    global phase
     if not re.fullmatch(r'ghcr\.io/[a-z0-9][a-z0-9-]*/miningcore-release-qualification:qualification-[a-z0-9-]+', destination):
         raise ValueError('Qualification requires a dedicated GHCR repository and unique qualification tag')
     publisher.policy.secrets.install()
     # Inspect before *any* remote blob write, including the partial-upload probe.
+    phase = 'inspect-private-candidate'
     publisher.publish(source, source.split('@', 1)[0] + ':qualified-private')
     real_run = subprocess.run
     interrupted = False
@@ -146,6 +155,7 @@ def qualify(source, destination):
     # Rehearse the uncertain boundary: upload succeeded but the publisher never
     # saw completion/recorded a digest. Retry the same immutable source and tag.
     with incomplete_upload(source, destination) as partial:
+        phase = 'publish-with-lost-response'
         publisher.subprocess.run = lose_copy_response
         try:
             try:
@@ -157,6 +167,7 @@ def qualify(source, destination):
             publisher.subprocess.run = real_run
         if not interrupted:
             raise ValueError('Qualification did not exercise lost-copy-response recovery')
+        phase = 'retry-immutable-publication'
         digest = publisher.publish(source, destination)
     with tempfile.TemporaryDirectory(prefix='miningcore-registry-qualification-') as temporary:
         directory = Path(temporary)
@@ -165,6 +176,7 @@ def qualify(source, destination):
         if auth.is_file():
             command += ['--src-authfile', str(auth)]
         # Independent authenticated download; do not inspect the local preview/cache.
+        phase = 'retrieve-public-attestations'
         subprocess.run(command + ['docker://' + destination.split(':', 1)[0] + '@' + digest,
                                   'oci:' + str(directory) + ':qualification'], check=True, timeout=600)
         attestations = inspect_download(directory, digest)
@@ -188,10 +200,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
     try:
         result = qualify(args.source, args.destination)
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         # Never put authentication headers, upload session URLs or raw server
         # responses into public logs. Missing evidence means failed qualification.
-        parser.exit(1, 'Registry qualification failed; production remains disabled.\n')
+        status = f'; HTTP {error.code}' if isinstance(error, urllib.error.HTTPError) else ''
+        parser.exit(1, f'Registry qualification failed at {phase} ({type(error).__name__}{status}); production remains disabled.\n')
     with open(args.report, 'x', encoding='utf-8') as output:
         json.dump(result, output, indent=2)
         output.write('\n')
