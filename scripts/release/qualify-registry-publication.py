@@ -101,8 +101,10 @@ def incomplete_upload(source, destination):
         if length >= len(data):
             raise QualificationError('Synthetic layer is too small for the registry minimum chunk size')
         phase = 'send-partial-upload'
-        with request('PATCH', location, data[:length], {'Content-Type': 'application/octet-stream',
-                     'Content-Range': f'0-{length - 1}'}) as response:
+        # Match Skopeo's initial append PATCH (no Content-Range). GHCR rejects
+        # the explicit range form here; still require its returned range to prove
+        # exactly how many bytes were accepted before deliberately abandoning it.
+        with request('PATCH', location, data[:length], {'Content-Type': 'application/octet-stream'}) as response:
             if response.status != 202 or response.headers.get('Range') != f'0-{length - 1}':
                 raise QualificationError('Registry did not confirm the expected incomplete byte range')
             location = upload_location(response.headers['Location'], repository)

@@ -42,8 +42,8 @@ class QualificationTests(unittest.TestCase):
             headers = {'Location': '/v2/' + repository + '/blobs/upload/session'}
             if method == 'PATCH':
                 self.assertEqual(data[:len(data)//2], request.data)
-                self.assertEqual('0-' + str(len(data)//2-1), request.headers['Content-range'])
-                headers['Range'] = request.headers['Content-range']
+                self.assertNotIn('Content-range', request.headers)
+                headers['Range'] = '0-' + str(len(data)//2-1)
             return Response(status=204 if method == 'DELETE' else 202, headers=headers)
         with patch.dict(os.environ, {'GITHUB_ACTOR': 'fixture', 'REGISTRY_TOKEN': 'fixture-only'}), \
              patch.object(qualification.urllib.request, 'build_opener') as opener, \
