@@ -1608,9 +1608,10 @@ public class ShareRecorderTests
 
             // Publishing the exact-share sidecar performs durable writes for the
             // complete 551-share incident. Observe that production boundary instead
-            // of imposing a five-second filesystem SLA on a loaded Windows runner.
+            // of imposing a filesystem throughput SLA on a loaded Windows runner.
+            // Keep a bounded hang guard while allowing slow durable sidecar writes.
             await completedIncidentPublished.Task.WaitAsync(
-                TimeSpan.FromSeconds(30));
+                TimeSpan.FromMinutes(2));
             await Assert.ThrowsAnyAsync<IOException>(() =>
                 returnedShare.PersistenceAdmission.WaitAsync(
                     TimeSpan.FromSeconds(30)));

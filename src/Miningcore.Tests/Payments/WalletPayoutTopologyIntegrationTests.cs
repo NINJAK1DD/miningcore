@@ -102,10 +102,16 @@ public partial class WalletPayoutControlIntegrationTests
             Assert.Equal(remaining, await PendingCount(db));
             Assert.Equal(1, await PaymentCount(db));
             Assert.Equal(allocated, await db.Admin.ExecuteScalarAsync<decimal>("SELECT sum(reward) FROM blocks WHERE status='confirmed'"));
-            await wallet.GenerateAsync(110, CancellationToken.None);
+        }
+        // Advance the chain while no payout process runs. Generating blocks can
+        // span multiple one-second payout cycles on a loaded runner; otherwise
+        // one intended maturity wave can legitimately produce several payments.
+        await wallet.GenerateAsync(110, CancellationToken.None);
+        await using(var paying = await TopologyProcess.Start(db, cluster))
+        {
             await Until(async () => await PendingCount(db) == 0 && await PaymentCount(db) == 2);
-            var cycles = (await second.State())["cycles"].Value<int>();
-            await AssertCycles(second, cycles + 3);
+            var cycles = (await paying.State())["cycles"].Value<int>();
+            await AssertCycles(paying, cycles + 3);
             await AssertConservation(db);
         }
         await using(var third = await TopologyProcess.Start(db, cluster))
@@ -118,7 +124,7 @@ public partial class WalletPayoutControlIntegrationTests
             Assert.Equal(2, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM payment_batches"));
             Assert.Equal(0, (await db.State()).OutstandingBatches);
         }
-        output.WriteLine($"{backlog} real pending Bitcoin blocks, two maturity/payment waves, three payout-process lifetimes; no missing or duplicate allocation, receipts or wallet transactions.");
+        output.WriteLine($"{backlog} real pending Bitcoin blocks, two maturity/payment waves, four payout-process lifetimes; no missing or duplicate allocation, receipts or wallet transactions.");
     }
 
     private static ClusterConfig TopologyConfig(Node wallet, string address, bool paused) => new()
