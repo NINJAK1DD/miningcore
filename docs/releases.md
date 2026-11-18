@@ -3568,7 +3568,10 @@ The content gate also scans allowed regular-file contents in every saved layer, 
 configuration (including environment and labels), and registry attestation payloads before
 uploading anything publicly. Gitleaks 8.30.1 is pinned by archive and executable SHA-256;
 the CLI installs it under ignored `build/release-tools` when missing, and verifies it before
-every scan. Direct library callers must run `production-secrets.py --install` first. Scanner
+every scan. Provider-specific rules remain enabled. The generic heuristic uses explicit
+credential-name assignments: commas and `>` inside compiler symbols are not assignments.
+This replaces the upstream generic rule in `production-gitleaks.toml`; it does not exempt
+binary files or image layers. Direct library callers must run `production-secrets.py --install` first. Scanner
 errors, checksum failures, unsupported attestations and input-budget exhaustion reject the
 candidate. Metadata is fetched only from the runner-private registry by digest, with redirects
 and proxies disabled. Candidate ignore files/comments cannot suppress findings, and CI emits

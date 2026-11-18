@@ -118,8 +118,7 @@ class SecretScan:
         try:
             if kind is None:
                 self.stream.seek(0)
-                config = self.path / 'scanner.toml'
-                config.write_text('[extend]\nuseDefault = true\n', encoding='utf-8')
+                config = Path(__file__).with_name('production-gitleaks.toml')
                 ignore = self.path / 'empty.ignore'
                 ignore.touch()
                 # No snippets, credential values or candidate paths enter CI logs.

@@ -68,6 +68,14 @@ class ProductionContentsTests(unittest.TestCase):
             self.image([[('app/Miningcore', b'host'), ('app/settings.txt', canary.encode())],
                         [('app/.wh.settings.txt', b'')]])
 
+    def test_binary_symbols_are_not_assignments_but_generic_credentials_are(self):
+        value = 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hI6'
+        self.release([('release/Miningcore.pdb', ('linkedTokenSource>' + value + '\ncbPasswordDigest > ' + value + '\n').encode())])
+        for name in ('API_KEY', 'password', 'rpcPassword', 'sharedEncryptionKey', 'client_secret'):
+            for syntax in (name + '=' + value + ';', '"' + name + '": "' + value + '"'):
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'secret scan'):
+                    self.release([('release/settings.txt', syntax.encode())])
+
     def test_lab_and_generated_artifacts_are_rejected(self):
         for suffix in ['scripts/test-lab/README.md', './scripts/test-lab/run.py',
             'BUILD/TEST-LAB/result.json', 'TestResults/result.xml', 'result.trx',
