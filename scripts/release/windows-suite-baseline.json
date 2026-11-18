@@ -1332,6 +1332,11 @@
     },
     {
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "LiveMaturityDuringPayoutCycles_PreservesAccountingAndUniqueWalletReceipts",
+      "case": "LiveMaturityDuringPayoutCycles_PreservesAccountingAndUniqueWalletReceipts"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
       "method": "LiveWalletCompatibility_PauseSuccessAndLostSubmissionPreserveAccounting",
       "case": "LiveWalletCompatibility_PauseSuccessAndLostSubmissionPreserveAccounting"
     },
@@ -1339,6 +1344,11 @@
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
       "method": "MigrationRejectsEffectiveWritePrivilegesAtomically",
       "case": "MigrationRejectsEffectiveWritePrivilegesAtomically"
+    },
+    {
+      "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",
+      "method": "NativeNonPpsRelayLoss_IsVisibleAgainstDurableReceiverRows",
+      "case": "NativeNonPpsRelayLoss_IsVisibleAgainstDurableReceiverRows"
     },
     {
       "class": "Miningcore.Tests.Payments.WalletPayoutControlIntegrationTests",

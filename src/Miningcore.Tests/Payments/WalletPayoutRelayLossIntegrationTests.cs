@@ -95,11 +95,13 @@ public partial class WalletPayoutControlIntegrationTests
                 resume.Set();
                 // A persisted tail marker on this FIFO connection proves that
                 // surviving congestion messages reached the recorder before stop.
+                // Thousands of rows can take longer to drain on a shared CI
+                // runner. This is a hang guard, not a persistence throughput SLA.
                 await Until(async () =>
                 {
                     await Send("tail");
                     return await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM shares WHERE worker='tail'") > 0;
-                }, 15);
+                }, 120);
                 await relay.StopAsync(CancellationToken.None);
                 await receiver.StopAsync(CancellationToken.None);
                 await recording.Stop();
