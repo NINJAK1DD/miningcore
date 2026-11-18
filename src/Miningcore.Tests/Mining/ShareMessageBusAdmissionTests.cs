@@ -6,6 +6,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using Miningcore.Blockchain;
 using Miningcore.Messaging;
+using Miningcore.Mining;
+using Microsoft.Extensions.Hosting;
+using NSubstitute;
 using Xunit;
 
 namespace Miningcore.Tests.Mining;
@@ -64,5 +67,41 @@ public class ShareMessageBusAdmissionTests
         Assert.Throws<InvalidOperationException>(() => bus.SendMessage(new Share()));
         Assert.Equal(1, calls);
         Assert.Throws<InvalidOperationException>(() => bus.RegisterScheduler<Share>(TaskPoolScheduler.Default));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnexpectedSubscriberFailureStopsHostAndRejectsPreviouslyAdmittedResponses(bool admissionOwned)
+    {
+        // A bounded wait detects an accidental read-to-write lock upgrade deadlock.
+        await Task.Run(() =>
+        {
+            var status = new ProcessStatus();
+            var lifetime = Substitute.For<IHostApplicationLifetime>();
+            using var coordinator = new MiningFailStopCoordinator(status, lifetime);
+            var bus = new MessageBus(coordinator);
+            using var admission = coordinator.AcquireSubmissionAcceptance();
+            var failure = new IOException("Injected unexpected subscriber failure");
+            var calls = 0;
+            using var subscription = bus.Listen<Share>().Subscribe(_ => { calls++; throw failure; });
+            var observed = Assert.Throws<IOException>(() =>
+            {
+                if(admissionOwned) admission.PublishShare(bus, new Share());
+                else bus.SendMessage(new Share());
+            });
+            Assert.Same(failure, observed);
+            Assert.True(coordinator.IsFailStopRequested);
+            Assert.True(coordinator.Token.IsCancellationRequested);
+            Assert.Equal(ProcessExitCodes.GeneralFailure, status.ExitCode);
+            lifetime.Received(1).StopApplication();
+            Assert.Throws<OperationCanceledException>(() => bus.SendMessage(new Share()));
+            Assert.Throws<OperationCanceledException>(() => admission.PublishShare(bus, new Share()));
+            var acknowledged = false;
+            Assert.Throws<OperationCanceledException>(() => admission.QueueResponse(() => acknowledged = true));
+            Assert.False(acknowledged);
+            Assert.Equal(1, calls);
+            lifetime.Received(1).StopApplication();
+        }).WaitAsync(TimeSpan.FromSeconds(30));
     }
 }

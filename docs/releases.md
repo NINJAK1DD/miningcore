@@ -3558,6 +3558,11 @@ the earlier preview check cannot substitute for this registry check.
 Production publishing fails closed until the repository administrator records successful
 qualification and sets `GHCR_PUBLICATION_QUALIFIED=true` (or, separately,
 `DOCKERHUB_PUBLICATION_QUALIFIED=true`). Leave an unused registry disabled. These are operator
+controls for the complete publication transaction: **the GHCR gate also blocks the binary
+`.tar.gz` assets and the durable GitHub Release**, including resumed tagged publications.
+Withdrawing GHCR qualification therefore stops archive-only releases too. CI can still build
+and inspect archives as workflow artifacts; those artifacts are not published GitHub Releases.
+This coupling preserves the existing archive/image recovery contract. These flags are operator
 attestations, not automatic proof: retain the successful run, identity/permission review,
 candidate and retrieved index digests, provenance/SBOM digests, and interruption/retry evidence
 in the PR before enabling publication. Qualify a separate repository using the intended workflow

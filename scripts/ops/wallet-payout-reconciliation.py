@@ -6,7 +6,8 @@ identity check, not proof of wallet payment. Missing or contradictory evidence
 always leaves recipients uncertain and cannot authorize reconcile_batch.
 """
 import argparse
-from collections import Counter
+from collections import defaultdict
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -16,13 +17,65 @@ import re
 import struct
 
 
+class EvidenceError(ValueError):
+    """Only fixed, non-sensitive diagnostics may be exposed by the CLI."""
+
+
 def amount(value):
     if not isinstance(value, str):
-        raise ValueError('Amounts must be exact decimal strings, never JSON floats')
-    result = Decimal(value)
+        raise EvidenceError('Amounts must be exact decimal strings, never JSON floats')
+    try:
+        result = Decimal(value)
+    except InvalidOperation:
+        raise EvidenceError('Invalid decimal amount') from None
     if not result.is_finite() or result <= 0:
-        raise ValueError('Amounts must be finite and positive')
+        raise EvidenceError('Amounts must be finite and positive')
     return result
+
+
+def timestamp(value):
+    try:
+        result = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if result.utcoffset() is None:
+            raise ValueError()
+        return result
+    except (ValueError, AttributeError, TypeError):
+        raise EvidenceError('Evidence timestamps must be ISO 8601 with an explicit timezone') from None
+
+
+def group(rows, key):
+    indexed = defaultdict(list)
+    for row in rows:
+        indexed[key(row)].append(row)
+    return indexed
+
+
+def transaction_key(row):
+    return row.get('pool_id'), row.get('transaction_id')
+
+
+def attributed(batch, payment, wallet_payment, payment_batches, attributions):
+    # The receipt schema has no control-batch foreign key. A separate retained
+    # incident record must link the transaction to this batch; time alone cannot.
+    if not batch.get('id') or not batch.get('admitted_at') or not batch.get('evidence_until'):
+        return False
+    key = transaction_key(payment)
+    if key[0] != batch['pool_id'] or transaction_key(wallet_payment) != key:
+        return False
+    receipts, links = payment_batches.get(key, []), attributions.get(key, [])
+    if len(receipts) != 1 or len(links) != 1:
+        return False
+    receipt, link = receipts[0], links[0]
+    if link.get('batch_id') != batch['id'] or not isinstance(link.get('evidence_reference'), str) or not link['evidence_reference'].strip():
+        return False
+    values = [link.get('submitted_at'), receipt.get('created_at'),
+              payment.get('created_at'), wallet_payment.get('created_at')]
+    if any(value is None for value in values):
+        return False
+    start, end = timestamp(batch['admitted_at']), timestamp(batch['evidence_until'])
+    submitted, recorded, paid, observed = map(timestamp, values)
+    return (start <= submitted <= recorded <= end and submitted <= paid <= end and
+            submitted <= observed <= end)
 
 
 def binary_string(value):
@@ -48,42 +101,49 @@ def snapshot_digest(pool, snapshot):
 def report(database, wallet, snapshot):
     batch = database['batch']
     if not re.fullmatch(r'[0-9a-f]{64}', batch['digest']):
-        raise ValueError('Invalid original batch digest')
+        raise EvidenceError('Invalid original batch digest')
     result = {'batch': batch, 'authorizes_reconciliation': False,
               'snapshot_verified': False, 'recipients': [], 'warnings': []}
     if snapshot is None:
         result['warnings'].append('Original snapshot unavailable: a digest or current balances cannot reconstruct it.')
         return result
     if snapshot_digest(batch['pool_id'], snapshot) != batch['digest']:
-        raise ValueError('Snapshot does not match the original admitted batch; do not substitute current balances')
+        raise EvidenceError('Snapshot does not match the original admitted batch; do not substitute current balances')
     result['snapshot_verified'] = True
-    addresses = [row['address'] for row in snapshot]
-    if len(set(addresses)) != len(addresses):
-        raise ValueError('Duplicate snapshot recipients require manual investigation')
+    addresses = {row['address'] for row in snapshot}
+    if len(addresses) != len(snapshot):
+        raise EvidenceError('Duplicate snapshot recipients require manual investigation')
     payments = database.get('payments', [])
     transactions = wallet.get('payments', [])
     def identity(row):
         if not isinstance(row['transaction_id'], str) or not row['transaction_id']:
-            raise ValueError('Missing transaction receipt identity')
+            raise EvidenceError('Missing transaction receipt identity')
         return row['address'], amount(row['amount']), row['transaction_id']
-    persisted = Counter(identity(row) for row in payments)
-    observed = Counter(identity(row) for row in transactions)
+    # Validate every receipt, including evidence outside the selected snapshot.
+    for row in payments + transactions:
+        identity(row)
+    persisted = group(payments, lambda row: row['address'])
+    observed = group(transactions, lambda row: row['address'])
+    payment_batches = group(database.get('payment_batches', []), transaction_key)
+    attributions = group(database.get('attributions', []), transaction_key)
     for original in snapshot:
         address = original['address']
         expected = amount(original['amount'])
-        rows = [key for key in persisted if key[0] == address]
-        wallet_rows = [key for key in observed if key[0] == address]
+        rows = persisted.get(address, [])
+        wallet_rows = observed.get(address, [])
         # Deliberately conservative for split transactions, fee deductions,
         # ambiguous attribution, duplicates and a payment absent from either source.
-        confirmed = (len(rows) == 1 and rows == wallet_rows and rows[0][1] == expected and
-                     persisted[rows[0]] == 1 and observed[rows[0]] == 1)
+        confirmed = (len(rows) == len(wallet_rows) == 1 and
+                     identity(rows[0]) == identity(wallet_rows[0]) and amount(rows[0]['amount']) == expected and
+                     attributed(batch, rows[0], wallet_rows[0], payment_batches, attributions))
         result['recipients'].append({**original,
             'status': 'persisted_and_wallet_evidence_matches' if confirmed else 'uncertain',
-            'persisted_receipts': [key[2] for key in rows],
-            'wallet_receipts': [key[2] for key in wallet_rows]})
+            'persisted_receipts': list(dict.fromkeys(row['transaction_id'] for row in rows)),
+            'wallet_receipts': list(dict.fromkeys(row['transaction_id'] for row in wallet_rows))})
     if any(row['address'] not in addresses for row in payments + transactions):
         result['warnings'].append('Evidence contains recipients outside the original snapshot; isolate the batch before reconciliation.')
     result['warnings'].append('Exports are operator-supplied evidence, not authenticated wallet attestations. Verify chain status, batch attribution, fees and completeness independently. No absence of evidence proves NotAttempted.')
+    result['warnings'].append('A match requires pool and transaction identity, one payment_batches receipt, a retained transaction-to-control-batch attribution, and timestamps inside the admitted evidence window. Missing attribution remains uncertain; never manufacture it from matching amounts or timestamps.')
     return result
 
 
@@ -91,7 +151,7 @@ def read_evidence(path):
     with Path(path).open('rb') as source:
         raw = source.read(32 * 1024 * 1024 + 1)
     if len(raw) > 32 * 1024 * 1024:
-        raise ValueError('Evidence exceeds the 32 MiB review budget')
+        raise EvidenceError('Evidence exceeds the 32 MiB review budget')
     return json.loads(raw), hashlib.sha256(raw).hexdigest()
 
 
@@ -116,7 +176,9 @@ def main():
             json.dump(result, output, ensure_ascii=False, indent=2)
             output.write('\n')
         print('Read-only reconciliation evidence report created; no financial action authorized.')
-    except (OSError, ValueError, KeyError, TypeError, InvalidOperation):
+    except EvidenceError as error:
+        parser.exit(1, str(error) + '. No financial state changed.\n')
+    except (OSError, ValueError, KeyError, TypeError, InvalidOperation, AttributeError, OverflowError):
         parser.exit(1, 'Cannot verify reconciliation evidence; inspect the private inputs. No financial state changed.\n')
 
 

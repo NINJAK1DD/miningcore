@@ -265,9 +265,28 @@ access controls; do not commit it or upload it as a public CI artifact.
 
 Provide three JSON files:
 
-- Database export: `{"batch":{"id":"<batch UUID>","epoch":3,"pool_id":"pool","digest":"<original digest>"},"payments":[{"address":"miner-a","amount":"1.25","transaction_id":"<receipt>"}]}`.
+- Database export: `batch` contains `id`, `epoch`, `pool_id`, `digest`, `admitted_at`
+  (the control table's `admitted`) and `evidence_until` (the retained export cutoff).
+  `payments` contains `address`, `amount`, `pool_id`, `transaction_id` and `created_at`.
+  `payment_batches` contains the corresponding actual receipt rows, normalized to
+  `pool_id`, `transaction_id` and `created_at`.
 - Original snapshot, when available: `[{"address":"miner-a","amount":"1.25"},{"address":"miner-b","amount":"2.5"}]`.
-- Wallet evidence normalized after reviewing wallet/chain history: `{"payments":[{"address":"miner-a","amount":"1.25","transaction_id":"<receipt>"}]}`.
+- Wallet evidence normalized after reviewing wallet/chain history: `payments` contains
+  `address`, `amount`, `pool_id`, `transaction_id` and `created_at`.
+
+The database export also needs `attributions`, one retained incident record per transaction,
+with `batch_id` (the control batch UUID), `pool_id`, `transaction_id`, `submitted_at` and
+`evidence_reference` identifying the retained source establishing that association. The
+`payment_batches` table's identity is `(poolid, transactionconfirmationdata)`; it does **not**
+contain a control-batch foreign key. Never fabricate an attribution by copying the outstanding
+UUID onto a matching amount, timestamp or historical transaction. If the original association
+is unavailable, omit it: the recipient remains uncertain even when both exports agree.
+
+Use timezone-qualified ISO 8601 timestamps, for example `2026-11-18T12:01:00Z`. Submission,
+receipt persistence and wallet evidence must fall inside the admission-to-export window;
+persistence and wallet timestamps must not precede submission. Missing timestamps or clock
+skew cannot prove attribution; investigate them without widening the window to force a match.
+The cutoff bounds the evidence, not an authorization to complete an outstanding batch.
 
 Export only the identified batch's receipts using a read-only database session and retain
 the original SQL selection, wallet RPC responses, chain status and observation times alongside
@@ -286,12 +305,18 @@ python3 scripts/ops/wallet-payout-reconciliation.py \
 The output must not already exist; it is owner-only on POSIX. On Windows, protect the incident
 directory's ACL before running the command. The report records input SHA-256 hashes and only
 marks a recipient's evidence as matching when a single exact payment receipt agrees in both
-exports. Missing, duplicate, changed-amount, split, fee-adjusted or contradictory receipts remain
+exports and the pool, time window, unique payment-batch receipt and retained batch attribution
+all agree. Historical same-amount payments do not qualify. Missing, duplicate, changed-amount,
+split, fee-adjusted or contradictory receipts remain
 uncertain. Absence never proves `NotAttempted`. Exports are operator-supplied evidence, not
 authenticated attestations: independently verify completeness, confirmations and attribution.
 The report always says it does **not** authorize reconciliation. Reference the reviewed report
 and retained evidence in the incident reason only after completing the manual procedure above.
 No additional recipient manifest is stored in the control schema or exposed to its runtime role.
+Fixed validation diagnostics distinguish invalid amounts, snapshot mismatches and duplicate
+recipients without printing private input values. Other parser/filesystem errors remain generic.
+Receipt lookups are indexed once by recipient and transaction to keep large incident reports
+linear in evidence size, apart from snapshot sorting and output generation.
 
 ## Retention and archival
 
