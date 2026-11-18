@@ -4,10 +4,9 @@
 # released binaries/configuration; do not exempt whole files, layers or paths.
 [extend]
 useDefault = true
-disabledRules = ["generic-api-key"]
 
 [[rules]]
-id = "production-credential-assignment"
+id = "generic-api-key"
 description = "High-entropy credential assigned in production content"
 regex = '''(?i)(?:^|[^\w])(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|private[_-]?key|shared[_-]?encryption[_-]?key|rpc[_-]?password|password|passwd|token|secret|key)["']?\s*[:=]\s*["']?([a-z0-9_./+~!=:@$%^-]{16,150})(?:["'\s;]|$)'''
 secretGroup = 1

@@ -121,16 +121,21 @@ class SecretScan:
                 config = Path(__file__).with_name('production-gitleaks.toml')
                 ignore = self.path / 'empty.ignore'
                 ignore.touch()
+                report = self.path / 'redacted-findings.json'
                 # No snippets, credential values or candidate paths enter CI logs.
                 result = run_scanner([str(self.executable), 'stdin', '--config', str(config),
                     '--gitleaks-ignore-path', str(ignore), '--ignore-gitleaks-allow',
                     '--max-target-megabytes', '0', '--max-decode-depth', '3', '--redact=100',
+                    '--report-format=json', '--report-path', str(report),
                     '--no-banner', '--log-level', 'error'], stdin=self.stream,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600,
                     cwd=self.path, env={key: val for key, val in os.environ.items()
                                        if not key.startswith('GITLEAKS_')})
                 if result.returncode:
-                    raise ValueError('Production secret scan rejected content or could not complete; inspect privately with the pinned scanner')
+                    rules = sorted({row['RuleID'] for row in json.loads(report.read_text())}) if report.is_file() else []
+                    # Rule identifiers come from the reviewed scanner/configuration;
+                    # never print matching values, surrounding text or file paths.
+                    raise ValueError('Production secret scan rejected content or could not complete; rules=' + ','.join(rules))
         finally:
             self.stream.close()
             self.directory.cleanup()

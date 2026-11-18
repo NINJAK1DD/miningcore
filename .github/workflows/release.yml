@@ -1167,7 +1167,8 @@ jobs:
         run: |
           mkdir -p build/registry-qualification
           printf 'non-executable publication fixture\n' > build/registry-qualification/Miningcore
-          printf 'FROM scratch\nCOPY Miningcore /app/Miningcore\n' > build/registry-qualification/Dockerfile
+          python3 -c 'import os; from pathlib import Path; Path("build/registry-qualification/payload.bin").write_bytes(os.urandom(8 * 1024 * 1024))'
+          printf 'FROM scratch\nCOPY Miningcore /app/Miningcore\nCOPY payload.bin /app/qualification-payload.bin\n' > build/registry-qualification/Dockerfile
       - name: Build private qualification candidate
         id: candidate
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -1187,6 +1188,7 @@ jobs:
       - name: Verify GHCR upload recovery and independently retrieve attestations
         env:
           IMAGE_DIGEST: ${{ steps.candidate.outputs.digest }}
+          REGISTRY_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           destination="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/miningcore-release-qualification"

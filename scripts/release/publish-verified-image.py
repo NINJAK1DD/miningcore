@@ -56,7 +56,11 @@ def inspect_oci_secrets(source, index):
                 for layer in manifest['layers']:
                     if layer.get('mediaType') != 'application/vnd.in-toto+json':
                         raise ValueError('Unsupported attestation payload; secret inspection is incomplete')
-                    scan.json(private_json(source, 'blobs', layer))
+                    payload = private_json(source, 'blobs', layer)
+                    expected = descriptor['annotations']['vnd.docker.reference.digest'].removeprefix('sha256:')
+                    if not any(subject.get('digest', {}).get('sha256') == expected for subject in payload.get('subject', [])):
+                        raise ValueError('Attestation payload does not identify the inspected runtime')
+                    scan.json(payload)
 
 
 def publish(source, destination):

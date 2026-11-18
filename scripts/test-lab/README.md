@@ -70,14 +70,17 @@ It uses the repository's Actions identity with only `contents:read` and `package
 the same registry identity/permission model as production publication. No Docker Hub account
 is needed. It does not alter package visibility or production aliases.
 
-The helper checks the private image and all attestations, injects a lost response after the
-registry copy completes, retries the same immutable source/tag, then independently downloads
+The helper checks the private image and all attestations before any remote write. It starts
+a real chunked upload of a fresh 8 MiB synthetic layer, stops after the registry confirms a
+partial byte range, and checks that the unfinished blob is not visible. It then exercises the
+normal publisher, injects a lost response after the registry copy completes, retries the same immutable source/tag, then independently downloads
 all OCI data with Skopeo and verifies the index and provenance/SBOM payload hashes. The
 `ghcr-qualification-evidence` artifact records those identities and the exact workflow source.
 Keep it with the operator's package-access/permission review before enabling production.
-This recovery test covers interruption after completed upload; it explicitly does **not**
-claim to interrupt a partial blob upload. Production flags remain disabled until the required
-qualification and any outstanding interruption tests are reviewed. Qualification tags are
+The recovered partial layer's downloaded digest is checked too. The unfinished upload session
+is cancelled on exit; the report records whether cancellation succeeded (OCI permits server
+expiry if cancellation fails). Production flags remain disabled until the required
+qualification and its permission/cleanup evidence are reviewed. Qualification tags are
 retained as evidence; delete only the identified disposable package versions after review,
 using a separately authorized operator identity. The workflow has no package-delete grant.
 

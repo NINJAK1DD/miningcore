@@ -24,7 +24,8 @@ class PublicationTests(unittest.TestCase):
                  patch.object(publisher.subprocess, 'run') as command, \
                  patch.object(publisher.policy, 'verify_image'), \
                  patch.object(publisher, 'private_json', side_effect=[manifest, {}, manifest, {},
-                     {'predicateType': predicate, 'predicate': {'buildNote': canary}}]):
+                     {'subject': [{'digest': {'sha256': DIGEST[7:]}}],
+                      'predicateType': predicate, 'predicate': {'buildNote': canary}}]):
                 command.return_value.stdout = json.dumps(self.index()).encode()
                 with self.assertRaisesRegex(ValueError, 'secret scan'):
                     publisher.publish(SOURCE, DESTINATION)
