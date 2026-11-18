@@ -31,13 +31,18 @@ def upload_location(location, repository):
         raise QualificationError('Refusing a traversing upload location')
     location = urllib.parse.urljoin('https://ghcr.io', location)
     parsed = urllib.parse.urlsplit(location)
+    # GHCR returns /blobs/upload/<id> (singular) for sessions started through
+    # /blobs/uploads/. Follow either known endpoint within this exact repository.
+    prefix = next((value for value in (f'/v2/{repository}/blobs/upload/',
+                                      f'/v2/{repository}/blobs/uploads/')
+                   if parsed.path.startswith(value)), None)
     if (parsed.scheme != 'https' or parsed.netloc != 'ghcr.io' or parsed.fragment or
-            not parsed.path.startswith('/v2/' + repository + '/blobs/uploads/')):
+            prefix is None):
         raise QualificationError('Refusing an upload location outside the qualification repository')
     # OCI upload identifiers are opaque, not necessarily UUIDs. GHCR may use
     # encoded/padded tokens. Accept a single safe segment while preserving the
     # exact server-provided URL/query and the fixed origin/repository boundary.
-    suffix = urllib.parse.unquote(parsed.path.removeprefix('/v2/' + repository + '/blobs/uploads/'))
+    suffix = urllib.parse.unquote(parsed.path.removeprefix(prefix))
     if not re.fullmatch(r'[A-Za-z0-9_.~+=-]+', suffix) or suffix in ('.', '..'):
         raise QualificationError('Refusing unsafe upload session syntax')
     return location

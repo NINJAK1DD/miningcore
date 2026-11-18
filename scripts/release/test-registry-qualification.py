@@ -38,7 +38,8 @@ class QualificationTests(unittest.TestCase):
                 return Response(b'{"token":"fixture-only"}')
             if method == 'HEAD':
                 raise urllib.error.HTTPError(request.full_url, 404, 'absent', {}, None)
-            headers = {'Location': '/v2/' + repository + '/blobs/uploads/session'}
+            # GHCR returns a singular upload endpoint despite the plural POST.
+            headers = {'Location': '/v2/' + repository + '/blobs/upload/session'}
             if method == 'PATCH':
                 self.assertEqual(data[:len(data)//2], request.data)
                 self.assertEqual('0-' + str(len(data)//2-1), request.headers['Content-range'])
@@ -60,6 +61,8 @@ class QualificationTests(unittest.TestCase):
         repo = 'example/miningcore-release-qualification'
         good = '/v2/' + repo + '/blobs/uploads/session'
         self.assertEqual('https://ghcr.io' + good, qualification.upload_location(good, repo))
+        singular = good.replace('/blobs/uploads/', '/blobs/upload/')
+        self.assertEqual('https://ghcr.io' + singular, qualification.upload_location(singular, repo))
         for suffix in ('encoded.session==', 'encoded%3Dsession%3D', 'opaque+session'):
             location = good.rsplit('/', 1)[0] + '/' + suffix + '?state=fixture'
             self.assertEqual('https://ghcr.io' + location, qualification.upload_location(location, repo))
