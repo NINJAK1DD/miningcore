@@ -67,6 +67,31 @@ binaries must be installed under `/usr/lib/postgresql/*/bin` (or selected with
 
 ### Admission and relay review verification — 18 November 2026
 
+The follow-up availability fix at `ff1b48906dcc80de99864c12b8212925a64b5b2d`
+was rebuilt non-incrementally (application and native libraries), with zero warnings/errors.
+All **212 focused admission/recorder/relay/Bitcoin fail-stop tests passed, no skips**,
+including unexpected subscriber exceptions through both publication entry points: failed
+process status, cancellation, one host shutdown request and rejection of previously admitted
+responses. The transition happens after releasing the admission read lock.
+
+`measure-pps-capacity.sh` then ran alone against that rebuilt revision in a disposable
+PostgreSQL cluster. Both tests passed: 60,000 shares at 1,000/s for 60 seconds, followed by a
+10,000-share burst per topology, with exact liabilities, zero overflow/fallback/fail-stop and
+empty queues after drain. These figures supersede the earlier measurements below:
+
+| Topology | Sustained ack p95 / p99 | Burst offering / drain after offering | Burst ack p99 |
+| --- | --- | --- | --- |
+| Local | 20.615 / 22.203 ms | 0.039 / 1.263 s | 1263.486 ms |
+| Relay | 25.529 / 37.176 ms | 0.108 / 1.608 s | 1608.657 ms |
+
+Raw CPU/device-I/O/PostgreSQL-process samples and TRX are retained privately under
+`build/test-lab/pps-capacity-TNgW8cJF`; capacity TRX SHA-256:
+`fff7b4eefececfe18748d0277b1508fec525405e72f2334318ef0f0c1f67806b`.
+Focused TRX SHA-256: `5d3980b3deb1be8d5a7ef4d701a8493b6750db9daed6f72fb9edcfc9ac2d5aa0`.
+These are lab measurements, not production latency guarantees. Seven reconciliation utility
+tests also passed, including 10,000 recipients / 20,000 payment records, historical-batch
+rejection and non-sensitive CLI diagnostics. Current-head CI is recorded in PR #292.
+
 Production revision `443871bc0` and corrected test revision
 `6f9e11e9d2c398d6c363321611f30a60601b66a3` were verified in the documented Ubuntu lab.
 The non-incremental native/application build passed; the test-attribute import was then
