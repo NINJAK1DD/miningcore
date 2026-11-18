@@ -184,6 +184,17 @@ queue proves neither network delivery nor receiver processing. PPS local receipt
 liabilities; they do not make receiver-side telemetry complete. PPLNS/PROP weighting retains
 the documented ordinary-share loss boundary.
 
+Relay serialization is serialized before allocating its snapshot and payload buffers. Concurrent
+producers therefore cannot each allocate a maximum-size intermediate payload while waiting for
+the queue lock. The 16 MiB limit still covers only queued payload bytes: one active serializer,
+one native send, native socket queues, caller-owned shares and the rest of Miningcore consume
+additional memory. The concurrent near-limit regression reports process peak resident memory,
+allocated managed bytes and GC collection deltas; these are observations, not a memory SLA.
+Monitor process/container resident memory separately from queue occupancy and alert at 80% of
+the memory budget established in staging, with a critical alert before the container/host OOM
+limit. Include sustained GC pressure and increasing submission latency in that alert policy.
+Do not use the 16 MiB queue limit as the container memory limit.
+
 For PPS pools, alert on submission latency as well as queue pressure. The existing
 `miningcore_stratum_request_execution_time` summary measures complete request duration in
 milliseconds, including validation and the acknowledgement durability wait. For example,

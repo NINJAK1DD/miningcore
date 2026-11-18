@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Diagnostics;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -15,11 +17,67 @@ using NSubstitute;
 using Prometheus;
 using ProtoBuf;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Miningcore.Tests.Mining;
 
-public class ShareRelayHardeningTests
+public class ShareRelayHardeningTests(ITestOutputHelper output)
 {
+    [Fact]
+    public async Task ConcurrentNearLimitPayloads_KeepBoundedBacklogAndStopAdmission()
+    {
+        const int producers = 64;
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var url = $"tcp://127.0.0.1:{((IPEndPoint) listener.LocalEndpoint).Port}";
+        listener.Stop();
+        var bus = new MessageBus();
+        using var sending = new ManualResetEventSlim();
+        using var resume = new ManualResetEventSlim();
+        using var start = new ManualResetEventSlim();
+        using var relay = new ShareRelay(new ClusterConfig { ShareRelay = new() { PublishUrl = url } }, bus)
+        {
+            BeforeSend = ct => { sending.Set(); resume.Wait(ct); },
+        };
+        await relay.StartAsync(CancellationToken.None);
+        try
+        {
+            bus.SendMessage(new Share { PoolId = "pool" });
+            Assert.True(sending.Wait(TimeSpan.FromSeconds(10)));
+            // Share an immutable input to measure serializer/queue allocations,
+            // rather than counting 64 caller-owned strings as relay memory.
+            var payload = new string('a', ShareRelay.MaximumPayloadBytes - 1024);
+            var allocated = GC.GetTotalAllocatedBytes(true);
+            var collections = Enumerable.Range(0, 3).Select(GC.CollectionCount).ToArray();
+            var accepted = 0;
+            var rejected = 0;
+            var tasks = Enumerable.Range(0, producers).Select(_ => Task.Factory.StartNew(() =>
+            {
+                start.Wait();
+                try
+                {
+                    bus.SendMessage(new Share { PoolId = "pool", Miner = payload });
+                    Interlocked.Increment(ref accepted);
+                }
+                catch(IOException) { Interlocked.Increment(ref rejected); }
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
+            start.Set();
+            await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromMinutes(2));
+            Assert.Equal(producers, accepted + rejected);
+            Assert.InRange(accepted, 1, 16);
+            Assert.Equal(accepted, relay.GetRelayQueueMetrics().Depth);
+            Assert.InRange(relay.QueuedBytes, 1, relay.ByteCapacity);
+            Assert.Equal(rejected, relay.GetRelayQueueMetrics().OverflowCount);
+            Assert.ThrowsAny<IOException>(() => bus.SendMessage(new Share { PoolId = "pool" }));
+            using var process = Process.GetCurrentProcess();
+            output.WriteLine($"Concurrent near-limit producers={producers}; accepted={accepted}; rejected={rejected}; " +
+                $"queueBytes={relay.QueuedBytes}; allocatedBytes={GC.GetTotalAllocatedBytes(true) - allocated}; " +
+                $"processPeakRssBytes={process.PeakWorkingSet64}; GC delta=" +
+                string.Join(",", Enumerable.Range(0, 3).Select(g => GC.CollectionCount(g) - collections[g])));
+        }
+        finally { start.Set(); resume.Set(); await relay.StopAsync(CancellationToken.None); }
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("committed-source")]

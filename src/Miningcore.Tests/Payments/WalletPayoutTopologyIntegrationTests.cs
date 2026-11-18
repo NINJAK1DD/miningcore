@@ -127,6 +127,49 @@ public partial class WalletPayoutControlIntegrationTests
         output.WriteLine($"{backlog} real pending Bitcoin blocks, two maturity/payment waves, four payout-process lifetimes; no missing or duplicate allocation, receipts or wallet transactions.");
     }
 
+    [WalletControlFact]
+    public async Task LiveMaturityDuringPayoutCycles_PreservesAccountingAndUniqueWalletReceipts()
+    {
+        const int backlog = 128;
+        await using var db = await Database.Create();
+        await using var wallet = await Node.StartAsync(true, initialBlocks: 180);
+        var cluster = TopologyConfig(wallet, await wallet.GetNewAddressAsync(), false);
+        await SeedBlocks(db, wallet, cluster.Pools[0], backlog);
+        await db.SetPaused(false);
+        await using var active = await TopologyProcess.Start(db, cluster);
+        await Until(async () => await PaymentCount(db) >= 1);
+        Assert.InRange(await PendingCount(db), 1, backlog - 1);
+
+        // Keep the real payout process alive throughout generation. Interleave
+        // cycles with chain growth without assuming how many payments fit a wave.
+        foreach(var blocks in new[] { 20, 20, 70 })
+        {
+            var cycles = (await active.State())["cycles"].Value<int>();
+            await wallet.GenerateAsync(blocks, CancellationToken.None);
+            await AssertCycles(active, cycles + 2);
+        }
+        await Until(async () => await PendingCount(db) == 0 && await PaymentCount(db) >= 2 &&
+            await db.Admin.ExecuteScalarAsync<decimal>("SELECT coalesce(sum(amount),0) FROM balances") == 0 &&
+            (await db.State()).OutstandingBatches == 0);
+        await AssertCycles(active, (await active.State())["cycles"].Value<int>() + 2);
+        await active.Stop(); // Freeze the evidence before querying its separate tables.
+
+        var payments = await PaymentCount(db);
+        Assert.True(payments >= 2);
+        Assert.Equal(0, await PendingCount(db));
+        Assert.Equal(backlog, await db.Admin.ExecuteScalarAsync<int>("SELECT count(*) FROM blocks WHERE status='confirmed'"));
+        await AssertConservation(db);
+        await AssertWalletReceipts(db, wallet, payments);
+        var batches = (await db.Admin.QueryAsync<string>(
+            "SELECT transactionconfirmationdata FROM payment_batches ORDER BY transactionconfirmationdata")).ToArray();
+        var receipts = (await db.Admin.QueryAsync<string>(
+            "SELECT transactionconfirmationdata FROM payments ORDER BY transactionconfirmationdata")).ToArray();
+        Assert.Equal(receipts, batches);
+        Assert.Equal(batches.Length, batches.Distinct().Count());
+        Assert.Equal(0, (await db.State()).OutstandingBatches);
+        output.WriteLine($"{backlog} real blocks matured across live payout cycles; {payments} unique persisted payments/batches matched wallet sends and conserved all rewards.");
+    }
+
     private static ClusterConfig TopologyConfig(Node wallet, string address, bool paused) => new()
     {
         PaymentProcessing = new() { Enabled = true, Paused = paused, Interval = 1 },

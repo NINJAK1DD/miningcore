@@ -74,15 +74,18 @@ public sealed class ShareRelay : IHostedService, IDisposable, IShareRelayQueueMe
     {
         try
         {
-            if(Volatile.Read(ref failed) != 0)
-                throw new IOException("Share relay admission is closed");
-            var snapshot = share.CreateRelaySnapshot(clusterConfig.ClusterName);
-            using var stream = new LimitedPayloadStream();
-            Serializer.Serialize(stream, snapshot);
-            var frame = new Frame(snapshot.PoolId, (int) (string.IsNullOrEmpty(snapshot.AccountingId)
-                ? WireFormat.ProtocolBuffers : WireFormat.ProtocolBuffersAccounting), stream.ToArray());
+            // Bound transient serialization as well as queued payloads. Concurrent
+            // producers wait before allocating a snapshot/stream, so only one
+            // frame's serialization buffers exist outside the bounded queue.
             lock(gate)
             {
+                if(Volatile.Read(ref failed) != 0)
+                    throw new IOException("Share relay admission is closed");
+                var snapshot = share.CreateRelaySnapshot(clusterConfig.ClusterName);
+                using var stream = new LimitedPayloadStream();
+                Serializer.Serialize(stream, snapshot);
+                var frame = new Frame(snapshot.PoolId, (int) (string.IsNullOrEmpty(snapshot.AccountingId)
+                    ? WireFormat.ProtocolBuffers : WireFormat.ProtocolBuffersAccounting), stream.ToArray());
                 if(queuedBytes + frame.Payload.Length <= ByteCapacity && queue.Writer.TryWrite(frame))
                 {
                     queuedBytes += frame.Payload.Length;
