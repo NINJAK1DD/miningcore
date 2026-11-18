@@ -31,11 +31,15 @@ def upload_location(location, repository):
         raise QualificationError('Refusing a traversing upload location')
     location = urllib.parse.urljoin('https://ghcr.io', location)
     parsed = urllib.parse.urlsplit(location)
-    suffix = parsed.path.removeprefix('/v2/' + repository + '/blobs/uploads/')
     if (parsed.scheme != 'https' or parsed.netloc != 'ghcr.io' or parsed.fragment or
-            not parsed.path.startswith('/v2/' + repository + '/blobs/uploads/') or
-            not re.fullmatch(r'[A-Za-z0-9_-]+', suffix)):
+            not parsed.path.startswith('/v2/' + repository + '/blobs/uploads/')):
         raise QualificationError('Refusing an upload location outside the qualification repository')
+    # OCI upload identifiers are opaque, not necessarily UUIDs. GHCR may use
+    # encoded/padded tokens. Accept a single safe segment while preserving the
+    # exact server-provided URL/query and the fixed origin/repository boundary.
+    suffix = urllib.parse.unquote(parsed.path.removeprefix('/v2/' + repository + '/blobs/uploads/'))
+    if not re.fullmatch(r'[A-Za-z0-9_.~+=-]+', suffix) or suffix in ('.', '..'):
+        raise QualificationError('Refusing unsafe upload session syntax')
     return location
 
 
@@ -73,8 +77,11 @@ def incomplete_upload(source, destination):
             with request('HEAD', blob_url):
                 raise QualificationError('Partial upload fixture must not already be committed')
         except urllib.error.HTTPError as error:
-            if error.code != 404:
-                raise
+            try:
+                if error.code != 404:
+                    raise
+            finally:
+                error.close()
     phase = 'check-fresh-blob-absence'
     require_absent()
     location = None

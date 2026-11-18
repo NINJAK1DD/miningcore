@@ -60,9 +60,12 @@ class QualificationTests(unittest.TestCase):
         repo = 'example/miningcore-release-qualification'
         good = '/v2/' + repo + '/blobs/uploads/session'
         self.assertEqual('https://ghcr.io' + good, qualification.upload_location(good, repo))
+        for suffix in ('encoded.session==', 'encoded%3Dsession%3D', 'opaque+session'):
+            location = good.rsplit('/', 1)[0] + '/' + suffix + '?state=fixture'
+            self.assertEqual('https://ghcr.io' + location, qualification.upload_location(location, repo))
         for location in ('http://ghcr.io' + good, 'https://other.example' + good,
                          'https://ghcr.io@other.example' + good, '/v2/other/image/blobs/uploads/session',
-                         good + '/../other', good + '%2f..%2fother'):
+                         good + '/../other', good + '%2f..%2fother', good + '%5cother'):
             with self.subTest(location=location), self.assertRaises(ValueError):
                 qualification.upload_location(location, repo)
 
