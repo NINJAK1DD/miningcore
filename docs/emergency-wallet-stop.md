@@ -315,8 +315,18 @@ and retained evidence in the incident reason only after completing the manual pr
 No additional recipient manifest is stored in the control schema or exposed to its runtime role.
 Fixed validation diagnostics distinguish invalid amounts, snapshot mismatches and duplicate
 recipients without printing private input values. Other parser/filesystem errors remain generic.
+All three input files reject duplicate JSON object keys at every nesting level, including
+identical repeated values and equivalent escaped key names. The fixed diagnostic exposes
+neither the key nor its values; no report is written from ambiguous evidence.
 Receipt lookups are indexed once by recipient and transaction to keep large incident reports
 linear in evidence size, apart from snapshot sorting and output generation.
+
+A future read-only exporter could capture control and payment records in one consistent
+database snapshot, retaining source metadata and content hashes. It must not invent the missing
+transaction-to-control-batch association, reconcile a batch or release ownership. Recording
+that association atomically with payment receipts requires a separately reviewed schema and
+payout-path change. Neither approach replaces independent wallet/chain verification and
+operator approval; this helper continues to treat supplied exports as unauthenticated evidence.
 
 ## Retention and archival
 

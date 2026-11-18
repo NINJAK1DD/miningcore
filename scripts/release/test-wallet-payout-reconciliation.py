@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise conservative recovery of partially paid wallet batches."""
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -137,6 +138,55 @@ class ReconciliationTests(unittest.TestCase):
             self.assertEqual(1, run.returncode)
             self.assertNotIn('PRIVATE_CANARY', run.stderr)
             self.assertIn('Cannot verify reconciliation evidence', run.stderr)
+
+    def test_evidence_decoder_rejects_duplicate_keys_at_every_depth(self):
+        malformed = [
+            '{"batch":{},"batch":{}}',
+            '{"batch":{"id":"old","id":"new"}}',
+            '{"batch":{"digest":"first","digest":"last"}}',
+            '{"payments":[{"transaction_id":"old","transaction_id":"new"}]}',
+            '{"attributions":[{"batch_id":"old","batch_id":"new"}]}',
+            r'{"attributions":[{"evidence_reference":"first","evidence_\u0072eference":"last"}]}',
+            '[{"address":"miner-a","amount":"1.25","amount":"1.25"}]',
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'evidence.json'
+            for raw in malformed:
+                for encoding in ('utf-8', 'utf-16'):
+                    with self.subTest(raw=raw, encoding=encoding):
+                        path.write_bytes(raw.encode(encoding))
+                        with self.assertRaisesRegex(recovery.EvidenceError, '^Duplicate JSON object keys'):
+                            recovery.read_evidence(path)
+            # Repeated field names in separate objects are valid; retain the hash
+            # of the exact bytes, not a normalized or reserialized document.
+            raw = b'[ {"address":"miner-a"}, {"address":"miner-b"} ]\n'
+            path.write_bytes(raw)
+            decoded, digest = recovery.read_evidence(path)
+            self.assertEqual([{'address': 'miner-a'}, {'address': 'miner-b'}], decoded)
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), digest)
+
+    def test_cli_rejects_duplicates_in_each_input_without_disclosing_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = [root/'db.json', root/'wallet.json', root/'snapshot.json']
+            values = [self.database, {'payments': [self.payment]}, self.snapshot]
+            command = [sys.executable, str(spec.origin), '--database-export', str(paths[0]),
+                       '--wallet-export', str(paths[1]), '--snapshot', str(paths[2]), '--output', str(root/'out.json')]
+            for target in paths:
+                with self.subTest(target=target.name):
+                    for path, value in zip(paths, values):
+                        path.write_text(json.dumps(value))
+                    target.write_text('{"nested":[{"PRIVATE_KEY_NAME":"PRIVATE_VALUE_A",'
+                                      '"PRIVATE_KEY_NAME":"PRIVATE_VALUE_B"}]}')
+                    before = [path.read_bytes() for path in paths]
+                    run = subprocess.run(command, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(1, run.returncode)
+                    self.assertEqual('Duplicate JSON object keys are not permitted in reconciliation evidence. '
+                                     'No financial state changed.\n', run.stderr)
+                    self.assertEqual('', run.stdout)
+                    self.assertNotIn('PRIVATE_', run.stderr)
+                    self.assertFalse((root/'out.json').exists())
+                    self.assertEqual(before, [path.read_bytes() for path in paths])
 
 
 if __name__ == '__main__':

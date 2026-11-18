@@ -147,12 +147,24 @@ def report(database, wallet, snapshot):
     return result
 
 
+def unique_object(pairs):
+    # JSON decodes escaped names before invoking this hook, at every object depth.
+    # Reject even identical duplicates: neither first-wins nor last-wins evidence
+    # is an unambiguous source. Never expose the offending key or its values.
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise EvidenceError('Duplicate JSON object keys are not permitted in reconciliation evidence')
+        result[key] = value
+    return result
+
+
 def read_evidence(path):
     with Path(path).open('rb') as source:
         raw = source.read(32 * 1024 * 1024 + 1)
     if len(raw) > 32 * 1024 * 1024:
         raise EvidenceError('Evidence exceeds the 32 MiB review budget')
-    return json.loads(raw), hashlib.sha256(raw).hexdigest()
+    return json.loads(raw, object_pairs_hook=unique_object), hashlib.sha256(raw).hexdigest()
 
 
 def main():
