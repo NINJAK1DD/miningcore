@@ -59,7 +59,8 @@ public class ShareRelayHardeningTests(ITestOutputHelper output)
                     bus.SendMessage(new Share { PoolId = "pool", Miner = payload });
                     Interlocked.Increment(ref accepted);
                 }
-                catch(IOException) { Interlocked.Increment(ref rejected); }
+                catch(Exception error) when(error is IOException or InvalidOperationException)
+                { Interlocked.Increment(ref rejected); }
             }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
             start.Set();
             await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromMinutes(2));
@@ -67,8 +68,8 @@ public class ShareRelayHardeningTests(ITestOutputHelper output)
             Assert.InRange(accepted, 1, 16);
             Assert.Equal(accepted, relay.GetRelayQueueMetrics().Depth);
             Assert.InRange(relay.QueuedBytes, 1, relay.ByteCapacity);
-            Assert.Equal(rejected, relay.GetRelayQueueMetrics().OverflowCount);
-            Assert.ThrowsAny<IOException>(() => bus.SendMessage(new Share { PoolId = "pool" }));
+            Assert.Equal(1, relay.GetRelayQueueMetrics().OverflowCount);
+            Assert.Throws<InvalidOperationException>(() => bus.SendMessage(new Share { PoolId = "pool" }));
             using var process = Process.GetCurrentProcess();
             output.WriteLine($"Concurrent near-limit producers={producers}; accepted={accepted}; rejected={rejected}; " +
                 $"queueBytes={relay.QueuedBytes}; allocatedBytes={GC.GetTotalAllocatedBytes(true) - allocated}; " +
@@ -186,6 +187,7 @@ public class ShareRelayHardeningTests(ITestOutputHelper output)
         var provider = Substitute.For<IShareRelayQueueMetricsProvider>();
         provider.GetRelayQueueMetrics().Returns(new SharePersistenceQueueMetricsSnapshot(17, 41, 4096, 2));
         provider.QueuedBytes.Returns(1234L); provider.ByteCapacity.Returns(16L * 1024 * 1024);
+        provider.AcceptedCount.Returns(100L); provider.NativeSendCount.Returns(83L);
         var registry = Metrics.NewCustomRegistry();
         using var publisher = new MetricsPublisher(new MessageBus(), null, Metrics.WithCustomRegistry(registry), registry, provider);
         for(var i = 0; i < 2; i++)
@@ -199,6 +201,8 @@ public class ShareRelayHardeningTests(ITestOutputHelper output)
             Assert.Contains("miningcore_share_relay_queue_bytes 1234", metrics);
             Assert.Contains("miningcore_share_relay_queue_byte_capacity 16777216", metrics);
             Assert.Contains("miningcore_share_relay_queue_rejected_total 2", metrics);
+            Assert.Contains("miningcore_share_relay_accepted_total 100", metrics);
+            Assert.Contains("miningcore_share_relay_native_send_total 83", metrics);
         }
     }
 }

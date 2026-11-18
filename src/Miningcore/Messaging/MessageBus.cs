@@ -29,6 +29,8 @@ public class MessageBus : IMessageBus, IMiningAdmissionMessageBus
     }
 
     private readonly IMiningFailStopCoordinator failStopCoordinator;
+    private readonly object sharePublicationGate = new();
+    private bool sharePublicationFailed;
     private readonly Dictionary<Tuple<Type, string>, NotAWeakReference> messageBus =
         new();
 
@@ -61,6 +63,8 @@ public class MessageBus : IMessageBus, IMiningAdmissionMessageBus
     /// </param>
     public void RegisterScheduler<T>(IScheduler scheduler, string contract = null)
     {
+        if(typeof(T) == typeof(Share))
+            throw new InvalidOperationException("Share publication must remain synchronous within mining admission");
         schedulerMappings[new Tuple<Type, string>(typeof(T), contract)] = scheduler;
     }
 
@@ -143,7 +147,9 @@ public class MessageBus : IMessageBus, IMiningAdmissionMessageBus
         IObservable<T> source,
         string contract = null)
     {
-        return source.Subscribe(setupSubjectIfNecessary<T>(contract));
+        return typeof(T) == typeof(Share)
+            ? source.Subscribe(message => SendMessage(message, contract))
+            : source.Subscribe(setupSubjectIfNecessary<T>(contract));
     }
 
     /// <summary>
@@ -173,13 +179,35 @@ public class MessageBus : IMessageBus, IMiningAdmissionMessageBus
             return;
         }
 
-        setupSubjectIfNecessary<T>(contract).OnNext(message);
+        PublishSynchronously(message, contract);
     }
 
     void IMiningAdmissionMessageBus.SendMessageWithinMiningAdmission<T>(T message,
         string contract)
     {
-        setupSubjectIfNecessary<T>(contract).OnNext(message);
+        PublishSynchronously(message, contract);
+    }
+
+    private void PublishSynchronously<T>(T message, string contract)
+    {
+        if(typeof(T) != typeof(Share))
+        {
+            setupSubjectIfNecessary<T>(contract).OnNext(message);
+            return;
+        }
+
+        // ObserveOn(CurrentThread) still queues concurrent notifications and can
+        // return before a subscriber runs. Shares require completion on the caller.
+        // Serialize callbacks, and latch any exception before releasing the gate:
+        // Rx may detach a throwing observer before deferred fail-stop obtains its
+        // admission write lock. Later callers must never silently skip it.
+        lock(sharePublicationGate)
+        {
+            if(sharePublicationFailed)
+                throw new InvalidOperationException("Share publication is closed after a subscriber failure");
+            try { setupSubjectIfNecessary<T>(contract).OnNext(message); }
+            catch { sharePublicationFailed = true; throw; }
+        }
     }
 
     private ISubject<T> setupSubjectIfNecessary<T>(string contract)
@@ -194,7 +222,9 @@ public class MessageBus : IMessageBus, IMiningAdmissionMessageBus
                 return;
             }
 
-            ret = new ScheduledSubject<T>(getScheduler(tuple), null, new BehaviorSubject<T>(default(T)));
+            ret = typeof(T) == typeof(Share)
+                ? new BehaviorSubject<T>(default(T))
+                : new ScheduledSubject<T>(getScheduler(tuple), null, new BehaviorSubject<T>(default(T)));
             mb[tuple] = new NotAWeakReference(ret);
         });
 

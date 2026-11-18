@@ -176,6 +176,52 @@ Monitor these publisher series separately from receiver health:
 - `miningcore_share_relay_queue_high_watermark`;
 - `miningcore_share_relay_queue_bytes` and `miningcore_share_relay_queue_byte_capacity`;
 - `miningcore_share_relay_queue_rejected_total`.
+- `miningcore_share_relay_accepted_total` and `miningcore_share_relay_native_send_total`.
+
+The two totals count successful local enqueue and native PUB send, respectively. Neither
+is a receiver acknowledgement. Native congestion or a missing subscriber can discard shares
+while both totals agree and the rejection counter remains zero. The native-loss integration
+test compares these boundaries with real recorder rows in PostgreSQL after a FIFO tail marker
+has persisted; it covers PPLNS and PROP with a stalled receiver and no receiver at all.
+
+For a dedicated ordinary-share route, assign the same `relay_group` scrape label to its senders
+and its **one designated** receiver, and separate them with `role=relay_sender/relay_receiver`.
+An example discrepancy alert is:
+
+```yaml
+- alert: OrdinaryRelayDeliveryDiscrepancy
+  expr: >-
+    sum by (relay_group) (increase(miningcore_share_relay_accepted_total{role="relay_sender"}[10m]))
+    - sum by (relay_group) (increase(miningcore_valid_shares_total{role="relay_receiver"}[10m])) > 10
+  for: 5m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Accepted relay shares exceed receiver observations; inspect durable accounting"
+- alert: OrdinaryRelayReceiverMetricsMissing
+  expr: >-
+    count by (relay_group) (miningcore_share_relay_accepted_total{role="relay_sender"})
+    unless on (relay_group)
+    count by (relay_group) (miningcore_valid_shares_total{role="relay_receiver"})
+  for: 1m
+  labels:
+    severity: critical
+```
+
+Choose the count/window from the pool's financial loss budget and observed scrape/processing
+delay; 10 shares is only an example. Also alert on failed scrapes (`up == 0`), recorder recovery
+or fail-stop, and queue pressure. Receiver telemetry precedes persistence and must not be
+treated as durable evidence. During an alert, stop the affected ingress, drain healthy queues,
+and compare the sender totals for the incident interval against PostgreSQL shares grouped by
+pool/source, preserving timestamps and the counter-reset history. Account for block-only and
+merged-mining envelopes separately; the example is not valid for mixed routes or broadcast
+receivers without adapting the expected multiplicity. Do not automatically repay, synthesize
+missing shares, or clear an incident because telemetry alone matches.
+
+Operating PPLNS/PROP through PUB/SUB requires explicit operational acceptance of this lossy
+boundary in the deployment record. If missing weight-bearing shares is unacceptable, keep
+their recorder local to the ingress and do not deploy this remote-recording topology. Durable
+receiver acknowledgement/replay is not supplied by the emergency wallet-stop feature.
 
 Alert on rising occupancy and any rejection. Also compare sender accepted-share rates with
 receiver `miningcore_valid_shares_total` rates per pool, inspect recorder queue/recovery

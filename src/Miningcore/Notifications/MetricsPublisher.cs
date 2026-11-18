@@ -48,8 +48,11 @@ public class MetricsPublisher : StartupGatedBackgroundService
             var bytes = metricFactory.CreateGauge("miningcore_share_relay_queue_bytes", "Queued relay payload bytes");
             var byteCapacity = metricFactory.CreateGauge("miningcore_share_relay_queue_byte_capacity", "Relay payload byte capacity");
             var rejected = metricFactory.CreateCounter("miningcore_share_relay_queue_rejected_total", "Rejected relay publications; admission stops on rejection");
+            var accepted = metricFactory.CreateCounter("miningcore_share_relay_accepted_total", "Shares admitted to the local relay queue; not remote acknowledgements");
+            var nativeSends = metricFactory.CreateCounter("miningcore_share_relay_native_send_total", "Successful native PUB sends; not proof of remote receipt or persistence");
             var publishGate = new object();
             long published = 0;
+            long publishedAccepted = 0, publishedSends = 0;
             registry.AddBeforeCollectCallback(() =>
             {
                 lock(publishGate)
@@ -59,6 +62,12 @@ public class MetricsPublisher : StartupGatedBackgroundService
                     bytes.Set(relayMetrics.QueuedBytes); byteCapacity.Set(relayMetrics.ByteCapacity);
                     if(snapshot.OverflowCount > published) rejected.Inc(snapshot.OverflowCount - published);
                     published = Math.Max(published, snapshot.OverflowCount);
+                    var acceptedCount = relayMetrics.AcceptedCount;
+                    var sentCount = relayMetrics.NativeSendCount;
+                    if(acceptedCount > publishedAccepted) accepted.Inc(acceptedCount - publishedAccepted);
+                    if(sentCount > publishedSends) nativeSends.Inc(sentCount - publishedSends);
+                    publishedAccepted = Math.Max(publishedAccepted, acceptedCount);
+                    publishedSends = Math.Max(publishedSends, sentCount);
                 }
             });
         }

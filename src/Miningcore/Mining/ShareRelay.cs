@@ -17,6 +17,8 @@ public interface IShareRelayQueueMetricsProvider
     SharePersistenceQueueMetricsSnapshot GetRelayQueueMetrics();
     long QueuedBytes { get; }
     long ByteCapacity { get; }
+    long AcceptedCount { get; }
+    long NativeSendCount { get; }
 }
 
 public sealed class ShareRelay : IHostedService, IDisposable, IShareRelayQueueMetricsProvider
@@ -39,6 +41,9 @@ public sealed class ShareRelay : IHostedService, IDisposable, IShareRelayQueueMe
     private IDisposable subscription;
     private int depth, highWatermark, failed, disposed;
     private long queuedBytes, overflows;
+    private long accepted, nativeSends;
+    public long AcceptedCount => Interlocked.Read(ref accepted);
+    public long NativeSendCount => Interlocked.Read(ref nativeSends);
     internal int QueueCapacity { get; init; } = 4096;
     public long ByteCapacity => 16 * 1024 * 1024;
     internal const int MaximumPayloadBytes = 1024 * 1024;
@@ -90,6 +95,7 @@ public sealed class ShareRelay : IHostedService, IDisposable, IShareRelayQueueMe
                 {
                     queuedBytes += frame.Payload.Length;
                     highWatermark = Math.Max(highWatermark, ++depth);
+                    Interlocked.Increment(ref accepted);
                     return;
                 }
             }
@@ -138,6 +144,7 @@ public sealed class ShareRelay : IHostedService, IDisposable, IShareRelayQueueMe
                 message.Add(new ZFrame(frame.Flags));
                 message.Add(new ZFrame(frame.Payload));
                 socket.SendMessage(message);
+                Interlocked.Increment(ref nativeSends);
             }
         }
         catch(OperationCanceledException) when(shutdown.IsCancellationRequested) { }
