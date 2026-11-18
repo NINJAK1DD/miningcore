@@ -21,16 +21,21 @@ spec.loader.exec_module(publisher)
 phase = 'initialization'
 
 
+class QualificationError(ValueError):
+    """Reviewed static diagnostic; never include response bodies, URLs or credentials."""
+
+
+
 def upload_location(location, repository):
     if any(part in ('.', '..') for part in urllib.parse.unquote(urllib.parse.urlsplit(location).path).split('/')):
-        raise ValueError('Refusing a traversing upload location')
+        raise QualificationError('Refusing a traversing upload location')
     location = urllib.parse.urljoin('https://ghcr.io', location)
     parsed = urllib.parse.urlsplit(location)
     suffix = parsed.path.removeprefix('/v2/' + repository + '/blobs/uploads/')
     if (parsed.scheme != 'https' or parsed.netloc != 'ghcr.io' or parsed.fragment or
             not parsed.path.startswith('/v2/' + repository + '/blobs/uploads/') or
             not re.fullmatch(r'[A-Za-z0-9_-]+', suffix)):
-        raise ValueError('Refusing an upload location outside the qualification repository')
+        raise QualificationError('Refusing an upload location outside the qualification repository')
     return location
 
 
@@ -56,17 +61,17 @@ def incomplete_upload(source, destination):
     manifest = publisher.private_json(source, 'manifests', runtime)
     layer = max(manifest['layers'], key=lambda item: item['size'])
     if not re.fullmatch(r'sha256:[0-9a-f]{64}', layer['digest']) or not 0 < layer['size'] <= 16 * 1024**2:
-        raise ValueError('Qualification requires a bounded fresh synthetic layer')
+        raise QualificationError('Qualification requires a bounded fresh synthetic layer')
     authority, private_repository = source.split('@', 1)[0].split('/', 1)
     with opener.open(f'http://{authority}/v2/{private_repository}/blobs/{layer["digest"]}', timeout=60) as response:
         data = response.read(layer['size'] + 1)
     if len(data) != layer['size'] or 'sha256:' + hashlib.sha256(data).hexdigest() != layer['digest']:
-        raise ValueError('Synthetic layer checksum mismatch')
+        raise QualificationError('Synthetic layer checksum mismatch')
     blob_url = f'https://ghcr.io/v2/{repository}/blobs/{layer["digest"]}'
     def require_absent():
         try:
             with request('HEAD', blob_url):
-                raise ValueError('Partial upload fixture must not already be committed')
+                raise QualificationError('Partial upload fixture must not already be committed')
         except urllib.error.HTTPError as error:
             if error.code != 404:
                 raise
@@ -78,16 +83,16 @@ def incomplete_upload(source, destination):
         phase = 'start-partial-upload'
         with request('POST', f'https://ghcr.io/v2/{repository}/blobs/uploads/', b'') as response:
             if response.status != 202:
-                raise ValueError('Registry did not start a chunked upload')
+                raise QualificationError('Registry did not start a chunked upload')
             location = upload_location(response.headers['Location'], repository)
             length = max(len(data) // 2, int(response.headers.get('OCI-Chunk-Min-Length', '1')))
         if length >= len(data):
-            raise ValueError('Synthetic layer is too small for the registry minimum chunk size')
+            raise QualificationError('Synthetic layer is too small for the registry minimum chunk size')
         phase = 'send-partial-upload'
         with request('PATCH', location, data[:length], {'Content-Type': 'application/octet-stream',
                      'Content-Range': f'0-{length - 1}'}) as response:
             if response.status != 202 or response.headers.get('Range') != f'0-{length - 1}':
-                raise ValueError('Registry did not confirm the expected incomplete byte range')
+                raise QualificationError('Registry did not confirm the expected incomplete byte range')
             location = upload_location(response.headers['Location'], repository)
         phase = 'verify-uncommitted-blob-absence'
         require_absent()  # No closing PUT: uploaded bytes must not form a visible blob.
@@ -108,15 +113,15 @@ def inspect_download(directory, digest):
     def blob(descriptor):
         value = descriptor['digest']
         if not re.fullmatch(r'sha256:[0-9a-f]{64}', value):
-            raise ValueError('Invalid downloaded OCI digest')
+            raise QualificationError('Invalid downloaded OCI digest')
         raw = (directory / 'blobs/sha256' / value[7:]).read_bytes()
         if hashlib.sha256(raw).hexdigest() != value[7:]:
-            raise ValueError('Downloaded OCI content hash mismatch')
+            raise QualificationError('Downloaded OCI content hash mismatch')
         return json.loads(raw)
     index = blob({'digest': digest})
     runtimes = [m for m in index['manifests'] if m.get('platform') == {'os': 'linux', 'architecture': 'amd64'}]
     if len(runtimes) != 1:
-        raise ValueError('Downloaded index does not identify one qualified runtime')
+        raise QualificationError('Downloaded index does not identify one qualified runtime')
     runtime_digest = runtimes[0]['digest'].removeprefix('sha256:')
     attestations = []
     for descriptor in index['manifests']:
@@ -126,19 +131,19 @@ def inspect_download(directory, digest):
         for layer in manifest['layers']:
             payload = blob(layer)
             if not any(subject.get('digest', {}).get('sha256') == runtime_digest for subject in payload.get('subject', [])):
-                raise ValueError('Downloaded attestation subject differs from the qualified runtime')
+                raise QualificationError('Downloaded attestation subject differs from the qualified runtime')
             attestations.append({'manifest_digest': descriptor['digest'], 'payload_digest': layer['digest'],
                                  'predicate_type': payload['predicateType']})
     predicates = {item['predicate_type'] for item in attestations}
     if 'https://spdx.dev/Document' not in predicates or not any(p.startswith('https://slsa.dev/provenance/') for p in predicates):
-        raise ValueError('Downloaded provenance or SBOM is missing')
+        raise QualificationError('Downloaded provenance or SBOM is missing')
     return attestations
 
 
 def qualify(source, destination):
     global phase
     if not re.fullmatch(r'ghcr\.io/[a-z0-9][a-z0-9-]*/miningcore-release-qualification:qualification-[a-z0-9-]+', destination):
-        raise ValueError('Qualification requires a dedicated GHCR repository and unique qualification tag')
+        raise QualificationError('Qualification requires a dedicated GHCR repository and unique qualification tag')
     publisher.policy.secrets.install()
     # Inspect before *any* remote blob write, including the partial-upload probe.
     phase = 'inspect-private-candidate'
@@ -166,7 +171,7 @@ def qualify(source, destination):
         finally:
             publisher.subprocess.run = real_run
         if not interrupted:
-            raise ValueError('Qualification did not exercise lost-copy-response recovery')
+            raise QualificationError('Qualification did not exercise lost-copy-response recovery')
         phase = 'retry-immutable-publication'
         digest = publisher.publish(source, destination)
     with tempfile.TemporaryDirectory(prefix='miningcore-registry-qualification-') as temporary:
@@ -182,7 +187,7 @@ def qualify(source, destination):
         attestations = inspect_download(directory, digest)
         blob = directory / 'blobs/sha256' / partial['blob_digest'][7:]
         if hashlib.sha256(blob.read_bytes()).hexdigest() != partial['blob_digest'][7:]:
-            raise ValueError('Recovered partial-upload layer did not download with the expected hash')
+            raise QualificationError('Recovered partial-upload layer did not download with the expected hash')
     return {'destination': destination, 'index_digest': digest, 'attestations': attestations,
             'lost_copy_response_recovery': True, 'partial_blob_upload_interruption_tested': True,
             'partial_upload': partial,
@@ -204,6 +209,8 @@ if __name__ == '__main__':
         # Never put authentication headers, upload session URLs or raw server
         # responses into public logs. Missing evidence means failed qualification.
         status = f'; HTTP {error.code}' if isinstance(error, urllib.error.HTTPError) else ''
+        if isinstance(error, QualificationError):
+            status += '; ' + str(error)
         parser.exit(1, f'Registry qualification failed at {phase} ({type(error).__name__}{status}); production remains disabled.\n')
     with open(args.report, 'x', encoding='utf-8') as output:
         json.dump(result, output, indent=2)

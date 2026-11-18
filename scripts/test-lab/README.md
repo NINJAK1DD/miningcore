@@ -16,7 +16,9 @@ A file deleted by a later image
 layer still fails. Package assembly and asset collection enforce the same archive policy.
 
 The policy rejects lab directories, test result/coverage files, Miningcore test assemblies,
-wallet/keytab/credential-cache artifacts and Git metadata. Application payloads additionally
+wallet/keytab/credential-cache artifacts and Git metadata. Captured `docs/fixtures` proof
+data stays in the source repository; binary packages ship the Markdown operator guides.
+Application payloads additionally
 reject build/cache/log directories, dumps, bundles, private configs and recovery journals.
 Normal OS logs, operator documentation, example configs and migrations remain permitted.
 The gate combines path policy with a checksum-pinned Gitleaks scan of allowed file contents,
