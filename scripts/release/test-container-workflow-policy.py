@@ -32,6 +32,23 @@ def serviced_image(docker, family, minimum, stage=None):
 
 
 class WorkflowPolicyTests(unittest.TestCase):
+    def test_publication_requires_explicit_registry_qualification(self):
+        for filename, job, step_name, variable in (
+            ('release.yml', 'publish-release', 'Require completed GHCR qualification', 'GHCR_PUBLICATION_QUALIFIED'),
+            ('docker-image.yml', 'build', 'Validate Docker Hub publication destination', 'DOCKERHUB_PUBLICATION_QUALIFIED')):
+            workflow = yaml.load((ROOT / '.github/workflows' / filename).read_text(), Loader=yaml.BaseLoader)
+            steps = workflow['jobs'][job]['steps']
+            gate = next(s for s in steps if s['name'] == step_name)
+            self.assertEqual('${{ vars.' + variable + ' }}', gate['env']['PUBLICATION_QUALIFIED'])
+            self.assertIn('"$PUBLICATION_QUALIFIED" != true', gate['run'])
+            self.assertIn('exit 1', gate['run'])
+            self.assertNotIn('continue-on-error', gate)
+            if filename == 'release.yml':
+                self.assertNotIn('if', gate)
+            for step in steps:
+                if 'docker/login-action@' in step.get('uses', '') or 'publish-verified-image.py' in step.get('run', ''):
+                    self.assertLess(steps.index(gate), steps.index(step))
+
     def test_production_contents_gates_cannot_skip_or_follow_publication(self):
         workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
         for job_name, build_name, check_name in [
@@ -102,7 +119,15 @@ class WorkflowPolicyTests(unittest.TestCase):
                          'The publisher owns private inspection; do not duplicate the pull')
         self.assertIn('publish-verified-image.py', promotion['run'])
         self.assertIn('--source "127.0.0.1:5000/miningcore@$IMAGE_DIGEST"', promotion['run'])
-        self.assertIn('--destination docker.io/theretromike/miningcore:latest', promotion['run'])
+        self.assertIn('--destination "docker.io/$DOCKERHUB_REPOSITORY:latest"', promotion['run'])
+        self.assertEqual('${{ vars.DOCKERHUB_REPOSITORY }}', promotion['env']['DOCKERHUB_REPOSITORY'])
+        validation = next(s for s in steps if s['name'] == 'Validate Docker Hub publication destination')
+        login = next(s for s in steps if s['name'] == 'Log in to Docker Hub')
+        self.assertLess(steps.index(validation), steps.index(login))
+        self.assertEqual(promotion['if'], validation['if'])
+        self.assertNotIn('continue-on-error', validation)
+        self.assertIn('exit 1', validation['run'])
+        self.assertNotIn('theretromike', (ROOT / '.github/workflows/docker-image.yml').read_text())
 
     def test_docker_hub_trigger_covers_publication_inputs(self):
         workflow = yaml.load((ROOT / '.github/workflows/docker-image.yml').read_text(), Loader=yaml.BaseLoader)

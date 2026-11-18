@@ -41,9 +41,9 @@ class ProductionContentsTests(unittest.TestCase):
         self.path.write_bytes(tar_bytes([('release/Miningcore', b'host'), *entries], True))
         return policy.verify_archive(self.path)
 
-    def image(self, layers):
-        manifest = json.dumps([{'Layers': [f'{n}/layer.tar' for n in range(len(layers))]}]).encode()
-        entries = [('manifest.json', manifest)] + [(f'{n}/layer.tar', tar_bytes(layer)) for n, layer in enumerate(layers)]
+    def image(self, layers, config=None):
+        manifest = json.dumps([{'Config': 'config.json', 'Layers': [f'{n}/layer.tar' for n in range(len(layers))]}]).encode()
+        entries = [('manifest.json', manifest), ('config.json', json.dumps(config or {}).encode())] + [(f'{n}/layer.tar', tar_bytes(layer)) for n, layer in enumerate(layers)]
         self.path.write_bytes(tar_bytes(entries))
         return policy.verify_saved_image(self.path)
 
@@ -51,6 +51,22 @@ class ProductionContentsTests(unittest.TestCase):
         self.release([(name, b'normal') for name in ['release/docs/database.md',
             'release/migrations/add_wallet_payout_control.sql', 'release/scripts/ops/audit.sql',
             'release/config.example.json', 'release/Miningcore.dll', 'release/Miningcore.pdb']])
+
+    def test_synthetic_credentials_in_allowed_files_and_metadata_are_rejected(self):
+        # Nonfunctional format-valid token, assembled so source scans do not
+        # mistake the negative test itself for a published credential.
+        canary = 'ghp_' + 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hI6'
+        for payload in (canary.encode(), canary.encode('utf-16-le'),
+                        b'\x7fELF' + b'\0' * 65520 + canary.encode()):
+            with self.subTest(encoding=len(payload)), self.assertRaisesRegex(ValueError, 'secret scan'):
+                self.release([('release/settings.txt', payload)])
+        for config in ({'config': {'Env': ['ACCESS_TOKEN=' + canary]}},
+                       {'config': {'Labels': {'build.note': canary}}}):
+            with self.subTest(config_type=list(config['config'])), self.assertRaisesRegex(ValueError, 'secret scan'):
+                self.image([[('app/Miningcore', b'host')]], config)
+        with self.assertRaisesRegex(ValueError, 'secret scan'):
+            self.image([[('app/Miningcore', b'host'), ('app/settings.txt', canary.encode())],
+                        [('app/.wh.settings.txt', b'')]])
 
     def test_lab_and_generated_artifacts_are_rejected(self):
         for suffix in ['scripts/test-lab/README.md', './scripts/test-lab/run.py',
@@ -107,7 +123,8 @@ class ProductionContentsTests(unittest.TestCase):
     def test_zstd_layers_have_actionable_diagnostic(self):
         for magic in (0xFD2FB528, 0x184D2A50, 0x184D2A5F):
             self.path.write_bytes(tar_bytes([
-                ('manifest.json', b'[{"Layers":["layer.tar"]}]'),
+                ('manifest.json', b'[{"Config":"config.json","Layers":["layer.tar"]}]'),
+                ('config.json', b'{}'),
                 ('layer.tar', magic.to_bytes(4, 'little') + b'fixture')]))
             with self.subTest(magic=magic), self.assertRaisesRegex(ValueError, 'Unsupported zstd.*uncompressed or gzip'):
                 policy.verify_saved_image(self.path)
@@ -179,4 +196,5 @@ class ProductionContentsTests(unittest.TestCase):
 
 
 if __name__ == '__main__':
+    policy.secrets.install()
     unittest.main()

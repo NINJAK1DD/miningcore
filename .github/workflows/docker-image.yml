@@ -63,6 +63,24 @@ jobs:
         timeout-minutes: 10
         run: python3 -B scripts/test-lab/validate-registry-content-gate.py
 
+      - name: Validate Docker Hub publication destination
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
+          PUBLICATION_QUALIFIED: ${{ vars.DOCKERHUB_PUBLICATION_QUALIFIED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLICATION_QUALIFIED" != true ]]; then
+            echo 'Docker Hub publication is disabled until registry qualification is recorded.' >&2
+            exit 1
+          fi
+          # No inherited upstream namespace or automatic publication fallback.
+          if [[ ! "$DOCKERHUB_REPOSITORY" =~ ^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9._-]*$ ]]; then
+            echo 'Configure DOCKERHUB_REPOSITORY as an owned namespace/repository before publishing.' >&2
+            exit 1
+          fi
+
       - name: Log in to Docker Hub
         if: github.event_name == 'workflow_dispatch'
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
@@ -74,7 +92,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: theretromike/miningcore
+          images: miningcore-preview
 
       - name: Build Docker image for content verification
         timeout-minutes: 38
@@ -86,13 +104,13 @@ jobs:
           build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420
           load: true
           push: false
-          tags: theretromike/miningcore
+          tags: miningcore-preview:local
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
           sbom: false
 
       - name: Reject lab artifacts in Docker Hub image layers
-        run: python3 -B scripts/release/verify-production-contents.py --image theretromike/miningcore
+        run: python3 -B scripts/release/verify-production-contents.py --image miningcore-preview:local
 
       # Reuse the same builder/cache and inputs only after its filesystem passed.
       # The registry build retains provenance/SBOM, unsupported by the local load.
@@ -117,6 +135,7 @@ jobs:
         timeout-minutes: 20
         env:
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -124,6 +143,6 @@ jobs:
           # The helper inspects the private digest before the first public upload.
           python3 -B scripts/release/publish-verified-image.py \
             --source "127.0.0.1:5000/miningcore@$IMAGE_DIGEST" \
-            --destination docker.io/theretromike/miningcore:latest
-          printf 'Published `theretromike/miningcore@%s` with provenance and SBOM.\n' \
-            "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+            --destination "docker.io/$DOCKERHUB_REPOSITORY:latest"
+          printf 'Published `docker.io/%s@%s` with provenance and SBOM.\n' \
+            "$DOCKERHUB_REPOSITORY" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"

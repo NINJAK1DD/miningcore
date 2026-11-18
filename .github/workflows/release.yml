@@ -949,6 +949,17 @@ jobs:
           name: release-assets
           path: dist
 
+      - name: Require completed GHCR qualification
+        env:
+          PUBLICATION_QUALIFIED: ${{ vars.GHCR_PUBLICATION_QUALIFIED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLICATION_QUALIFIED" != true ]]; then
+            echo 'GHCR publication is disabled until registry qualification is recorded.' >&2
+            exit 1
+          fi
+
       - name: Resolve lowercase GHCR image name
         id: image
         shell: bash

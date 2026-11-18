@@ -6,13 +6,18 @@ including files hidden or deleted by later layers. This is a distribution policy
 not a replacement for secret scanning or a content-based malware scan.
 """
 import argparse
+import importlib.util
 import json
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import posixpath
 import re
 import subprocess
 import tarfile
 import tempfile
+
+spec = importlib.util.spec_from_file_location('production_secrets', Path(__file__).with_name('production-secrets.py'))
+secrets = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(secrets)
 
 
 def normalized(name):
@@ -66,9 +71,12 @@ def verify_archive(path):
     count = 0
     app = False
     roots = set()
-    with tarfile.open(path, 'r|gz') as archive:
+    with secrets.SecretScan() as scan, tarfile.open(path, 'r|gz') as archive:
         for member in archive:
             name = check_member(member)
+            if member.isfile():
+                with archive.extractfile(member) as content:
+                    scan.add(content)
             if name != '.':
                 roots.add(PurePosixPath(name).parts[0])
             app |= member.isfile() and len(PurePosixPath(name).parts) == 2 and name.endswith('/Miningcore')
@@ -82,7 +90,7 @@ def verify_archive(path):
 def verify_saved_image(path):
     count = 0
     app = False
-    with tarfile.open(path, 'r:') as saved:
+    with secrets.SecretScan() as scan, tarfile.open(path, 'r:') as saved:
         manifest = saved.getmember('manifest.json')
         if not manifest.isfile() or manifest.size > 1024 * 1024:
             raise ValueError('Invalid Docker image manifest')
@@ -93,6 +101,12 @@ def verify_saved_image(path):
         layers = images[0].get('Layers')
         if not isinstance(layers, list) or not layers or any(not isinstance(x, str) for x in layers):
             raise ValueError('Image manifest has no valid layers')
+        scan.json(images)
+        config = saved.getmember(normalized(images[0]['Config']))
+        if not config.isfile() or config.size > 16 * 1024 * 1024:
+            raise ValueError('Invalid Docker image configuration')
+        with saved.extractfile(config) as content:
+            scan.json(json.load(content))
         for layer in layers:
             entry = saved.getmember(normalized(layer))
             if not entry.isfile():
@@ -107,6 +121,9 @@ def verify_saved_image(path):
                 with tarfile.open(fileobj=stream, mode='r|*') as archive:
                     for member in archive:
                         name = check_member(member, image=True)
+                        if member.isfile():
+                            with archive.extractfile(member) as content:
+                                scan.add(content)
                         app |= member.isfile() and name == 'app/Miningcore'
                         count += 1
                         archive.members.clear()
@@ -138,6 +155,7 @@ def main():
     group.add_argument('--registry-image', help='pull and inspect an immutable image@sha256 digest (linux/amd64)')
     args = parser.parse_args()
     try:
+        secrets.install()
         if args.archive:
             count = verify_archive(args.archive)
             print(f'Production archive contents passed: {count} entries')

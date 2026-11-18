@@ -3519,7 +3519,12 @@ used by the tested workflows, while migrating retired Docker and MSBuild runtime
 and setup-dotnet v6 introduce separate ESM/dependency migrations; Dependabot may propose those
 major upgrades for independent review. There is no major-version ignore rule.
 
-The legacy Docker Hub publisher retains its manual destination and credentials. Pull requests
+The Docker Hub publisher requires the repository variable `DOCKERHUB_REPOSITORY` to name an
+owned `namespace/repository`, and `DOCKER_USER` / `DOCKER_PASSWORD` secrets with publication
+access to that repository. There is no default destination: an unset or malformed repository
+fails before login. Do not configure the upstream author's namespace unless you control it.
+Use a separate repository such as `<your-namespace>/miningcore-release-qualification` for
+authorized qualification; do not use production `latest` for qualification experiments. Pull requests
 changing that workflow build with the same metadata/Buildx actions but cannot log in or push to
 Docker Hub; only `workflow_dispatch` enables public publication. Published images include BuildKit
 provenance and an SBOM, and the run summary records the immutable image digest. Both publishers
@@ -3550,12 +3555,27 @@ Release durable or promoting any release tags. Resumed publication re-runs the c
 recorded digest. A failed pull, unsupported layer compression or forbidden artifact stops promotion;
 the earlier preview check cannot substitute for this registry check.
 
-On the first authorized public release, verify registry authentication/access controls, confirm
+Production publishing fails closed until the repository administrator records successful
+qualification and sets `GHCR_PUBLICATION_QUALIFIED=true` (or, separately,
+`DOCKERHUB_PUBLICATION_QUALIFIED=true`). Leave an unused registry disabled. These are operator
+attestations, not automatic proof: retain the successful run, identity/permission review,
+candidate and retrieved index digests, provenance/SBOM digests, and interruption/retry evidence
+in the PR before enabling publication. Qualify a separate repository using the intended workflow
+identity and permission model; do not use production tags for experiments. On qualification, verify registry authentication/access controls, confirm
 the destination digest matches the inspected candidate, and retrieve both provenance and SBOM
 from the destination. Disposable-registry tests do not qualify production registry permissions.
-Continue content-based secret scanning alongside the artifact-path checks: review build arguments
-and provenance metadata for credentials, and use BuildKit secret mounts for build credentials.
-An allowed filename or attestation can still contain sensitive data that the path policy cannot detect.
+The content gate also scans allowed regular-file contents in every saved layer, image
+configuration (including environment and labels), and registry attestation payloads before
+uploading anything publicly. Gitleaks 8.30.1 is pinned by archive and executable SHA-256;
+the CLI installs it under ignored `build/release-tools` when missing, and verifies it before
+every scan. Direct library callers must run `production-secrets.py --install` first. Scanner
+errors, checksum failures, unsupported attestations and input-budget exhaustion reject the
+candidate. Metadata is fetched only from the runner-private registry by digest, with redirects
+and proxies disabled. Candidate ignore files/comments cannot suppress findings, and CI emits
+no matching values. Synthetic allowed-file, binary/UTF-16, environment/label, provenance and
+SBOM negatives exercise this boundary. This is pattern-based detection, not a proof that all
+possible credentials, encrypted data or malware are absent; review build arguments and use
+BuildKit secret mounts for build credentials. No raw scanner input/report is uploaded.
 
 The PostgreSQL 17 service containers deliberately retain serviced major tags for disposable
 integration-test databases. They are outside the archive-build pin/monitor contract; test jobs

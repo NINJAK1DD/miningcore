@@ -16,6 +16,30 @@ DESTINATION = 'docker.io/example/miningcore:latest'
 
 
 class PublicationTests(unittest.TestCase):
+    def test_attestation_secrets_reject_before_any_destination_write(self):
+        canary = 'ghp_' + 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hI6'
+        for predicate in ('https://slsa.dev/provenance/v1', 'https://spdx.dev/Document'):
+            manifest = {'config': {}, 'layers': [{'mediaType': 'application/vnd.in-toto+json'}]}
+            with self.subTest(predicate=predicate), \
+                 patch.object(publisher.subprocess, 'run') as command, \
+                 patch.object(publisher.policy, 'verify_image'), \
+                 patch.object(publisher, 'private_json', side_effect=[manifest, {}, manifest, {},
+                     {'predicateType': predicate, 'predicate': {'buildNote': canary}}]):
+                command.return_value.stdout = json.dumps(self.index()).encode()
+                with self.assertRaisesRegex(ValueError, 'secret scan'):
+                    publisher.publish(SOURCE, DESTINATION)
+                self.assertEqual(1, command.call_count)
+                self.assertNotIn(DESTINATION, command.call_args.args[0])
+
+    def test_metadata_fetch_failure_prevents_publication(self):
+        with patch.object(publisher.subprocess, 'run') as command, \
+             patch.object(publisher.policy, 'verify_image'), \
+             patch.object(publisher, 'private_json', side_effect=ValueError('checksum mismatch')):
+            command.return_value.stdout = json.dumps(self.index()).encode()
+            with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                publisher.publish(SOURCE, DESTINATION)
+            self.assertEqual(1, command.call_count)
+
     def index(self):
         return {'schemaVersion': 2, 'manifests': [
             {'digest': DIGEST, 'platform': {'os': 'linux', 'architecture': 'amd64'}},
@@ -59,11 +83,14 @@ class PublicationTests(unittest.TestCase):
         def command(args, **kwargs):
             events.append(args)
             return subprocess.CompletedProcess(args, 0, json.dumps(self.index()).encode() if '--raw' in args else DIGEST)
-        with patch.object(publisher.subprocess, 'run', side_effect=command), \
+        with patch.object(publisher, 'inspect_oci_secrets',
+                          side_effect=lambda *a: events.append('metadata verified')), \
+             patch.object(publisher.subprocess, 'run', side_effect=command), \
              patch.object(publisher.policy, 'verify_image', side_effect=lambda *a, **k: events.append('verified')):
             self.assertEqual(DIGEST, publisher.publish(SOURCE, DESTINATION))
         self.assertEqual('verified', events[1])
-        copy = events[2]
+        self.assertEqual('metadata verified', events[2])
+        copy = events[3]
         for option in ('--all', '--preserve-digests', '--dest-tls-verify=true', '--src-tls-verify=false'):
             self.assertIn(option, copy)
         self.assertEqual(['docker://' + SOURCE, 'docker://' + DESTINATION], copy[-2:])
@@ -77,10 +104,11 @@ class PublicationTests(unittest.TestCase):
                     raise subprocess.CalledProcessError(1, args)
                 return subprocess.CompletedProcess(args, 0, 'sha256:' + 'b' * 64)
             with self.subTest(fail_copy=fail_copy), patch.object(publisher.subprocess, 'run', side_effect=command), \
-                 patch.object(publisher.policy, 'verify_image'):
+                 patch.object(publisher.policy, 'verify_image'), patch.object(publisher, 'inspect_oci_secrets'):
                 with self.assertRaises((ValueError, subprocess.CalledProcessError)):
                     publisher.publish(SOURCE, DESTINATION)
 
 
 if __name__ == '__main__':
+    publisher.policy.secrets.install()
     unittest.main()

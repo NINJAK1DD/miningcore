@@ -68,12 +68,13 @@ def main():
                              if s['name'] == 'Inspect private candidate and publish verified staged container')
             # Execute the real gate/promotion commands against only this private
             # fixture repository. No external registry credentials or tags are used.
-            promote = promote.replace('127.0.0.1:5000/miningcore', repository).replace('docker.io/theretromike/miningcore', destination)
+            promote = promote.replace('127.0.0.1:5000/miningcore', repository).replace('docker.io/$DOCKERHUB_REPOSITORY', destination)
             ghcr_gate = ghcr_gate.replace('127.0.0.1:5000/miningcore', repository)
-            env = dict(os.environ, DESTINATION_IMAGE=destination + ':ghcr', GITHUB_STEP_SUMMARY=str(scratch / 'summary'),
+            env = dict(os.environ, DOCKERHUB_REPOSITORY='fixture/qualification', DESTINATION_IMAGE=destination + ':ghcr', GITHUB_STEP_SUMMARY=str(scratch / 'summary'),
                        GITHUB_OUTPUT=str(scratch / 'outputs'))
             digests = {}
-            for kind in ('clean', 'contaminated'):
+            canary = 'ghp_' + 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hI6'
+            for kind in ('clean', 'contaminated', 'allowed-file-secret', 'label-secret', 'environment-secret', 'provenance-secret'):
                 context = scratch / kind
                 context.mkdir()
                 (context / 'Miningcore').write_text('non-executable fixture')
@@ -81,12 +82,23 @@ def main():
                 if kind == 'contaminated':
                     (context / 'private.trx').write_text('fixture-only, no secrets')
                     dockerfile += 'COPY private.trx /tmp/private.trx\n'
+                if kind == 'allowed-file-secret':
+                    (context / 'settings.txt').write_text(canary)
+                    dockerfile += 'COPY settings.txt /app/settings.txt\n'
+                if kind == 'label-secret':
+                    dockerfile += f'LABEL build.note={canary}\n'
+                if kind == 'environment-secret':
+                    dockerfile += f'ENV ACCESS_TOKEN={canary}\n'
+                build_args = []
+                if kind == 'provenance-secret':
+                    dockerfile += 'ARG BUILD_NOTE\n'
+                    build_args = ['--build-arg', 'BUILD_NOTE=' + canary]
                 (context / 'Dockerfile').write_text(dockerfile)
                 metadata = scratch / f'{kind}.json'
                 tag = repository + ':' + kind
                 images.append(tag)
                 run('docker', 'buildx', 'build', '--builder', name, '--platform=linux/amd64', '--provenance=mode=max',
-                    '--sbom=true', '--push', '--tag', tag, '--metadata-file', str(metadata), str(context))
+                    '--sbom=true', '--push', '--tag', tag, '--metadata-file', str(metadata), *build_args, str(context))
                 digest = json.loads(metadata.read_text())['containerimage.digest']
                 digests[kind] = digest
                 images.append(repository + '@' + digest)
@@ -117,17 +129,21 @@ def main():
                                           for layer in manifest['layers'])
                     if not any(p and 'slsa.dev/provenance/' in p for p in predicates) or 'https://spdx.dev/Document' not in predicates:
                         raise RuntimeError('Expected both provenance and SBOM attestations')
-                elif (result.returncode == 0 or ghcr.returncode == 0 or
-                      'Forbidden production artifact' not in result.stderr or
-                      'Forbidden production artifact' not in ghcr.stderr):
-                    raise RuntimeError('Contaminated staged image was not rejected by both gates')
-                if kind == 'contaminated':
+                else:
+                    expected = 'Forbidden production artifact' if kind == 'contaminated' else 'secret scan'
+                    if (result.returncode == 0 or ghcr.returncode == 0 or
+                            expected not in result.stderr or expected not in ghcr.stderr):
+                        raise RuntimeError(f'{kind} was not rejected by both gates')
+                if kind != 'clean':
                     index = json.loads(run('docker', 'buildx', 'imagetools', 'inspect', repository + '@' + digest, '--raw'))
                     runtime = next(m for m in index['manifests'] if m['platform']['os'] == 'linux')
                     manifest = json.loads(run('docker', 'buildx', 'imagetools', 'inspect', repository + '@' + runtime['digest'], '--raw'))
                     # The dirty layer and its index must never reach the public side,
                     # even though the private candidate was built successfully.
-                    for path in ('manifests/' + digest, 'blobs/' + manifest['layers'][-1]['digest']):
+                    paths = ['manifests/' + digest]
+                    if kind in ('contaminated', 'allowed-file-secret'):
+                        paths.append('blobs/' + manifest['layers'][-1]['digest'])
+                    for path in paths:
                         try:
                             urllib.request.urlopen(f'http://127.0.0.1:{ports[1]}/v2/fixture/{path}', timeout=3)
                         except urllib.error.HTTPError as error:
