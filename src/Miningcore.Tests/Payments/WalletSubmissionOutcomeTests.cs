@@ -32,6 +32,17 @@ public class WalletSubmissionOutcomeTests
         Assert.NotEqual(snapshot.Digest, WalletPayoutBatch.Create("pool", balances).Digest);
         Assert.Equal(64, snapshot.Digest.Length);
     }
+
+    [Fact]
+    public void OperatorReconciliationDigest_MatchesProductionEncoding()
+    {
+        var snapshot = WalletPayoutBatch.Create("pool", new[]
+        {
+            new Miningcore.Persistence.Model.Balance { Address = "miner-a", Amount = 1.25m },
+            new Miningcore.Persistence.Model.Balance { Address = "miner-b", Amount = 2.5m },
+        });
+        Assert.Equal("b0721cbaab9da336c2464d0ebd00fb7f7cf389be5dbe882629e8d59b606b7de9", snapshot.Digest);
+    }
     [Theory]
     [InlineData(-32601)]
     [InlineData(-32602)]

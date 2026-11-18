@@ -256,6 +256,43 @@ does not expose it. A completion-recording failure reports a control incident,
 preserves the original handler failure if any, and does not relabel paid recipients
 as having uncertain wallet outcomes.
 
+### Read-only reconciliation evidence report
+
+`scripts/ops/wallet-payout-reconciliation.py` compares private operator exports without
+connecting to the database or wallet. It never invokes `finish_batch`, `reconcile_batch`,
+changes a balance, or submits a transfer. Preserve the original evidence under incident
+access controls; do not commit it or upload it as a public CI artifact.
+
+Provide three JSON files:
+
+- Database export: `{"batch":{"id":"<batch UUID>","epoch":3,"pool_id":"pool","digest":"<original digest>"},"payments":[{"address":"miner-a","amount":"1.25","transaction_id":"<receipt>"}]}`.
+- Original snapshot, when available: `[{"address":"miner-a","amount":"1.25"},{"address":"miner-b","amount":"2.5"}]`.
+- Wallet evidence normalized after reviewing wallet/chain history: `{"payments":[{"address":"miner-a","amount":"1.25","transaction_id":"<receipt>"}]}`.
+
+Export only the identified batch's receipts using a read-only database session and retain
+the original SQL selection, wallet RPC responses, chain status and observation times alongside
+the normalized inputs. Amounts are strings, never JSON floats. The original snapshot must use
+the exact invariant `.NET decimal.ToString("G29")` amounts used at admission; the utility checks
+its SHA-256 identity using the production encoding. Current balances are not an original
+snapshot. A digest cannot reconstruct addresses or amounts. Omit `--snapshot` if unavailable:
+the report explicitly records that recipients cannot be established.
+
+```sh
+python3 scripts/ops/wallet-payout-reconciliation.py \
+  --database-export incident/database.json --wallet-export incident/wallet.json \
+  --snapshot incident/original-snapshot.json --output incident/reconciliation-report.json
+```
+
+The output must not already exist; it is owner-only on POSIX. On Windows, protect the incident
+directory's ACL before running the command. The report records input SHA-256 hashes and only
+marks a recipient's evidence as matching when a single exact payment receipt agrees in both
+exports. Missing, duplicate, changed-amount, split, fee-adjusted or contradictory receipts remain
+uncertain. Absence never proves `NotAttempted`. Exports are operator-supplied evidence, not
+authenticated attestations: independently verify completeness, confirmations and attribution.
+The report always says it does **not** authorize reconciliation. Reference the reviewed report
+and retained evidence in the incident reason only after completing the manual procedure above.
+No additional recipient manifest is stored in the control schema or exposed to its runtime role.
+
 ## Retention and archival
 
 Sample the following read-only inventory daily using the monitoring login, retaining
