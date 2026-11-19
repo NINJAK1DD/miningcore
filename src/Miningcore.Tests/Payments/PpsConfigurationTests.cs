@@ -19,24 +19,54 @@ public class PpsConfigurationTests
     public void PpsRelayRequiresAuthenticatedTransport(bool sender, bool disabled)
     {
         var config = CreateConfig(CoinFamily.Bitcoin);
+        config.PaymentProcessing.Paused = disabled;
         config.Pools[0].PaymentProcessing.Enabled = !disabled;
         config.ShareRelay = sender ? new ShareRelayConfig() : null;
         config.ShareRelays = sender ? null : new[] { new ShareRelayEndpointConfig() };
         Assert.Throws<PoolStartupException>(() => ShareRelaySecurity.Validate(config));
-        foreach(var placeholder in new[] { "REPLACE_WITH_A_LONG_RANDOM_SECRET", "  change_me_to_a_long_random_secret " })
+        void SetKey(string value)
         {
-            if(sender) config.ShareRelay.SharedEncryptionKey = placeholder;
-            else config.ShareRelays[0].SharedEncryptionKey = placeholder;
+            if(sender) config.ShareRelay.SharedEncryptionKey = value;
+            else config.ShareRelays[0].SharedEncryptionKey = value;
+        }
+        foreach(var invalid in new[] { new string('a', 31), new string('a', 31) + " ",
+            "REPLACE_WITH_A_LONG_RANDOM_SECRET", "  change_me_to_a_long_random_secret ",
+            "CHANGE_ME" + new string('a', 32), "RePlAcE_" + new string('a', 32) })
+        {
+            SetKey(invalid);
             Assert.Throws<PoolStartupException>(() => ShareRelaySecurity.Validate(config));
         }
-        if(sender) config.ShareRelay.SharedEncryptionKey = "isolated-fixture-key-32-characters-minimum";
-        else config.ShareRelays[0].SharedEncryptionKey = "isolated-fixture-key-32-characters-minimum";
-        ShareRelaySecurity.Validate(config);
+        foreach(var valid in new[] { new string('a', 32), "isolated-fixture-key-32-characters-minimum" })
+        {
+            SetKey(valid);
+            ShareRelaySecurity.Validate(config);
+        }
         if(sender)
         {
             config.ShareRelay.Connect = true;
             Assert.Throws<PoolStartupException>(() => ShareRelaySecurity.Validate(config));
         }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NonPpsRelayWarnsWithoutDisclosingKeyOrRequiringOne(bool sender)
+    {
+        var config = CreateConfig(CoinFamily.Bitcoin);
+        config.Pools[0].PaymentProcessing.PayoutScheme = PayoutScheme.SOLO;
+        config.ShareRelay = sender ? new ShareRelayConfig() : null;
+        config.ShareRelays = sender ? null : new[] { new ShareRelayEndpointConfig() };
+        var warnings = new List<string>();
+        ShareRelaySecurity.Validate(config, warnings.Add);
+        Assert.Empty(warnings);
+        const string key = " RePlAcE_private-fixture-suffix ";
+        if(sender) config.ShareRelay.SharedEncryptionKey = key;
+        else config.ShareRelays[0].SharedEncryptionKey = key;
+        ShareRelaySecurity.Validate(config, warnings.Add);
+        var message = Assert.Single(warnings);
+        Assert.Contains("placeholder", message);
+        Assert.DoesNotContain("private-fixture-suffix", message);
     }
 
     [Theory]

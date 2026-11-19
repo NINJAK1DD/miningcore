@@ -9,8 +9,8 @@ archive, and a successful build is not evidence that a real wallet is reconciled
 1. Record the old binary/image identity, configuration, service overrides, database
    roles, filesystems holding recovery journals, wallet backups and **every process**
    sharing the database or wallet. Include remote relay senders and payout consumers.
-2. For an archive, explicitly select the published RC.2 in the release guide's
-   download block, verify checksums and provenance,
+2. For an archive, explicitly select the published RC.2 in the
+   [archive version selection and download instructions](releases.md#choose-a-version), verify checksums and provenance,
    and stage into a new versioned directory, without replacing the active installation.
    Match Ubuntu 22.04 or 26.04 x64; 24.04 uses a source build. Compare the peeled
    release commit from the [independent lookup](releases.md#resolve-the-release-source-commit)

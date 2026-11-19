@@ -84,7 +84,7 @@ cp "$repository_root/packaging/systemd/miningcore.service" \
     "$package_root/systemd/"
 
 python3 "$repository_root/scripts/release/render-release-doc.py" install "$source_commit" \
-    "${GITHUB_REPOSITORY:-NINJAK1DD/miningcore}" "$package_root"
+    "${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY to the GitHub owner/repository containing the packaged commit}" "$package_root"
 
 cat > "$package_root/BUILD-INFO" <<EOF
 Version: $version

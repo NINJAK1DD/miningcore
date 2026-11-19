@@ -96,6 +96,9 @@ of the wallet pause:
 - Enabled pools configured for PPS require a bind-mode sender and a `sharedEncryptionKey` of at
   least 32 characters on the sender and every receiver endpoint, even with payment processing
   disabled. PPS connect mode is rejected; external transport protection does not bypass this check.
+  Even an existing long key is refused if it starts with `CHANGE_ME` or `REPLACE_`
+  after trimming, regardless of case. Rotate matching keys on both ends before restarting.
+  Non-PPS relays warn about those prefixes at startup without refusing the configuration.
 - **Every relay sender, including PPLNS/PROP, fail-stops** on oversized/invalid serialization,
   local queue saturation or publisher failure. Limits are 4,096 messages / 16 MiB queued payload,
   1 MiB per frame, 128-message native PUB/SUB high-water marks and a 128-message receiver queue.
@@ -3692,6 +3695,10 @@ For a candidate, keep the latest stable baseline explicitly separate from the se
 candidate examples. Update the RC highlights, upgrade matrix, guide index and
 `scripts/release/test-release-install-docs.sh` together. Historical release/evidence
 versions identify their original behavior and must not be replaced globally.
+Update the offline guide route in both `scripts/release/test-packaged-guide.py` and the
+packaged-image smoke test in `.github/workflows/release.yml`; a historical route is not
+proof that the current guide ships. When packaging locally, set `GITHUB_REPOSITORY`
+to the GitHub owner/repository that contains the selected commit (including fork builds).
 For changes after this candidate, use `## Unreleased (after v0.4.0-rc.2): subject`.
 The documentation guard permits this next-cycle heading but rejects unqualified
 Unreleased entries and entries still assigned to the previous v0.3.0 boundary. Do not

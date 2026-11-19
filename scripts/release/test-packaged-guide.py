@@ -8,7 +8,16 @@ from urllib.parse import urlsplit, unquote
 helpers = runpy.run_path(str(Path(__file__).with_name('test-doc-links.py')))
 root = Path(sys.argv[1]).resolve()
 guide = root / 'INSTALL.md'
-targets = {target for _, target in helpers['local_targets'](guide)}
+targets = set()
+
+
+def collect(target):
+    targets.add(target)
+    return target
+
+
+runpy.run_path(str(Path(__file__).with_name('render-release-doc.py')))['map_links'](
+    guide.read_text(encoding='utf-8'), collect)
 if 'docs/upgrade-v0.4.0-rc.2.md' not in targets:
     sys.exit('Packaged INSTALL.md lacks the offline RC.2 route')
 for raw in targets:

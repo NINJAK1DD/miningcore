@@ -153,6 +153,8 @@ fi
 SOURCE_COMMIT=$(git -C "$repository_root" rev-parse HEAD)
 SOURCE_DATE_EPOCH=$(git -C "$repository_root" show -s --format=%ct "$SOURCE_COMMIT")
 export SOURCE_COMMIT SOURCE_DATE_EPOCH
+export GITHUB_REPOSITORY=fixture/miningcore
+python3 -B "$repository_root/scripts/release/test-render-release-doc.py"
 
 for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
   rm -rf -- "$output_dir"
@@ -251,6 +253,7 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
   python3 "$repository_root/scripts/release/render-release-doc.py" notes "$SOURCE_COMMIT" \
     fixture/miningcore "$work_dir/notes.md"
   recorded_source=$(sed -n 's/^Source commit: //p' "$extracted/$package_root/BUILD-INFO")
+  grep -Fq "https://github.com/$GITHUB_REPOSITORY/blob/$recorded_source/scripts/test-lab/" "$extracted/$package_root/INSTALL.md"
   grep -Fxq "[Installation and upgrade guide for this build](https://github.com/fixture/miningcore/blob/$recorded_source/docs/releases.md)" "$work_dir/notes.md"
   grep -Fq 'both .NET and ASP.NET Core 10.0.15 or later within .NET 10' "$work_dir/notes.md"
   for asset in miningcore.service configure-postgresql-ordering.sh postgresql-ordering.conf.example; do

@@ -4,38 +4,62 @@ import argparse
 from pathlib import Path
 import posixpath
 import re
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlsplit
 import xml.etree.ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def install(root, source_url):
-    # Rebase links from docs/releases.md to the package root. Prefer shipped
-    # files offline; repository-only resources must refer to this build's tree.
-    def link(match):
-        prefix, target = match.groups()
-        parsed = urlsplit(target)
-        if not parsed.path or parsed.scheme or parsed.netloc:
-            return match[0]
-        path = posixpath.normpath(posixpath.join('docs', parsed.path))
-        destination = path if (root / path).exists() else f'{source_url}/{path}'
-        return prefix + parsed._replace(path=destination).geturl()
+def map_links(text, transform):
+    """Transform guide destinations only, preserving literal examples and link titles."""
+    tokens = re.compile(
+        r'(?P<code>(?<!`)(?P<ticks>`+)(?!`).*?(?<!`)(?P=ticks)(?!`))'
+        r'|(?P<prefix>\]\(|^ {0,3}\[[^\]\n]+\]:[ \t]*)(?:<(?P<angle>[^>\n]+)>|(?P<bare>(?:[^\s()<>]|\([^\s()]*\))+))',
+        re.MULTILINE | re.DOTALL)
 
-    lines = []
+    def replace(match):
+        if match['code'] is not None:
+            return match[0]
+        if match['angle'] is not None:
+            return match['prefix'] + '<' + transform(match['angle']) + '>'
+        return match['prefix'] + transform(match['bare'])
+
+    lines, prose = [], []
     fence = None
-    for line in (root / 'docs/releases.md').read_text(encoding='utf-8').splitlines(keepends=True):
-        marker = re.match(r'^\s*(`{3,}|~{3,})(.*)$', line)
+    for line in text.splitlines(keepends=True):
+        marker = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', line)
+        if not (marker or fence or not line.strip() or line.expandtabs(4).startswith('    ')):
+            prose.append(line)
+            continue
+        lines.append(tokens.sub(replace, ''.join(prose)))
+        prose.clear()
         if marker and fence is None:
             fence = marker[1]
         elif marker and marker[1].startswith(fence or '!') and not marker[2].strip():
             fence = None
-        elif fence is None:
-            line = re.sub(r'(\]\()([^\s)>]+)', link, line)
-            line = re.sub(r'^(\s*\[[^\]]+\]:\s*<?)([^\s>]+)', link, line)
         lines.append(line)
-    (root / 'INSTALL.md').write_text(''.join(lines), encoding='utf-8')
+    lines.append(tokens.sub(replace, ''.join(prose)))
+    return ''.join(lines)
+
+
+def install(root, source_url):
+    root = root.resolve()
+
+    def destination(target):
+        parsed = urlsplit(target)
+        if not parsed.path or parsed.scheme or parsed.netloc:
+            return target
+        path = posixpath.normpath(posixpath.join('docs', unquote(parsed.path)))
+        local = (root / path).resolve()
+        if path.startswith('/') or not local.is_relative_to(root):
+            raise ValueError(f'Guide target leaves package: {target}')
+        url_path = quote(path, safe="/:@!$&'*+,;=-._~")
+        url = url_path if local.exists() else f'{source_url}/{url_path}'
+        return parsed._replace(path=url).geturl()
+
+    text = (root / 'docs/releases.md').read_text(encoding='utf-8')
+    (root / 'INSTALL.md').write_text(map_links(text, destination), encoding='utf-8')
 
 
 if __name__ == '__main__':

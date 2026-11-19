@@ -102,7 +102,7 @@ public class ShareReceiver : BackgroundService
     public override async Task StartAsync(CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        ShareRelaySecurity.Validate(clusterConfig);
+        ShareRelaySecurity.Validate(clusterConfig, message => logger.Warn(message));
 
         if(clusterConfig.ShareRelays != null)
         {
