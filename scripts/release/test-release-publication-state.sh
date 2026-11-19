@@ -770,6 +770,12 @@ scenario_malformed_version_contract_fails_closed() (
   bash -c 'source "$1"; publication_validate_environment' bash "$FAKE_ROOT/publish-release-state.sh"
 )
 
+scenario_missing_version_reader_fails_closed() (
+  reset_fake_services missing-reader
+  cp "$repository_root/scripts/release/"{publish-release-state.sh,release-version.ere} "$FAKE_ROOT/"
+  bash -c 'source "$1"; publication_validate_environment' bash "$FAKE_ROOT/publish-release-state.sh" > "$FAKE_ROOT/stdout"
+)
+
 scenario_reader_warning_does_not_change_release_tag() (
   reset_fake_services reader-warning v0.4.0-rc.2
   # A child-shell startup warning must stay visible without entering the ERE.
@@ -798,6 +804,7 @@ scenario_github_cli_warning_does_not_change_version_parse
 scenario_reader_warning_does_not_change_release_tag
 
 for scenario in \
+  scenario_missing_version_reader_fails_closed \
   scenario_malformed_version_contract_fails_closed \
   scenario_conflicting_version_tag_fails_closed \
   scenario_changed_asset_is_not_overwritten \
@@ -833,6 +840,11 @@ if [[ $(wc -l < "$version_error") -ne 1 ]] ||
     ! grep -Fq 'expected one nonempty line of printable ASCII without whitespace' "$version_error"; then
   fail 'Malformed version contract must produce one actionable publication diagnostic'
 fi
+
+[[ ! -s "$test_root/missing-reader/stdout" ]] || fail 'Missing-reader diagnostic was written to stdout'
+[[ $(<"$test_root/scenario_missing_version_reader_fails_closed.out") == \
+  'HUMAN ACTION REQUIRED: read-release-version-pattern.sh is missing or unreadable; restore the release checkout' ]] ||
+  fail 'Missing reader did not produce a single actionable diagnostic on stderr'
 
 grep -Fq 'does not have the expected workflow title' \
   "$test_root/scenario_foreign_same_tag_draft_fails_closed.out" ||
