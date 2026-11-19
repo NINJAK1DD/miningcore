@@ -4362,8 +4362,11 @@ public class ShareRecorderTests
         }
     }
 
-    [Fact]
-    public async Task RecoveryJournal_ConcurrentRecorderInstancesSerializeByCanonicalFilename()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2500)]
+    public async Task RecoveryJournal_ConcurrentRecorderInstancesSerializeByCanonicalFilename(
+        int flushDelayMilliseconds)
     {
         var recoveryFilename = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         var mapper = AutoMapperFactory.CreateMapper();
@@ -4381,6 +4384,17 @@ public class ShareRecorderTests
 
         var ordinaryRecorder = CreateRecorder();
         var candidateRecorder = CreateRecorder();
+        foreach(var recorder in new[] { ordinaryRecorder, candidateRecorder })
+        {
+            var flush = recorder.RecoveryJournalFlush;
+            recorder.RecoveryJournalFlush = async stream =>
+            {
+                // Exercise durable I/O slower than the former two-second hang guard.
+                await Task.Delay(flushDelayMilliseconds);
+                await flush(stream);
+            };
+        }
+
         var ordinaryShare = new Share
         {
             PoolId = "ltc-solo",
@@ -4405,11 +4419,12 @@ public class ShareRecorderTests
         Assert.Same(ordinaryRecorder.RecoveryWriteGate,
             candidateRecorder.RecoveryWriteGate);
 
+        Task ordinaryWrite = Task.CompletedTask;
+        Task candidateWrite = Task.CompletedTask;
+
         try
         {
             await ordinaryRecorder.RecoveryWriteGate.WaitAsync();
-            Task ordinaryWrite;
-            Task candidateWrite;
 
             try
             {
@@ -4427,8 +4442,11 @@ public class ShareRecorderTests
             }
 
             await Task.WhenAll(ordinaryWrite, candidateWrite)
-                .WaitAsync(TimeSpan.FromSeconds(2));
+                .WaitAsync(TimeSpan.FromMinutes(2));
 
+            await using var stream = File.OpenRead(recoveryFilename);
+            Assert.True(ShareRecorder.ValidateRecoveryJournal(stream,
+                recoveryFilename));
             var records = (await File.ReadAllLinesAsync(recoveryFilename))
                 .Where(x => !string.IsNullOrWhiteSpace(x) && !x.StartsWith('#'))
                 .Select(JsonConvert.DeserializeObject<Share>)
@@ -4441,7 +4459,22 @@ public class ShareRecorderTests
         }
         finally
         {
-            File.Delete(recoveryFilename);
+            // WaitAsync does not cancel durable writes. Drain started writers before
+            // deleting their journal, including when a contention assertion fails.
+            try
+            {
+                await Task.WhenAll(ordinaryWrite, candidateWrite)
+                    .WaitAsync(TimeSpan.FromMinutes(2));
+            }
+            finally
+            {
+                // A hung writer must fail the test without unlinking its live journal.
+                if(ordinaryWrite.IsCompleted && candidateWrite.IsCompleted)
+                {
+                    ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+                    File.Delete(recoveryFilename);
+                }
+            }
         }
     }
 
@@ -4474,6 +4507,8 @@ public class ShareRecorderTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseFlush = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        Task firstWrite = Task.CompletedTask;
+        Task secondWrite = Task.CompletedTask;
 
         try
         {
@@ -4489,13 +4524,13 @@ public class ShareRecorderTests
                 Assert.IsType<FileStream>(stream).Flush(true);
             };
 
-            var firstWrite = first.WriteRecoveryJournalAsync(new[]
+            firstWrite = first.WriteRecoveryJournalAsync(new[]
             {
                 new Share { PoolId = "btc-solo", Miner = "BFirstWriter" },
             });
-            await flushEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await flushEntered.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
-            var secondWrite = second.WriteRecoveryJournalAsync(new[]
+            secondWrite = second.WriteRecoveryJournalAsync(new[]
             {
                 new Share { PoolId = "doge-solo", Miner = "DSecondWriter" },
             });
@@ -4504,7 +4539,7 @@ public class ShareRecorderTests
 
             releaseFlush.TrySetResult(true);
             await Task.WhenAll(firstWrite, secondWrite)
-                .WaitAsync(TimeSpan.FromSeconds(5));
+                .WaitAsync(TimeSpan.FromMinutes(2));
 
             await using var stream = File.OpenRead(recoveryFilename);
             Assert.True(ShareRecorder.ValidateRecoveryJournal(stream,
@@ -4520,8 +4555,19 @@ public class ShareRecorderTests
         finally
         {
             releaseFlush.TrySetResult(true);
-            ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
-            Directory.Delete(directory, true);
+            try
+            {
+                await Task.WhenAll(firstWrite, secondWrite)
+                    .WaitAsync(TimeSpan.FromMinutes(2));
+            }
+            finally
+            {
+                if(firstWrite.IsCompleted && secondWrite.IsCompleted)
+                {
+                    ShareRecorder.ForgetRecoveryWriteStateForTests(recoveryFilename);
+                    Directory.Delete(directory, true);
+                }
+            }
         }
     }
 
