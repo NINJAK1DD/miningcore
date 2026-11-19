@@ -32,6 +32,9 @@ the original authors and contributors.
 - PostgreSQL-backed shares, blocks, balances, statistics and payment processing.
 - Fail-closed share accounting with bounded queues, an emergency recovery journal and queue metrics.
 - Protected payout ownership and reconciliation for interrupted or uncertain wallet submissions.
+- In RC.2, [database-wide wallet payout pause](docs/emergency-wallet-stop.md) and
+  [durable PPS acknowledgements](docs/share-relays.md) protect different operations:
+  pausing new wallet batches does not stop earning shares or recall an admitted payment.
 - Cluster-wide, exclusive Stratum listener reservation with address-aware safe port reuse.
 - Share relays for advanced distributed pool deployments.
 - REST API and WebSocket notifications, with bearer-authenticated, route-isolated administration
@@ -54,8 +57,8 @@ different runtime packages; Ubuntu 24.04 is a source-build target. Use the
 > This quick start pins the published `v0.3.0` stable release.
 > The latest stable baseline remains v0.3.0 until a newer stable release is published.
 > For controlled candidate testing, read the
-> [v0.3.0 to v0.4.0-rc.1 upgrade guide](docs/upgrade-v0.4.0-rc.1.md).
-> Select `v0.4.0-rc.1` only if its release page and required assets are available;
+> [RC.2 installation and upgrade checklist](docs/upgrade-v0.4.0-rc.2.md).
+> Select `v0.4.0-rc.2` only if its release page and required assets are available;
 > otherwise use the stable version below. Never substitute an unpublished tag into download commands.
 > To install another published version, select it
 > from the [releases page](https://github.com/NINJAK1DD/miningcore/releases) and substitute that tag
@@ -749,9 +752,10 @@ configuration, then run the image. This example uses a fixed Docker bridge gatew
 public API, binds the admin and metrics ports to host loopback, and publishes the merged-mining LTC
 Stratum port. Publish every additional port used by your configuration:
 
-The setup block below is for a new container installation. Existing operators should
-follow the [container upgrade guide](docs/upgrade-v0.4.0-rc.1.md#container-upgrades) and retain their configuration,
-service environment and persistent state; do not rerun the new-install downloads over them.
+The setup block below is for a new container installation. For RC.2 follow the
+[RC.2 rollout](docs/upgrade-v0.4.0-rc.2.md); for RC.1 follow its
+[container upgrade guide](docs/upgrade-v0.4.0-rc.1.md#container-upgrades).
+Retain configuration, service environment and persistent state; do not rerun the new-install downloads over them.
 
 ```console
 MININGCORE_VERSION=v0.3.0  # Replace with the published release you selected.

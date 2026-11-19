@@ -974,6 +974,8 @@ jobs:
 
       - name: Write release-note preamble
         shell: bash
+        env:
+          RELEASE_SOURCE: ${{ needs.resolve-release.outputs.source_commit }}
         run: |
           cat > release-notes.md <<'EOF'
           This release contains a primary, framework-dependent **Ubuntu 26.04 x64** build
@@ -981,11 +983,11 @@ jobs:
           matching the host release; native binaries built on Ubuntu 26.04 are not compatible with
           older glibc systems. Ubuntu 24.04 remains a tested source-build target.
 
-          Read the packaged `INSTALL.md` or the [release installation guide](https://github.com/NINJAK1DD/miningcore/blob/dev/docs/releases.md)
-          before deployment. Miningcore targets the supported .NET 10 LTS runtime; install the
-          documented runtime dependencies and complete all required PostgreSQL migrations before
-          startup.
+          Read the packaged `INSTALL.md` before deployment. Install the documented serviced
+          runtime and complete the PostgreSQL steps for your deployment before startup.
           EOF
+          printf '\n[Installation and upgrade guide for this build](https://github.com/%s/blob/%s/docs/releases.md)\n' \
+            "$GITHUB_REPOSITORY" "$RELEASE_SOURCE" >> release-notes.md
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0

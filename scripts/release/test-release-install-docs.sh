@@ -230,10 +230,12 @@ assert_file_contains 'the v0.4.0-rc.1 database migration example' \
 assert_file_contains 'the published stable quick-start boundary' \
   'This quick start pins the published `v0.3.0` stable release.' "$readme"
 assert_readme_prose_contains 'the unpublished-artifact boundary' \
-  'Select `v0.4.0-rc.1` only if its release page and required assets are available;'
+  'Select `v0.4.0-rc.2` only if its release page and required assets are available;'
 assert_readme_prose_contains 'the retained latest stable baseline' \
   'The latest stable baseline remains v0.3.0 until a newer stable release is published.'
 assert_file_contains 'the RC release heading' \
+  '## v0.4.0-rc.2 highlights' "$document"
+assert_file_contains 'the previous RC release heading' \
   '## v0.4.0-rc.1 highlights' "$document"
 assert_file_contains 'the RC upgrade boundary' \
   '### Upgrade boundary from v0.3.0' "$document"
@@ -445,10 +447,10 @@ assert_file_contains 'the terminal-logger opt-out contract' \
   'The standard `MSBUILDTERMINALLOGGER=off` environment setting remains available' "$readme"
 assert_prose_contains 'the private source-build audit-log contract' \
   'Warning enforcement uses a separate private normal-verbosity MSBuild log'
-assert_contains 'the v0.4.0-rc.1 recovery example' \
-  'export TAG=v0.4.0-rc.1'
-assert_contains 'the v0.4.0-rc.1 tagging example' \
-  'NEXT_VERSION=v0.4.0-rc.1'
+assert_contains 'the v0.4.0-rc.2 recovery example' \
+  'export TAG=v0.4.0-rc.2'
+assert_contains 'the v0.4.0-rc.2 tagging example' \
+  'NEXT_VERSION=v0.4.0-rc.2'
 assert_file_contains 'the direct PPS Bitcoin-family boundary' \
   'Direct audited `Bitcoin`-family pool' "$pps_document"
 assert_file_contains 'the PPS reserve warning' \

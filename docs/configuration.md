@@ -7,6 +7,10 @@ comments even though Miningcore accepts them.
 For a smaller topology-specific starting point, choose a direct, multi-coin, merged-mining or
 distributed-recorder file from the [example configuration index](../examples/README.md).
 
+Upgrading an existing pool? Preserve its configuration and credentials. The
+[RC.2 checklist](upgrade-v0.4.0-rc.2.md) covers the timestamp setting, PPS relay
+key requirements and the distinction between local and database-wide payout pause.
+
 Miningcore preserves JSON string values in both the cluster configuration and bundled or
 operator-supplied coin-template files. Content that resembles an ISO date remains the exact string
 the operator configured; it is not silently converted to a date or rewritten for the host's locale

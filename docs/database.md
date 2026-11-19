@@ -52,11 +52,12 @@ documented migration order.
 
 Use the schema files from the **release you actually selected**. The install
 examples deliberately default to published stable v0.3.0; they do not silently
-install RC.1. Select RC.1 explicitly only when its verified assets are available,
-or use an immutable RC.1 source checkout.
+install a candidate. Select RC.2 explicitly only when its verified assets are available,
+or use an immutable RC.2 source checkout.
 
 | Database state | Correct path |
 | --- | --- |
+| RC.2 (fresh or existing) | Follow the [RC.2 database checklist](upgrade-v0.4.0-rc.2.md#database-preparation). Wallet control requires a separate administrator step, even after a fresh schema import. |
 | New, empty database for RC.1 | Import that RC.1 release's `createdb.sql` once. It already includes the shared accounting/PPS arithmetic structures, direct-SOLO/payout/recovery structures and Pearl schema present in that release. Do not then replay the upgrade migrations. |
 | Existing v0.3.0 or older database | Never rerun `createdb.sql`. Back up and follow the [release-specific migration matrix](upgrade-v0.4.0-rc.1.md#database-migration-matrix); apply only the required upgrade scripts. Unchanged, prepared BTC SOLO or LTC/DOGE SOLO/SOLO needs no new SQL solely for RC.1. |
 

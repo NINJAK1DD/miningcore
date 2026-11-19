@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[2]
 BASELINE = ROOT / 'scripts/release/fixtures/v0.4.0-rc.1-legacy-release-anchors.txt'
 DOCUMENTS = ('README.md', 'docs/releases.md', 'docs/database.md',
              'docs/upgrade-v0.4.0-rc.1.md', 'docs/bitcoin-minimum-difficulty.md',
-             'docs/pps-arithmetic-migration.md', 'docs/troubleshooting.md')
+             'docs/pps-arithmetic-migration.md', 'docs/troubleshooting.md',
+             'docs/upgrade-v0.4.0-rc.2.md')
 STABLE_BOUNDARY = 'The latest stable baseline remains v0.3.0 until a newer stable release is published.'
 NO_SQL = 'No new SQL solely for this upgrade when the v0.3.0 prerequisites are installed.'
 
@@ -68,8 +69,8 @@ def validate(documents, baseline):
     expected_assignments = {
         'README.md': Counter({('MININGCORE_VERSION', 'v0.3.0'): 3}),
         'docs/releases.md': Counter({('MININGCORE_VERSION', 'v0.3.0'): 2,
-                                     ('NEXT_VERSION', 'v0.4.0-rc.1'): 1,
-                                     ('TAG', 'v0.4.0-rc.1'): 1}),
+                                     ('NEXT_VERSION', 'v0.4.0-rc.2'): 1,
+                                     ('TAG', 'v0.4.0-rc.2'): 1}),
         'docs/database.md': Counter({('MININGCORE_VERSION', 'v0.4.0-rc.1'): 1}),
     }
     for name, expected in expected_assignments.items():
@@ -81,10 +82,16 @@ def validate(documents, baseline):
         require(STABLE_BOUNDARY in prose(documents[name]), f'{name}: missing stable baseline')
 
     release = documents['docs/releases.md']
+    for name in ('README.md', 'docs/releases.md', 'docs/database.md'):
+        require('upgrade-v0.4.0-rc.2.md' in documents[name], f'{name}: missing current upgrade route')
+    candidate = documents['docs/upgrade-v0.4.0-rc.2.md']
+    for prerequisite in ('add_wallet_payout_control.sql', 'upgrade_wallet_payout_control_v2.sql',
+                         'add_payout_recovery_audit.sql', 'cross-cluster-release-acceptance'):
+        require(prerequisite in candidate, f'RC.2 guide missing prerequisite: {prerequisite}')
     for level, title in headings(release):
         if re.match(r'Unreleased\b', title, re.IGNORECASE):
             require(level == '##' and re.fullmatch(
-                r'Unreleased \(after v0\.4\.0-rc\.1\): \S.*', title) is not None,
+                r'Unreleased \(after v0\.4\.0-rc\.2\): \S.*', title) is not None,
                 f'Invalid next-cycle release heading: {level} {title}')
     for fragment in ('For a stable release, put the version flip in the final release-preparation commit',
                      'so its README and packaged INSTALL.md select that same stable version.',
