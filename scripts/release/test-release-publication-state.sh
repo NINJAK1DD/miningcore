@@ -763,6 +763,13 @@ scenario_asset_visibility_timeout_fails_closed() (
   run_command prepare
 )
 
+scenario_malformed_version_contract_fails_closed() (
+  reset_fake_services malformed-version
+  cp "$repository_root/scripts/release/"{publish-release-state,read-release-version-pattern}.sh "$FAKE_ROOT/"
+  : > "$FAKE_ROOT/release-version.ere"
+  bash -c 'source "$1"; publication_validate_environment' bash "$FAKE_ROOT/publish-release-state.sh"
+)
+
 scenario_interrupted_publication_resumes
 scenario_older_rerun_preserves_newer_surfaces
 scenario_prerelease_never_moves_mutable_surfaces v1.2.3-rc.1
@@ -775,6 +782,7 @@ scenario_opaque_token_config_escaping_is_injection_safe
 scenario_github_cli_warning_does_not_change_version_parse
 
 for scenario in \
+  scenario_malformed_version_contract_fails_closed \
   scenario_conflicting_version_tag_fails_closed \
   scenario_changed_asset_is_not_overwritten \
   scenario_non_authoritative_api_failure_is_fatal \
@@ -803,6 +811,11 @@ for scenario in \
   grep -Fq 'HUMAN ACTION REQUIRED:' "$test_root/$scenario.out" ||
     fail "$scenario did not provide a human-action diagnostic"
 done
+
+version_error="$test_root/scenario_malformed_version_contract_fails_closed.out"
+[[ $(wc -l < "$version_error") -eq 1 ]] &&
+  grep -Fq 'expected one nonempty line of printable ASCII without whitespace' "$version_error" ||
+  fail 'Malformed version contract must produce one actionable publication diagnostic'
 
 grep -Fq 'does not have the expected workflow title' \
   "$test_root/scenario_foreign_same_tag_draft_fails_closed.out" ||
