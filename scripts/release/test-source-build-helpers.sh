@@ -401,7 +401,7 @@ for helper in "${helpers[@]}"; do
   state="$sandbox/state"
 
   mkdir -p "$sandbox/src/Miningcore" "$sandbox/scripts/release" "$state"
-  cp "$repository_root/scripts/release/release-version.ere" "$sandbox/scripts/release/"
+  cp "$repository_root/scripts/release/"{release-version.ere,read-release-version-pattern.sh} "$sandbox/scripts/release/"
   cp "$repository_root/$helper" "$sandbox/$helper"
   cp "$repository_root/scripts/release/source-build-identity.sh" \
     "$sandbox/scripts/release/source-build-identity.sh"

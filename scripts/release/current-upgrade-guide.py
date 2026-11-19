@@ -4,7 +4,14 @@ import argparse
 from pathlib import Path
 import re
 
-VERSION = re.compile(Path(__file__).with_name('release-version.ere').read_text(encoding='ascii').strip())
+def load_version_pattern(path):
+    pattern = path.read_bytes().removesuffix(b'\n')
+    if not re.fullmatch(rb'[!-~]+', pattern):
+        raise ValueError(f'{path}: expected one nonempty line of printable ASCII without whitespace')
+    return re.compile(pattern.decode('ascii'))
+
+
+VERSION = load_version_pattern(Path(__file__).with_name('release-version.ere'))
 
 
 def guide_path(release_doc, tag=None):

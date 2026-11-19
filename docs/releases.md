@@ -3485,8 +3485,10 @@ stable hosted runner and an immutable, digest-pinned Docker Official Image.
 
 The guide, source builds, archive tools and publication use the same tag grammar.
 Use `vMAJOR.MINOR.PATCH` with no leading zeros in the three core numbers. An
-optional prerelease suffix can contain alphanumeric groups separated by dots or
-hyphens (for example `-alpha`, `-beta.1`, or `-rc.1.1`). Build metadata
+optional prerelease suffix follows [SemVer 2.0](https://semver.org/spec/v2.0.0.html):
+dot-separated identifiers contain ASCII letters, digits or hyphens. A digits-only
+identifier cannot have a leading zero (`-rc.0` is valid; `-rc.01` is not).
+Hyphens within an identifier are allowed, including consecutive ones. Build metadata
 (`+suffix`) is excluded because the version also names a container tag.
 
 The workflow-declared

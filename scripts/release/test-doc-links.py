@@ -96,7 +96,7 @@ def local_targets(path: Path):
     # (and handles multiline destinations, titles, escapes and code blocks).
     lines = path.read_text(encoding='utf-8').splitlines()
     candidates = [(line, match[1]) for line, text in enumerate(lines, 1)
-                  if (match := re.match(r'^\s*\[((?:\\.|[^\[\]\\])+)\]:', text))]
+                  if (match := re.match(r'^[ \t]*(?:>[ \t]*)*\[((?:\\.|[^\[\]\\])+)\]:', text))]
     excluded = set()
     if candidates:
         # Use the real block spans, including nested/indented code and HTML

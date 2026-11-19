@@ -13,7 +13,7 @@ expected_source_commit=$3
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 source "$repository_root/scripts/release/linux-release-targets.sh"
 
-IFS= read -r version_pattern < "$repository_root/scripts/release/release-version.ere"
+version_pattern=$(bash "$repository_root/scripts/release/read-release-version-pattern.sh")
 expected_version_pattern="^${version_pattern}$"
 
 if [[ ! "$expected_version" =~ $expected_version_pattern ]]; then

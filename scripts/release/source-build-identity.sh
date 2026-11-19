@@ -18,7 +18,7 @@ miningcore_resolve_source_build_identity() {
     return 0
   fi
 
-  IFS= read -r version_pattern < "$(dirname "${BASH_SOURCE[0]}")/release-version.ere" || return 1
+  version_pattern=$(bash "$(dirname "${BASH_SOURCE[0]}")/read-release-version-pattern.sh") || return 1
   while IFS= read -r candidate; do
     if [[ "$candidate" =~ ^${version_pattern}$ ]]; then
       release_tags+=("$candidate")

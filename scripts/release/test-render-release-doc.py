@@ -3,6 +3,7 @@
 from pathlib import Path
 import os
 import runpy
+import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -11,7 +12,8 @@ import unittest
 
 install = runpy.run_path(str(Path(__file__).with_name('render-release-doc.py')))['install']
 check = runpy.run_path(str(Path(__file__).with_name('test-packaged-guide.py')))['check']
-guide_path = runpy.run_path(str(Path(__file__).with_name('current-upgrade-guide.py')))['guide_path']
+version_tools = runpy.run_path(str(Path(__file__).with_name('current-upgrade-guide.py')))
+guide_path = version_tools['guide_path']
 targets = runpy.run_path(str(Path(__file__).with_name('test-doc-links.py')))['local_targets']
 SOURCE = 'https://github.com/fixture/fork/blob/' + 'b' * 40
 
@@ -95,19 +97,52 @@ class GuideTests(unittest.TestCase):
 
     def test_tag_contract(self):
         for version in ('v1.2.3-rc.4', 'v1.2.3', 'v0.4.0-beta.1', 'v0.4.0-alpha',
-                        'v0.4.0-rc.1.1', 'v0.4.0-hotfix.1', 'v0.4.0-pre-release'):
+                        'v0.4.0-rc.1.1', 'v0.4.0-hotfix.1', 'v0.4.0-pre-release',
+                        'v0.4.0-rc.0', 'v0.4.0-01a', 'v0.4.0-x-y-z.--'):
             doc = f'NEXT_VERSION={version}\n'
             self.assertEqual(f'docs/upgrade-{version}.md', guide_path(doc, version))
             for wrong in ('v1.2.3-rc.3', 'v1.2.4'):
                 with self.assertRaisesRegex(ValueError, 'does not match'):
                     guide_path(doc, wrong)
         for invalid in ('v01.2.3', 'v1.02.3', 'v1.2.03', 'v1.2.3-', 'v1.2.3-beta..1',
-                        'v1.2.3-rc_2', 'v1.2.3+build', 'v１.2.3', 'v1.2.3/other'):
+                        'v1.2.3-rc_2', 'v1.2.3+build', 'v１.2.3', 'v1.2.3/other',
+                        'v1.2.3-01', 'v1.2.3-rc.01'):
             with self.subTest(invalid=invalid):
                 with self.assertRaisesRegex(ValueError, 'Invalid NEXT_VERSION'):
                     guide_path(f'NEXT_VERSION={invalid}\n')
                 with self.assertRaisesRegex(ValueError, 'Invalid release tag'):
                     guide_path('NEXT_VERSION=v1.2.3\n', invalid)
+
+    def test_version_contract_readers(self):
+        path = self.root / 'release-version.ere'
+        reader = self.root / 'read-release-version-pattern.sh'
+        shutil.copyfile(Path(__file__).with_name(reader.name), reader)
+        pattern = Path(__file__).with_name(path.name).read_bytes().removesuffix(b'\n')
+        self.assertRegex(pattern, rb'\A[!-~]+\Z')
+        for suffix in (b'', b'\n'):
+            path.write_bytes(pattern + suffix)
+            loaded = subprocess.check_output(['bash', str(reader)]).rstrip(b'\n')
+            self.assertEqual(loaded, pattern)
+            regex = version_tools['load_version_pattern'](path)
+            for tag, valid in [('v1.2.3-x--y.0', True), ('v1.2.3-rc.01', False),
+                               ('v1.2.3-01a', True), ('v1.2.3-01', False)]:
+                self.assertEqual(bool(regex.fullmatch(tag)), valid)
+                result = subprocess.run(['bash', '-c', '[[ $1 =~ ^${2}$ ]]', 'bash', tag, loaded.decode('ascii')])
+                self.assertEqual(result.returncode, 0 if valid else 1)
+        for malformed in (b'', b'\n', pattern + b'\n\n', pattern + b'\nv.*', pattern + b' '):
+            path.write_bytes(malformed)
+            with self.assertRaisesRegex(ValueError, 'one nonempty line'):
+                version_tools['load_version_pattern'](path)
+            result = subprocess.run(['bash', str(reader)], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(result.stdout)
+            self.assertIn(b'one nonempty line', result.stderr)
+
+    def test_unused_quoted_definitions(self):
+        path = self.docs / 'quoted.md'
+        path.write_text('> [one]: first.md\n>\n> > [two]:\n> >   second.md\n'
+                        '>\n> ```\n> [one]: example.md\n> ```\n', encoding='utf-8')
+        self.assertEqual([(1, 'first.md'), (3, 'second.md')], list(targets(path)))
 
     def test_reference_probes_cannot_be_hidden_or_borrow_example_labels(self):
         path = self.docs / 'example.md'
