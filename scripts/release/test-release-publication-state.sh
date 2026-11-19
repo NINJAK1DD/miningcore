@@ -770,6 +770,20 @@ scenario_malformed_version_contract_fails_closed() (
   bash -c 'source "$1"; publication_validate_environment' bash "$FAKE_ROOT/publish-release-state.sh"
 )
 
+scenario_reader_warning_does_not_change_release_tag() (
+  reset_fake_services reader-warning v0.4.0-rc.2
+  # A child-shell startup warning must stay visible without entering the ERE.
+  # Inject it deterministically without depending on host locales.
+  bash() {
+    printf '%s\n' 'fixture: reader startup warning' >&2
+    command bash "$@"
+  }
+  publication_validate_environment > "$FAKE_ROOT/stdout" 2> "$FAKE_ROOT/stderr"
+  [[ "$PUBLICATION_VERSION" == '0.4.0-rc.2' ]] || fail 'Reader warning changed the release version'
+  [[ ! -s "$FAKE_ROOT/stdout" ]] || fail 'Reader diagnostic escaped to stdout'
+  grep -Fxq 'fixture: reader startup warning' "$FAKE_ROOT/stderr" || fail 'Reader warning was lost'
+)
+
 scenario_interrupted_publication_resumes
 scenario_older_rerun_preserves_newer_surfaces
 scenario_prerelease_never_moves_mutable_surfaces v1.2.3-rc.1
@@ -780,6 +794,8 @@ scenario_completed_release_recovers_from_one_immutable_tag
 scenario_missing_asset_clears_stale_state
 scenario_opaque_token_config_escaping_is_injection_safe
 scenario_github_cli_warning_does_not_change_version_parse
+
+scenario_reader_warning_does_not_change_release_tag
 
 for scenario in \
   scenario_malformed_version_contract_fails_closed \
@@ -813,9 +829,10 @@ for scenario in \
 done
 
 version_error="$test_root/scenario_malformed_version_contract_fails_closed.out"
-[[ $(wc -l < "$version_error") -eq 1 ]] &&
-  grep -Fq 'expected one nonempty line of printable ASCII without whitespace' "$version_error" ||
+if [[ $(wc -l < "$version_error") -ne 1 ]] ||
+    ! grep -Fq 'expected one nonempty line of printable ASCII without whitespace' "$version_error"; then
   fail 'Malformed version contract must produce one actionable publication diagnostic'
+fi
 
 grep -Fq 'does not have the expected workflow title' \
   "$test_root/scenario_foreign_same_tag_draft_fails_closed.out" ||
