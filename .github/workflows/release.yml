@@ -557,10 +557,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
-            echo "Release tags must use SemVer, for example v0.1.0-rc.1 or v0.1.0"
-            exit 1
-          fi
+          python3 scripts/release/current-upgrade-guide.py --tag "$GITHUB_REF_NAME"
 
           tagged_commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
           if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then

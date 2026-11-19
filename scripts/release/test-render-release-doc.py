@@ -94,12 +94,31 @@ class GuideTests(unittest.TestCase):
             self.assertEqual(label + '(docs/db.md)', self.render(label + '(db.md)'))
 
     def test_tag_contract(self):
-        for version in ('v1.2.3-rc.4', 'v1.2.3'):
+        for version in ('v1.2.3-rc.4', 'v1.2.3', 'v0.4.0-beta.1', 'v0.4.0-alpha',
+                        'v0.4.0-rc.1.1', 'v0.4.0-hotfix.1', 'v0.4.0-pre-release'):
             doc = f'NEXT_VERSION={version}\n'
             self.assertEqual(f'docs/upgrade-{version}.md', guide_path(doc, version))
-            for wrong in ('v1.2.3-rc.3', '', 'v1.2.4'):
+            for wrong in ('v1.2.3-rc.3', 'v1.2.4'):
                 with self.assertRaisesRegex(ValueError, 'does not match'):
                     guide_path(doc, wrong)
+        for invalid in ('v01.2.3', 'v1.02.3', 'v1.2.03', 'v1.2.3-', 'v1.2.3-beta..1',
+                        'v1.2.3-rc_2', 'v1.2.3+build', 'v１.2.3', 'v1.2.3/other'):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, 'Invalid NEXT_VERSION'):
+                    guide_path(f'NEXT_VERSION={invalid}\n')
+                with self.assertRaisesRegex(ValueError, 'Invalid release tag'):
+                    guide_path('NEXT_VERSION=v1.2.3\n', invalid)
+
+    def test_reference_probes_cannot_be_hidden_or_borrow_example_labels(self):
+        path = self.docs / 'example.md'
+        for example in ('```md\n[u]: fake.md\n```', '~~~\n[u]: fake.md\n~~~',
+                        '    [u]: fake.md', '<!--\n[u]: fake.md\n-->'):
+            path.write_text('[u]: missing.md\n\n' + example, encoding='utf-8')
+            self.assertEqual([(1, 'missing.md')], list(targets(path)))
+        for unclosed in ('```md', '~~~~', '<!--'):
+            path.write_text('[unused]: missing.md\n\n' + unclosed, encoding='utf-8')
+            with self.assertRaisesRegex(SystemExit, 'unclosed code fence or HTML comment'):
+                list(targets(path))
 
     def test_link_diagnostics(self):
         path = self.docs / 'example.md'

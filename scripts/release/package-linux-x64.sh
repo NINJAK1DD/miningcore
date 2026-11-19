@@ -19,7 +19,8 @@ build_image="$5"
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$repository_root/scripts/release/linux-release-targets.sh"
 
-if [[ ! "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+IFS= read -r version_pattern < "$repository_root/scripts/release/release-version.ere"
+if [[ ! "$version" =~ ^${version_pattern}$ ]]; then
     echo "Version contains unsupported characters: $version" >&2
     exit 64
 fi

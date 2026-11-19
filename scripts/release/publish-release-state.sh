@@ -87,7 +87,9 @@ publication_validate_environment() {
 
   # Build metadata (+suffix) is intentionally excluded because '+' is not a
   # legal OCI tag character. This also keeps every promoted tag reversible.
-  if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+  local version_pattern
+  IFS= read -r version_pattern < "$publication_script_dir/release-version.ere" || publication_die "cannot read release version contract"
+  if [[ ! "$GITHUB_REF_NAME" =~ ^${version_pattern}$ ]]; then
     publication_die "release tag '$GITHUB_REF_NAME' is not a supported v-prefixed SemVer tag"
   fi
 

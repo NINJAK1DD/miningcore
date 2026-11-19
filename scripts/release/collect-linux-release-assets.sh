@@ -13,8 +13,7 @@ expected_source_commit=$3
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 source "$repository_root/scripts/release/linux-release-targets.sh"
 
-version_pattern='v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
-version_pattern+='(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?'
+IFS= read -r version_pattern < "$repository_root/scripts/release/release-version.ere"
 expected_version_pattern="^${version_pattern}$"
 
 if [[ ! "$expected_version" =~ $expected_version_pattern ]]; then
@@ -43,7 +42,7 @@ if [[ ${#archives[@]} -ne ${#MININGCORE_LINUX_RELEASE_TARGETS[@]} ]]; then
 fi
 
 declare -A archive_by_target=()
-filename_pattern="^miningcore-(${version_pattern})"
+filename_pattern='^miningcore-(.+)'
 filename_pattern+='-linux-x64-ubuntu-([0-9]+\.[0-9]+)\.tar\.gz$'
 
 for archive in "${archives[@]}"; do
@@ -53,7 +52,7 @@ for archive in "${archives[@]}"; do
   fi
 
   recorded_filename_version=${BASH_REMATCH[1]}
-  ubuntu_version=${BASH_REMATCH[7]}
+  ubuntu_version=${BASH_REMATCH[2]}
 
   if ! miningcore_linux_release_target_supported "$ubuntu_version"; then
     echo "Unsupported Ubuntu archive target in filename: $ubuntu_version ($archive)" >&2

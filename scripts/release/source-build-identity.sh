@@ -8,6 +8,7 @@ miningcore_resolve_source_build_identity() {
   local output_variable="$2"
   local -n output_arguments="$output_variable"
   local candidate
+  local version_pattern
   local source_commit
   local -a release_tags=()
 
@@ -17,8 +18,9 @@ miningcore_resolve_source_build_identity() {
     return 0
   fi
 
+  IFS= read -r version_pattern < "$(dirname "${BASH_SOURCE[0]}")/release-version.ere" || return 1
   while IFS= read -r candidate; do
-    if [[ "$candidate" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+    if [[ "$candidate" =~ ^${version_pattern}$ ]]; then
       release_tags+=("$candidate")
     fi
   done < <(git -C "$repository_root" tag --points-at HEAD --list 'v*')

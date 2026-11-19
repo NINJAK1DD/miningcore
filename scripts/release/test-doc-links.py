@@ -95,13 +95,28 @@ def local_targets(path: Path):
     # each candidate label; cmark still decides whether it's really defined
     # (and handles multiline destinations, titles, escapes and code blocks).
     lines = path.read_text(encoding='utf-8').splitlines()
+    candidates = [(line, match[1]) for line, text in enumerate(lines, 1)
+                  if (match := re.match(r'^\s*\[((?:\\.|[^\[\]\\])+)\]:', text))]
+    excluded = set()
+    if candidates:
+        # Use the real block spans, including nested/indented code and HTML
+        # comments. A definition-shaped example must not borrow a real label.
+        for node in markdown_tree(path).iter():
+            if node.tag.rsplit('}', 1)[-1] in ('code_block', 'html_block'):
+                pos = re.fullmatch(r'(\d+):\d+-(\d+):\d+', node.attrib.get('sourcepos', ''))
+                if pos:
+                    excluded.update(range(int(pos[1]), int(pos[2]) + 1))
     probes = []
     extra = []
-    for line, text in enumerate(lines, 1):
-        definition = re.match(r'^\s*\[((?:\\.|[^\[\]\\])+)\]:', text)
-        if definition:
-            extra.append(f'\n\n[probe-{len(probes)}][{definition[1]}]')
+    for line, label in candidates:
+        if line not in excluded:
+            extra.append(f'\n\n[probe-{len(probes)}][{label}]')
             probes.append(line)
+    # If the suffix is swallowed by a fence or HTML comment, do not silently
+    # accept an empty probe inventory. Never validate this artificial link.
+    end_marker = '#miningcore-end-of-document-probe'
+    extra.append(f'\n\n[end-of-document]({end_marker})\n')
+    saw_end = False
     tree = markdown_tree(path, extra=''.join(extra))
     for node in tree.iter():
         if node.tag.rsplit('}', 1)[-1] in ('link', 'image'):
@@ -111,11 +126,16 @@ def local_targets(path: Path):
                          for child in node.iter() if 'sourcepos' in child.attrib]
             line = min((position for position in positions if position), default=0)
             if line > len(lines):
+                if node.attrib['destination'] == end_marker and ''.join(node.itertext()).strip() == 'end-of-document':
+                    saw_end = True
+                    continue
                 label = re.fullmatch(r'probe-(\d+)', ''.join(node.itertext()).strip())
                 if not label:
                     continue
                 line = probes[int(label[1])]
             yield line, node.attrib['destination']
+    if not saw_end:
+        raise SystemExit(f'{path}: Markdown validation probes were hidden; check for an unclosed code fence or HTML comment')
 
 
 def main() -> int:

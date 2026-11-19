@@ -3483,6 +3483,12 @@ is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so 
 not depend on GitHub retaining the retiring `ubuntu-22.04` runner image. Both release lanes use a
 stable hosted runner and an immutable, digest-pinned Docker Official Image.
 
+The guide, source builds, archive tools and publication use the same tag grammar.
+Use `vMAJOR.MINOR.PATCH` with no leading zeros in the three core numbers. An
+optional prerelease suffix can contain alphanumeric groups separated by dots or
+hyphens (for example `-alpha`, `-beta.1`, or `-rc.1.1`). Build metadata
+(`+suffix`) is excluded because the version also names a container tag.
+
 The workflow-declared
 build-image reference is recorded in each archive's `BUILD-INFO` and checked against the shared
 release-target contract during collection; the in-container `VERSION_ID` check independently

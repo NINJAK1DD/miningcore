@@ -9,7 +9,7 @@ work_dir=$(mktemp -d)
 publish_dir="$work_dir/publish"
 output_dir="$work_dir/dist"
 complete_dir="$work_dir/complete"
-version=v1.2.3-rc.4
+version=v1.2.3-beta.1
 source "$repository_root/scripts/release/linux-release-targets.sh"
 
 resolute_digest=sha256:513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d
@@ -395,7 +395,7 @@ bash "$package_script" v1.2.4 26.04 "$publish_dir" "$output_dir" \
   "$(miningcore_linux_release_target_image 26.04)"
 cp "$output_dir"/*ubuntu-26.04.tar.gz "$fixture/"
 expect_collection_failure "archives from different releases" "$fixture" \
-  'records release v1.2.4; expected v1.2.3-rc.4'
+  "records release v1.2.4; expected $version"
 
 set +e
 invalid_output=$(

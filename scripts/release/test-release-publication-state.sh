@@ -549,7 +549,7 @@ scenario_older_rerun_preserves_newer_surfaces() (
 )
 
 scenario_prerelease_never_moves_mutable_surfaces() (
-  reset_fake_services prerelease v1.2.3-rc.1
+  reset_fake_services "prerelease-$1" "$1"
   FAKE_REFERENCES["$MININGCORE_IMAGE:1.2"]=$previous_digest
   FAKE_REFERENCES["$MININGCORE_IMAGE:latest"]=$previous_digest
 
@@ -558,7 +558,7 @@ scenario_prerelease_never_moves_mutable_surfaces() (
   [[ "$FAKE_RELEASE_LAST_PUBLISH_LATEST" == false ]] ||
     fail 'Prerelease became GitHub latest'
   assert_reference_digest "$MININGCORE_IMAGE:$GITHUB_REF_NAME" "$expected_digest"
-  assert_reference_digest "$MININGCORE_IMAGE:1.2.3-rc.1" "$expected_digest"
+  assert_reference_digest "$MININGCORE_IMAGE:${1#v}" "$expected_digest"
   assert_reference_digest "$MININGCORE_IMAGE:1.2" "$previous_digest"
   assert_reference_digest "$MININGCORE_IMAGE:latest" "$previous_digest"
 )
@@ -765,7 +765,8 @@ scenario_asset_visibility_timeout_fails_closed() (
 
 scenario_interrupted_publication_resumes
 scenario_older_rerun_preserves_newer_surfaces
-scenario_prerelease_never_moves_mutable_surfaces
+scenario_prerelease_never_moves_mutable_surfaces v1.2.3-rc.1
+scenario_prerelease_never_moves_mutable_surfaces v1.2.3-beta.1
 scenario_completed_release_survives_pruned_stage_and_metadata_edits
 scenario_legacy_assets_without_server_digests_use_byte_fallback
 scenario_completed_release_recovers_from_one_immutable_tag
