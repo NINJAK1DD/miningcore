@@ -870,10 +870,11 @@ jobs:
 
       - name: Verify offline installation route in packaged image
         run: |
+          guide=$(python3 scripts/release/current-upgrade-guide.py)
           docker run --rm --network none --entrypoint sh miningcore-release-test:${{ github.sha }} -ec '
             cd /app
-            grep -Fq "](docs/upgrade-v0.4.0-rc.2.md)" INSTALL.md
-            test -r docs/upgrade-v0.4.0-rc.2.md'
+            grep -Fq "]($1)" INSTALL.md
+            test -r "$1"' sh "$guide"
 
       - name: Smoke-test managed ZeroMQ binding in packaged container
         shell: bash

@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
+from xml.etree import ElementTree
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -23,8 +25,6 @@ MARKDOWN_FILES = [
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 EXPLICIT_ANCHOR = re.compile(r"<(?:a\s+name|[^>]+\sid)=[\"']([^\"']+)[\"']", re.I)
-INLINE_LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^\s>)]+)(?:\s+(?:\"[^\"]*\"|'[^']*'))?\)")
-REFERENCE_LINK = re.compile(r"^\s*\[[^\]]+\]:\s*(?:<([^>]+)>|(\S+))")
 
 
 def markdown_slug(text: str) -> str:
@@ -79,22 +79,17 @@ def anchors_for(path: Path) -> set[str]:
     return anchors
 
 
+def markdown_tree(path: Path):
+    # Parse the links readers see, independently of the archive rewriter.
+    return ElementTree.fromstring(subprocess.check_output(
+        ['cmark-gfm', '--to', 'xml', '--sourcepos', '--extension', 'table', str(path)]))
+
+
 def local_targets(path: Path):
-    fence: tuple[str, int] | None = None
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        updated_fence = update_fence(line, fence)
-        if updated_fence != fence:
-            fence = updated_fence
-            continue
-        if fence:
-            continue
-
-        for target in INLINE_LINK.findall(line):
-            yield number, target
-
-        reference = REFERENCE_LINK.match(line)
-        if reference:
-            yield number, reference.group(1) or reference.group(2)
+    tree = markdown_tree(path)
+    for node in tree.iter():
+        if node.tag.rsplit('}', 1)[-1] in ('link', 'image'):
+            yield int(node.get('sourcepos', '0:0').split(':', 1)[0]), node.attrib['destination']
 
 
 def main() -> int:
@@ -110,11 +105,11 @@ def main() -> int:
     for source in MARKDOWN_FILES:
         for line, raw_target in local_targets(source):
             target = unquote(raw_target)
-            parsed = urlsplit(target)
+            parsed = urlsplit(raw_target)
             if parsed.scheme or parsed.netloc:
                 continue
 
-            relative_path = parsed.path
+            relative_path = unquote(parsed.path)
             destination = source.resolve() if not relative_path else (source.parent / relative_path).resolve()
             try:
                 destination.relative_to(REPO_ROOT)
@@ -134,7 +129,7 @@ def main() -> int:
 
             if destination not in anchor_cache:
                 anchor_cache[destination] = anchors_for(destination)
-            if parsed.fragment not in anchor_cache[destination]:
+            if unquote(parsed.fragment) not in anchor_cache[destination]:
                 errors.append(
                     f"{source.relative_to(REPO_ROOT)}:{line}: missing anchor "
                     f"#{parsed.fragment} in {destination.relative_to(REPO_ROOT)}"

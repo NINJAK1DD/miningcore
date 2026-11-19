@@ -14,22 +14,42 @@ ROOT = Path(__file__).resolve().parents[2]
 def map_links(text, transform):
     """Transform guide destinations only, preserving literal examples and link titles."""
     tokens = re.compile(
-        r'(?P<code>(?<!`)(?P<ticks>`+)(?!`).*?(?<!`)(?P=ticks)(?!`))'
+        r'(?P<escape>\\[\\`])|(?P<code>(?<!`)(?P<ticks>`+)(?!`).*?(?<!`)(?P=ticks)(?!`))'
         r'|(?P<prefix>\]\(|^ {0,3}\[[^\]\n]+\]:[ \t]*)(?:<(?P<angle>[^>\n]+)>|(?P<bare>(?:[^\s()<>]|\([^\s()]*\))+))',
         re.MULTILINE | re.DOTALL)
 
     def replace(match):
-        if match['code'] is not None:
+        if match['code'] is not None or match['escape'] is not None:
             return match[0]
         if match['angle'] is not None:
             return match['prefix'] + '<' + transform(match['angle']) + '>'
         return match['prefix'] + transform(match['bare'])
 
     lines, prose = [], []
+    list_indents = []
+    after_blank = True
+    indented_code = False
     fence = None
     for line in text.splitlines(keepends=True):
-        marker = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', line)
-        if not (marker or fence or not line.strip() or line.expandtabs(4).startswith('    ')):
+        expanded = line.expandtabs(4)
+        indent = len(expanded) - len(expanded.lstrip(' '))
+        if line.strip() and not fence:
+            while list_indents and indent < list_indents[-1]:
+                list_indents.pop()
+        base = list_indents[-1] if list_indents else 0
+        content = expanded[base:]
+        item = re.match(r'^ {0,3}(?:[-+*]|\d{1,9}[.)]) {1,4}(?! )', content)
+        if item and not fence:
+            base += item.end()
+            list_indents.append(base)
+            content = expanded[base:]
+            # Code spans cannot extend from one list item into the next.
+            lines.append(tokens.sub(replace, ''.join(prose)))
+            prose.clear()
+        marker = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', content)
+        indented_code = (after_blank or indented_code) and content.startswith('    ')
+        after_blank = not line.strip()
+        if not (marker or fence or after_blank or indented_code):
             prose.append(line)
             continue
         lines.append(tokens.sub(replace, ''.join(prose)))

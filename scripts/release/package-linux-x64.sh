@@ -5,8 +5,11 @@ set -euo pipefail
 if [[ $# -ne 5 ]]; then
     echo "Usage: $0 <version> <ubuntu-version> <publish-directory>" >&2
     echo "  <output-directory> <build-image>" >&2
+    echo "Required environment: GITHUB_REPOSITORY=owner/repository containing the source commit (automatic in Actions)." >&2
     exit 64
 fi
+
+: "${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY to the GitHub owner/repository containing the packaged commit}"
 
 version="$1"
 ubuntu_version="$2"
@@ -84,7 +87,7 @@ cp "$repository_root/packaging/systemd/miningcore.service" \
     "$package_root/systemd/"
 
 python3 "$repository_root/scripts/release/render-release-doc.py" install "$source_commit" \
-    "${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY to the GitHub owner/repository containing the packaged commit}" "$package_root"
+    "$GITHUB_REPOSITORY" "$package_root"
 
 cat > "$package_root/BUILD-INFO" <<EOF
 Version: $version

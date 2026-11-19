@@ -3695,9 +3695,10 @@ For a candidate, keep the latest stable baseline explicitly separate from the se
 candidate examples. Update the RC highlights, upgrade matrix, guide index and
 `scripts/release/test-release-install-docs.sh` together. Historical release/evidence
 versions identify their original behavior and must not be replaced globally.
-Update the offline guide route in both `scripts/release/test-packaged-guide.py` and the
-packaged-image smoke test in `.github/workflows/release.yml`; a historical route is not
-proof that the current guide ships. When packaging locally, set `GITHUB_REPOSITORY`
+The extracted archive and packaged-image checks derive the required offline guide from
+the tag selection (`NEXT_VERSION`) below. For local documentation and archive tests,
+install Ubuntu's `cmark-gfm` package so link validation uses an independent Markdown
+parser. When packaging locally, set `GITHUB_REPOSITORY`
 to the GitHub owner/repository that contains the selected commit (including fork builds).
 For changes after this candidate, use `## Unreleased (after v0.4.0-rc.2): subject`.
 The documentation guard permits this next-cycle heading but rejects unqualified

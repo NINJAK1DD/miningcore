@@ -153,6 +153,15 @@ fi
 SOURCE_COMMIT=$(git -C "$repository_root" rev-parse HEAD)
 SOURCE_DATE_EPOCH=$(git -C "$repository_root" show -s --format=%ct "$SOURCE_COMMIT")
 export SOURCE_COMMIT SOURCE_DATE_EPOCH
+if usage=$(env -u GITHUB_REPOSITORY bash "$package_script" 2>&1); then
+  exit 1
+fi
+grep -Fq 'GITHUB_REPOSITORY=owner/repository' <<<"$usage"
+if missing=$(env -u GITHUB_REPOSITORY bash "$package_script" "$version" 26.04 "$publish_dir" \
+  "$output_dir" "$resolute_image" 2>&1); then
+  exit 1
+fi
+grep -Fq 'Set GITHUB_REPOSITORY' <<<"$missing"
 export GITHUB_REPOSITORY=fixture/miningcore
 python3 -B "$repository_root/scripts/release/test-render-release-doc.py"
 
@@ -249,7 +258,8 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
   extracted="$work_dir/extracted-$ubuntu_version"
   mkdir -p "$extracted"
   tar -xzf "$output_dir/$archive" -C "$extracted"
-  python3 -B "$repository_root/scripts/release/test-packaged-guide.py" "$extracted/$package_root"
+  python3 -B "$repository_root/scripts/release/test-packaged-guide.py" "$extracted/$package_root" \
+    "https://github.com/$GITHUB_REPOSITORY/blob/$SOURCE_COMMIT"
   python3 "$repository_root/scripts/release/render-release-doc.py" notes "$SOURCE_COMMIT" \
     fixture/miningcore "$work_dir/notes.md"
   recorded_source=$(sed -n 's/^Source commit: //p' "$extracted/$package_root/BUILD-INFO")
