@@ -9,8 +9,8 @@ archive, and a successful build is not evidence that a real wallet is reconciled
 1. Record the old binary/image identity, configuration, service overrides, database
    roles, filesystems holding recovery journals, wallet backups and **every process**
    sharing the database or wallet. Include remote relay senders and payout consumers.
-2. For an archive, explicitly select the published RC.2 in
-   [Choose a version](releases.md#choose-a-version), verify checksums and provenance,
+2. For an archive, explicitly select the published RC.2 in the release guide's
+   download block, verify checksums and provenance,
    and stage into a new versioned directory, without replacing the active installation.
    Match Ubuntu 22.04 or 26.04 x64; 24.04 uses a source build. Compare the peeled
    release commit from the [independent lookup](releases.md#resolve-the-release-source-commit)
@@ -76,7 +76,8 @@ guard: it does not perform these steps.
   operator explicitly resumes. Do not infer wallet inactivity from a dead session.
 - PPS acknowledgement now requires committed accounting or an authenticated,
   force-flushed journal. PPS relay senders need a recorder, share partitions, the
-  same accounting database, bind mode and matching keys of at least 32 characters.
+  same accounting database, bind mode and matching random keys of at least 32 characters.
+  Replace keys starting with `CHANGE_ME` or `REPLACE_` on every endpoint; PPS startup rejects those placeholders.
   Follow [relay rollout and key rotation](share-relays.md#required-pps-transport-protection-and-upgrade)
   on both ends; monitor pressure and share rates even for non-PPS senders.
 - Verify listener/proxy attribution, daemon sync, accepted shares, recorder/journal
@@ -92,10 +93,17 @@ guard: it does not perform these steps.
 
 ## Before tagging or promoting
 
-Record the exact release-preparation commit as it lands on `dev`. Run the
-[documented lab suite](../scripts/test-lab/README.md) with PostgreSQL and the
+Record the exact release-preparation commit as it lands on `dev`. From a source
+checkout of that commit (the lab is intentionally not shipped), run the lab suite
+described in `scripts/test-lab/README.md` with PostgreSQL and the
 pinned Bitcoin BLAKE2b Knots regtest daemon as well as the standard daemons;
 record any optional hardware/daemon skips. Keep cross-cluster restore, wallet
 reconciliation and topology-specific commissioning evidence distinct from PR CI.
 After tag-triggered publication, verify the prerelease flag, archive checksums and
 source identities, and the versioned container digest. Stable aliases must not move.
+
+This is a manual cutover, not an unattended upgrade script. Rehearse both an
+RC.1 upgrade and a fresh installation with separate administrator provisioning.
+Record interrupted-batch reconciliation, restored roles/ACLs, mixed-node shutdown
+and rollback results for the intended topology. CI is not evidence of a live
+wallet rehearsal. If any step fails, see [When an RC.2 upgrade stops](troubleshooting.md#when-an-rc2-upgrade-stops).

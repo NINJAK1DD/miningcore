@@ -32,6 +32,15 @@ def serviced_image(docker, family, minimum, stage=None):
 
 
 class WorkflowPolicyTests(unittest.TestCase):
+    def test_release_notes_receive_resolved_source(self):
+        jobs = yaml.safe_load((ROOT / '.github/workflows/release.yml').read_text())['jobs']
+        job = jobs['publish-release']
+        self.assertIn('resolve-release', job['needs'])
+        step, = [item for item in job['steps'] if item.get('name') == 'Write release-note preamble']
+        self.assertEqual('${{ needs.resolve-release.outputs.source_commit }}', step['env']['RELEASE_SOURCE'])
+        self.assertEqual('python3 scripts/release/render-release-doc.py notes "$RELEASE_SOURCE" "$GITHUB_REPOSITORY" release-notes.md',
+                         step['run'].strip())
+
     def test_ghcr_qualification_is_opt_in_and_has_only_registry_write_permission(self):
         workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
         self.assertEqual('false', workflow['on']['workflow_dispatch']['inputs']['qualify_ghcr']['default'])

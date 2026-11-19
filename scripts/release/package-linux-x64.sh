@@ -65,7 +65,6 @@ cp "$repository_root/README.md" "$repository_root/LICENSE" \
     "$repository_root/config.example.json" "$package_root/"
 cp "$repository_root/examples/README.md" "$repository_root"/examples/*.json \
     "$package_root/examples/"
-cp "$repository_root/docs/releases.md" "$package_root/INSTALL.md"
 # Ship operator guides, not captured devnet/regtest proof fixtures. Keep those
 # reproducibility inputs in the source repository and isolated lab.
 mkdir -p "$package_root/docs"
@@ -83,6 +82,9 @@ cp "$repository_root/packaging/systemd/miningcore.service" \
     "$repository_root/packaging/systemd/configure-postgresql-ordering.sh" \
     "$repository_root/packaging/systemd/postgresql-ordering.conf.example" \
     "$package_root/systemd/"
+
+python3 "$repository_root/scripts/release/render-release-doc.py" install "$source_commit" \
+    "${GITHUB_REPOSITORY:-NINJAK1DD/miningcore}" "$package_root"
 
 cat > "$package_root/BUILD-INFO" <<EOF
 Version: $version

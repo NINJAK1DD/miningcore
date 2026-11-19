@@ -55,6 +55,30 @@ class ReleasePreparationTests(unittest.TestCase):
     def test_rc2_upgrade_requires_wallet_control_even_with_rc1_contract_intact(self):
         self.mutation('docs/upgrade-v0.4.0-rc.2.md', 'add_wallet_payout_control.sql', 'createdb.sql')
 
+    def test_rc2_migration_scenarios_and_safety_boundaries(self):
+        guide = 'docs/upgrade-v0.4.0-rc.2.md'
+        for term in ("Import RC.2's `createdb.sql` once", 'separate administrator installation',
+                     'Never rerun `createdb.sql`', 'Install `add_payout_recovery_audit.sql`',
+                     'Then provision wallet control', 'Apply only the required prerequisites',
+                     'does **not** exempt', 'Preserve audit history', 'while paused as its trusted owner',
+                     'never replay initial control installation', 'Verify existing protocol-2 owners and grants',
+                     'only when the control is absent', 'separate trusted administrator with the exact runtime login',
+                     'do not grant administrative or operator privileges', 'control starts **paused**',
+                     'Never start old and', 'Never apply every file', 'reconcile before deciding',
+                     'cross-cluster-release-acceptance'):
+            with self.subTest(term=term):
+                self.mutation(guide, term, 'OMITTED')
+
+    def test_rc2_routes_and_preparation_anchors(self):
+        self.mutation('docs/database.md', '`export MININGCORE_VERSION=v0.4.0-rc.2`', '`use dev`')
+        for name in ('README.md', 'docs/releases.md', 'docs/database.md'):
+            documents = self.original.copy()
+            documents[name] = documents[name].replace('upgrade-v0.4.0-rc.2.md', 'missing.md')
+            self.assertTrue(guard.validate(documents, self.baseline), name)
+        for alias in ('emergency-wallet-control-protocol-2', 'rc2-payout-pause-deployment-and-rollback-warning',
+                      'upcoming-v040-rc2', 'unreleased-after-v040-rc1-guided-payout-recovery-and-timestamp-setup'):
+            self.mutation('docs/releases.md', f'id="{alias}"', 'id="missing"')
+
     def test_shell_matrix_preflight(self):
         for shell in ('bash', 'dash', 'zsh'):
             with self.subTest(missing=shell):
@@ -83,7 +107,8 @@ class ReleasePreparationTests(unittest.TestCase):
     def test_stale_or_unqualified_unreleased_entries_rejected(self):
         for heading in ('## Unreleased: future fix', '## Unreleased',
                         '## Unreleased (after v0.3.0): future fix',
-                        '## Unreleased (after v0.4.0-rc.1): stale fix'):
+                        '## Unreleased (after v0.4.0-rc.1): stale fix',
+                        '## Unreleased (after v0.4.0-rc.3): speculative fix'):
             with self.subTest(heading=heading):
                 documents = self.original.copy()
                 documents['docs/releases.md'] += '\n' + heading + '\n'

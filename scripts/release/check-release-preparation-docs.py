@@ -85,9 +85,24 @@ def validate(documents, baseline):
     for name in ('README.md', 'docs/releases.md', 'docs/database.md'):
         require('upgrade-v0.4.0-rc.2.md' in documents[name], f'{name}: missing current upgrade route')
     candidate = documents['docs/upgrade-v0.4.0-rc.2.md']
-    for prerequisite in ('add_wallet_payout_control.sql', 'upgrade_wallet_payout_control_v2.sql',
-                         'add_payout_recovery_audit.sql', 'cross-cluster-release-acceptance'):
-        require(prerequisite in candidate, f'RC.2 guide missing prerequisite: {prerequisite}')
+    for label, instructions in {
+        'New empty database': ("Import RC.2's `createdb.sql` once", 'separate administrator installation'),
+        'Existing RC.1': ('Never rerun `createdb.sql`', 'Install `add_payout_recovery_audit.sql`',
+                         'Then provision wallet control'),
+        'v0.3.0 or older': ('Apply only the required prerequisites', 'does **not** exempt'),
+        'Interim development installation': ('Preserve audit history', 'protocol-1 control use `upgrade_wallet_payout_control_v2.sql` while paused',
+                                            'never replay initial control installation', 'Verify existing protocol-2 owners and grants instead of reinstalling'),
+    }.items():
+        rows = [line for line in candidate.splitlines() if line.startswith(f'| {label} |')]
+        require(len(rows) == 1 and all(term in rows[0] for term in instructions),
+                f'RC.2 migration instructions missing or ambiguous: {label}')
+    for boundary in ('Install `add_wallet_payout_control.sql` only when the control is absent',
+                     'separate trusted administrator with the exact runtime login',
+                     'do not grant administrative or operator privileges to the service',
+                     'control starts **paused**', 'Never start old and new payout owners together',
+                     'Never apply every file in the directory in alphabetical order',
+                     'reconcile before deciding whether to restore', 'cross-cluster-release-acceptance'):
+        require(boundary in prose(candidate), f'RC.2 safety boundary missing: {boundary}')
     for level, title in headings(release):
         if re.match(r'Unreleased\b', title, re.IGNORECASE):
             require(level == '##' and re.fullmatch(
@@ -113,6 +128,8 @@ def validate(documents, baseline):
         require(fragment in prose(release), f'Missing safe tag-push recovery guidance: {fragment}')
     require('The cumulative example below deliberately targets v0.4.0-rc.1' in
             prose(documents['docs/database.md']), 'Database example must explain its RC-specific target')
+    require('For RC.2, replace the version assignment in that example with `export MININGCORE_VERSION=v0.4.0-rc.2`'
+            in prose(documents['docs/database.md']), 'Manual prerequisite example must explain RC.2 selection')
     require('docs/upgrade-v0.4.0-rc.1.md#container-upgrades' in documents['README.md'],
             'README container upgrade warning must link directly to the upgrade path')
 
@@ -120,7 +137,18 @@ def validate(documents, baseline):
     # both together cannot silently change an already published external link.
     expected = [line for line in baseline.splitlines() if line and not line.startswith('#')]
     require(len(expected) == 33 and len(set(expected)) == 33, 'Invalid frozen historical-anchor baseline')
-    actual = re.findall(r'^<a id="(unreleased[^"]*)"></a>$', release, re.MULTILINE)
+    rc2_aliases = {
+        'unreleased-after-v040-rc1-guided-payout-recovery-and-timestamp-setup': 'guided payout recovery and timestamp setup',
+        'upcoming-v040-rc2': 'runtime and compatibility',
+        'emergency-wallet-control-protocol-2': 'emergency wallet control protocol 2',
+        'rc2-payout-pause-deployment-and-rollback-warning': 'payout pause deployment and rollback warning',
+    }
+    for alias, heading in rc2_aliases.items():
+        require(release.count(f'<a id="{alias}"></a>') == 1 and
+                f'<a id="{alias}"></a>\n\n## v0.4.0-rc.2: {heading}\n' in release,
+                f'Incorrect historical RC.2 anchor: {alias}')
+    actual = [alias for alias in re.findall(r'^<a id="(unreleased[^"]*)"></a>$', release, re.MULTILINE)
+              if alias not in rc2_aliases]
     require(Counter(actual) == Counter(expected), 'Historical release anchors differ from the frozen baseline')
     pairs = re.findall(r'^<a id="(unreleased[^"]*)"></a>\n\n## v0\.4\.0-rc\.1: (.+)$',
                        release, re.MULTILINE)

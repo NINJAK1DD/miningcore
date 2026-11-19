@@ -868,6 +868,13 @@ jobs:
       - name: Smoke-test packaged container
         run: docker run --rm miningcore-release-test:${{ github.sha }} --version
 
+      - name: Verify offline installation route in packaged image
+        run: |
+          docker run --rm --network none --entrypoint sh miningcore-release-test:${{ github.sha }} -ec '
+            cd /app
+            grep -Fq "](docs/upgrade-v0.4.0-rc.2.md)" INSTALL.md
+            test -r docs/upgrade-v0.4.0-rc.2.md'
+
       - name: Smoke-test managed ZeroMQ binding in packaged container
         shell: bash
         run: |
@@ -977,17 +984,7 @@ jobs:
         env:
           RELEASE_SOURCE: ${{ needs.resolve-release.outputs.source_commit }}
         run: |
-          cat > release-notes.md <<'EOF'
-          This release contains a primary, framework-dependent **Ubuntu 26.04 x64** build
-          and a separately built **Ubuntu 22.04 x64 compatibility** archive. Use only the archive
-          matching the host release; native binaries built on Ubuntu 26.04 are not compatible with
-          older glibc systems. Ubuntu 24.04 remains a tested source-build target.
-
-          Read the packaged `INSTALL.md` before deployment. Install the documented serviced
-          runtime and complete the PostgreSQL steps for your deployment before startup.
-          EOF
-          printf '\n[Installation and upgrade guide for this build](https://github.com/%s/blob/%s/docs/releases.md)\n' \
-            "$GITHUB_REPOSITORY" "$RELEASE_SOURCE" >> release-notes.md
+          python3 scripts/release/render-release-doc.py notes "$RELEASE_SOURCE" "$GITHUB_REPOSITORY" release-notes.md
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0

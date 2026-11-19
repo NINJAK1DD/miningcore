@@ -15,7 +15,9 @@ AutoMapper, Polly and protobuf-net dependencies. These ship with the build;
 operators should not replace individual DLLs. Bitcoin II explorer links were
 updated; a link change does not change network consensus or payout eligibility.
 
-## Emergency wallet control protocol 2
+<a id="emergency-wallet-control-protocol-2"></a>
+
+## v0.4.0-rc.2: emergency wallet control protocol 2
 
 Wallet batch completion now requires the PostgreSQL session that admitted it,
 identified by both backend PID and start time. Replacement runtime sessions cannot
@@ -30,7 +32,9 @@ GSS encryption so certificate policy cannot be bypassed and plaintext fallback i
 impossible. See the [transport policy](postgres-tls.md); optional modes still do not
 guarantee encryption.
 
-## RC.2 payout pause: deployment and rollback warning
+<a id="rc2-payout-pause-deployment-and-rollback-warning"></a>
+
+## v0.4.0-rc.2: payout pause deployment and rollback warning
 
 **RC.1 ignores `paymentProcessing.paused` and can resume wallet payouts with that flag present.**
 Before starting any paused service, stop and inventory every wallet-capable process, verify the
@@ -73,6 +77,8 @@ Linux native builds require **x86-64-v2 plus AES-NI and PCLMULQDQ**. They use a
 fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
+
+<a id="unreleased-after-v040-rc1-guided-payout-recovery-and-timestamp-setup"></a>
 
 ## v0.4.0-rc.2: guided payout recovery and timestamp setup
 
@@ -190,7 +196,9 @@ first connection, including standalone recovery. After correcting the configurat
 or require clearing payout state. The two-minute recovery limit is per idle prompt, and scripted
 TTY startups can use `--no-payout-recovery-prompt`; it cannot be combined with standalone recovery.
 
-## v0.4.0-rc.2 runtime and compatibility
+<a id="upcoming-v040-rc2"></a>
+
+## v0.4.0-rc.2: runtime and compatibility
 
 > **Upgrade .NET before installing RC.2.** Normal Miningcore startup now requires both
 > .NET and ASP.NET Core **10.0.15 or later in .NET 10**. As of 11 November 2026, normal Canonical

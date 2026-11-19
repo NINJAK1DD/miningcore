@@ -23,6 +23,12 @@ public class PpsConfigurationTests
         config.ShareRelay = sender ? new ShareRelayConfig() : null;
         config.ShareRelays = sender ? null : new[] { new ShareRelayEndpointConfig() };
         Assert.Throws<PoolStartupException>(() => ShareRelaySecurity.Validate(config));
+        foreach(var placeholder in new[] { "REPLACE_WITH_A_LONG_RANDOM_SECRET", "  change_me_to_a_long_random_secret " })
+        {
+            if(sender) config.ShareRelay.SharedEncryptionKey = placeholder;
+            else config.ShareRelays[0].SharedEncryptionKey = placeholder;
+            Assert.Throws<PoolStartupException>(() => ShareRelaySecurity.Validate(config));
+        }
         if(sender) config.ShareRelay.SharedEncryptionKey = "isolated-fixture-key-32-characters-minimum";
         else config.ShareRelays[0].SharedEncryptionKey = "isolated-fixture-key-32-characters-minimum";
         ShareRelaySecurity.Validate(config);

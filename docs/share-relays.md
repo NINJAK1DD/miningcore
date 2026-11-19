@@ -109,7 +109,7 @@ Sender:
 "shareRelay": {
   "publishUrl": "tcp://192.0.2.20:5555",
   "connect": false,
-  "sharedEncryptionKey": "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
+  "sharedEncryptionKey": "CHANGE_ME_RELAY_SHARED_SECRET"
 }
 ```
 
@@ -119,7 +119,7 @@ Receiver/recorder:
 "shareRelays": [
   {
     "url": "tcp://192.0.2.20:5555",
-    "sharedEncryptionKey": "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
+    "sharedEncryptionKey": "CHANGE_ME_RELAY_SHARED_SECRET"
   }
 ]
 ```

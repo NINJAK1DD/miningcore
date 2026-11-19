@@ -208,6 +208,11 @@ v0.3.0 accounting schema, or merely because an already prepared SOLO service is 
 
 The cumulative example below deliberately targets v0.4.0-rc.1, unlike the stable
 installation defaults. Use it only after the candidate's assets are published.
+For RC.2, replace the version assignment in that example with
+`export MININGCORE_VERSION=v0.4.0-rc.2` and use the verified RC.2 archive:
+its three prerequisite SQL scripts are unchanged. This manual sequence has no
+version guard and is not a complete RC.2 cutover; continue with the
+[RC.2 database steps](upgrade-v0.4.0-rc.2.md#database-preparation).
 For a v0.2.x-to-v0.3.0 stable upgrade, follow the [v0.3.0 prerequisites](releases.md#v030-highlights)
 and use SQL from the verified v0.3.0 archive, not this RC directory. The RC
 accounting migration contains newer schema changes absent from v0.3.0.
@@ -1452,7 +1457,7 @@ sudo journalctl -u miningcore --since '10 minutes ago' --no-pager
 
 ### Restart-only payout pause
 
-This option requires a binary containing the payout-pause fix (target: v0.4.0-rc.2).
+This option requires a binary containing the payout-pause fix (added in v0.4.0-rc.2).
 The v0.4.0-rc.1 binary does not implement it. Verify the selected binary's generated schema
 (`--generate-config-schema`) includes `ClusterPaymentProcessingConfig.properties.paused`
 before relying on it. Never roll back to an older binary with a paused configuration: an unknown
