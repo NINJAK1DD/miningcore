@@ -51,6 +51,7 @@ jobs:
 
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             version="$GITHUB_REF_NAME"
+            python3 scripts/release/current-upgrade-guide.py --tag "$version"
           else
             # One resolver prevents independently versioned matrix legs. Release
             # failures must be recovered with "Re-run all jobs" because Actions

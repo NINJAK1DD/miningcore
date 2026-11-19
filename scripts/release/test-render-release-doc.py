@@ -1,13 +1,18 @@
 """Focused fixtures for the root-level archive INSTALL.md."""
 
 from pathlib import Path
+import os
 import runpy
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 
 
 install = runpy.run_path(str(Path(__file__).with_name('render-release-doc.py')))['install']
 check = runpy.run_path(str(Path(__file__).with_name('test-packaged-guide.py')))['check']
+guide_path = runpy.run_path(str(Path(__file__).with_name('current-upgrade-guide.py')))['guide_path']
+targets = runpy.run_path(str(Path(__file__).with_name('test-doc-links.py')))['local_targets']
 SOURCE = 'https://github.com/fixture/fork/blob/' + 'b' * 40
 
 
@@ -70,15 +75,44 @@ class GuideTests(unittest.TestCase):
             (parent / 'db.md').touch()  # A stale path can resolve to the wrong shipped file.
         guide = self.root / 'INSTALL.md'
         good = self.render(f'[upgrade]({route})\n\n- outer\n    - [read the\nguide](db.md)\n'
-                           '\n`[literal](db.md)`\n\n```sh\nNEXT_VERSION=v9.0.0-rc.3\n```\n')
+                           '\n`[literal](db.md)`\n\n\\[plain](db.md)\n\n```sh\nNEXT_VERSION=v9.0.0-rc.3\n```\n')
         check(self.root, SOURCE)
         for bad in (good.replace('](docs/db.md)', '](db.md)'),
+                    good.replace('[plain](db.md)', '[plain](docs/db.md)'),
                     good.replace('[literal](db.md)', '[literal](docs/db.md)'),
                     good.replace('](docs/db.md)', '](docs/missing.md)')):
             with self.subTest(bad=bad):
                 guide.write_text(bad, encoding='utf-8')
                 with self.assertRaises(ValueError):
                     check(self.root, SOURCE)
+
+    def test_bracket_escapes(self):
+        (self.docs / 'db.md').touch()
+        for literal in (r'\[literal](db.md)', r'[literal\](db.md)', r'\[literal\](db.md)', 'orphan](db.md)'):
+            self.assertEqual(literal + ' [real](docs/db.md)', self.render(literal + ' [real](db.md)'))
+        for label in (r'\\[real]', r'[real \[bracket\]]'):
+            self.assertEqual(label + '(docs/db.md)', self.render(label + '(db.md)'))
+
+    def test_tag_contract(self):
+        for version in ('v1.2.3-rc.4', 'v1.2.3'):
+            doc = f'NEXT_VERSION={version}\n'
+            self.assertEqual(f'docs/upgrade-{version}.md', guide_path(doc, version))
+            for wrong in ('v1.2.3-rc.3', '', 'v1.2.4'):
+                with self.assertRaisesRegex(ValueError, 'does not match'):
+                    guide_path(doc, wrong)
+
+    def test_link_diagnostics(self):
+        path = self.docs / 'example.md'
+        path.write_text('paragraph\n\n[wrapped\nlabel](missing.md)\n\n[unused]:\n  absent.md\n'
+                        '\n```\n[ignored]: ignored.md\n```\n', encoding='utf-8')
+        self.assertEqual([(3, 'missing.md'), (6, 'absent.md')], list(targets(path)))
+        self.render('NEXT_VERSION=v1.2.3\n')
+        for script, args in (('test-doc-links.py', []), ('test-packaged-guide.py', [str(self.root), SOURCE])):
+            result = subprocess.run([sys.executable, str(Path(__file__).with_name(script)), *args],
+                                    env={**os.environ, 'PATH': ''}, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn('apt install cmark-gfm', result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
 
 
 if __name__ == '__main__':

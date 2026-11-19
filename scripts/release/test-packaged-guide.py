@@ -20,7 +20,7 @@ def check(root, source_url):
         nodes = []
         for node in helpers['markdown_tree'](document).iter():
             kind = node.tag.rsplit('}', 1)[-1]
-            if kind in ('code', 'code_block'):
+            if kind in ('text', 'code', 'code_block'):
                 nodes.append((kind, node.text))
             elif kind in ('link', 'image'):
                 dest = urlsplit(node.attrib['destination'])
@@ -46,7 +46,7 @@ def check(root, source_url):
 
     expected, actual = inventory(source), inventory(guide)
     if expected != actual:
-        raise ValueError('Packaged INSTALL.md changed a rendered link destination or literal example')
+        raise ValueError('Packaged INSTALL.md changed rendered text, a link destination or a literal example')
     if ('link', required) not in actual:
         raise ValueError(f'Packaged INSTALL.md lacks the offline route: {required}')
 

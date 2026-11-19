@@ -3696,7 +3696,9 @@ candidate examples. Update the RC highlights, upgrade matrix, guide index and
 `scripts/release/test-release-install-docs.sh` together. Historical release/evidence
 versions identify their original behavior and must not be replaced globally.
 The extracted archive and packaged-image checks derive the required offline guide from
-the tag selection (`NEXT_VERSION`) below. For local documentation and archive tests,
+the tag selection (`NEXT_VERSION`) below. Tag builds reject a mismatch before packaging.
+For a stable release such as v0.4.0, ship and link the stable guide
+(`docs/upgrade-v0.4.0.md`), not just the last candidate's guide. For local documentation and archive tests,
 install Ubuntu's `cmark-gfm` package so link validation uses an independent Markdown
 parser. When packaging locally, set `GITHUB_REPOSITORY`
 to the GitHub owner/repository that contains the selected commit (including fork builds).

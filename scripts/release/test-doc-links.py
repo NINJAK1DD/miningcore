@@ -79,17 +79,43 @@ def anchors_for(path: Path) -> set[str]:
     return anchors
 
 
-def markdown_tree(path: Path):
+def markdown_tree(path: Path, *, extra=""):
     # Parse the links readers see, independently of the archive rewriter.
-    return ElementTree.fromstring(subprocess.check_output(
-        ['cmark-gfm', '--to', 'xml', '--sourcepos', '--extension', 'table', str(path)]))
+    command = ['cmark-gfm', '--to', 'xml', '--sourcepos', '--extension', 'table']
+    try:
+        xml = (subprocess.check_output(command, input=path.read_bytes() + extra.encode('utf-8'))
+               if extra else subprocess.check_output([*command, str(path)]))
+    except FileNotFoundError:
+        raise SystemExit('Markdown validation requires cmark-gfm. On Ubuntu run: sudo apt install cmark-gfm') from None
+    return ElementTree.fromstring(xml)
 
 
 def local_targets(path: Path):
-    tree = markdown_tree(path)
+    # cmark omits unused reference definitions. Append a synthetic use of
+    # each candidate label; cmark still decides whether it's really defined
+    # (and handles multiline destinations, titles, escapes and code blocks).
+    lines = path.read_text(encoding='utf-8').splitlines()
+    probes = []
+    extra = []
+    for line, text in enumerate(lines, 1):
+        definition = re.match(r'^\s*\[((?:\\.|[^\[\]\\])+)\]:', text)
+        if definition:
+            extra.append(f'\n\n[probe-{len(probes)}][{definition[1]}]')
+            probes.append(line)
+    tree = markdown_tree(path, extra=''.join(extra))
     for node in tree.iter():
         if node.tag.rsplit('}', 1)[-1] in ('link', 'image'):
-            yield int(node.get('sourcepos', '0:0').split(':', 1)[0]), node.attrib['destination']
+            # cmark can locate the link itself on its closing line. Its
+            # label children retain the opening line of wrapped text.
+            positions = [int(child.attrib['sourcepos'].split(':', 1)[0])
+                         for child in node.iter() if 'sourcepos' in child.attrib]
+            line = min((position for position in positions if position), default=0)
+            if line > len(lines):
+                label = re.fullmatch(r'probe-(\d+)', ''.join(node.itertext()).strip())
+                if not label:
+                    continue
+                line = probes[int(label[1])]
+            yield line, node.attrib['destination']
 
 
 def main() -> int:

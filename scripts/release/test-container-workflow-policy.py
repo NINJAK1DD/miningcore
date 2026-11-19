@@ -32,6 +32,14 @@ def serviced_image(docker, family, minimum, stage=None):
 
 
 class WorkflowPolicyTests(unittest.TestCase):
+    def test_tag_version_checked_before_resolver_outputs(self):
+        jobs = yaml.safe_load((ROOT / '.github/workflows/release.yml').read_text())['jobs']
+        resolver, = [s['run'] for s in jobs['resolve-release']['steps'] if s.get('id') == 'release']
+        self.assertIn('if [[ "$GITHUB_REF" == refs/tags/* ]]; then\n'
+                      '  version="$GITHUB_REF_NAME"\n'
+                      '  python3 scripts/release/current-upgrade-guide.py --tag "$version"\nelse', resolver)
+        self.assertLess(resolver.index('--tag "$version"'), resolver.index('>> "$GITHUB_OUTPUT"'))
+
     def test_release_notes_receive_resolved_source(self):
         jobs = yaml.safe_load((ROOT / '.github/workflows/release.yml').read_text())['jobs']
         job = jobs['publish-release']

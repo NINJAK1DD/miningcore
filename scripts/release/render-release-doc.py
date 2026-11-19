@@ -14,18 +14,34 @@ ROOT = Path(__file__).resolve().parents[2]
 def map_links(text, transform):
     """Transform guide destinations only, preserving literal examples and link titles."""
     tokens = re.compile(
-        r'(?P<escape>\\[\\`])|(?P<code>(?<!`)(?P<ticks>`+)(?!`).*?(?<!`)(?P=ticks)(?!`))'
-        r'|(?P<prefix>\]\(|^ {0,3}\[[^\]\n]+\]:[ \t]*)(?:<(?P<angle>[^>\n]+)>|(?P<bare>(?:[^\s()<>]|\([^\s()]*\))+))',
+        r'(?P<escape>\\[\\`\[\]])|(?P<code>(?<!`)(?P<ticks>`+)(?!`).*?(?<!`)(?P=ticks)(?!`))'
+        r'|(?P<prefix>\]\(|^ {0,3}\[[^\]\n]+\]:[ \t]*)(?:<(?P<angle>[^>\n]+)>|(?P<bare>(?:[^\s()<>]|\([^\s()]*\))+))'
+        r'|(?P<bracket>[\[\]])',
         re.MULTILINE | re.DOTALL)
 
     def replace(match):
+        nonlocal depth
         if match['code'] is not None or match['escape'] is not None:
             return match[0]
+        if match['bracket']:
+            depth = depth + 1 if match['bracket'] == '[' else max(0, depth - 1)
+            return match[0]
+        if match['prefix'] == '](':
+            if not depth:
+                return match[0]
+            depth -= 1
         if match['angle'] is not None:
             return match['prefix'] + '<' + transform(match['angle']) + '>'
         return match['prefix'] + transform(match['bare'])
 
     lines, prose = [], []
+    depth = 0
+
+    def flush():
+        nonlocal depth
+        depth = 0
+        lines.append(tokens.sub(replace, ''.join(prose)))
+        prose.clear()
     list_indents = []
     after_blank = True
     indented_code = False
@@ -44,22 +60,20 @@ def map_links(text, transform):
             list_indents.append(base)
             content = expanded[base:]
             # Code spans cannot extend from one list item into the next.
-            lines.append(tokens.sub(replace, ''.join(prose)))
-            prose.clear()
+            flush()
         marker = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', content)
         indented_code = (after_blank or indented_code) and content.startswith('    ')
         after_blank = not line.strip()
         if not (marker or fence or after_blank or indented_code):
             prose.append(line)
             continue
-        lines.append(tokens.sub(replace, ''.join(prose)))
-        prose.clear()
+        flush()
         if marker and fence is None:
             fence = marker[1]
         elif marker and marker[1].startswith(fence or '!') and not marker[2].strip():
             fence = None
         lines.append(line)
-    lines.append(tokens.sub(replace, ''.join(prose)))
+    flush()
     return ''.join(lines)
 
 
