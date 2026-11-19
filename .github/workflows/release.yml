@@ -9,6 +9,11 @@ on:
     # Test source container is a required dev check. Every PR must report it,
     # including changes outside application/build paths; do not path-filter it.
   workflow_dispatch:
+    inputs:
+      qualify_ghcr:
+        description: 'Publish only a synthetic fixture to the dedicated GHCR qualification repository'
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -89,6 +94,8 @@ jobs:
           python3 -B scripts/release/test-container-runtime-build.py
           python3 -B scripts/release/test-source-container-validation.py
           python3 -B scripts/release/test-container-workflow-policy.py
+          python3 -B scripts/release/test-production-contents.py
+          python3 -B scripts/release/test-wallet-payout-reconciliation.py
           shellcheck scripts/release/container-apt-install.sh
 
       - name: Setup Docker Buildx
@@ -120,6 +127,9 @@ jobs:
           # Imported cache hits can retain lazy remote blobs. Every consuming
           # solve needs the remote provider, even when the same builder is reused.
           cache-from: type=gha,scope=source-container-dependencies,timeout=1m
+
+      - name: Reject lab artifacts in source container layers
+        run: python3 -B scripts/release/verify-production-contents.py --image "miningcore-source-test:$SOURCE_SHA"
 
       - name: Smoke-test source container
         run: docker run --rm "miningcore-source-test:$SOURCE_SHA" --version
@@ -739,6 +749,7 @@ jobs:
           (cd dist && sha256sum --check SHA256SUMS)
           archive="miningcore-${{ needs.resolve-release.outputs.version }}"
           archive+="-linux-x64-ubuntu-${{ matrix.ubuntu }}.tar.gz"
+          python3 -B scripts/release/verify-production-contents.py --archive "dist/$archive"
           tar -tzf "dist/$archive"
           extracted=$(mktemp -d)
           trap 'rm -rf -- "$extracted"' EXIT
@@ -851,6 +862,9 @@ jobs:
           cache-from: type=gha,scope=release-container
           cache-to: type=gha,mode=max,scope=release-container
 
+      - name: Reject lab artifacts in packaged container layers
+        run: python3 -B scripts/release/verify-production-contents.py --image "miningcore-release-test:${{ github.sha }}"
+
       - name: Smoke-test packaged container
         run: docker run --rm miningcore-release-test:${{ github.sha }} --version
 
@@ -871,6 +885,31 @@ jobs:
             --entrypoint sh miningcore-release-test:${{ github.sha }} \
             /probe/run-container-dependency-smoke.sh
 
+  registry-content-check:
+    name: Test private registry publication boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+      - name: Install registry test tools
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo python3-yaml
+          printf '### Publication tool versions\n\n```text\n' >> "$GITHUB_STEP_SUMMARY"
+          skopeo --version | tee -a "$GITHUB_STEP_SUMMARY"
+          dpkg-query --show --showformat='${Package} ${Version}\n' skopeo python3-yaml | tee -a "$GITHUB_STEP_SUMMARY"
+          printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Test private candidate publication boundary
+        run: |
+          python3 -B scripts/release/test-publish-verified-image.py
+          python3 -B scripts/release/test-registry-qualification.py
+          python3 -B scripts/test-lab/validate-registry-content-gate.py
+
   publish-release:
     name: Publish GitHub Release and GHCR image
     if: startsWith(github.ref, 'refs/tags/v')
@@ -886,9 +925,18 @@ jobs:
       - source-container-check
       - collect-release-assets
       - container-check
+      - registry-content-check
     runs-on: ubuntu-24.04
     # Bound head-of-line blocking for the repository-wide publication queue.
     timeout-minutes: 60
+    services:
+      candidate-registry:
+        image: registry@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+        ports:
+          - 127.0.0.1:5000:5000
+        options: >-
+          --read-only --cap-drop=ALL --security-opt=no-new-privileges --user=1000:1000
+          --tmpfs=/var/lib/registry:rw,nosuid,nodev,size=4294967296,mode=1777
     permissions:
       contents: write
       packages: write
@@ -907,6 +955,17 @@ jobs:
         with:
           name: release-assets
           path: dist
+
+      - name: Require completed GHCR qualification
+        env:
+          PUBLICATION_QUALIFIED: ${{ vars.GHCR_PUBLICATION_QUALIFIED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLICATION_QUALIFIED" != true ]]; then
+            echo 'GHCR publication is disabled until registry qualification is recorded.' >&2
+            exit 1
+          fi
 
       - name: Resolve lowercase GHCR image name
         id: image
@@ -937,6 +996,21 @@ jobs:
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."127.0.0.1:5000"]
+              http = true
+
+      - name: Install verified publication tools
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo
+          printf '### Publication tool versions\n\n```text\n' >> "$GITHUB_STEP_SUMMARY"
+          skopeo --version | tee -a "$GITHUB_STEP_SUMMARY"
+          dpkg-query --show --showformat='${Package} ${Version}\n' skopeo | tee -a "$GITHUB_STEP_SUMMARY"
+          printf '```\n' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Prepare or resume release publication
         id: publication
@@ -969,7 +1043,7 @@ jobs:
         id: metadata
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ${{ steps.image.outputs.name }}
+          images: 127.0.0.1:5000/miningcore
           flavor: latest=false
           tags: |
             type=raw,value=${{ steps.publication.outputs.staging_tag }}
@@ -977,9 +1051,9 @@ jobs:
             org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.revision=${{ needs.resolve-release.outputs.source_commit }}
 
-      - name: Publish version-scoped staged container
+      - name: Build runner-private release candidate
         if: steps.publication.outputs.needs_container_build == 'true'
-        id: container
+        id: local-container
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: container-context
@@ -995,6 +1069,18 @@ jobs:
           cache-from: type=gha,scope=release-container
           cache-to: type=gha,mode=max,scope=release-container
 
+      - name: Inspect private candidate and publish verified staged container
+        if: steps.publication.outputs.needs_container_build == 'true'
+        id: container
+        timeout-minutes: 20
+        env:
+          IMAGE_DIGEST: ${{ steps.local-container.outputs.digest }}
+          DESTINATION_IMAGE: ${{ steps.image.outputs.name }}:${{ steps.publication.outputs.staging_tag }}
+        run: >-
+          python3 -B scripts/release/publish-verified-image.py
+          --source "127.0.0.1:5000/miningcore@$IMAGE_DIGEST"
+          --destination "$DESTINATION_IMAGE"
+
       - name: Record and verify staged container digest
         id: recorded-container
         env:
@@ -1007,6 +1093,13 @@ jobs:
             ${{ steps.container.outputs.digest || steps.publication.outputs.staging_digest }}
         shell: bash
         run: bash scripts/release/publish-release-state.sh record
+
+      - name: Verify staged registry image contents before release promotion
+        timeout-minutes: 15
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.recorded-container.outputs.digest }}
+        run: python3 -B scripts/release/verify-production-contents.py --registry-image "$IMAGE_NAME@$IMAGE_DIGEST"
 
       - name: Attest container provenance
         if: steps.publication.outputs.release_state != 'published'
@@ -1035,3 +1128,77 @@ jobs:
           MININGCORE_SOURCE_COMMIT: ${{ needs.resolve-release.outputs.source_commit }}
         shell: bash
         run: bash scripts/release/publish-release-state.sh promote
+
+  qualify-ghcr:
+    name: Qualify dedicated GHCR repository
+    if: github.event_name == 'workflow_dispatch' && inputs.qualify_ghcr && !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    services:
+      candidate-registry:
+        image: registry@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+        ports:
+          - 127.0.0.1:5000:5000
+        options: >-
+          --read-only --cap-drop=ALL --security-opt=no-new-privileges --user=1000:1000
+          --tmpfs=/var/lib/registry:rw,nosuid,nodev,size=67108864,mode=1777
+    steps:
+      - name: Checkout reviewed qualification tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."127.0.0.1:5000"]
+              http = true
+      - name: Install qualification tools
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo
+          skopeo --version | tee -a "$GITHUB_STEP_SUMMARY"
+          dpkg-query --show --showformat='${Package} ${Version}\n' skopeo | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Prepare non-executable fixture
+        run: |
+          mkdir -p build/registry-qualification
+          printf 'non-executable publication fixture\n' > build/registry-qualification/Miningcore
+          python3 -c 'import os; from pathlib import Path; Path("build/registry-qualification/payload.bin").write_bytes(os.urandom(8 * 1024 * 1024))'
+          printf 'FROM scratch\nCOPY Miningcore /app/Miningcore\nCOPY payload.bin /app/qualification-payload.bin\n' > build/registry-qualification/Dockerfile
+      - name: Build private qualification candidate
+        id: candidate
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: build/registry-qualification
+          platforms: linux/amd64
+          push: true
+          tags: 127.0.0.1:5000/qualification:candidate
+          provenance: mode=max
+          sbom: true
+      - name: Log in to GHCR with repository workflow identity
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Verify GHCR upload recovery and independently retrieve attestations
+        env:
+          IMAGE_DIGEST: ${{ steps.candidate.outputs.digest }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          destination="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/miningcore-release-qualification"
+          destination+=":qualification-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python3 -B scripts/release/qualify-registry-publication.py \
+            --source "127.0.0.1:5000/qualification@$IMAGE_DIGEST" \
+            --destination "$destination" --report qualification-evidence.json
+      - name: Retain qualification evidence for operator review
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ghcr-qualification-evidence
+          path: qualification-evidence.json
+          if-no-files-found: error

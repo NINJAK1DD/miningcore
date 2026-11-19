@@ -217,6 +217,16 @@ public sealed class MiningFailStopCoordinator : IMiningFailStopCoordinator,
             }
         }
 
+        else if(failure != null && !IsFailStopRequested)
+        {
+            // MessageBus latches any throwing Share subscriber closed. Unexpected
+            // exceptions therefore require an observable host failure too, rather
+            // than leaving listeners online while every later share is rejected.
+            // The admission read lock must be released before taking the write gate.
+            BeginFailStop(ProcessExitCodes.GeneralFailure);
+            logger.Fatal("Unexpected Share subscriber failure closed mining admission and requested host shutdown");
+        }
+
         failure?.Throw();
     }
 

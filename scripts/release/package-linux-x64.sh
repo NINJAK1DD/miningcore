@@ -66,10 +66,14 @@ cp "$repository_root/README.md" "$repository_root/LICENSE" \
 cp "$repository_root/examples/README.md" "$repository_root"/examples/*.json \
     "$package_root/examples/"
 cp "$repository_root/docs/releases.md" "$package_root/INSTALL.md"
-cp -a "$repository_root/docs" "$package_root/docs"
+# Ship operator guides, not captured devnet/regtest proof fixtures. Keep those
+# reproducibility inputs in the source repository and isolated lab.
+mkdir -p "$package_root/docs"
+cp "$repository_root"/docs/*.md "$package_root/docs/"
 cp "$repository_root"/src/Miningcore/Persistence/Postgres/Scripts/*.sql \
     "$package_root/migrations/"
 cp "$repository_root"/scripts/ops/*.sql "$package_root/scripts/ops/"
+cp "$repository_root/scripts/ops/wallet-payout-reconciliation.py" "$package_root/scripts/ops/"
 cp "$repository_root/scripts/release/audit-settlement-shares.sql" \
     "$repository_root/scripts/release/audit-legacy-settlement-shares.sql" \
     "$repository_root/scripts/release/check-pps-arithmetic-ownership.sql" \
@@ -106,6 +110,8 @@ tar --sort=name \
     --owner=0 --group=0 --numeric-owner \
     -C "$work_dir" -cf - "$package_name" |
     gzip -n -9 > "$archive_path"
+
+python3 -B "$repository_root/scripts/release/verify-production-contents.py" --archive "$archive_path"
 
 (
     cd "$output_dir"

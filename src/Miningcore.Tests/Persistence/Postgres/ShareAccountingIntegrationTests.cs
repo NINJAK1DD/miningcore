@@ -534,6 +534,39 @@ public class ShareAccountingIntegrationTests
             Assert.Equal(0.25m, await connection.ExecuteScalarAsync<decimal>(
                 "SELECT amount FROM balances WHERE poolid='ltc' AND address='load-miner'"));
 
+            // Replay a full batch in a different order, including retained receipts
+            // with pruned projections. Grouping the reads must preserve every check.
+            var replays = bulk.Reverse().Concat(new[] { second, prunedPair }).ToArray();
+            await using(var transaction = await connection.BeginTransactionAsync())
+            {
+                var outcomes = await repository.InsertAccountingBatchesAsync(
+                    connection, transaction, replays, CancellationToken.None);
+                Assert.All(outcomes, outcome => Assert.Equal(
+                    ShareAccountingInsertResult.AlreadyCommitted, outcome));
+                await transaction.CommitAsync();
+            }
+            foreach(var corruptCredit in new[] { false, true })
+            {
+                var changed = bulk[123];
+                changed = corruptCredit
+                    ? changed with { PpsCredits = new[] { changed.PpsCredits[0] with { Address = "wrong-miner" } } }
+                    : changed with { Shares = new[] { changed.Shares[0] with { Miner = "wrong-miner" } } };
+                var fresh = CreateBatch(Guid.NewGuid(), 0.1m, 'F');
+                await using(var transaction = await connection.BeginTransactionAsync())
+                {
+                    await Assert.ThrowsAsync<InvalidDataException>(() => repository.InsertAccountingBatchesAsync(
+                        connection, transaction, new[] { fresh }.Concat(replays.Select(x =>
+                            x.AccountingId == changed.AccountingId ? changed : x)).ToArray(), CancellationToken.None));
+                    await transaction.RollbackAsync();
+                }
+                Assert.Equal(0, await connection.ExecuteScalarAsync<int>(
+                    "SELECT count(*) FROM share_accounting_groups WHERE accountingid=@id", new { id = fresh.AccountingId }));
+            }
+            Assert.Equal(250, await connection.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM pps_share_credits WHERE address='load-miner'"));
+            Assert.Equal(0.25m, await connection.ExecuteScalarAsync<decimal>(
+                "SELECT amount FROM balances WHERE poolid='ltc' AND address='load-miner'"));
+
             // Two recorder transactions contending for the same recipient must serialize on
             // the remainder row without deadlocking or losing either liability.
             await using(var secondConnection = new NpgsqlConnection(connectionString))

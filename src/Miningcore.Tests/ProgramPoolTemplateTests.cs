@@ -1005,6 +1005,35 @@ public partial class ProgramPoolTemplateTests
     }
 
     [Fact]
+    public async Task PpsRelaySender_RegistersRecorderAndRequiresSharePartitionsEvenWhilePaused()
+    {
+        var config = MergedMiningCluster(shareRelaySender: true);
+        config.PaymentProcessing.Paused = true;
+        config.Pools[1].PaymentProcessing.PayoutScheme = PayoutScheme.PPS;
+        var services = new ServiceCollection();
+        Program.ConfigureShareProcessingHostedServices(services, config);
+        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(ISharePersistenceQueueMetricsProvider));
+        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IHostedService) &&
+            descriptor.ImplementationFactory != null);
+        Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IShareRelayQueueMetricsProvider));
+        Assert.DoesNotContain(services, descriptor => descriptor.ImplementationType == typeof(ShareReceiver));
+        var cf = Substitute.For<IConnectionFactory>();
+        var connection = Substitute.For<IDbConnection>();
+        cf.OpenConnectionAsync().Returns(connection);
+        var repository = Substitute.For<IShareRepository>();
+        repository.GetMissingSharePartitionsAsync(connection, Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns(new[] { config.Pools[1].Id });
+        await Assert.ThrowsAsync<PoolStartupException>(() =>
+            Program.EnsureSharePartitionsAsync(false, config, cf, repository, CancellationToken.None));
+
+        config.Pools[1].PaymentProcessing.Enabled = false;
+        Assert.False(Program.RequiresLocalPpsRecorder(config));
+        var disabledServices = new ServiceCollection();
+        Program.ConfigureShareProcessingHostedServices(disabledServices, config);
+        Assert.DoesNotContain(disabledServices, descriptor => descriptor.ServiceType == typeof(ISharePersistenceQueueMetricsProvider));
+    }
+
+    [Fact]
     public void RelayShareProcessing_DoesNotRegisterLocalQueueMetricsProvider()
     {
         var services = new ServiceCollection();

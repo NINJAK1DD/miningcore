@@ -28,6 +28,40 @@ public sealed class PayoutManagerLoggingCollection
 public class PayoutManagerLoggingTests
 {
     [Fact]
+    public async Task CompletionFailure_DoesNotLogDatabaseOrWalletExceptionText()
+    {
+        const string secret = "private-wallet-or-database-secret";
+        var previous = LogManager.Configuration;
+        using var target = new MemoryTarget { Layout = "${level}|${message}|${exception:format=tostring}" };
+        var logging = new LoggingConfiguration();
+        logging.AddRuleForAllLevels(target, "Miningcore.Payments.PayoutManager");
+        try
+        {
+            LogManager.Configuration = logging;
+            var connections = Substitute.For<IConnectionFactory>();
+            var connection = Substitute.For<System.Data.IDbConnection>();
+            connections.OpenConnectionAsync().Returns(connection);
+            var balances = Substitute.For<IBalanceRepository>();
+            balances.GetPoolBalancesOverThresholdAsync(connection, "pool", Arg.Any<decimal>())
+                .Returns(new[] { new Miningcore.Persistence.Model.Balance { Address = "miner", Amount = 1m } });
+            var lease = Substitute.For<IPayoutManagerLease>();
+            lease.TryBeginWalletPayoutAsync(Arg.Any<CancellationToken>(), Arg.Any<WalletPayoutBatch>()).Returns(true);
+            lease.CompleteWalletPayoutAsync(Arg.Any<CancellationToken>())
+                .Returns(Task.FromException(new InvalidOperationException(secret)));
+            using var manager = new PayoutManager(Substitute.For<ILifetimeScope>(), connections,
+                Substitute.For<IBlockRepository>(), Substitute.For<IShareRepository>(), balances,
+                new ClusterConfig { PaymentProcessing = new() }, Substitute.For<IMessageBus>(), lease, new ProcessStatus());
+            await Assert.ThrowsAsync<PayoutOutcomeUncertainException>(() => manager.PayoutPoolBalancesAsync(
+                Substitute.For<IMiningPool>(), new PoolConfig { Id = "pool", PaymentProcessing = new(),
+                    Template = new BitcoinTemplate { Symbol = "BTC" } }, Substitute.For<IPayoutHandler>(), CancellationToken.None));
+            Assert.Contains(target.Logs, x => x.Contains("completion is unrecorded"));
+            Assert.Contains(target.Logs, x => x.Contains("PayoutManager.CompleteConclusiveBatchAsync"));
+            Assert.DoesNotContain(secret, string.Join("\n", target.Logs));
+        }
+        finally { LogManager.Configuration = previous; }
+    }
+
+    [Fact]
     public async Task ClosedWalletAdmission_ReportsSkipWithoutReadingBalancesOrCallingWallet()
     {
         var previous = LogManager.Configuration;

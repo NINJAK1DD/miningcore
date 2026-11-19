@@ -27,24 +27,32 @@ public class NonParallelCollectionTests
             .Where(type => type.GetConstructors().Any(constructor => constructor.GetParameters()
                 .Any(parameter => parameter.ParameterType == typeof(IsolatedPostgresServer))))
             .ToArray();
-        // These exceptions are unit-only. Keep live database cases in server-injected
-        // suites: the structural guard cannot detect database access inside a method.
+        // GSS cases deliberately own separate servers: each authentication/keytab
+        // setup must be destroyed rather than leaking into another policy test.
+        var perCaseSuites = new[] { typeof(PostgresGssIntegrationTests) };
+        foreach(var suite in perCaseSuites)
+        {
+            Assert.Contains(suite, members);
+            Assert.DoesNotContain(suite, liveSuites);
+        }
+        // Other live database cases stay in server-injected suites: the structural
+        // guard cannot detect database access inside a method.
         var unitSuites = new[] { typeof(PostgresConnectionPolicyTests), typeof(PostgresCommandTimeoutTests) };
         foreach(var unitSuite in unitSuites)
             Assert.Contains(unitSuite, members);
         foreach(var member in members)
         {
-            var isLive = liveSuites.Contains(member);
+            var isLive = liveSuites.Contains(member) || perCaseSuites.Contains(member);
             var isUnit = unitSuites.Contains(member);
             Assert.True(isLive != isUnit,
-                $"{member.FullName} must be exactly one of a server-injected live suite or an explicit unit-only suite " +
+                $"{member.FullName} must be exactly one of a reviewed live suite or an explicit unit-only suite " +
                 $"(server injection: {isLive}, unit exception: {isUnit}). Review fixture injection and collection classification.");
         }
-        return liveSuites;
+        return liveSuites.Concat(perCaseSuites).ToArray();
     }
 
     [Fact]
-    public void PostgresPolicy_UsesOneCollectionServerForAllLiveTestClasses()
+    public void PostgresPolicy_LiveSuitesUseReviewedServerOwnershipAndSharedIsolation()
     {
         Assert.Contains(typeof(ICollectionFixture<IsolatedPostgresServer>),
             typeof(PostgresPolicyCollection).GetInterfaces());
@@ -75,8 +83,10 @@ public class NonParallelCollectionTests
                     $"{testClass.Name}.{method.Name} must declare exactly one isolated PostgreSQL opt-in attribute; " +
                     $"found {attributes.Length}: {string.Join(", ", attributes.Select(attribute => attribute.GetType().Name))}.");
                 var attribute = attributes[0];
-                Assert.True(attribute is IsolatedPostgresFactAttribute or IsolatedPostgresTheoryAttribute ||
-                    (testClass == typeof(PostgresTlsIntegrationTests) && attribute is PostgresTlsUnixFactAttribute),
+                Assert.True(testClass == typeof(PostgresGssIntegrationTests)
+                    ? attribute is GssPostgresFactAttribute or GssPostgresTheoryAttribute
+                    : attribute is IsolatedPostgresFactAttribute or IsolatedPostgresTheoryAttribute ||
+                        (testClass == typeof(PostgresTlsIntegrationTests) && attribute is PostgresTlsUnixFactAttribute),
                     $"{testClass.Name}.{method.Name} must use an isolated PostgreSQL opt-in attribute, not {attribute.GetType().Name}.");
             }
         }
@@ -109,7 +119,8 @@ public class NonParallelCollectionTests
                 typeof(BitcoinVersionRollingRegtestTests), typeof(BitcoinBlake2bRegtestTests),
                 typeof(BitcoinBlake2bMaturityRegtestTests),
                 typeof(BitcoinBlake2bUpgradePaymentTests),
-                typeof(BitcoinBlake2bStartupTests), typeof(MergedMiningPayoutRegtestTests) } };
+                typeof(BitcoinBlake2bStartupTests), typeof(MergedMiningPayoutRegtestTests),
+                typeof(WalletPayoutControlIntegrationTests) } };
         yield return new object[] { typeof(WarthogWalletSecrecyCollection),
             new[] { typeof(WarthogWalletAddressTests) } };
         yield return new object[] { typeof(RpcDiagnosticCollection),
@@ -126,6 +137,7 @@ public class NonParallelCollectionTests
         // cannot observe the TLS fixtures' temporary process-wide settings.
         yield return new object[] { typeof(PostgresPolicyCollection),
             new[] { typeof(PostgresConnectionPolicyTests), typeof(PostgresTlsIntegrationTests),
+                typeof(PostgresGssIntegrationTests),
                 typeof(PostgresCommandTimeoutTests), typeof(PostgresCommandTimeoutIntegrationTests),
                 typeof(PayoutHandlerPersistenceIntegrationTests),
                 typeof(BitcoinCustodialSettlementIntegrationTests) } };

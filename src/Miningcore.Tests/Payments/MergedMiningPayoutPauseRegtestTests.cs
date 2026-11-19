@@ -46,19 +46,14 @@ public partial class MergedMiningPayoutRegtestTests
         var ltcAddress = (await litecoin.RpcAsync("getnewaddress", true, "pause", "legacy")).Value<string>();
         var dogeAddress = (await dogecoin.RpcAsync("getnewaddress", true)).Value<string>();
         var schema = $"miningcore_pause_{Guid.NewGuid():N}";
-        var connectionString = Environment.GetEnvironmentVariable("MININGCORE_TEST_POSTGRES");
-        await using var connection = new NpgsqlConnection(connectionString);
-        await connection.OpenAsync();
+        await using var control = await WalletPayoutControlIntegrationTests.Database.Create();
+        var connection = control.Admin;
         var directory = Path.Combine(Path.GetTempPath(), schema);
         Directory.CreateDirectory(directory);
 
         try
         {
-            await connection.ExecuteAsync($"CREATE SCHEMA {schema}; SET search_path TO {schema}, public");
-            await connection.ExecuteAsync((await File.ReadAllTextAsync(PostgresTestScripts.PathFor("createdb.sql")))
-                .Replace("SET ROLE miningcore;", ""));
-            var database = new PgConnectionFactory(new NpgsqlConnectionStringBuilder(connectionString)
-                { SearchPath = $"{schema},public" }.ConnectionString);
+            var database = control.Factory;
             var mapper = AutoMapperFactory.CreateMapper();
             var shares = new ShareRepository(mapper);
             var blocks = new BlockRepository(mapper);
@@ -196,6 +191,7 @@ public partial class MergedMiningPayoutRegtestTests
 
             cluster.Pools = pausedPools.ToArray();
             cluster.PaymentProcessing.Paused = false;
+            await control.SetPaused(false);
             Assert.True(Program.ShouldRunPaymentProcessor(cluster));
             await using(var stale = new PostgresPayoutManagerLease(database))
                 Assert.False(await stale.TryAcquireAsync(CancellationToken.None));
@@ -226,11 +222,6 @@ public partial class MergedMiningPayoutRegtestTests
         }
         finally
         {
-            // Closing resets/rolls back a failed migration transaction before cleanup.
-            await connection.CloseAsync();
-            await using var cleanup = new NpgsqlConnection(connectionString);
-            await cleanup.OpenAsync();
-            await cleanup.ExecuteAsync($"DROP SCHEMA IF EXISTS {schema} CASCADE");
             Directory.Delete(directory, true);
         }
     }

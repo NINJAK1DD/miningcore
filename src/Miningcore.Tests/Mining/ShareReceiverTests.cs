@@ -176,7 +176,11 @@ public class ShareReceiverTests
             Assert.Equal(ShareAccountingRole.Auxiliary,
                 actual.PairedShare.AccountingRole);
             Assert.Equal(created, actual.PairedShare.Created);
-            Assert.Equal("regtest-sender", actual.Source);
+            // Financial identity belongs to the producer, even when the current
+            // relay publisher has a different cluster name.
+            Assert.Equal("sender", actual.Source);
+            Assert.Equal("sender", parent.Source);
+            Assert.Equal("sender", parent.PairedShare.Source);
             Assert.Equal(actual.Source, actual.PairedShare.Source);
         }
         finally

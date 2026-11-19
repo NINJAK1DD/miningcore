@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Autofac;
 using AutoMapper;
 using Miningcore.Api;
@@ -95,6 +97,19 @@ public class AdminApiPaymentProcessingTests
             Assert.Contains("controlled restart", error.Message);
             Assert.All(pools, x => Assert.True(x.PaymentProcessing.Enabled));
         }
+    }
+
+    [Fact]
+    public async Task UnreadableWalletControl_IsUnknownAndUnavailable_NotResumed()
+    {
+        var controller = CreateController(true);
+        var result = await controller.GetWalletPayoutControl(CancellationToken.None);
+        var unavailable = Assert.IsType<Microsoft.AspNetCore.Mvc.ObjectResult>(result.Result);
+        Assert.Equal(503, unavailable.StatusCode);
+        var body = Newtonsoft.Json.Linq.JObject.FromObject(unavailable.Value);
+        Assert.Equal("unknown", body.Value<string>("state"));
+        Assert.False(body.Value<bool>("newWalletBatchesAllowed"));
+        Assert.Null(result.Value);
     }
 
     [Fact]
@@ -240,6 +255,9 @@ public class AdminApiPaymentProcessingTests
     }
 
     private static AdminApiController CreateController(bool clusterPaymentEnabled,
+        params PoolConfig[] poolConfigs) => CreateController(Substitute.For<IConnectionFactory>(), clusterPaymentEnabled, poolConfigs);
+
+    internal static AdminApiController CreateController(IConnectionFactory factory, bool clusterPaymentEnabled,
         params PoolConfig[] poolConfigs)
     {
         return CreateController(new ClusterConfig
@@ -249,10 +267,10 @@ public class AdminApiPaymentProcessingTests
                 Enabled = clusterPaymentEnabled,
             },
             Pools = poolConfigs,
-        });
+        }, factory);
     }
 
-    private static AdminApiController CreateController(ClusterConfig clusterConfig)
+    private static AdminApiController CreateController(ClusterConfig clusterConfig, IConnectionFactory factory = null)
     {
         var poolConfigs = clusterConfig.Pools;
         var pools = new ConcurrentDictionary<string, IMiningPool>();
@@ -266,7 +284,7 @@ public class AdminApiPaymentProcessingTests
         var builder = new ContainerBuilder();
         builder.RegisterInstance(Substitute.For<IMapper>());
         builder.RegisterInstance(clusterConfig);
-        builder.RegisterInstance(Substitute.For<IConnectionFactory>());
+        builder.RegisterInstance(factory ?? Substitute.For<IConnectionFactory>()).As<IConnectionFactory>();
         builder.RegisterInstance(new global::Miningcore.Api.Responses.AdminGcStats());
         builder.RegisterInstance(Substitute.For<IMinerRepository>());
         builder.RegisterInstance(Substitute.For<IPaymentRepository>());

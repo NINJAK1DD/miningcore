@@ -125,17 +125,23 @@ def check_publisher(workflow):
         return errors + ["publisher steps must be a sequence of mappings"]
     login = [step for step in steps if str(step.get("uses", "")).startswith("docker/login-action@")]
     build = [step for step in steps if str(step.get("uses", "")).startswith("docker/build-push-action@")]
-    if len(login) != 1 or len(build) != 1:
-        return errors + ["publisher requires exactly one Docker login and build step"]
-    login, build = login[0], build[0]
+    if len(login) != 1 or len(build) != 2:
+        return errors + ["publisher requires one Docker login, one local build and one publication step"]
+    login, preview, build = login[0], build[0], build[1]
     if not manual_dispatch_only(login.get("if")):
         errors.append("Docker login must be gated by the manual-dispatch equality")
+    preview_inputs = preview.get("with")
+    if (not isinstance(preview_inputs, dict) or
+            preview_inputs.get("push") != "false" or preview_inputs.get("load") != "true"):
+        errors.append("Docker preview must load locally and never push")
+    if not manual_dispatch_only(build.get("if")):
+        errors.append("Docker publication must be gated by the manual-dispatch equality")
     inputs = build.get("with")
     if not isinstance(inputs, dict):
         errors.append("Docker build inputs must be a mapping")
     else:
-        if not manual_dispatch_only(inputs.get("push"), require_expression=True):
-            errors.append("Docker push must evaluate the manual-dispatch equality")
+        if inputs.get("push") != "true":
+            errors.append("Gated Docker publication must explicitly enable push")
         if inputs.get("provenance") != "mode=max" or inputs.get("sbom") != "true":
             errors.append("Docker build must retain provenance and SBOM validation")
 
@@ -228,7 +234,10 @@ class ContractTests(unittest.TestCase):
                      "if": "github.event_name == 'workflow_dispatch'",
                      "with": {"password": "${{ secrets['DOCKER_PASSWORD'] }}"}},
                     {"uses": "docker/build-push-action@" + "b" * 40,
-                     "with": {"push": "${{ github.event_name == 'workflow_dispatch' }}",
+                     "with": {"push": "false", "load": "true"}},
+                    {"uses": "docker/build-push-action@" + "b" * 40,
+                     "if": "github.event_name == 'workflow_dispatch'",
+                     "with": {"push": "true",
                               "provenance": "mode=max", "sbom": "true"}}]}}}
 
     def test_publisher_accepts_equivalent_conditions(self):
@@ -252,9 +261,20 @@ class ContractTests(unittest.TestCase):
             workflow = self.publisher()
             workflow["jobs"]["build"]["steps"][0]["if"] = condition
             self.assertTrue(check_publisher(workflow))
+            workflow = self.publisher()
+            workflow["jobs"]["build"]["steps"][2]["if"] = condition
+            self.assertTrue(check_publisher(workflow))
         workflow = self.publisher()
         workflow["jobs"]["build"]["steps"][1]["with"]["push"] = "github.event_name == 'workflow_dispatch'"
         self.assertTrue(check_publisher(workflow))  # A bare action input is a truthy string.
+
+    def test_publisher_rejects_preview_push_and_missing_publication_attestations(self):
+        for index, key, value in ((1, "push", "true"), (1, "load", "false"),
+                                  (2, "provenance", "false"), (2, "sbom", "false")):
+            with self.subTest(index=index, key=key):
+                workflow = self.publisher()
+                workflow["jobs"]["build"]["steps"][index]["with"][key] = value
+                self.assertTrue(check_publisher(workflow))
 
     def test_publisher_rejects_secret_dot_and_bracket_access(self):
         for expression in ("${{ secrets.DOCKER_USER }}", "${{ secrets['DOCKER_USER'] }}",
@@ -280,7 +300,7 @@ class ContractTests(unittest.TestCase):
         steps[0]["if"] = "true"
         errors, count, policy = inspect_document(yaml.safe_dump(workflow), publisher=True)
         self.assertTrue(any("full commit SHA" in error for error in errors))
-        self.assertEqual(count, 2)
+        self.assertEqual(count, 3)
         self.assertIn("Docker login must be gated by the manual-dispatch equality", policy)
 
     def test_structural_errors_block_publisher_loading(self):

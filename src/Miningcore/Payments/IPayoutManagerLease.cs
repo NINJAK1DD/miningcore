@@ -8,8 +8,11 @@ public interface IPayoutManagerLease : IAsyncDisposable
 {
     string AcquisitionFailure { get; }
     bool RequiresRecovery { get; }
+    Task ValidateWalletControlAsync(CancellationToken ct);
     Task<bool> TryAcquireAsync(CancellationToken ct);
     Task EnsureHeldAsync(CancellationToken ct);
+    Task<bool> TryBeginWalletPayoutAsync(CancellationToken ct, WalletPayoutBatch batch);
+    Task CompleteWalletPayoutAsync(CancellationToken ct);
     void BeginFinancialOperation();
     void CompleteFinancialOperation();
     void MarkFinancialOutcomeUncertain();

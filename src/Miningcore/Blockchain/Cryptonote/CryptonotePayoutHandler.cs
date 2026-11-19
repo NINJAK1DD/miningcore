@@ -483,9 +483,6 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
         // detect network
         await UpdateNetworkTypeAsync(ct);
 
-        // detect transfer_split support
-        var response = await rpcClientWallet.ExecuteAsync<TransferResponse>(logger, CryptonoteWalletCommands.TransferSplit, ct);
-        walletSupportsTransferSplit = response.Error.Code != CryptonoteConstants.MoneroRpcMethodNotFound;
     }
 
     public async Task<Block[]> ClassifyBlocksAsync(IMiningPool pool, Block[] blocks, CancellationToken ct)
@@ -675,6 +672,13 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
                 return true;
             })
             .ToArray();
+
+        if(balances.Length == 0)
+            return;
+
+        var probe = await rpcClientWallet.ExecuteAsync<TransferResponse>(logger, CryptonoteWalletCommands.TransferSplit, ct);
+        WalletSubmissionOutcome.RequireRejectedProbe(probe.Error, CryptonoteWalletCommands.TransferSplit, hasNoTransferArguments: true);
+        walletSupportsTransferSplit = probe.Error.Code != CryptonoteConstants.MoneroRpcMethodNotFound;
 
         // simple balances first
         var simpleBalances = balances

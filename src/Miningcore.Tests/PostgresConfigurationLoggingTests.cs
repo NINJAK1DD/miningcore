@@ -180,7 +180,7 @@ public class PostgresConfigurationLoggingTests
         const string goldenConnection = "Server=db.example.invalid;Port=5433;Database=test\r\n\u0085\u2028\u2029forged-line;" +
             "User Id=test-user;Password=database-secret-must-not-be-logged;SSL Mode=Require;" +
             "SSL Certificate=private-certificate-path;SSL Key=private-key-path;" +
-            "SSL Password=certificate-secret-must-not-be-logged;CommandTimeout=600;";
+            "SSL Password=certificate-secret-must-not-be-logged;CommandTimeout=600;GSS Encryption Mode=Disable;";
         const string goldenDiagnostic = "Using PostgreSQL persistence {\"Port\":5433,\"SslMode\":\"Require\"," +
             "\"TlsNoValidate\":true,\"PasswordConfigured\":true,\"TlsCertConfigured\":true,\"TlsKeyConfigured\":true," +
             "\"TlsPasswordConfigured\":true,\"RootCertificatePathConfigured\":false,\"CommandTimeout\":600}";

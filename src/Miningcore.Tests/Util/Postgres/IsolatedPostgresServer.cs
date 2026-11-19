@@ -25,6 +25,7 @@ public sealed class IsolatedPostgresServer : IAsyncDisposable, IAsyncLifetime
     private bool started;
     private string activeCertificate;
     private bool? passwordAuthentication;
+    private string gssKeytab;
 
     // Opted-in filtered unit runs also construct this collection fixture. Keep
     // the environment guard so ordinary unit runs never start PostgreSQL.
@@ -98,6 +99,7 @@ public sealed class IsolatedPostgresServer : IAsyncDisposable, IAsyncLifetime
             // Debian/Ubuntu system Unix sockets are not writable by the test account.
             await File.WriteAllTextAsync(Path.Combine(Data, "postgresql.conf"),
                 $"listen_addresses='127.0.0.1'\nport={Port}\nunix_socket_directories=''\n" +
+                (gssKeytab == null ? "" : $"krb_server_keyfile='{gssKeytab.Replace("'", "''")}'\n") +
                 (certificate == "off" ? "ssl=off\n" :
                     $"ssl=on\nssl_cert_file='{certificate}.crt'\nssl_key_file='{certificate}.key'\n"));
             try
@@ -114,6 +116,18 @@ public sealed class IsolatedPostgresServer : IAsyncDisposable, IAsyncLifetime
 
     public Task UseCertificate(string certificate) =>
         started && activeCertificate == certificate ? Task.CompletedTask : Restart(certificate);
+
+    internal async Task GssAuthentication(string keytab, string realm)
+    {
+        // Fixed fixture realm and generated private keytab only; no production identity.
+        Assert.Equal("MININGCORE.TEST", realm);
+        gssKeytab = keytab;
+        await File.WriteAllTextAsync(Path.Combine(Data, "pg_ident.conf"),
+            $"gsslab miningcore@{realm} miningcore\n");
+        await File.WriteAllTextAsync(Path.Combine(Data, "pg_hba.conf"),
+            $"host all miningcore 127.0.0.1/32 gss include_realm=1 krb_realm={realm} map=gsslab\n");
+        await Restart("valid");
+    }
 
     public async Task PasswordAuthentication(bool required)
     {
@@ -134,6 +148,15 @@ public sealed class IsolatedPostgresServer : IAsyncDisposable, IAsyncLifetime
         started = false;
         await Start(certificate, Port);
     }
+
+    internal async Task StopForOutageAsync()
+    {
+        if(started)
+            await Run("pg_ctl", "-D", Data, "-m", "immediate", "-w", "stop");
+        started = false;
+    }
+
+    internal Task ResumeAfterOutageAsync() => Start(activeCertificate, Port);
 
     internal async Task<string> Run(string executable, params string[] arguments)
     {

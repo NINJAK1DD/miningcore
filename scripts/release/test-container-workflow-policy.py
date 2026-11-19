@@ -32,6 +32,174 @@ def serviced_image(docker, family, minimum, stage=None):
 
 
 class WorkflowPolicyTests(unittest.TestCase):
+    def test_ghcr_qualification_is_opt_in_and_has_only_registry_write_permission(self):
+        workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual('false', workflow['on']['workflow_dispatch']['inputs']['qualify_ghcr']['default'])
+        job = workflow['jobs']['qualify-ghcr']
+        self.assertEqual("github.event_name == 'workflow_dispatch' && inputs.qualify_ghcr && !startsWith(github.ref, 'refs/tags/')", job['if'])
+        self.assertEqual({'contents': 'read', 'packages': 'write'}, job['permissions'])
+        run = next(s for s in job['steps'] if 'qualify-registry-publication.py' in s.get('run', ''))
+        self.assertIn('/miningcore-release-qualification', run['run'])
+        self.assertNotIn(':latest', run['run'])
+        self.assertNotIn('continue-on-error', run)
+
+    def test_publication_requires_explicit_registry_qualification(self):
+        for filename, job, step_name, variable in (
+            ('release.yml', 'publish-release', 'Require completed GHCR qualification', 'GHCR_PUBLICATION_QUALIFIED'),
+            ('docker-image.yml', 'build', 'Validate Docker Hub publication destination', 'DOCKERHUB_PUBLICATION_QUALIFIED')):
+            workflow = yaml.load((ROOT / '.github/workflows' / filename).read_text(), Loader=yaml.BaseLoader)
+            steps = workflow['jobs'][job]['steps']
+            gate = next(s for s in steps if s['name'] == step_name)
+            self.assertEqual('${{ vars.' + variable + ' }}', gate['env']['PUBLICATION_QUALIFIED'])
+            self.assertIn('"$PUBLICATION_QUALIFIED" != true', gate['run'])
+            self.assertIn('exit 1', gate['run'])
+            self.assertNotIn('continue-on-error', gate)
+            if filename == 'release.yml':
+                self.assertNotIn('if', gate)
+            for step in steps:
+                if 'docker/login-action@' in step.get('uses', '') or 'publish-verified-image.py' in step.get('run', ''):
+                    self.assertLess(steps.index(gate), steps.index(step))
+
+    def test_production_contents_gates_cannot_skip_or_follow_publication(self):
+        workflow = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
+        for job_name, build_name, check_name in [
+            ('source-container-check', 'Build source container', 'Reject lab artifacts in source container layers'),
+            ('container-check', 'Build packaged container', 'Reject lab artifacts in packaged container layers')]:
+            steps = workflow['jobs'][job_name]['steps']
+            check = next(s for s in steps if s['name'] == check_name)
+            build = next(s for s in steps if s['name'] == build_name)
+            self.assertGreater(steps.index(check), steps.index(build))
+            self.assertNotIn('if', check)
+            self.assertNotIn('continue-on-error', check)
+            self.assertIn('verify-production-contents.py --image', check['run'])
+        steps = workflow['jobs']['build-release']['steps']
+        inspection = next(s for s in steps if s['name'] == 'Inspect release archive')
+        upload = next(s for s in steps if s['name'] == 'Upload tested release archive')
+        self.assertLess(steps.index(inspection), steps.index(upload))
+        self.assertIn('verify-production-contents.py --archive', inspection['run'])
+        self.assertNotIn('if', inspection)
+        self.assertNotIn('continue-on-error', inspection)
+        source_steps = workflow['jobs']['source-container-check']['steps']
+        self.assertTrue(any('test-production-contents.py' in s.get('run', '') for s in source_steps))
+        for script in ('package-linux-x64.sh', 'collect-linux-release-assets.sh'):
+            self.assertIn('verify-production-contents.py', (ROOT / 'scripts/release' / script).read_text())
+        hub = yaml.load((ROOT / '.github/workflows/docker-image.yml').read_text(), Loader=yaml.BaseLoader)
+        steps = hub['jobs']['build']['steps']
+        check = next(s for s in steps if 'verify-production-contents.py --image' in s.get('run', ''))
+        self.assertNotIn('if', check)
+        self.assertNotIn('continue-on-error', check)
+        builds = [s for s in steps if 'docker/build-push-action@' in s.get('uses', '')]
+        self.assertEqual(2, len(builds))
+        self.assertEqual('false', builds[0]['with']['push'])
+        self.assertEqual('true', builds[0]['with']['load'])
+        self.assertLess(steps.index(builds[0]), steps.index(check))
+        self.assertLess(steps.index(check), steps.index(builds[1]))
+        self.assertEqual("github.event_name == 'workflow_dispatch'", builds[1]['if'])
+        self.assertEqual('true', builds[1]['with']['push'])
+        self.assertEqual('mode=max', builds[1]['with']['provenance'])
+        self.assertEqual('true', builds[1]['with']['sbom'])
+
+    def test_registry_digest_inspection_precedes_every_release_promotion(self):
+        release = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
+        steps = release['jobs']['publish-release']['steps']
+        record = next(s for s in steps if s.get('id') == 'recorded-container')
+        gate = next(s for s in steps if s['name'] == 'Verify staged registry image contents before release promotion')
+        self.assertEqual('${{ steps.image.outputs.name }}', gate['env']['IMAGE_NAME'])
+        self.assertEqual('${{ steps.recorded-container.outputs.digest }}', gate['env']['IMAGE_DIGEST'])
+        self.assertIn('--registry-image "$IMAGE_NAME@$IMAGE_DIGEST"', gate['run'])
+        self.assertGreater(steps.index(gate), steps.index(record))
+        self.assertNotIn('if', gate, 'Resumed publications must recheck the recorded digest too')
+        self.assertNotIn('continue-on-error', gate)
+        for name in ('Publish and verify durable GitHub Release', 'Promote and verify release container tags'):
+            promotion = next(s for s in steps if s['name'] == name)
+            self.assertGreater(steps.index(promotion), steps.index(gate))
+            self.assertNotIn('if', promotion)
+            self.assertNotIn('continue-on-error', promotion)
+
+        hub = yaml.load((ROOT / '.github/workflows/docker-image.yml').read_text(), Loader=yaml.BaseLoader)
+        steps = hub['jobs']['build']['steps']
+        build = next(s for s in steps if s.get('id') == 'push')
+        self.assertEqual('127.0.0.1:5000/miningcore:candidate', build['with']['tags'])
+        self.assertEqual('linux/amd64', build['with']['platforms'])
+        promotion = next(s for s in steps if s['name'] == 'Promote and record verified Docker Hub image digest')
+        self.assertLess(steps.index(build), steps.index(promotion))
+        self.assertEqual("github.event_name == 'workflow_dispatch'", promotion['if'])
+        self.assertNotIn('continue-on-error', promotion)
+        self.assertEqual('${{ steps.push.outputs.digest }}', promotion['env']['IMAGE_DIGEST'])
+        self.assertFalse(any('--registry-image' in s.get('run', '') for s in steps),
+                         'The publisher owns private inspection; do not duplicate the pull')
+        self.assertIn('publish-verified-image.py', promotion['run'])
+        self.assertIn('--source "127.0.0.1:5000/miningcore@$IMAGE_DIGEST"', promotion['run'])
+        self.assertIn('--destination "docker.io/$DOCKERHUB_REPOSITORY:latest"', promotion['run'])
+        self.assertEqual('${{ vars.DOCKERHUB_REPOSITORY }}', promotion['env']['DOCKERHUB_REPOSITORY'])
+        validation = next(s for s in steps if s['name'] == 'Validate Docker Hub publication destination')
+        login = next(s for s in steps if s['name'] == 'Log in to Docker Hub')
+        self.assertLess(steps.index(validation), steps.index(login))
+        self.assertEqual(promotion['if'], validation['if'])
+        self.assertNotIn('continue-on-error', validation)
+        self.assertIn('exit 1', validation['run'])
+        self.assertNotIn('theretromike', (ROOT / '.github/workflows/docker-image.yml').read_text())
+
+    def test_docker_hub_trigger_covers_publication_inputs(self):
+        workflow = yaml.load((ROOT / '.github/workflows/docker-image.yml').read_text(), Loader=yaml.BaseLoader)
+        paths = workflow['on']['pull_request']['paths']
+        for path in ('Dockerfile', '.dockerignore', '.github/workflows/release.yml',
+                     '.github/workflows/docker-image.yml', 'scripts/release/publish-verified-image.py',
+                     'scripts/release/verify-production-contents.py', 'scripts/release/test-publish-verified-image.py',
+                     'scripts/release/test-production-contents.py', 'scripts/release/test-container-workflow-policy.py',
+                     'scripts/test-lab/validate-registry-content-gate.py'):
+            with self.subTest(path=path):
+                self.assertTrue(any(fnmatchcase(path, pattern) for pattern in paths))
+
+    def test_publication_tool_versions_are_recorded_in_summaries(self):
+        for filename, jobs in (('release.yml', ('registry-content-check', 'publish-release')),
+                               ('docker-image.yml', ('build',))):
+            workflow = yaml.load((ROOT / '.github/workflows' / filename).read_text(), Loader=yaml.BaseLoader)
+            for job_name in jobs:
+                step = next(s for s in workflow['jobs'][job_name]['steps']
+                            if 'install -y --no-install-recommends skopeo' in s.get('run', ''))
+                self.assertNotIn('if', step)
+                self.assertNotIn('continue-on-error', step)
+                self.assertIn('skopeo --version | tee -a "$GITHUB_STEP_SUMMARY"', step['run'])
+                self.assertIn("dpkg-query --show --showformat='${Package} ${Version}\\n' skopeo", step['run'])
+                if 'install -y --no-install-recommends skopeo python3-yaml' in step['run']:
+                    self.assertIn('skopeo python3-yaml | tee -a "$GITHUB_STEP_SUMMARY"', step['run'])
+
+    def test_candidates_are_private_and_live_boundary_test_is_mandatory(self):
+        release = yaml.load((ROOT / '.github/workflows/release.yml').read_text(), Loader=yaml.BaseLoader)
+        hub = yaml.load((ROOT / '.github/workflows/docker-image.yml').read_text(), Loader=yaml.BaseLoader)
+        for job in (release['jobs']['publish-release'], hub['jobs']['build']):
+            service = job['services']['candidate-registry']
+            self.assertEqual(['127.0.0.1:5000:5000'], service['ports'])
+            self.assertRegex(service['image'], r'^registry@sha256:[0-9a-f]{64}$')
+            for option in ('--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--tmpfs='):
+                self.assertIn(option, service['options'])
+            builder = next(s for s in job['steps'] if 'docker/setup-buildx-action@' in s.get('uses', ''))
+            self.assertEqual('network=host', builder['with']['driver-opts'])
+            self.assertIn('[registry."127.0.0.1:5000"]', builder['with']['buildkitd-config-inline'])
+        steps = release['jobs']['publish-release']['steps']
+        build = next(s for s in steps if s.get('id') == 'local-container')
+        metadata = next(s for s in steps if s.get('id') == 'metadata')
+        self.assertEqual('127.0.0.1:5000/miningcore', metadata['with']['images'])
+        copy = next(s for s in steps if s.get('id') == 'container')
+        self.assertNotIn('uses', copy, 'Public publication must not build again')
+        self.assertIn('publish-verified-image.py', copy['run'])
+        self.assertIn('--source "127.0.0.1:5000/miningcore@$IMAGE_DIGEST"', copy['run'])
+        self.assertEqual('${{ steps.local-container.outputs.digest }}', copy['env']['IMAGE_DIGEST'])
+        self.assertLess(steps.index(build), steps.index(copy))
+        self.assertEqual(build['if'], copy['if'])
+        self.assertNotIn('continue-on-error', copy)
+        self.assertIn('registry-content-check', release['jobs']['publish-release']['needs'])
+        test_job = release['jobs']['registry-content-check']
+        self.assertNotIn('if', test_job)
+        self.assertNotIn('continue-on-error', test_job)
+        for job in (test_job, hub['jobs']['build']):
+            test = next(s for s in job['steps'] if 'validate-registry-content-gate.py' in s.get('run', ''))
+            self.assertNotIn('if', test)
+            self.assertNotIn('continue-on-error', test)
+        tests = next(s for s in test_job['steps'] if 'test-publish-verified-image.py' in s.get('run', ''))
+        self.assertNotIn('if', tests)
+
     def test_container_servicing_tags_match_reviewed_policy(self):
         policy = ET.parse(ROOT / 'src/Miningcore/RuntimeDependencyPolicy.props')
         minimum = policy.findtext('./PropertyGroup/MiningcoreRuntimeMinimum')

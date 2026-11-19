@@ -12,6 +12,21 @@ namespace Miningcore.Tests.Notifications;
 
 public class PaymentNotificationTests
 {
+    [Fact]
+    public void CompletionUnrecorded_IsNotAZeroAmountPaymentFailure()
+    {
+        var notification = new PaymentNotification("test", "private incident", 0, "BTC")
+        { Outcome = PaymentNotificationOutcome.CompletionUnrecorded };
+        var rendered = NotificationService.FormatPaymentNotification(notification, "BTC", null);
+        Assert.Equal("Payout Completion Unrecorded Notification", rendered.Subject);
+        Assert.Contains("do not resend", rendered.EmailMessage);
+        Assert.DoesNotContain("0 BTC", rendered.EmailMessage);
+        Assert.DoesNotContain("private incident", rendered.EmailMessage);
+        Assert.Null(notification.FailedAmount);
+        Assert.Null(notification.UncertainAmount);
+        Assert.Equal("completionUnrecorded", SerializePayment(notification)["outcome"].Value<string>());
+    }
+
     [Theory]
     [InlineData(PaymentNotificationOutcome.Failure)]
     [InlineData(PaymentNotificationOutcome.Uncertain)]

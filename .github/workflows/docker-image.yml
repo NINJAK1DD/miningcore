@@ -8,6 +8,11 @@ on:
     # Do not configure this workflow as a required branch-protection check.
     paths:
       - '.github/workflows/docker-image.yml'
+      - '.github/workflows/release.yml'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'scripts/release/**'
+      - 'scripts/test-lab/validate-registry-content-gate.py'
 
 permissions:
   contents: read
@@ -19,7 +24,15 @@ jobs:
     # Docker supplies the Ubuntu 26.04 build userspace. Pin orchestration to
     # Ubuntu 24.04 so ubuntu-latest migrations do not change the release host.
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
+    services:
+      candidate-registry:
+        image: registry@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+        ports:
+          - 127.0.0.1:5000:5000
+        options: >-
+          --read-only --cap-drop=ALL --security-opt=no-new-privileges --user=1000:1000
+          --tmpfs=/var/lib/registry:rw,nosuid,nodev,size=4294967296,mode=1777
 
     steps:
       - name: Check out the repo
@@ -31,6 +44,42 @@ jobs:
       # The docker-container builder is required for the provenance/SBOM inputs below.
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."127.0.0.1:5000"]
+              http = true
+
+      - name: Install verified publication tools
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo python3-yaml
+          printf '### Publication tool versions\n\n```text\n' >> "$GITHUB_STEP_SUMMARY"
+          skopeo --version | tee -a "$GITHUB_STEP_SUMMARY"
+          dpkg-query --show --showformat='${Package} ${Version}\n' skopeo python3-yaml | tee -a "$GITHUB_STEP_SUMMARY"
+          printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Test private candidate publication boundary
+        timeout-minutes: 10
+        run: python3 -B scripts/test-lab/validate-registry-content-gate.py
+
+      - name: Validate Docker Hub publication destination
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
+          PUBLICATION_QUALIFIED: ${{ vars.DOCKERHUB_PUBLICATION_QUALIFIED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLICATION_QUALIFIED" != true ]]; then
+            echo 'Docker Hub publication is disabled until registry qualification is recorded.' >&2
+            exit 1
+          fi
+          # No inherited upstream namespace or automatic publication fallback.
+          if [[ ! "$DOCKERHUB_REPOSITORY" =~ ^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9._-]*$ ]]; then
+            echo 'Configure DOCKERHUB_REPOSITORY as an owned namespace/repository before publishing.' >&2
+            exit 1
+          fi
 
       - name: Log in to Docker Hub
         if: github.event_name == 'workflow_dispatch'
@@ -43,29 +92,57 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: theretromike/miningcore
+          images: miningcore-preview
 
-      - name: Build Docker image (publish only on manual dispatch)
-        id: push
+      - name: Build Docker image for content verification
         timeout-minutes: 38
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ./Dockerfile
+          platforms: linux/amd64
           build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420
-          push: ${{ github.event_name == 'workflow_dispatch' }}
-          tags: theretromike/miningcore
+          load: true
+          push: false
+          tags: miningcore-preview:local
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
+
+      - name: Reject lab artifacts in Docker Hub image layers
+        run: python3 -B scripts/release/verify-production-contents.py --image miningcore-preview:local
+
+      # Reuse the same builder/cache and inputs only after its filesystem passed.
+      # The registry build retains provenance/SBOM, unsupported by the local load.
+      - name: Build runner-private Docker candidate on manual dispatch
+        if: github.event_name == 'workflow_dispatch'
+        id: push
+        timeout-minutes: 5
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          build-args: MININGCORE_CONTAINER_APT_TIMEOUT_SECONDS=420
+          push: true
+          tags: 127.0.0.1:5000/miningcore:candidate
           labels: ${{ steps.meta.outputs.labels }}
           provenance: mode=max
           sbom: true
 
-      - name: Record published image digest
+      - name: Promote and record verified Docker Hub image digest
         if: github.event_name == 'workflow_dispatch'
+        timeout-minutes: 20
         env:
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
         shell: bash
         run: |
           set -euo pipefail
           [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          printf 'Published `theretromike/miningcore@%s` with provenance and SBOM.\n' \
-            "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          # The helper inspects the private digest before the first public upload.
+          python3 -B scripts/release/publish-verified-image.py \
+            --source "127.0.0.1:5000/miningcore@$IMAGE_DIGEST" \
+            --destination "docker.io/$DOCKERHUB_REPOSITORY:latest"
+          printf 'Published `docker.io/%s@%s` with provenance and SBOM.\n' \
+            "$DOCKERHUB_REPOSITORY" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"

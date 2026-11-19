@@ -129,6 +129,8 @@ public class PayoutManager : ProcessStatusBackgroundService
             throw new TrustedPoolStartupException("Cannot start the payout manager while cluster paymentProcessing.paused=true");
         }
 
+        // Read-only preflight happens before durable ownership is acquired.
+        await payoutLease.ValidateWalletControlAsync(ct);
         if(!await payoutLease.TryAcquireAsync(ct))
         {
             ProcessStatus.MarkFailed(payoutLease.RequiresRecovery
@@ -832,12 +834,15 @@ public class PayoutManager : ProcessStatusBackgroundService
 
         if(poolBalancesOverMinimum.Length > 0)
         {
-            payoutLease.BeginFinancialOperation();
+            // Admission is serialized with the database stop. A successful durable
+            // admission permits this entire handler batch, including later requests.
+            // Pause cannot recall it; the outstanding batch blocks resume until resolved.
+            if(!await payoutLease.TryBeginWalletPayoutAsync(ct, WalletPayoutBatch.Create(config.Id, poolBalancesOverMinimum)))
+                return;
 
             try
             {
                 await handler.PayoutAsync(pool, poolBalancesOverMinimum, ct);
-                payoutLease.CompleteFinancialOperation();
             }
 
             catch(PayoutOutcomeUncertainException ex)
@@ -857,13 +862,13 @@ public class PayoutManager : ProcessStatusBackgroundService
                 throw;
             }
 
-            catch(OperationCanceledException) when(ct.IsCancellationRequested)
+            catch(OperationCanceledException ex) when(ct.IsCancellationRequested)
             {
                 // Cancellation reaching this branch may be pre-submission or may follow a
                 // conclusive, fully persisted partial batch. A handler must classify every
                 // ambiguous wallet outcome as PayoutOutcomeUncertainException instead, so no
                 // ambiguity remains here and durable ownership can be released safely.
-                payoutLease.CompleteFinancialOperation();
+                await CompleteConclusiveBatchAsync(config, ex);
                 throw;
             }
 
@@ -872,8 +877,6 @@ public class PayoutManager : ProcessStatusBackgroundService
                 // No handler may throw an ordinary exception after an ambiguous submission.
                 // Such outcomes must be classified explicitly above. This path is therefore a
                 // conclusive pre-submission/configuration failure and must not strand ownership.
-                payoutLease.CompleteFinancialOperation();
-
                 try
                 {
                     await NotifyPayoutFailureAsync(poolBalancesOverMinimum, config, ex);
@@ -884,12 +887,40 @@ public class PayoutManager : ProcessStatusBackgroundService
                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "PayoutManager.PayoutPoolBalancesAsync", failure: notificationEx);
                 }
 
+                await CompleteConclusiveBatchAsync(config, ex);
                 throw;
             }
+            await CompleteConclusiveBatchAsync(config, null);
         }
 
         else
             logger.Info(() => $"No balances over configured minimum payout for pool {config.Id}");
+    }
+
+    private async Task CompleteConclusiveBatchAsync(PoolConfig config, Exception handlerFailure)
+    {
+        try { await payoutLease.CompleteWalletPayoutAsync(CancellationToken.None); }
+        catch(Exception completionFailure)
+        {
+            payoutLease.MarkFinancialOutcomeUncertain();
+            var message = handlerFailure == null
+                ? "Payout handler completed conclusively; database batch completion is unrecorded. Preserve existing payment receipts and reconcile the control record before restart."
+                : "Payout handler failed conclusively; database batch completion is unrecorded. Preserve the original failure and reconcile the control record before restart.";
+            logger.Error("[{0}] {1}", config.Id, message);
+            RpcConsumerDiagnostics.Write(logger, LogLevel.Error, "PayoutManager.CompleteConclusiveBatchAsync", failure: completionFailure);
+            try
+            {
+                // No recipient uncertainty is inferred from a control-write failure.
+                messageBus.SendMessage(new PaymentNotification(config.Id, message, 0, config.Template.Symbol, 0, null, null, null)
+                { Outcome = PaymentNotificationOutcome.CompletionUnrecorded });
+            }
+            catch(Exception notificationFailure)
+            {
+                RpcConsumerDiagnostics.Write(logger, LogLevel.Error, "PayoutManager.CompleteConclusiveBatchAsync", failure: notificationFailure);
+            }
+            throw new PayoutOutcomeUncertainException(message, handlerFailure == null ? completionFailure :
+                new AggregateException(handlerFailure, completionFailure));
+        }
     }
 
     private Task NotifyPayoutFailureAsync(Balance[] balances, PoolConfig pool, Exception ex)

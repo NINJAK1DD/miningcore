@@ -15,9 +15,31 @@ public class Share
 {
     private Task persistenceAdmission = Task.CompletedTask;
 
+    // Receiver-owned provenance, never accepted from the wire.
+    [ProtoIgnore]
+    internal bool IsRelayed { get; set; }
+
+    internal Share CreateRelaySnapshot(string source)
+    {
+        // Publication must not race the recorder or rewrite an already committed
+        // receipt. In particular, legacy financial receipts may have a null Source.
+        var copy = (Share) MemberwiseClone();
+        if(string.IsNullOrEmpty(AccountingId))
+            copy.Source = source;
+        copy.BlockRewardDouble = (double) BlockReward;
+        if(PairedShare != null)
+        {
+            copy.PairedShare = (Share) PairedShare.MemberwiseClone();
+            if(string.IsNullOrEmpty(AccountingId) && string.IsNullOrEmpty(PairedShare.AccountingId))
+                copy.PairedShare.Source = source;
+            copy.PairedShare.BlockRewardDouble = (double) PairedShare.BlockReward;
+        }
+        return copy;
+    }
+
     /// <summary>
-    /// Runtime-only completion used by the local Stratum admission path when a saturated
-    /// persistence queue diverts this share to the bounded emergency journal writer.
+    /// Runtime-only durability completion for PPS acceptance and for shares diverted
+    /// from a saturated persistence queue to the bounded emergency journal writer.
     /// </summary>
     [ProtoIgnore]
     internal Task PersistenceAdmission => Volatile.Read(ref persistenceAdmission);

@@ -91,6 +91,8 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
     exit 1
   fi
 
+  python3 -B "$repository_root/scripts/release/verify-production-contents.py" --archive "$archive_path"
+
   # Do not use grep -q here: with pipefail it may close the pipe early and
   # misclassify tar's resulting SIGPIPE as a missing metadata entry.
   if ! tar -tzf "$archive_path" | grep -Fx "$build_info_path" >/dev/null; then

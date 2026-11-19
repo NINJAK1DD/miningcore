@@ -785,8 +785,19 @@ public class Program : ProcessStatusBackgroundService
             services.AddHostedService<ShareReceiver>();
         }
         else
-            services.AddHostedService<ShareRelay>();
+        {
+            // PPS acceptance must not depend on best-effort PUB/SUB delivery. The
+            // sender commits the same immutable receipts used by the receiver.
+            if(RequiresLocalPpsRecorder(config))
+                ConfigureShareRecorderHostedService(services);
+            services.AddHostedService(sp => sp.GetRequiredService<ShareRelay>());
+            services.TryAddSingleton<IShareRelayQueueMetricsProvider>(sp => sp.GetRequiredService<ShareRelay>());
+        }
     }
+
+    internal static bool RequiresLocalPpsRecorder(ClusterConfig config) =>
+        config?.Pools?.Any(pool => pool.Enabled &&
+            ShareAccounting.UsesPps(pool)) == true;
 
     internal static void ConfigureMiningShutdownCoordinator(IServiceCollection services)
     {
@@ -2404,10 +2415,10 @@ public class Program : ProcessStatusBackgroundService
         ClusterConfig config, IConnectionFactory cf, IShareRepository shareRepo,
         CancellationToken ct)
     {
-        // A relay sender publishes ordinary shares instead of recording them locally. It may
-        // still have PostgreSQL solely to own payout processing, so do not require local share
-        // partitions unless this is an explicit recovery import.
-        var writesSharesLocally = recoveryMode || config?.ShareRelay == null;
+        // Statistical relay senders may have PostgreSQL solely for payouts. PPS
+        // senders also record their financial envelopes before acknowledging them.
+        var writesSharesLocally = recoveryMode || config?.ShareRelay == null ||
+            RequiresLocalPpsRecorder(config);
 
         if(config?.Persistence?.Postgres == null || !writesSharesLocally)
             return;
@@ -2554,6 +2565,7 @@ public class Program : ProcessStatusBackgroundService
     internal static void ValidatePpsDeployment(ClusterConfig config,
         bool requireAssignedTemplates = false)
     {
+        ShareRelaySecurity.Validate(config);
         var ppsPools = config?.Pools?.Where(pool => pool.Enabled &&
             pool.PaymentProcessing?.PayoutScheme == PayoutScheme.PPS).ToArray() ??
             Array.Empty<PoolConfig>();

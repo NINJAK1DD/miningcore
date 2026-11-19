@@ -106,6 +106,7 @@
     <None Update="Fixtures/config-diagnostics-v2.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="Fixtures/WalletControlV1.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- Generate an independent source inventory so new fixtures are automatically checked

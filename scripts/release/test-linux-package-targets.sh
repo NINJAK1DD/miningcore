@@ -87,6 +87,10 @@ repack_fixture() {
     remove-build-info)
       rm -- "$build_info"
       ;;
+    add-lab-artifact)
+      mkdir -p "$unpack/$package_root/scripts/test-lab"
+      printf 'fixture-only\n' > "$unpack/$package_root/scripts/test-lab/private.trx"
+      ;;
     replace-target)
       sed -i "s/^Target: .*/Target: $replacement/" "$build_info"
       ;;
@@ -163,6 +167,12 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
 
   test -f "$output_dir/$archive"
   (cd "$output_dir" && sha256sum --check SHA256SUMS)
+  if tar -tzf "$output_dir/$archive" | grep -F "$package_root/docs/fixtures/" >/dev/null; then
+    echo "$archive contains test proof fixtures" >&2
+    exit 1
+  fi
+  tar -xOf "$output_dir/$archive" "$package_root/scripts/ops/wallet-payout-reconciliation.py" |
+    cmp - "$repository_root/scripts/ops/wallet-payout-reconciliation.py"
 
   target=$(tar -xOf "$output_dir/$archive" "$package_root/BUILD-INFO" |
     sed -n 's/^Target: //p')
@@ -399,6 +409,25 @@ fi
 if ! grep -Fq 'Supported targets: 26.04, 22.04' <<<"$invalid_output"; then
   echo "Unsupported archive target did not report the target allowlist" >&2
   printf '%s\n' "$invalid_output" >&2
+  exit 1
+fi
+
+fixture=$(new_fixture lab-contamination)
+cp "$complete_dir"/*.tar.gz "$fixture/"
+repack_fixture "$fixture/miningcore-${version}-linux-x64-ubuntu-26.04.tar.gz" add-lab-artifact
+expect_collection_failure "lab artifacts in downloaded assets" "$fixture" 'Forbidden production artifact'
+
+# Reject contamination inherited from dotnet publish before producing checksums.
+mkdir -p "$publish_dir/scripts/test-lab"
+printf 'fixture-only\n' > "$publish_dir/scripts/test-lab/private.trx"
+set +e
+contaminated_output=$(bash "$package_script" "$version" 26.04 "$publish_dir" "$output_dir" \
+  "$resolute_image" 2>&1)
+contaminated_status=$?
+set -e
+if [[ "$contaminated_status" -eq 0 ]] || ! grep -Fq 'Forbidden production artifact' <<<"$contaminated_output"; then
+  echo 'Package assembly did not reject lab artifacts in the publish directory' >&2
+  printf '%s\n' "$contaminated_output" >&2
   exit 1
 fi
 

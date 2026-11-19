@@ -34,7 +34,7 @@ The example retains its explicit 60-second command timeout. Omitted/null uses
 | `Disable` | Plaintext only. Appropriate only when another reviewed boundary protects the connection. |
 | `Allow` | Plaintext first; TLS if required by the server. No server certificate authentication. |
 | `Prefer` | TLS when available; can fall back to plaintext. No server certificate authentication. |
-| `Require` | Requires encryption; does **not** authenticate the server certificate in Npgsql 9. |
+| `Require` | Requires encryption; does **not** authenticate the server certificate in Npgsql 10. |
 | `VerifyCA` | Requires TLS and a valid chain to a trusted CA, including certificate validity dates; does not match the hostname. |
 | `VerifyFull` | Requires TLS, a valid trusted chain, and a matching hostname. Recommended for remote connections. |
 
@@ -45,7 +45,7 @@ undefined enum values.
 
 | Configuration | Effective policy |
 | --- | --- |
-| Mode omitted/null, `tls` omitted/null/false | `Prefer`, preserving Npgsql 9's previous default |
+| Mode omitted/null, `tls` omitted/null/false | `Prefer`, preserving the existing connection policy |
 | Mode omitted/null, `tls: true` | `Require`, whether `tlsNoValidate` is omitted, false or true |
 | Explicit mode with either non-null legacy flag (even false) | Rejected; remove both legacy flags |
 | `tlsNoValidate: true` without `tls: true` | Rejected |
@@ -53,7 +53,7 @@ undefined enum values.
 | Nonempty client certificate/key/password with `Disable`, `Allow` or `Prefer` | Rejected; select a mode requiring TLS |
 
 `tlsNoValidate: false` has never upgraded `Require` to certificate validation
-with the bundled Npgsql 9.0.3. The deprecated driver `Trust Server Certificate`
+with the bundled Npgsql 10.0.3. The deprecated driver `Trust Server Certificate`
 option is no longer emitted; no custom certificate-validation bypass is added.
 The connection policy never retries a verifying connection using a weaker mode.
 Invalid combinations fail configuration validation before database-dependent
@@ -82,8 +82,37 @@ CA files and system trust store for the entire process lifetime. An interactive
 shell may have different trust sources. Startup validation checks configuration;
 it does not snapshot trust-store state or reserve a CA file for future opens.
 
-Use a PEM CA certificate file supported by Npgsql 9. An explicit missing,
+Use a PEM CA certificate file supported by Npgsql 10. An explicit missing,
 unreadable or invalid file does not fall back to the environment or system store.
+With Npgsql 10, a configured CA replaces the system trust store rather than augmenting it.
+With optional TLS (`Allow`, `Prefer`, `Disable`, including omitted TLS configuration),
+Miningcore preserves Npgsql 10's `GssEncryptionMode=Prefer` for opportunistic
+encryption when Kerberos credentials and server support are available. GSS session
+encryption was introduced in Npgsql 10; this is not a claim about Npgsql 9 builds.
+`Disable` disables **TLS**, not
+GSS. GSS preference is opportunistic: unavailable credentials or server support can
+still permit plaintext. It is not an encryption requirement.
+
+With mandatory TLS (`Require`, `VerifyCA`, `VerifyFull`, or legacy `tls=true`),
+Miningcore disables GSS session encryption so it cannot bypass the requested TLS
+policy or certificate checks. This does not disable GSS authentication. A TLS-only
+migration therefore requires TLS to succeed; it cannot fall back to plaintext.
+For remote financial databases, use `VerifyFull`, a trusted CA and the certificate's matching hostname.
+Before rollout, validate under the actual service identity and confirm TLS on that connection:
+
+```sql
+SELECT ssl, version, cipher FROM pg_stat_ssl WHERE pid = pg_backend_pid();
+```
+
+Require `ssl = true`; this query verifies transport encryption, while `VerifyFull` supplies
+server identity verification. Checking a different administrator session does not verify
+Miningcore's connection. See the [Npgsql 10 release notes](https://www.npgsql.org/doc/release-notes/10.0.html).
+For an existing GSS deployment, check `encrypted` in `pg_stat_gssapi` for
+`pg_backend_pid()` under the actual service identity; checking only `pg_stat_ssl`
+cannot detect GSS encryption. See [Npgsql's transport policy](https://www.npgsql.org/doc/security.html).
+The [disposable Kerberos lab](../scripts/test-lab/README.md#live-kerberosgss-and-tls-matrix)
+exercises real MIT tickets, server-observed encryption, GSS authentication over TLS,
+credential rejection and mandatory-TLS failure boundaries through this connection policy.
 An empty/whitespace-only explicit or construction-time environment CA path is rejected.
 The new `tlsRootCert` path is preserved exactly, including meaningful spaces.
 In non-verifying modes `PGSSLROOTCERT` does not upgrade security; its value is
@@ -238,5 +267,5 @@ testing. Process-global environment changes run in an xUnit collection with
 collections one at a time after all parallel-capable collections finish.
 
 References: [Npgsql TLS documentation](https://www.npgsql.org/doc/security.html#encryption-ssltls),
-[Npgsql 9.0.3 TLS implementation](https://github.com/npgsql/npgsql/blob/v9.0.3/src/Npgsql/Internal/NpgsqlConnector.cs),
+[Npgsql 10.0.3 TLS implementation](https://github.com/npgsql/npgsql/blob/v10.0.3/src/Npgsql/Internal/NpgsqlConnector.cs),
 and [Npgsql connection parameters](https://www.npgsql.org/doc/connection-string-parameters.html).

@@ -1,5 +1,9 @@
 # Database setup and upgrades
 
+Wallet payouts require the separately administered, initially paused
+[database emergency wallet control](emergency-wallet-stop.md). Apply its migration
+after normal schema setup, then complete the coordinated rollout before resume.
+
 For authenticated remote connections, configure `sslMode: "VerifyFull"` using the
 [PostgreSQL TLS policy and migration guide](postgres-tls.md). Legacy `tls: true`
 encrypts traffic but does not authenticate the server certificate with Npgsql 9.

@@ -1,0 +1,19 @@
+# Retain provider-specific credential/private-key rules. The generic source-code
+# heuristic also treats commas and '>' in compiled symbol names as assignments.
+# Replace that one heuristic with explicit credential-name/value assignments for
+# released binaries/configuration; do not exempt whole files, layers or paths.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+description = "High-entropy credential assigned in production content"
+regex = '''(?i)(?:^|[^\w])(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|private[_-]?key|shared[_-]?encryption[_-]?key|rpc[_-]?password|password|passwd|token|secret|key)["']?\s*[:=]\s*["']?([a-z0-9_./+~!=:@$%^-]{16,150})(?:["'\s;]|$)'''
+secretGroup = 1
+entropy = 3.5
+keywords = ["key", "token", "secret", "password", "passwd"]
+
+[[rules.allowlists]]
+description = "OpenSSL-style variable-relative key file reference, not embedded key material"
+regexTarget = "match"
+regexes = ['''(?i)^\s*private[_-]?key["']?\s*[:=]\s*["']?\$[A-Za-z_][A-Za-z0-9_]*(?:/[A-Za-z0-9_.-]+)+["']?\s*$''']

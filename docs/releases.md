@@ -1,5 +1,20 @@
 # Installing a prebuilt Miningcore release
 
+## Emergency wallet control protocol 2
+
+Wallet batch completion now requires the PostgreSQL session that admitted it,
+identified by both backend PID and start time. Replacement runtime sessions cannot
+clear an unresolved batch using readable identities and a reacquired advisory lock.
+Pre-release protocol-1 installations need the [coordinated protocol-2 migration](emergency-wallet-stop.md#upgrading-a-pre-release-protocol-1-installation);
+new binaries reject the old protocol. Preserve all history and reconcile outstanding
+legacy batches explicitly before resuming.
+
+The PostgreSQL connection policy preserves Npgsql 10's preferred GSS encryption when
+TLS is optional, including omitted TLS configuration. Mandatory TLS modes disable
+GSS encryption so certificate policy cannot be bypassed and plaintext fallback is
+impossible. See the [transport policy](postgres-tls.md); optional modes still do not
+guarantee encryption.
+
 ## RC.2 payout pause: deployment and rollback warning
 
 **RC.1 ignores `paymentProcessing.paused` and can resume wallet payouts with that flag present.**
@@ -45,6 +60,63 @@ from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
 ## Unreleased (after v0.4.0-rc.1): guided payout recovery and timestamp setup
+
+Wallet payout admission now requires the separate, initially paused
+[database emergency wallet control migration and coordinated rollout](emergency-wallet-stop.md).
+Deploy all wallet-capable binaries before relying on it. Older versions ignore the
+marker; rollback requires coordinated shutdown and wallet reconciliation.
+
+This release also introduces **breaking PPS acknowledgement and relay behavior**, independent
+of the wallet pause:
+
+- Positive PPS Stratum responses wait for a committed receipt/liability or an authenticated,
+  force-flushed recovery journal. PPS relay senders require their own recorder, share partitions
+  and the same accounting database as receivers. Transport publication is not financial durability.
+- Enabled pools configured for PPS require a bind-mode sender and a `sharedEncryptionKey` of at
+  least 32 characters on the sender and every receiver endpoint, even with payment processing
+  disabled. PPS connect mode is rejected; external transport protection does not bypass this check.
+- **Every relay sender, including PPLNS/PROP, fail-stops** on oversized/invalid serialization,
+  local queue saturation or publisher failure. Limits are 4,096 messages / 16 MiB queued payload,
+  1 MiB per frame, 128-message native PUB/SUB high-water marks and a 128-message receiver queue.
+  Smaller native buffers can increase best-effort ordinary-share loss during bursts, affecting
+  PPLNS/PROP weighting. An empty sender queue is not delivery confirmation.
+- Rotate the shared key during upgrade if older logs containing the publisher's CURVE public
+  key exist. That key plus network reachability allows subscription to private share metadata;
+  CURVE does not supply a subscriber allowlist. Restrict listeners and protect retained logs.
+- Monitor all six `miningcore_share_relay_queue_*` pressure/rejection series, receiver share
+  rates and database/recovery health separately. The [relay guide](share-relays.md#bounded-transport-fail-stop-and-monitoring)
+  names the exact series and provides a PPS submission-latency alert example.
+- Pearl assigns its canonical source before its first receipt commit. Relay copies preserve
+  financial identity, including old null-source receipts, without modifying shared share objects.
+- Equihash caches are revalidated on the next admitted payout after a conclusive unsupported
+  method/argument response. Unknown wallet outcomes never enable an automatic fallback or retry.
+  No-argument probe results expire after 15 minutes; the argument-bearing privacy probe
+  expires after 24 hours, including unsupported results, so a wallet
+  upgrade can enable native functionality without a configuration change. Expiration is checked
+  only inside admitted payout work. A second consecutive invalidation raises a payout failure
+  notification, with at most one reminder per 24 hours. Only a successfully recorded payout
+  resets the alert streak; skipped, unfunded and rejected cycles preserve it.
+  Restart Miningcore after upgrading the wallet daemon to adopt new capabilities immediately.
+  Follow the [coordinated stop and reconciliation procedure](emergency-wallet-stop.md#coordinated-installation-upgrade-and-rollback);
+  a restart does not clear uncertain payouts or authorize resubmission. Without a restart,
+  newly supported privacy arguments may take up to 24 hours to be detected, during which
+  a ZIP 317 wallet can conclusively reject legacy fixed-fee payments.
+  Native shielding also stops the payout cycle on response loss, missing operation/transaction
+  identifiers, unavailable results or unknown statuses. Operators must reconcile uncertain
+  shielding before releasing the retained payout admission.
+  Privacy-policy-capable wallets choose their conventional fee; the balance precheck reserves
+  5,000 zatoshis times `max(2, recipients + 1)` for a page (0.00255 ZEC for 50 recipients).
+  This output/change estimate can still be exceeded by input selection. Fees rise with page size;
+  legacy wallets retain the explicit 0.0001 fee. See [ZIP 317](https://zips.z.cash/zip-0317).
+
+Review the [relay upgrade procedure](share-relays.md#required-pps-transport-protection-and-upgrade)
+before resuming admission. Live wallet evidence covers the pinned versions in the
+[compatibility matrix](../scripts/test-lab/README.md#wallet-compatibility-matrix); other versions
+still require deployment validation. These changes do not recall already admitted wallet work.
+
+AutoMapper is updated to 16.3.0 for the constructor and runtime-mapping recursion
+vulnerabilities GHSA-6vhm-j9h7-f9gh and GHSA-gpwp-5797-mjff. Dependency vulnerability
+checks remain enforced; see the [dependency security record](dependency-security.md).
 
 Include these operator steps in the next candidate's deployment checklist (including RC.2 if this
 change ships there). Normal upgrades must preserve ownership markers and financial records.
@@ -3447,15 +3519,80 @@ used by the tested workflows, while migrating retired Docker and MSBuild runtime
 and setup-dotnet v6 introduce separate ESM/dependency migrations; Dependabot may propose those
 major upgrades for independent review. There is no major-version ignore rule.
 
-The legacy Docker Hub publisher retains its manual destination and credentials. Pull requests
-changing that workflow build with the same metadata/Buildx actions but cannot log in or push;
-only `workflow_dispatch` enables those steps. Published images include BuildKit provenance and
-an SBOM, and the run summary records the immutable image digest. This does not attest that Docker
+The Docker Hub publisher requires the repository variable `DOCKERHUB_REPOSITORY` to name an
+owned `namespace/repository`, and `DOCKER_USER` / `DOCKER_PASSWORD` secrets with publication
+access to that repository. There is no default destination: an unset or malformed repository
+fails before login. Do not configure the upstream author's namespace unless you control it.
+Use a separate repository such as `<your-namespace>/miningcore-release-qualification` for
+authorized qualification; do not use production `latest` for qualification experiments. Pull requests
+changing that workflow build with the same metadata/Buildx actions but cannot log in or push to
+Docker Hub; only `workflow_dispatch` enables public publication. Published images include BuildKit
+provenance and an SBOM, and the run summary records the immutable image digest. Both publishers
+build their final candidate in a digest-pinned registry bound only to the runner's `127.0.0.1`.
+The storage is ephemeral and inaccessible from outside that runner. The publication helper pulls
+and inspects the private digest before its first public write. It rejects additional runtime
+platforms and copies the complete verified index with Skopeo `--all --preserve-digests`, without
+rebuilding or stripping attestations. Public destinations require verified TLS.
+Docker Hub receives `latest` directly, with a final digest check; no public staging tag is created.
+Rejected candidates are discarded with the private registry at job cleanup. This does not attest that Docker
 Hub credentials or registry publication work during a PR build; those require an authorized
 manual publication. GHCR release publication remains the canonical release path.
-The Docker PR check is path-filtered and must not be required by branch protection. Its Buildx
-docker-container driver supports the attestation inputs; PR builds exercise those inputs even
-though their cache-only output does not export the image or attestations.
+The Docker PR check covers its workflow, the Release workflow, Dockerfile, `.dockerignore`,
+shared release scripts/tests and the registry lab validator. It remains path-filtered and must
+not be required by branch protection. The publication and registry-test job summaries record
+`skopeo --version` and the installed Ubuntu package versions, including `python3-yaml` where
+used. These packages follow signed Ubuntu archive updates rather than fixed version pins.
+Its Buildx
+docker-container driver supports publication attestations; PR builds load and inspect a local
+preview. The disposable [registry lab](../scripts/test-lab/README.md) runs automatically before
+publication and in a mandatory Release CI job. It proves that rejected candidate manifests and
+contaminated layers never reach its separate destination registry, and verifies successful
+digest/attestation preservation without publishing to Docker Hub or GHCR.
+
+GHCR's public version-scoped staging tag is created only after private inspection; it remains part
+of the recoverable publication protocol. GHCR also pulls and inspects the recorded staged digest before making the GitHub
+Release durable or promoting any release tags. Resumed publication re-runs the check against the
+recorded digest. A failed pull, unsupported layer compression or forbidden artifact stops promotion;
+the earlier preview check cannot substitute for this registry check.
+
+Production publishing fails closed until the repository administrator records successful
+qualification and sets `GHCR_PUBLICATION_QUALIFIED=true` (or, separately,
+`DOCKERHUB_PUBLICATION_QUALIFIED=true`). Leave an unused registry disabled. These are operator
+controls for the complete publication transaction: **the GHCR gate also blocks the binary
+`.tar.gz` assets and the durable GitHub Release**, including resumed tagged publications.
+Withdrawing GHCR qualification therefore stops archive-only releases too. CI can still build
+and inspect archives as workflow artifacts; those artifacts are not published GitHub Releases.
+This coupling preserves the existing archive/image recovery contract. These flags are operator
+attestations, not automatic proof: retain the successful run, identity/permission review,
+candidate and retrieved index digests, provenance/SBOM digests, and interruption/retry evidence
+in the PR before enabling publication. Qualify a separate repository using the intended workflow
+identity and permission model; do not use production tags for experiments. On qualification, verify registry authentication/access controls, confirm
+the destination digest matches the inspected candidate, and retrieve both provenance and SBOM
+from the destination. Disposable-registry tests do not qualify production registry permissions.
+The content gate also scans allowed regular-file contents in every saved layer, image
+configuration (including environment and labels), and registry attestation payloads before
+uploading anything publicly. Gitleaks 8.30.1 is pinned by archive and executable SHA-256;
+the CLI installs it under ignored `build/release-tools` when missing, and verifies it before
+every scan. Provider-specific rules remain enabled. The generic heuristic uses explicit
+credential-name assignments: commas and `>` inside compiler symbols are not assignments.
+This replaces the upstream generic rule in `production-gitleaks.toml`; it does not exempt
+binary files or image layers. Direct library callers must run `production-secrets.py --install` first. Scanner
+errors, checksum failures, unsupported attestations and input-budget exhaustion reject the
+candidate. Metadata is fetched only from the runner-private registry by digest, with redirects
+and proxies disabled. Candidate ignore files/comments cannot suppress findings, and CI emits
+no matching values. Synthetic allowed-file, binary/UTF-16, environment/label, provenance and
+SBOM negatives exercise this boundary. This is pattern-based detection, not a proof that all
+possible credentials, encrypted data or malware are absent; review build arguments and use
+BuildKit secret mounts for build credentials. No raw scanner input/report is uploaded.
+
+The checked Ubuntu GnuTLS library contains public cryptographic self-test keys, and libssh2
+contains PEM parser marker strings. `production-public-fixtures.json` records their exact
+OS paths, package versions, full library hashes and upstream source. Only those public
+constants are masked in the scanner's temporary input after the entire library hash matches;
+the shipped library is unchanged and all remaining bytes are scanned. GnuTLS constants also
+require individual SHA-256 matches against the upstream self-test arrays. A changed library,
+another path, an unknown key or an added credential is not exempt. Distro updates that change
+these binaries require a new source/hash review; do not broadly exclude a library or rule.
 
 The PostgreSQL 17 service containers deliberately retain serviced major tags for disposable
 integration-test databases. They are outside the archive-build pin/monitor contract; test jobs

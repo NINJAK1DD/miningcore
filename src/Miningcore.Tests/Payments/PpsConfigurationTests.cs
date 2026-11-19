@@ -12,13 +12,35 @@ namespace Miningcore.Tests.Payments;
 public class PpsConfigurationTests
 {
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void PpsRelayRequiresAuthenticatedTransport(bool sender, bool disabled)
+    {
+        var config = CreateConfig(CoinFamily.Bitcoin);
+        config.Pools[0].PaymentProcessing.Enabled = !disabled;
+        config.ShareRelay = sender ? new ShareRelayConfig() : null;
+        config.ShareRelays = sender ? null : new[] { new ShareRelayEndpointConfig() };
+        Assert.Throws<PoolStartupException>(() => ShareRelaySecurity.Validate(config));
+        if(sender) config.ShareRelay.SharedEncryptionKey = "isolated-fixture-key-32-characters-minimum";
+        else config.ShareRelays[0].SharedEncryptionKey = "isolated-fixture-key-32-characters-minimum";
+        ShareRelaySecurity.Validate(config);
+        if(sender)
+        {
+            config.ShareRelay.Connect = true;
+            Assert.Throws<PoolStartupException>(() => ShareRelaySecurity.Validate(config));
+        }
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void PauseRetainsPpsFinancialRequirements(bool sender)
     {
         var config = CreateConfig(CoinFamily.Bitcoin);
         config.PaymentProcessing.Paused = true;
-        config.ShareRelay = sender ? new ShareRelayConfig() : null;
+        config.ShareRelay = sender ? new ShareRelayConfig { SharedEncryptionKey = "isolated-fixture-key-32-characters-minimum" } : null;
         Program.ValidatePpsDeployment(config, requireAssignedTemplates: true);
         Assert.False(Program.ShouldRunPaymentProcessor(config));
         Assert.True(Program.RequiresShareAccountingPersistence(config));
@@ -98,7 +120,7 @@ public class PpsConfigurationTests
         Program.ValidatePpsDeployment(config, requireAssignedTemplates: true);
         Assert.True(Program.RequiresShareAccountingPersistence(config));
         Assert.True(Program.RequiresSynchronousBlockCandidatePersistence(config));
-        config.ShareRelay = new ShareRelayConfig();
+        config.ShareRelay = new ShareRelayConfig { SharedEncryptionKey = "isolated-fixture-key-32-characters-minimum" };
         config.Persistence = null;
         Assert.Throws<PoolStartupException>(() => Program.ValidatePpsDeployment(config));
         config.Persistence = new PersistenceConfig { Postgres = new PostgresConfig() };
@@ -110,7 +132,7 @@ public class PpsConfigurationTests
     public void RelaySender_RequiresLocalCandidateAndAccountingSchema()
     {
         var config = CreateConfig(CoinFamily.Bitcoin);
-        config.ShareRelay = new ShareRelayConfig();
+        config.ShareRelay = new ShareRelayConfig { SharedEncryptionKey = "isolated-fixture-key-32-characters-minimum" };
 
         Program.ValidatePpsDeployment(config);
 
@@ -123,7 +145,7 @@ public class PpsConfigurationTests
     public void RelaySenderWithoutPostgres_RejectsPpsBeforeMiningStarts()
     {
         var config = CreateConfig(CoinFamily.Bitcoin);
-        config.ShareRelay = new ShareRelayConfig();
+        config.ShareRelay = new ShareRelayConfig { SharedEncryptionKey = "isolated-fixture-key-32-characters-minimum" };
         config.Persistence = null;
 
         var error = Assert.Throws<PoolStartupException>(() =>

@@ -78,6 +78,7 @@ public static class XelisWalletCommands
     public const string BuildTransaction = "build_transaction";
 
     public const string IsOnline = "is_online";
+    public const string GetTopoHeight = "get_topoheight";
     public const string SetOnlineMode = "set_online_mode";
 }
 

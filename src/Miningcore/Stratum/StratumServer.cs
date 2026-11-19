@@ -733,8 +733,9 @@ public abstract class StratumServer
             acceptance.PublishShare(messageBus, share);
         }
 
-        // A normal bounded-queue admission completes immediately. Queue saturation transfers
-        // ownership to the bounded emergency writer and completes only after its force-flush.
+        // Statistical queue admission completes immediately. PPS admission waits for its
+        // database commit or durable recovery journal. Queue saturation transfers ownership
+        // to the bounded emergency writer and completes only after its force-flush.
         // Merged mining publishes a statistical clone before returning this object and propagates
         // that clone's completion here. Deliberately wait outside the admission lock so storage
         // latency cannot delay an exclusive fail-stop transition.

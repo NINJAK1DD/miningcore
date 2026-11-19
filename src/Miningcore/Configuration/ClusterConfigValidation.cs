@@ -229,6 +229,10 @@ public class PoolConfigValidator : AbstractValidator<PoolConfig>
             .NotEmpty()
             .WithMessage("Pool: id missing or empty");
 
+        RuleFor(j => j.Id)
+            .MaximumLength(200)
+            .WithMessage("Pool: id must not exceed the 200-character wallet-control limit");
+
         RuleFor(j => j.Coin)
             .NotNull()
             .When(_ => !recoveryMode)

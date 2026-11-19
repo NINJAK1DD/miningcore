@@ -9,6 +9,7 @@ public enum PaymentNotificationOutcome
     Success,
     Failure,
     Uncertain,
+    CompletionUnrecorded,
 }
 
 public record PaymentRecipientTransactionChain

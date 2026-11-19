@@ -38,6 +38,20 @@ public class AdminApiController : ApiControllerBase
 
     #region Actions
 
+    [HttpGet("payment/wallet-control")]
+    public async Task<ActionResult<Miningcore.Payments.WalletPayoutControlState>> GetWalletPayoutControl(CancellationToken ct)
+    {
+        try
+        {
+            return await Miningcore.Payments.WalletPayoutControlState.ReadAsync(cf, ct);
+        }
+        catch(Exception) when(!ct.IsCancellationRequested)
+        {
+            // Never present unavailable state as resumed, or leak database diagnostics.
+            return StatusCode(503, new { state = "unknown", newWalletBatchesAllowed = false });
+        }
+    }
+
     [HttpPut("logging/level/{level}")]
     public ActionResult<string> SetLoggingLevel(string level)
     {

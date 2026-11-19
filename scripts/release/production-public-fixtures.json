@@ -1,0 +1,29 @@
+{
+  "usr/lib/x86_64-linux-gnu/libgnutls.so.30.41.1": {
+    "package": "libgnutls30t64:amd64 3.8.12-2ubuntu1.1",
+    "sha256": "ebcc6a4dfae904dc956feb61cef5c36917cf36c19c5718d3c2be7e377ac65d27",
+    "source": "https://raw.githubusercontent.com/gnutls/gnutls/3.8.12/lib/crypto-selftests-pk.c",
+    "source_sha256": "6e596be00754107fd7f7d1f132c2dc8cd0ff12bbdfc6de08c162a1dd5eedc7e8",
+    "public_key_fixtures": {
+      "eddsa_ed448_privkey": "fed7079dd4491609e4c996e232f366ac434fa4cc9df19df363391d079d470964",
+      "eddsa_ed25519_privkey": "5a09eb5df3674472eda0077d83cbccef72692c3d052ab393368ac57295439c58",
+      "gost12_512_privkey": "a4d138d7ef9748464117b44fb9c0a4b5b85a1599a127d02690abaa96d03c16e6",
+      "gost12_256_privkey": "fa0b06a72461ec0a963dcfccb8d5b61bd88a6074fc7271573bff68ab86b8c1af",
+      "gost01_privkey": "ef237ea8db4f2ae9ee100e8ced96d29b5dceb0e6a948443e6b8a00b1791f9ec9",
+      "ecdsa_secp521r1_privkey": "f8766749b0c6f9b5661364568226af0ba7ae8d87c0073df24e440de4417521cd",
+      "ecdsa_secp384r1_privkey": "293216817f0d585f0b54f225582f59e7b2e2a795b5f8002e2d71c5e3d49ce9b0",
+      "ecdsa_secp256r1_privkey": "91ea1699ff6b1a34b4a1d500a9c75a808441e47b9ea68da6fb0195e01ce1dc61",
+      "ecdsa_secp224r1_privkey": "a0b9679665e29ac220dfb0b366317e1b9dd5fe31e9def8b2e511669a041389ae",
+      "ecdsa_secp192r1_privkey": "934b3e9bfd9936c5e30c7f0ed7d36a05e2044f755c0aa433e1d6bef6a68d1391",
+      "dsa_2048_privkey": "7c4c63ee462e0e700cd9e29c8e0f730b3f1b484c4abdd83f1e69fcd477c061fa",
+      "rsa_2048_privkey": "d039c8119a029ab9f9c83c04d67002d887b6bc6026c4264402ab27cdf24cf138"
+    }
+  },
+  "usr/lib/x86_64-linux-gnu/libssh2.so.1.0.1": {
+    "package": "libssh2-1t64:amd64 1.11.1-1ubuntu0.26.04.4",
+    "sha256": "34287a1e8942e6fdf1c154e8c615a8dab7a69dc6a4e8d76913afb323fdc6fd6f",
+    "source": "https://raw.githubusercontent.com/libssh2/libssh2/libssh2-1.11.1/src/pem.c",
+    "source_sha256": "eba1a89ba4beb0aa9aaf4e4da68be5f2f890e7367001e8bb705c697b9485d416",
+    "parser_labels": ["OPENSSH PRIVATE KEY"]
+  }
+}

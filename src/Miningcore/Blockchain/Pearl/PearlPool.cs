@@ -271,6 +271,7 @@ public sealed class PearlPool(IComponentContext ctx, JsonSerializerSettings sett
         {
             PoolId = poolConfig.Id, Miner = worker.Miner, Worker = worker.Worker, UserAgent = worker.UserAgent,
             IpAddress = connection.RemoteEndpoint.Address.ToString(), SessionId = connection.ConnectionId,
+            Source = clusterConfig.ClusterName,
             Created = clock.Now, BlockHeight = job.Block.Height, RewardBasisSatoshis = job.Block.RewardGrains,
             AccountingId = identity[..32], AccountingRole = ShareAccountingRole.Single,
             Difficulty = Math.Min(job.Difficulty, networkDifficulty), ShareDifficulty = achieved,

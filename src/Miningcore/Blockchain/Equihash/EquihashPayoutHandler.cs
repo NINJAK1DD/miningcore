@@ -17,6 +17,10 @@ using Miningcore.Rpc;
 using Miningcore.Time;
 using NBitcoin;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json;
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using Contract = Miningcore.Contracts.Contract;
 using IBlockRepository = Miningcore.Persistence.Repositories.IBlockRepository;
 
@@ -54,6 +58,28 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
     protected const decimal TransferFee = 0.0001m;
     protected const int ZMinConfirmations = 8;
     protected const string PrivacyPolicy = "AllowRevealedRecipients";
+    // Handlers are recreated each payout cycle. Cache only conclusive probe
+    // results for this process/configuration, without retaining retired pools.
+    private static readonly ConditionalWeakTable<PoolConfig, CapabilityCache> capabilities = new();
+    private CapabilityCache payoutCapabilities;
+    private string capabilityConfiguration;
+    private bool capabilitiesInvalidated;
+    internal TimeProvider CapabilityClock { get; init; } = TimeProvider.System;
+    internal static readonly TimeSpan CapabilityRefreshInterval = TimeSpan.FromMinutes(15);
+    internal static readonly TimeSpan PrivacyRefreshInterval = TimeSpan.FromHours(24);
+    internal static readonly TimeSpan CapabilityAlertInterval = TimeSpan.FromHours(24);
+    private sealed class CapabilityCache
+    {
+        public readonly SemaphoreSlim Gate = new(1, 1);
+        public string Configuration;
+        public bool? NativeShielding;
+        public bool? SendCurrency;
+        public bool? Privacy;
+        public long? LastValidated;
+        public long? PrivacyLastValidated;
+        public long? LastAlert;
+        public int ConsecutiveInvalidations;
+    }
 
     #region IPayoutHandler
 
@@ -69,20 +95,109 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         network = Network.GetNetwork(blockchainInfoResponse.Response.Chain.ToLower());
 
         chainConfig = pc.Template.As<EquihashCoinTemplate>().GetNetwork(network.ChainName);
+    }
 
-        // detect z_shieldcoinbase support
-        var response = await rpcClient.ExecuteAsync<JObject>(logger, EquihashCommands.ZShieldCoinbase, ct);
-        supportsNativeShielding = response.Error.Code != (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND;
-        
-        // detect sendcurrency support
-        var responseSendCurrency = await rpcClient.ExecuteAsync<JObject>(logger, EquihashCommands.SendCurrency, ct);
-        supportsSendCurrency = responseSendCurrency.Error.Code != (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND;
-        
-        // detect z_sendmany PrivacyPolicy support
-        var responseZSendMany = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.ZSendMany, ct, new object[] { poolExtraConfig.ZAddress, new [] { new ZSendManyRecipient { Address = poolExtraConfig.ZAddress, Amount = 0.0m } }, ZMinConfirmations, TransferFee, "WrongPrivacyPolicy" }); // we willingly provide the wrong parameter for "PrivacyPolicy" in order to detect its support and more importantly not accidently altering the pool wallet
-        supportsZSendManyPrivacyPolicy = responseZSendMany.Error?.Code == (int) BitcoinRPCErrorCode.RPC_INVALID_PARAMETER;
-        if(responseZSendMany.Error?.Code != null)
-            RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Debug, "EquihashPayoutHandler.ConfigureAsync");
+    private async Task DetectPayoutCapabilitiesAsync(CancellationToken ct)
+    {
+        var cache = capabilities.GetValue(poolConfig, _ => new CapabilityCache());
+        var configuration = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            JsonConvert.SerializeObject(new { poolConfig.Coin, poolConfig.Address,
+                poolConfig.Daemons, poolExtraConfig.ZAddress }))));
+        await cache.Gate.WaitAsync(ct);
+        try
+        {
+            if(cache.Configuration != configuration)
+            {
+                cache.Configuration = configuration;
+                cache.NativeShielding = cache.SendCurrency = cache.Privacy = null;
+                cache.LastValidated = null;
+                cache.ConsecutiveInvalidations = 0;
+                cache.PrivacyLastValidated = cache.LastAlert = null;
+            }
+            // Expiration is checked only inside an admitted payout. No background
+            // timer may invoke spending-method capability probes while paused.
+            if(cache.LastValidated.HasValue &&
+               CapabilityClock.GetElapsedTime(cache.LastValidated.Value) >= CapabilityRefreshInterval)
+            {
+                cache.NativeShielding = cache.SendCurrency = null;
+                cache.LastValidated = null;
+            }
+            // Argument-bearing privacy probes retain fail-closed uncertainty semantics.
+            // Refresh them much less often than the harmless no-argument probes.
+            if(cache.PrivacyLastValidated.HasValue &&
+               CapabilityClock.GetElapsedTime(cache.PrivacyLastValidated.Value) >= PrivacyRefreshInterval)
+                cache.Privacy = null;
+            if(!cache.NativeShielding.HasValue)
+            {
+                var response = await rpcClient.ExecuteAsync<JObject>(logger, EquihashCommands.ZShieldCoinbase, ct);
+                WalletSubmissionOutcome.RequireRejectedProbe(response.Error, EquihashCommands.ZShieldCoinbase, hasNoTransferArguments: true);
+                cache.NativeShielding = response.Error.Code != (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND;
+            }
+            supportsNativeShielding = cache.NativeShielding.Value;
+
+            if(!cache.SendCurrency.HasValue)
+            {
+                var response = await rpcClient.ExecuteAsync<JObject>(logger, EquihashCommands.SendCurrency, ct);
+                WalletSubmissionOutcome.RequireRejectedProbe(response.Error, EquihashCommands.SendCurrency, hasNoTransferArguments: true);
+                cache.SendCurrency = response.Error.Code != (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND;
+            }
+            supportsSendCurrency = cache.SendCurrency.Value;
+
+            if(!cache.Privacy.HasValue)
+            {
+                // Invalid policy and zero amount deliberately request rejection.
+                // A lost response remains uncertain; never cache it as a capability.
+                var response = await rpcClient.ExecuteAsync<string>(logger, EquihashCommands.ZSendMany, ct,
+                    new object[] { poolExtraConfig.ZAddress,
+                        new[] { new ZSendManyRecipient { Address = poolExtraConfig.ZAddress, Amount = 0m } },
+                        ZMinConfirmations, TransferFee, "WrongPrivacyPolicy" });
+                WalletSubmissionOutcome.RequireRejectedProbe(response.Error, EquihashCommands.ZSendMany);
+                cache.Privacy = response.Error.Code == (int) BitcoinRPCErrorCode.RPC_INVALID_PARAMETER;
+                cache.PrivacyLastValidated = CapabilityClock.GetTimestamp();
+            }
+            supportsZSendManyPrivacyPolicy = cache.Privacy.Value;
+            payoutCapabilities = cache;
+            capabilityConfiguration = configuration;
+            capabilitiesInvalidated = false;
+            cache.LastValidated ??= CapabilityClock.GetTimestamp();
+        }
+        finally { cache.Gate.Release(); }
+    }
+
+    private async Task<bool> InvalidateUnsupportedCapabilitiesAsync(int? code, Balance[] affected, bool privacyArguments = false)
+    {
+        if(code != (int) BitcoinRPCErrorCode.RPC_METHOD_NOT_FOUND &&
+           !(privacyArguments && code == (int) BitcoinRPCErrorCode.RPC_INVALID_PARAMS))
+            return false;
+
+        // Only conclusive rejection permits another capability probe. Never turn
+        // a timeout, lost response or unknown async result into an automatic retry.
+        var cache = payoutCapabilities;
+        var notify = false;
+        if(cache != null)
+        {
+            await cache.Gate.WaitAsync();
+            try
+            {
+                if(cache.Configuration == capabilityConfiguration)
+                {
+                    cache.NativeShielding = cache.SendCurrency = cache.Privacy = null;
+                    cache.LastValidated = null;
+                    cache.ConsecutiveInvalidations = Math.Min(2, cache.ConsecutiveInvalidations + 1);
+                    notify = cache.ConsecutiveInvalidations >= 2 &&
+                        (!cache.LastAlert.HasValue || CapabilityClock.GetElapsedTime(cache.LastAlert.Value) >= CapabilityAlertInterval);
+                    if(notify) cache.LastAlert = CapabilityClock.GetTimestamp();
+                }
+            }
+            finally { cache.Gate.Release(); }
+        }
+        capabilitiesInvalidated = true;
+        logger.Warn("Wallet rejected a cached RPC capability; revalidation is deferred to the next admitted payout cycle");
+        if(notify)
+            NotifyPayoutFailure(poolConfig.Id, affected,
+                "Wallet repeatedly rejected its advertised RPC capabilities; payouts are deferred. Check wallet version and RPC arguments.", null,
+                daemonCode: code);
+        return true;
     }
 
     public override async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
@@ -94,6 +209,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         {
             await TrackPayoutAsync(balances, () =>
                 PayoutTrackedAsync(pool, balances, ct));
+
         }
         finally
         {
@@ -106,14 +222,35 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
         }
     }
 
-    protected virtual Task PayoutTrackedAsync(IMiningPool pool, Balance[] balances,
+    private async Task RecordSuccessfulPayoutAsync()
+    {
+        var cache = payoutCapabilities;
+        if(cache == null) return;
+        await cache.Gate.WaitAsync();
+        try
+        {
+            if(cache.Configuration == capabilityConfiguration)
+            {
+                cache.ConsecutiveInvalidations = 0;
+                cache.LastAlert = null;
+            }
+        }
+        finally { cache.Gate.Release(); }
+    }
+
+    protected virtual async Task PayoutTrackedAsync(IMiningPool pool, Balance[] balances,
         CancellationToken ct)
     {
+        // Even invalid-argument probes invoke spending RPC methods. Never run
+        // them during configuration/classification outside wallet admission.
+        if(!balances.Any(x => x.Amount > 0))
+            return;
+        await DetectPayoutCapabilitiesAsync(ct);
         // Some projects like Veruscoin do not require shielding before being able to spend coins.
         // They can also send coins from a t-address to t-addresses and z-addresses.
-        return supportsSendCurrency
+        await (supportsSendCurrency
             ? PayoutSendCurrencyAsync(pool, balances, ct)
-            : PayoutZSendManyAsync(pool, balances, ct);
+            : PayoutZSendManyAsync(pool, balances, ct));
     }
 
     protected virtual async Task LockWallet(CancellationToken ct)
@@ -177,9 +314,12 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
         // Shield first
         if(supportsNativeShielding)
-            await ShieldCoinbaseAsync(ct);
+            await ShieldCoinbaseAsync(balances, ct);
         else
             await ShieldCoinbaseEmulatedAsync(ct);
+
+        if(capabilitiesInvalidated)
+            return;
 
         // send in batches with no more than 50 recipients to avoid running into tx size limits
         var pageSize = 50;
@@ -213,12 +353,18 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                 ZMinConfirmations, // only spend funds covered by this many confirmations
             });
 
-            if(balanceResponse.Error != null || (decimal) (double) balanceResponse.Response - TransferFee < pageAmount)
+            // Reserve the ZIP 317 output/change action estimate. The wallet still
+            // selects inputs and calculates its actual fee; fragmented notes may
+            // require more. Legacy wallets retain their explicit fixed fee.
+            var feeReserve = supportsZSendManyPrivacyPolicy
+                ? 0.00005m * Math.Max(2, amounts.Count + 1)
+                : TransferFee;
+            if(balanceResponse.Error != null || (decimal) (double) balanceResponse.Response - feeReserve < pageAmount)
             {
                 if(balanceResponse.Error != null)
                     RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Warn, "EquihashPayoutHandler.PayoutZSendManyAsync", code: balanceResponse.Error?.Code);
                 else
-                    logger.Info(() => $"[{LogCategory}] Insufficient shielded balance for payment of {FormatAmount(pageAmount)}");
+                    logger.Info(() => $"[{LogCategory}] Insufficient shielded balance for payment of {FormatAmount(pageAmount)} plus fee reserve {FormatAmount(feeReserve)}");
 
                 return;
             }
@@ -237,7 +383,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                     poolExtraConfig.ZAddress, // default account
                     amounts, // addresses and associated amounts
                     ZMinConfirmations, // only spend funds covered by this many confirmations
-                    TransferFee,
+                    null, // Let privacy-policy-capable wallets calculate their conventional fee (ZIP 317).
                     PrivacyPolicy // allow transactions with transparent recipients to be processed, which is not enabled by default for that coin because of severe privacy reinforcements
                 };
             }
@@ -259,6 +405,12 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
             WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
                 EquihashCommands.ZSendMany);
+
+            if(await InvalidateUnsupportedCapabilitiesAsync(response.Error?.Code, page, supportsZSendManyPrivacyPolicy))
+            {
+                TrackPayoutSubmissionNotStarted(page);
+                return;
+            }
 
             if(response.Error == null)
             {
@@ -301,6 +453,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                                     logger.Info(() => $"[{LogCategory}] {EquihashCommands.ZSendMany} completed with transaction id: {txId}");
 
                                     await PersistPaymentsAsync(page, txId);
+                                    await RecordSuccessfulPayoutAsync();
                                     NotifyPayoutSuccess(poolConfig.Id, page, new[] { txId }, null);
 
                                     continueWaiting = false;
@@ -428,6 +581,12 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             WalletSubmissionOutcome.ThrowIfUnknown(response.Error,
                 EquihashCommands.SendCurrency);
 
+            if(await InvalidateUnsupportedCapabilitiesAsync(response.Error?.Code, page))
+            {
+                TrackPayoutSubmissionNotStarted(page);
+                return;
+            }
+
             if(response.Error == null)
             {
                 var operationId = WalletSubmissionOutcome.RequireTransactionId(
@@ -469,6 +628,7 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
                                     logger.Info(() => $"[{LogCategory}] {EquihashCommands.SendCurrency} completed with transaction id: {txId}");
 
                                     await PersistPaymentsAsync(page, txId);
+                                    await RecordSuccessfulPayoutAsync();
                                     NotifyPayoutSuccess(poolConfig.Id, page, new[] { txId }, null);
 
                                     continueWaiting = false;
@@ -554,7 +714,16 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
     /// spent to a z-addr (shielded address), and must be swept out of the t-addr
     /// in one transaction with no change.
     /// </summary>
-    private async Task ShieldCoinbaseAsync(CancellationToken ct)
+    private async Task ShieldCoinbaseAsync(Balance[] balances, CancellationToken ct)
+    {
+        try { await ShieldCoinbaseCoreAsync(balances, ct); }
+        catch(Exception ex) when(WalletSubmissionOutcome.IsTransportFailure(ex))
+        {
+            throw new PayoutOutcomeUncertainException("Native shielding was interrupted before its outcome was known", ex);
+        }
+    }
+
+    private async Task ShieldCoinbaseCoreAsync(Balance[] balances, CancellationToken ct)
     {
         logger.Info(() => $"[{LogCategory}] Shielding ZCash Coinbase funds");
 
@@ -566,6 +735,10 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
 
         var response = await rpcClient.ExecuteAsync<ZCashShieldingResponse>(logger, EquihashCommands.ZShieldCoinbase, ct, args);
 
+        WalletSubmissionOutcome.ThrowIfUnknown(response.Error, EquihashCommands.ZShieldCoinbase);
+        if(await InvalidateUnsupportedCapabilitiesAsync(response.Error?.Code, balances))
+            return;
+
         if(response.Error != null)
         {
             if(response.Error.Code == (int)BitcoinRPCErrorCode.RPC_WALLET_INSUFFICIENT_FUNDS || response.Error.Code == (int)BitcoinRPCErrorCode.RPC_INVALID_PARAMS || response.Error.Code == (int)BitcoinRPCErrorCode.RPC_INVALID_PARAMETER)
@@ -576,7 +749,8 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             return;
         }
 
-        var operationId = response.Response.OperationId;
+        var operationId = WalletSubmissionOutcome.RequireTransactionId(response.Response?.OperationId,
+            EquihashCommands.ZShieldCoinbase + " operation");
 
         logger.Info(() => $"[{LogCategory}] {EquihashCommands.ZShieldCoinbase} operation id: {operationId}");
 
@@ -587,20 +761,24 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             var operationResultResponse = await rpcClient.ExecuteAsync<ZCashAsyncOperationStatus[]>(logger,
                 EquihashCommands.ZGetOperationResult, ct, new object[] { new object[] { operationId } });
 
+            if(operationResultResponse.Error != null)
+                throw new PayoutOutcomeUncertainException($"Shielding operation {operationId} result is unavailable");
+
             if(operationResultResponse.Error == null &&
                operationResultResponse.Response?.Any(x => x.OperationId == operationId) == true)
             {
                 var operationResult = operationResultResponse.Response.First(x => x.OperationId == operationId);
 
-                if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status))
+                if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status) || !Enum.IsDefined(status))
                 {
-                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.ShieldCoinbaseAsync");
-                    break;
+                    throw new PayoutOutcomeUncertainException($"Shielding operation {operationId} returned an unknown status");
                 }
 
                 switch(status)
                 {
                     case ZOperationStatus.Success:
+                        WalletSubmissionOutcome.RequireTransactionId(operationResult.Result?.Value<string>("txid"),
+                            EquihashCommands.ZShieldCoinbase + " result");
                         logger.Info(() => $"[{LogCategory}] {EquihashCommands.ZShieldCoinbase} successful");
 
                         continueWaiting = false;
@@ -691,18 +869,17 @@ public class EquihashPayoutHandler : BitcoinPayoutHandler
             var operationResultResponse = await rpcClient.ExecuteAsync<ZCashAsyncOperationStatus[]>(logger,
                 EquihashCommands.ZGetOperationResult, ct, new object[] { new object[] { operationId } });
 
-            WalletSubmissionOutcome.ThrowIfUnknown(operationResultResponse.Error,
-                $"{EquihashCommands.ZSendMany} shielding operation {operationId}");
+            if(operationResultResponse.Error != null)
+                throw new PayoutOutcomeUncertainException($"Shielding transfer {operationId} result is unavailable");
 
             if(operationResultResponse.Error == null &&
                operationResultResponse.Response?.Any(x => x.OperationId == operationId) == true)
             {
                 var operationResult = operationResultResponse.Response.First(x => x.OperationId == operationId);
 
-                if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status))
+                if(!Enum.TryParse(operationResult.Status, true, out ZOperationStatus status) || !Enum.IsDefined(status))
                 {
-                    RpcConsumerDiagnostics.Write(logger, NLog.LogLevel.Error, "EquihashPayoutHandler.ShieldCoinbaseEmulatedAsync");
-                    break;
+                    throw new PayoutOutcomeUncertainException($"Shielding transfer {operationId} returned an unknown status");
                 }
 
                 switch(status)

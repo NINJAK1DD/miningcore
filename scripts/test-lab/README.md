@@ -1,5 +1,53 @@
 # Persistent Ubuntu test lab
 
+Keep these reproducibility tools in source control and source archives, not in production
+binary packages or runtime images. Release CI runs
+`scripts/release/verify-production-contents.py` against both Ubuntu archives and every
+layer of the source-built and packaged runtime images. The standalone Docker Hub workflow
+also checks its local image before manual publication. Both publishers build the final candidate
+into a digest-pinned registry bound only to the runner's `127.0.0.1`, with ephemeral storage.
+`publish-verified-image.py` pulls the private digest, inspects every linux/amd64 layer, refuses
+additional runtime platforms, and only then copies the complete index to the public destination.
+Skopeo preserves every digest, provenance and SBOM; the published digest is checked again.
+Docker Hub copies directly to `latest`, so no public staging tags accumulate. GHCR retains only
+already-inspected version-scoped staging images for its recovery protocol, and rechecks their
+digests on resumed publication. Rejected candidates remain private and disappear with the runner.
+A file deleted by a later image
+layer still fails. Package assembly and asset collection enforce the same archive policy.
+
+The policy rejects lab directories, test result/coverage files, Miningcore test assemblies,
+wallet/keytab/credential-cache artifacts and Git metadata. Captured `docs/fixtures` proof
+data stays in the source repository; binary packages ship the Markdown operator guides.
+Application payloads additionally
+reject build/cache/log directories, dumps, bundles, private configs and recovery journals.
+Normal OS logs, operator documentation, example configs and migrations remain permitted.
+The gate combines path policy with a checksum-pinned Gitleaks scan of allowed file contents,
+including binary/UTF-16 strings, image configuration and digest-verified attestation payloads.
+Pattern scanning cannot prove the absence of every possible secret or malware. Generated lab
+data belongs in temporary directories or ignored `build/test-lab`, never in a publish directory.
+The scanner reads tar headers and regular-file streams without extracting archive-controlled
+paths or executing contents; image pulls/saves need Docker. Zstd
+layers fail closed with an explicit diagnostic: export uncompressed or gzip layers for
+inspection. The signature check follows [RFC 8878](https://www.rfc-editor.org/rfc/rfc8878.html).
+Index copying uses Skopeo's [`--all --preserve-digests` contract](https://github.com/containers/skopeo/blob/main/docs/skopeo-copy.1.md).
+
+To reproduce registry identity enforcement, run as the ordinary Linux lab user:
+
+```bash
+python3 -B scripts/test-lab/validate-registry-content-gate.py
+```
+
+This check requires Docker/Buildx, Skopeo and PyYAML (`sudo apt-get install skopeo python3-yaml`).
+It runs automatically in a mandatory Release job and before manual Docker Hub publication;
+it can also be run locally. Two digest-pinned registries on ephemeral loopback ports model
+the private candidate store and the public destination. The test builds non-executable clean
+and contaminated fixtures and executes both workflows' actual publication commands. It verifies
+that a rejected candidate's manifest and contaminated layer are absent from the destination,
+that `latest` retains the clean digest, and that clean publication preserves the image index,
+provenance and SBOM. The test removes its registries, builder and local fixture images on exit.
+It never publishes to Docker Hub or GHCR. Registry, BuildKit and SBOM-generator downloads require
+network access; actual publication testing remains confined to the two disposable registries.
+
 The documented local lab is WSL2 `Ubuntu` (Ubuntu 26.04.1), running as the ordinary
 `ubuntu` user. Keep Linux source and build outputs separate from Windows outputs.
 The system installation has .NET SDK 10.0.114/runtime 10.0.14, which is below the current
@@ -16,6 +64,91 @@ binaries must be installed under `/usr/lib/postgresql/*/bin` (or selected with
 `MININGCORE_TEST_POSTGRES_BIN`).
 
 ## Run the suite
+
+### Admission and relay review verification — 18 November 2026
+
+The follow-up availability fix at `ff1b48906dcc80de99864c12b8212925a64b5b2d`
+was rebuilt non-incrementally (application and native libraries), with zero warnings/errors.
+All **212 focused admission/recorder/relay/Bitcoin fail-stop tests passed, no skips**,
+including unexpected subscriber exceptions through both publication entry points: failed
+process status, cancellation, one host shutdown request and rejection of previously admitted
+responses. The transition happens after releasing the admission read lock.
+
+`measure-pps-capacity.sh` then ran alone against that rebuilt revision in a disposable
+PostgreSQL cluster. Both tests passed: 60,000 shares at 1,000/s for 60 seconds, followed by a
+10,000-share burst per topology, with exact liabilities, zero overflow/fallback/fail-stop and
+empty queues after drain. These figures supersede the earlier measurements below:
+
+| Topology | Sustained ack p95 / p99 | Burst offering / drain after offering | Burst ack p99 |
+| --- | --- | --- | --- |
+| Local | 20.615 / 22.203 ms | 0.039 / 1.263 s | 1263.486 ms |
+| Relay | 25.529 / 37.176 ms | 0.108 / 1.608 s | 1608.657 ms |
+
+Raw CPU/device-I/O/PostgreSQL-process samples and TRX are retained privately under
+`build/test-lab/pps-capacity-TNgW8cJF`; capacity TRX SHA-256:
+`fff7b4eefececfe18748d0277b1508fec525405e72f2334318ef0f0c1f67806b`.
+Focused TRX SHA-256: `5d3980b3deb1be8d5a7ef4d701a8493b6750db9daed6f72fb9edcfc9ac2d5aa0`.
+These are lab measurements, not production latency guarantees. Seven reconciliation utility
+tests also passed, including 10,000 recipients / 20,000 payment records, historical-batch
+rejection and non-sensitive CLI diagnostics. Current-head CI is recorded in PR #292.
+
+Production revision `443871bc0` and corrected test revision
+`6f9e11e9d2c398d6c363321611f30a60601b66a3` were verified in the documented Ubuntu lab.
+The non-incremental native/application build passed; the test-attribute import was then
+corrected and tests rebuilt against those unchanged application/native outputs. Both build
+warning audits passed. The focused recorder, admission, relay, payout and capacity suite passed
+**227 tests, no failures/skips**. The complete wallet/control/TLS/Kerberos matrix then passed
+**248 tests, no failures/skips**, in 21m06s. Private matrix TRX SHA-256:
+`ca1a74111f0fc22899307154f3c6ff3f69930d041cf5207b15039ef8f77b1a47`.
+
+The live-maturity companion test matured 128 Bitcoin blocks while the payout process continued
+cycling. Four distinct recorded payment batches matched wallet transactions, with no pending
+blocks, duplicate receipts or lost rewards. The assertion permits any legitimate count >= 2.
+
+The native relay fixture used 256-byte user-agent payloads, 10,000 offered shares, native
+send/receive HWM 128, and an explicitly stalled receiver. PPLNS persisted 4,965 unique rows
+(5,035 missing); PROP persisted 4,901 (5,099 missing), despite successful native sends and zero
+managed queue rejections. A persisted FIFO tail marker preceded shutdown. All 32 shares sent
+without a subscriber were absent in each scheme. These measurements demonstrate a loss
+boundary under this controlled workload; OS buffers/timing change the threshold and HWM 128
+does not mean that the 129th share is necessarily dropped. See the relay guide's deployment
+risk acceptance and discrepancy alerts. No durable remote acknowledgement is claimed.
+
+With 64 simultaneous near-1 MiB submissions and a blocked publisher, 16 were admitted and 48
+refused; queued payloads stayed at 16,761,088 bytes. Managed allocation delta was 53,569,512
+bytes; GC deltas were 1/1/1. The shared test process's lifetime peak RSS was 522,629,120 bytes,
+including other tests: this is not an isolated relay-memory ceiling. Concurrent publication now
+waits for its subscriber, latches subscriber failure and prevents later callers silently skipping
+an observer that Rx detached after an exception.
+
+Both PPS topologies again sustained 1,000 shares/s for 60 seconds and recovered 10,000-share
+bursts with exact durable liabilities and no overflow/fallback/fail-stop. Local/relay sustained
+acknowledgement p99 was 22.763/29.630 ms; burst drain after offering was 1.220/1.092 seconds.
+Current release-tool tests, real-registry qualification and exact-head CI are recorded in PR #292
+separately; the figures above do not imply production publication or Docker Hub qualification.
+
+### Explicit GHCR qualification
+
+The Release workflow's manual `qualify_ghcr` input defaults to false. On an authorized
+branch run, enabling it publishes only a non-executable synthetic fixture to
+`ghcr.io/<repository-owner>/miningcore-release-qualification:qualification-<sha>-<run>-<attempt>`.
+It uses the repository's Actions identity with only `contents:read` and `packages:write`,
+the same registry identity/permission model as production publication. No Docker Hub account
+is needed. It does not alter package visibility or production aliases.
+
+The helper checks the private image and all attestations before any remote write. It starts
+a real chunked upload of a fresh 8 MiB synthetic layer, stops after the registry confirms a
+partial byte range, and checks that the unfinished blob is not visible. It then exercises the
+normal publisher, injects a lost response after the registry copy completes, retries the same immutable source/tag, then independently downloads
+all OCI data with Skopeo and verifies the index and provenance/SBOM payload hashes. The
+`ghcr-qualification-evidence` artifact records those identities and the exact workflow source.
+Keep it with the operator's package-access/permission review before enabling production.
+The recovered partial layer's downloaded digest is checked too. The unfinished upload session
+is cancelled on exit; the report records whether cancellation succeeded (OCI permits server
+expiry if cancellation fails). Production flags remain disabled until the required
+qualification and its permission/cleanup evidence are reviewed. Qualification tags are
+retained as evidence; delete only the identified disposable package versions after review,
+using a separately authorized operator identity. The workflow has no package-delete grant.
 
 ### Persistent Windows native toolchain
 
@@ -63,6 +196,251 @@ The forced rebuild prevents `PreserveNewest` from retaining stale `coins.json`, 
 or example configuration after syncing older source timestamps. Do not remove it when
 reusing a persistent lab. NuGet auditing must remain enabled.
 
+## Wallet-control session security and protocol upgrade
+
+With the ordinary lab environment exported, run the security, ownership and transport
+regressions against disposable PostgreSQL using the freshly built revision:
+
+```bash
+bash scripts/test-lab/with-postgres.sh dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj \
+  --no-build --no-restore \
+  --filter 'FullyQualifiedName~WalletPayoutControlIntegrationTests|FullyQualifiedName~PostgresConnectionPolicyTests|FullyQualifiedName~PostgresTlsIntegrationTests|FullyQualifiedName~PayoutManagerLeaseIntegrationTests|FullyQualifiedName~PayoutOwnershipRecoveryIntegrationTests' \
+  --logger 'trx;LogFileName=wallet-session-security.trx' --results-directory build/test-lab
+```
+
+`CompletionRequiresOriginalBackend_EvenWithReadableIdentityAndReacquiredLock` opens
+distinct runtime sessions, copies readable identities, transfers the advisory lock,
+disconnects the original and tests a simulated reused PID with a different backend
+start time. Each unauthorized completion must fail; only an audited operator
+reconciliation may resolve the batch. Same-session completion retries must work.
+
+`DisposedGuardClosesBackendInsteadOfReturningCompletionAuthorityToPool` enables
+pooling for ordinary connections and verifies that disposing an unresolved payout
+guard actually closes its backend. A later connection cannot inherit its authority.
+
+`ProtocolOneUpgrade_PreservesOutstandingHistoryAndRequiresOperatorReconciliation`
+reproduces the original replacement-session exploit using the archived **test-only**
+protocol-1 fixture, then tests the real atomic migration. Active owners, unpaused state,
+runtime callers and repeat upgrades must fail without altering history. New startup
+rejects protocol 1; protocol 2 preserves legacy batches and requires reconciliation.
+The unconditional parity test checks fresh-install and upgrade function definitions.
+
+The three non-superuser owner-visibility regressions require only
+`MININGCORE_TEST_POSTGRES`, independently of the Bitcoin daemon opt-in. They exercise
+fresh installation and protocol-1 upgrade, inherited versus non-inherited statistics
+privileges, revocation/restoration and both actual function owners during startup.
+The PostgreSQL 15–18 CI matrix runs these same tests and requires all three to execute
+and pass without skips, covering the role-inheritance differences between majors.
+To rerun them in a disposable lab cluster after the audited build:
+
+```bash
+bash scripts/test-lab/with-postgres.sh dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj \
+  --no-build --no-restore \
+  --filter 'FullyQualifiedName~NonSuperuserControlOwner_|FullyQualifiedName~PreflightChecksBothActualFunctionOwnersForStatisticsVisibility'
+```
+
+The connection-policy tests check GSS preference for omitted/optional TLS and GSS
+disablement for mandatory TLS. The live TLS matrix checks encryption and rejects
+missing TLS, wrong trust and hostname mismatch where required. For live Kerberos
+negotiation, run the separate realm-backed matrix below. To include the wallet cases,
+run this filter through `with-wallets.py` and
+export the pinned Pearl worker as below. Keep manifests and wallet logs private.
+
+## Live Kerberos/GSS and TLS matrix
+
+The Ubuntu lab can run a real MIT KDC and PostgreSQL with fresh principals, keytabs
+and credential caches. No production realm, credentials, DNS configuration, system
+keytab or system service is used. Install the missing tools as the ordinary lab user
+into a **fresh** private directory (reuse that verified installation for later runs):
+
+```bash
+kerberos_root="$HOME/miningcore-test-lab/kerberos"
+bash scripts/test-lab/install-kerberos-tools.sh "$kerberos_root"
+```
+
+The installer downloads pinned versions from the lab's authenticated Ubuntu repositories,
+verifies the committed [SHA-256 manifest](kerberos-packages.sha256) **before extraction**,
+extracts them without executing maintainer scripts, and retains package provenance.
+Unavailable versions or changed artifacts fail the installation; there is no fallback
+to the repository's latest version. Review version/hash updates together and rerun
+the full live matrix before qualifying new artifacts. The pins cover the extracted
+tools, not the host OS/runtime libraries; record those versions with every result.
+It does not install or start a system KDC. Package
+names target Ubuntu 26.04 amd64; update repository metadata through normal lab
+maintenance before installing tools. The host needs the ordinary MIT GSS/Kerberos
+runtime libraries and the existing PostgreSQL/native-build prerequisites.
+
+After an audited build of the committed revision with the verified private SDK:
+
+```bash
+export MININGCORE_TEST_POSTGRES_BIN=/usr/lib/postgresql/18/bin
+python3 scripts/test-lab/with-kerberos.py --tools "$kerberos_root/tools" -- \
+  dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --no-restore \
+  --filter 'FullyQualifiedName~PostgresGssIntegrationTests|FullyQualifiedName~PostgresTlsIntegrationTests|FullyQualifiedName~PostgresConnectionPolicyTests' \
+  --logger 'trx;LogFileName=kerberos-gss.trx' --results-directory build/test-lab
+```
+
+The wrapper binds the KDC to a random loopback port and creates only a private
+`MININGCORE.TEST` realm. PostgreSQL binds loopback too and requires GSS authentication
+with an exact realm-qualified principal mapping. Each connection is checked using
+`pg_stat_gssapi` and `pg_stat_ssl` for its own backend, then transfers a 100 KB payload.
+This distinguishes authentication from actual transport encryption.
+
+The matrix covers omitted and all six explicit TLS modes, legacy TLS flags, ordinary
+and dedicated guard connections, trusted TLS with GSS authentication, and rejection
+of missing/unmapped client credentials or an incorrect server keytab. With working
+GSS encryption first established on the same endpoint, mandatory TLS must reject
+disabled TLS, an untrusted/expired certificate or hostname mismatch. A negative
+control reproduces the old forced-GSS-disable plaintext regression. Deliberate
+loopback-trust cases verify that optional modes can fall back to TLS or plaintext
+when no GSS credentials exist; optional preference is not an encryption requirement.
+
+Credential-negative cases select their native cache before starting a fresh client
+process; changing managed environment variables after GSS initialization does not
+reliably replace acquired credentials. Tests run in the serialized PostgreSQL policy
+collection. The private realm disables short-name domain qualification as well as
+DNS canonicalization, keeping its synthetic localhost principal independent of the
+host's resolver search suffix. The wrapper stops its own process groups and removes temporary
+realm keys/caches on exit. Keep test diagnostics private; never publish keytabs,
+credential caches or Kerberos traces. Without the opt-in environment, the seven
+methods are explicitly skipped; a successful ordinary CI run is not live GSS evidence.
+This qualifies MIT Kerberos on Linux, not Windows SSPI, Active Directory or cross-realm trust.
+
+## Wallet compatibility matrix
+
+The additional wallet fixtures use disposable private chains and production payout
+handlers, the real wallet RPCs, a real PostgreSQL control lease, and an HTTP proxy
+that can discard an accepted spending response or hold it until client cancellation.
+No production wallet, password or public-chain funding is needed.
+
+Install the pinned tools as the ordinary lab user in a private directory. The
+installer verifies SHA-256 before extraction and does not run package maintainer
+scripts or install wallets on the system PATH. Python 3.12+ is required for safe
+archive extraction. Zano needs a separate upstream **testnet** build: its mainnet
+release refuses fresh-chain spending below its built-in checkpoints.
+
+```bash
+sudo apt-get install -y g++-12 cmake git curl python3 libssl-dev libzstd-dev libjitterentropy3-dev
+wallet_root="$HOME/miningcore-test-lab/wallet-compatibility"
+python3 scripts/test-lab/install-wallet-compatibility.py "$wallet_root"
+bash scripts/test-lab/build-zano-testnet.sh "$wallet_root"
+python3 scripts/test-lab/with-wallets.py --root "$wallet_root" -- \
+  bash scripts/test-lab/with-postgres.sh dotnet test \
+  src/Miningcore.Tests/Miningcore.Tests.csproj --no-build --no-restore \
+  --filter 'FullyQualifiedName~LiveWalletCompatibility' \
+  --logger 'trx;LogFileName=live-wallets.trx' --results-directory build/test-lab
+```
+
+These package names are for the documented Ubuntu 26.04 lab. Build Miningcore first
+with the verified SDK and export the ordinary lab daemon variables, including
+`MININGCORE_TEST_BITCOIND`, as described above. To include the matrix in the full
+suite, omit the filter. The wrapper sets `MININGCORE_TEST_WALLET_MANIFEST`, waits
+for funding, runs the command, then stops only the process groups it created.
+Without that opt-in, the wallet theory is explicitly skipped. Evidence, wallet
+files and logs remain under a mode-0700 run directory; do not publish its manifest
+or wallet logs, which may contain disposable wallet secrets.
+
+| Family | Pinned wallet | Private-chain setup |
+| --- | --- | --- |
+| CryptoNote | Monero 0.18.5.4 | Regression chain, fixed difficulty, offline daemon; only the lab `fakechain` network label is normalized for the handler |
+| Conceal | 6.7.6 | Testnet, loopback-exclusive peers, 40 normally validated difficulty-one blocks with target-spaced timestamps; default anonymity remains five |
+| Zano | 2.2.3.608, source `09c052615e8327aca7d8c849f80d97f3342cc3d4` | Upstream `TESTNET=ON`, GCC 12 and checksum-pinned Boost 1.83; only gold-to-BFD linker selection changes; 30 validated private blocks |
+| Equihash | Zcash 6.20.0 | Sapling regtest, no peers, legacy address RPCs explicitly enabled; blocks continue to mature asynchronous shielding/payments |
+| Xelis | 1.25.0 (`b149b57a`) | Devnet's explicit PoW-skip funding mode, loopback-exclusive peers, authenticated wallet RPC |
+
+Zcash is a legacy compatibility fixture; it does not establish compatibility with
+Zebra/Zallet or recommend deploying the retired wallet. See the upstream
+[zcashd retirement notice](https://github.com/zcash/zcash/blob/master/doc/book/src/user/end-of-life.md).
+Sapling parameters are bundled by this version; no Sprout parameter download is
+needed. These Debug lab tests retain the project's Debug peer-guard behavior for
+isolated networks. They do not claim production network synchronization or live
+TCP miner coverage.
+
+Before deploying a different wallet version or fork, pin its exact version/source and
+checksum in a disposable lab and repeat this matrix: paused admission, capability
+probes, successful submission and accounting, response loss, cancellation, and
+restart/reconciliation. For Equihash, also run the capability-transition and fragmented-fee
+cases. Record the tested Miningcore commit, wallet identity and results; the existing
+pinned results do not qualify an untested replacement. After the coordinated wallet
+upgrade, restart Miningcore to adopt new capabilities immediately, preserving any
+outstanding ownership/reconciliation requirements.
+
+Each family verifies paused admission, a successful real payment and exact
+accounting, then accepted submission followed by response loss and cancellation.
+Uncertainty must preserve the unpaid liability and outstanding admission, retain
+ownership, and refuse resume. Xelis additionally goes offline through its actual
+wallet RPC, reactivates through Miningcore, and defers spending for that cycle.
+The stale-height case deliberately injects lagging scan metadata into the real
+wallet's response; the regular height read must subsequently permit payment.
+
+### Fragmented Zcash conventional fees
+
+The full wallet matrix also includes
+`LiveZcashFragmentedFunds_MultiplePagesRejectConclusiveFeeShortfallThenRetry`.
+It creates eight confirmed Sapling notes, pays an initial page, then deliberately leaves
+a subsequent 50-recipient page enough for the preliminary reserve but insufficient for
+the real wallet's input-dependent fee. A real conclusive rejection must retain liabilities
+and complete admission. After funding, a later payout must settle the remaining recipients
+without repeating earlier payments (101 distinct recipients across the scenario).
+Run it with `with-wallets.py` and `with-postgres.sh`, using the same invocation as the
+wallet matrix and filter `FullyQualifiedName~LiveZcashFragmentedFunds`.
+
+## PPS capacity and relay saturation
+
+### Pearl precommitted PPS relay regression
+
+After building the same source in the Linux checkout, export `MININGCORE_TEST_PEARL_WORKER`
+as the absolute path to the checksum-verified worker from the documented
+[Pearl build](../../docs/pearl-development.md). Then run:
+
+```bash
+bash scripts/test-lab/with-postgres.sh dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj \
+  --no-build --no-restore --filter 'FullyQualifiedName~PearlPpsAcceptanceKeepsCommittedIdentity' \
+  --logger 'trx;LogFileName=pearl-pps-relay.trx' --results-directory build/test-lab
+```
+
+This opt-in case assigns the captured real SRBMiner proof to an isolated job, executes
+the production native verifier and Pearl submission/candidate-store path, and acknowledges
+only after accounting. It then recreates the publisher, receiver, recorder and candidate-store
+objects twice, then launches two fresh OS processes that reload the durable candidate and
+deliver duplicates over real CURVE sockets into the same PostgreSQL database.
+It checks exact payload hashes, one receipt/share/credit, liability plus remainder conservation,
+and no quarantine or fail-stop. It does not claim fresh GPU mining or an operating-system
+reboot. Preserve the pinned worker provenance and the TRX with the tested revision.
+
+### Capacity and failure boundaries
+
+The requested capacity target is 1,000 shares/second for 60 seconds, followed by
+a 10,000-share burst. `PpsCapacity_Sustains1000PerSecondAndRecovers10000ShareBurst`
+and `PpsRelayCapacity_Sustains1000PerSecondAndRecovers10000ShareBurst` exercise
+the production Stratum acknowledgement boundary and PostgreSQL recorder, including
+real CURVE publication/receiver deduplication in the second case. They record
+acknowledgement p95/p99/max, queue high-water marks, managed CPU, commit counts,
+WAL bytes and PostgreSQL I/O timing. Every acknowledged share must have exactly
+one statistical row and credit and the exact aggregate liability, with no overflow,
+journal fallback or fail-stop. The offered-rate and recovery deadlines are asserted.
+
+For process CPU and device latency, stop unrelated lab work first, install
+`sysstat`, retain the SDK/daemon environment, and run:
+
+```bash
+bash scripts/test-lab/measure-pps-capacity.sh
+```
+
+The private results directory contains the commit, CPU/kernel/filesystem identity,
+TRX, PostgreSQL `pidstat` samples and `iostat` device samples. Device measurements
+describe the WSL virtual disk and may include other host activity; they are not a
+production storage SLA. Repeat on the intended deployment hardware before sizing
+it beyond the measured workload.
+
+`PpsRelayOverload_BoundsMemoryAndPreservesAcknowledgedLiabilities` independently
+holds transport processing, saturates an eight-message test queue with no receiver,
+and proves bounded rejection/fail-stop plus recovery without losing or duplicating
+acknowledged PPS liabilities. `PpsHealthySlowDatabase_KeepsEveryResponsePendingUntilCommit`
+holds a real database lock for 300 ms and checks that all 100 responses remain
+pending until commit. The normal production recorder capacity remains 65,536;
+small capacities in saturation fixtures intentionally reach failure boundaries.
+
 ## Optional TCP Stratum payout-pause staging smoke
 
 Run this manually before adopting a release on an isolated LTC/DOGE staging deployment.
@@ -107,11 +485,65 @@ pool IDs and test interval in a private incident record, without wallet credenti
 
 This is an opt-in manual acceptance procedure, not a claim that TCP staging ran in CI.
 The automated `PausedExample_RealStartupMiningPersistenceAndOwnershipRecovery` fixture
-exercises production job managers directly. Multi-node emergency-stop, prolonged-pause,
-large-backlog and database-failure scenarios remain separately tracked in
-[issue #291](https://github.com/NINJAK1DD/miningcore/issues/291).
+exercises production job managers directly. The additional #291 scenarios are covered by
+the fixtures below; neither fixture group claims this optional TCP mining smoke ran.
+
+## Combined pause, relay, backlog and PPS outage scenarios
+
+Run `WalletPayoutControlIntegrationTests` through the runner above, or use its same daemon
+environment and `with-postgres.sh` wrapper with a previously built, unchanged revision:
+
+```bash
+bash scripts/test-lab/with-postgres.sh dotnet test src/Miningcore.Tests/Miningcore.Tests.csproj \
+  --no-build --no-restore --filter 'FullyQualifiedName~WalletPayoutControlIntegrationTests' \
+  --logger 'trx;LogFileName=wallet-topologies.trx' --results-directory build/test-lab
+```
+
+Allow at least 20 minutes for the focused group. Every database, role, wallet, daemon and
+child service belongs to the fixture; the outage case starts and abruptly stops its own
+loopback PostgreSQL server, never the shared lab server. Runtime roles remain distinct
+from table owners and wallet-control operators. The private outage server uses the existing
+TLS-policy fixture's loopback-only trust authentication; the outer lab wrapper uses SCRAM.
+
+- `MixedLocalPauseProcesses_ShareWalletAndDatabaseWithoutSharingOwnership` starts separate
+  locally paused and active service processes on one database/wallet. A third payout owner
+  must fail. It distinguishes the local flag from the database stop, restarts the owner,
+  and matches database payment receipts to actual wallet sends.
+- `ExtendedPausedRelay_PersistsPpsAndMonitorsBoundedQueuesAndBacklog` runs for at least
+  **620 real seconds**, crossing two production five-minute pause heartbeats. It feeds
+  50 immutable PPS shares approximately every five seconds through real ZeroMQ and the
+  production receiver/recorder, checks each durable credit and balance, keeps 64 blocks
+  pending, and records queue high-water, overflow, storage growth and zero wallet sends.
+  Synthetic validated evidence isolates relay/accounting behavior; it is not proof of TCP
+  mining. Test-only repeats of the same IDs compensate for PUB/SUB loss and verify deduplication.
+- `LargePausedBacklog_RestartsBetweenMaturityWavesWithoutDuplicateAllocationOrPayment`
+  records 256 real regtest block/coinbase identities while locally paused, then uses three
+  payout-process lifetimes and two maturity waves. It checks complete classification,
+  reward/balance conservation, exactly two payment receipts and matching wallet transactions.
+- `PausedPps_DatabaseInterruptionRequiresDurabilityBeforeAcknowledgementAndExplicitRecovery`
+  holds a real database statement pending, abruptly stops PostgreSQL, and checks that PPS
+  responses wait for authenticated journal durability. A fresh recorder imports and replays
+  the evidence exactly once. A second outage plus injected journal-flush failure must produce
+  no positive responses and must retain a fatal incident that still blocks startup after
+  PostgreSQL returns. It invokes the production Stratum publish/acknowledgement boundary
+  directly, without a TCP mining client.
+- `PpsRelaySender_CommitsLocallyAndReceiverDeduplicates` verifies local PPS durability with
+  the receiver absent, followed by real relay delivery and receipt deduplication in the same
+  database. Mixed-scheme statistical traffic must not be duplicated by the sender's recorder.
+
+The soak's bounded measurements describe that traffic and duration, not an indefinite pause
+or capacity benchmark. Local pause suspends payout reconciliation/retention while PPS liabilities
+continue growing. Monitor disk capacity, queue pressure, pending blocks, recovery evidence and
+wallet reserves; stop admission before capacity is exhausted. Keep the shared database and
+coordinated-version boundaries in the [wallet-stop guide](../../docs/emergency-wallet-stop.md).
 
 ## Live payout recovery and shutdown checks
+
+For database emergency wallet admission, run the full suite and the focused
+`FullyQualifiedName~WalletPayoutControlIntegrationTests` cases. They create disposable
+databases and authenticated runtime/operator roles, start competing process hosts,
+restart a private PostgreSQL server and exercise a real Bitcoin wallet. See the
+[protocol, rollout policy and verified results](../../docs/emergency-wallet-stop.md).
 
 After building the current source, run:
 

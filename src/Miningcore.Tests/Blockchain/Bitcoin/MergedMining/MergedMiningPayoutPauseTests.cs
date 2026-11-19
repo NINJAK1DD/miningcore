@@ -121,8 +121,9 @@ public partial class MergedMiningManagerReorgTests
 
         foreach(var topology in new[] { "direct", "sender", "receiver" })
         {
-            cluster.ShareRelay = topology == "sender" ? new ShareRelayConfig() : null;
-            cluster.ShareRelays = topology == "receiver" ? new[] { new ShareRelayEndpointConfig() } : null;
+            const string relayKey = "isolated-merged-pause-fixture-key-32-characters";
+            cluster.ShareRelay = topology == "sender" ? new ShareRelayConfig { SharedEncryptionKey = relayKey } : null;
+            cluster.ShareRelays = topology == "receiver" ? new[] { new ShareRelayEndpointConfig { SharedEncryptionKey = relayKey } } : null;
             Program.ValidateMergedMiningDeployment(cluster, requireAssignedTemplates: true);
             Program.ValidatePpsDeployment(cluster, requireAssignedTemplates: true);
             var manager = new TestManager(container, Substitute.For<IMasterClock>(), new MessageBus(),
