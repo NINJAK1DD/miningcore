@@ -9,7 +9,7 @@ work_dir=$(mktemp -d)
 publish_dir="$work_dir/publish"
 output_dir="$work_dir/dist"
 complete_dir="$work_dir/complete"
-version=v1.2.3-rc.4
+version=v1.2.3-beta.1
 source "$repository_root/scripts/release/linux-release-targets.sh"
 
 resolute_digest=sha256:513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d
@@ -153,6 +153,17 @@ fi
 SOURCE_COMMIT=$(git -C "$repository_root" rev-parse HEAD)
 SOURCE_DATE_EPOCH=$(git -C "$repository_root" show -s --format=%ct "$SOURCE_COMMIT")
 export SOURCE_COMMIT SOURCE_DATE_EPOCH
+if usage=$(env -u GITHUB_REPOSITORY bash "$package_script" 2>&1); then
+  exit 1
+fi
+grep -Fq 'GITHUB_REPOSITORY=owner/repository' <<<"$usage"
+if missing=$(env -u GITHUB_REPOSITORY bash "$package_script" "$version" 26.04 "$publish_dir" \
+  "$output_dir" "$resolute_image" 2>&1); then
+  exit 1
+fi
+grep -Fq 'Set GITHUB_REPOSITORY' <<<"$missing"
+export GITHUB_REPOSITORY=fixture/miningcore
+python3 -B "$repository_root/scripts/release/test-render-release-doc.py"
 
 for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
   rm -rf -- "$output_dir"
@@ -247,6 +258,14 @@ for ubuntu_version in "${MININGCORE_LINUX_RELEASE_TARGETS[@]}"; do
   extracted="$work_dir/extracted-$ubuntu_version"
   mkdir -p "$extracted"
   tar -xzf "$output_dir/$archive" -C "$extracted"
+  python3 -B "$repository_root/scripts/release/test-packaged-guide.py" "$extracted/$package_root" \
+    "https://github.com/$GITHUB_REPOSITORY/blob/$SOURCE_COMMIT"
+  python3 "$repository_root/scripts/release/render-release-doc.py" notes "$SOURCE_COMMIT" \
+    fixture/miningcore "$work_dir/notes.md"
+  recorded_source=$(sed -n 's/^Source commit: //p' "$extracted/$package_root/BUILD-INFO")
+  grep -Fq "https://github.com/$GITHUB_REPOSITORY/blob/$recorded_source/scripts/test-lab/" "$extracted/$package_root/INSTALL.md"
+  grep -Fxq "[Installation and upgrade guide for this build](https://github.com/fixture/miningcore/blob/$recorded_source/docs/releases.md)" "$work_dir/notes.md"
+  grep -Fq 'both .NET and ASP.NET Core 10.0.15 or later within .NET 10' "$work_dir/notes.md"
   for asset in miningcore.service configure-postgresql-ordering.sh postgresql-ordering.conf.example; do
     cmp "$repository_root/packaging/systemd/$asset" "$extracted/$package_root/systemd/$asset"
   done
@@ -376,7 +395,7 @@ bash "$package_script" v1.2.4 26.04 "$publish_dir" "$output_dir" \
   "$(miningcore_linux_release_target_image 26.04)"
 cp "$output_dir"/*ubuntu-26.04.tar.gz "$fixture/"
 expect_collection_failure "archives from different releases" "$fixture" \
-  'records release v1.2.4; expected v1.2.3-rc.4'
+  "records release v1.2.4; expected $version"
 
 set +e
 invalid_output=$(

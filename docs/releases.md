@@ -1,6 +1,23 @@
 # Installing a prebuilt Miningcore release
 
-## Emergency wallet control protocol 2
+## v0.4.0-rc.2 highlights
+
+RC.2 adds database-wide wallet payout admission, guided ownership recovery and
+durable PPS share acknowledgements. It also changes custodial block confirmation,
+relay backpressure and native hash capability checks. **Upgrading is not a
+binary-only replacement for wallet payout managers.** Start with the
+[RC.2 operator checklist](upgrade-v0.4.0-rc.2.md) for fresh installations,
+RC.1 upgrades, or a direct upgrade from stable v0.3.0.
+
+The runtime floor is serviced .NET **and** ASP.NET Core 10.0.15. The candidate
+includes updated NBitcoin/Altcoins/Secp256k1, Npgsql 10, Newtonsoft.Json.Schema,
+AutoMapper, Polly and protobuf-net dependencies. These ship with the build;
+operators should not replace individual DLLs. Bitcoin II explorer links were
+updated; a link change does not change network consensus or payout eligibility.
+
+<a id="emergency-wallet-control-protocol-2"></a>
+
+## v0.4.0-rc.2: emergency wallet control protocol 2
 
 Wallet batch completion now requires the PostgreSQL session that admitted it,
 identified by both backend PID and start time. Replacement runtime sessions cannot
@@ -15,7 +32,9 @@ GSS encryption so certificate policy cannot be bypassed and plaintext fallback i
 impossible. See the [transport policy](postgres-tls.md); optional modes still do not
 guarantee encryption.
 
-## RC.2 payout pause: deployment and rollback warning
+<a id="rc2-payout-pause-deployment-and-rollback-warning"></a>
+
+## v0.4.0-rc.2: payout pause deployment and rollback warning
 
 **RC.1 ignores `paymentProcessing.paused` and can resume wallet payouts with that flag present.**
 Before starting any paused service, stop and inventory every wallet-capable process, verify the
@@ -59,7 +78,9 @@ fixed compiler baseline instead of inheriting AVX-512 or other optional features
 from the release runner. See [native CPU portability](native-cpu-portability.md)
 for the SIGILL investigation, runtime-dispatch policy and regression checks.
 
-## Unreleased (after v0.4.0-rc.1): guided payout recovery and timestamp setup
+<a id="unreleased-after-v040-rc1-guided-payout-recovery-and-timestamp-setup"></a>
+
+## v0.4.0-rc.2: guided payout recovery and timestamp setup
 
 Wallet payout admission now requires the separate, initially paused
 [database emergency wallet control migration and coordinated rollout](emergency-wallet-stop.md).
@@ -75,6 +96,9 @@ of the wallet pause:
 - Enabled pools configured for PPS require a bind-mode sender and a `sharedEncryptionKey` of at
   least 32 characters on the sender and every receiver endpoint, even with payment processing
   disabled. PPS connect mode is rejected; external transport protection does not bypass this check.
+  Even an existing long key is refused if it starts with `CHANGE_ME` or `REPLACE_`
+  after trimming, regardless of case. Rotate matching keys on both ends before restarting.
+  Non-PPS relays warn about those prefixes at startup without refusing the configuration.
 - **Every relay sender, including PPLNS/PROP, fail-stops** on oversized/invalid serialization,
   local queue saturation or publisher failure. Limits are 4,096 messages / 16 MiB queued payload,
   1 MiB per frame, 128-message native PUB/SUB high-water marks and a 128-message receiver queue.
@@ -118,8 +142,8 @@ AutoMapper is updated to 16.3.0 for the constructor and runtime-mapping recursio
 vulnerabilities GHSA-6vhm-j9h7-f9gh and GHSA-gpwp-5797-mjff. Dependency vulnerability
 checks remain enforced; see the [dependency security record](dependency-security.md).
 
-Include these operator steps in the next candidate's deployment checklist (including RC.2 if this
-change ships there). Normal upgrades must preserve ownership markers and financial records.
+Follow these steps during RC.2 deployment.
+Normal upgrades must preserve ownership markers and financial records.
 
 Standalone recovery enforces the same patched runtime policy as normal startup. Runtime-policy
 failures now exit with operator-required status 78 so the packaged service does not restart-loop
@@ -175,7 +199,9 @@ first connection, including standalone recovery. After correcting the configurat
 or require clearing payout state. The two-minute recovery limit is per idle prompt, and scripted
 TTY startups can use `--no-payout-recovery-prompt`; it cannot be combined with standalone recovery.
 
-## Upcoming v0.4.0-rc.2
+<a id="upcoming-v040-rc2"></a>
+
+## v0.4.0-rc.2: runtime and compatibility
 
 > **Upgrade .NET before installing RC.2.** Normal Miningcore startup now requires both
 > .NET and ASP.NET Core **10.0.15 or later in .NET 10**. As of 11 November 2026, normal Canonical
@@ -343,6 +369,7 @@ Use this guide by task:
 | Upgrade or rollback | [Upgrade or roll back](#upgrade-or-roll-back) |
 | Container deployment | [GitHub Container Registry image](#use-the-github-container-registry-image) |
 | Install or upgrade to v0.3.0 | [v0.3.0 highlights](#v030-highlights) |
+| Upgrade RC.1 or v0.3.0 to RC.2 | [RC.2 operator checklist](upgrade-v0.4.0-rc.2.md) |
 | Upgrade v0.3.0 to v0.4.0-rc.1 | [RC.1 upgrade guide](upgrade-v0.4.0-rc.1.md) |
 | Existing v0.1.0 operator | [v0.2.0 highlights](#v020-highlights) |
 | v0.2.0 `SOLO`/`SOLO` merged-mining failure | [v0.2.1 hotfix](#v021-hotfix) |
@@ -1986,8 +2013,8 @@ download the archive matching the host and the checksum manifest:
 - `SHA256SUMS`
 
 The executable installation examples below use the published stable `v0.3.0`.
-For controlled candidate testing, follow the [RC.1 upgrade guide](upgrade-v0.4.0-rc.1.md)
-and substitute `v0.4.0-rc.1` only after its release page and required assets are available.
+For controlled candidate testing, follow the [RC.2 upgrade guide](upgrade-v0.4.0-rc.2.md)
+and substitute `v0.4.0-rc.2` only after its release page and required assets are available.
 
 ```console
 export MININGCORE_VERSION=v0.3.0
@@ -2316,6 +2343,11 @@ activation requirements using its own files. It does not use
 `MININGCORE_MIGRATION_PLAN` or the new RC.1 ownership preflight files; those files
 are not present in v0.3.0 archives. Do not run the RC.1 block below against them.
 
+### Upgrade to v0.4.0-rc.2
+
+Use the [RC.2 operator checklist](upgrade-v0.4.0-rc.2.md); the older RC.1 block
+cannot install the database-wide wallet controls. Do not change its version guard.
+
 ### Upgrade to v0.4.0-rc.1
 
 The executable block below is **only for v0.4.0-rc.1 archives**. Explicitly select
@@ -2607,8 +2639,9 @@ Release candidates are for controlled validation, not the default production ins
 
 The setup block below is for a new container installation only. It downloads a configuration
 and creates an administrative token. Existing operators must not run it over their configuration
-or environment file; follow the [container upgrade path](upgrade-v0.4.0-rc.1.md#container-upgrades)
-and retain their mounts, credentials and persistent state.
+or environment file. For RC.2 follow the [coordinated rollout](upgrade-v0.4.0-rc.2.md);
+for RC.1 use its [container upgrade path](upgrade-v0.4.0-rc.1.md#container-upgrades).
+Retain mounts, credentials and persistent state in either case.
 
 ```console
 export MININGCORE_VERSION=v0.3.0  # Replace with the published release you selected.
@@ -3443,12 +3476,20 @@ the task links at the top of this guide and the [troubleshooting guide](troubles
 
 ### Build and package contract
 
-The release workflow accepts SemVer tags reachable from `dev`, for example `v0.4.0-rc.1` or
+The release workflow accepts SemVer tags reachable from `dev`, for example `v0.4.0-rc.2` or
 `v0.3.0`. It first builds and smoke-tests the Ubuntu 26.04-based source `Dockerfile`, then builds and
 fully tests separate Ubuntu 26.04 primary and Ubuntu 22.04 compatibility archives. The Jammy archive
 is built inside an Ubuntu 22.04 job container on a maintained hosted runner, so its publication does
 not depend on GitHub retaining the retiring `ubuntu-22.04` runner image. Both release lanes use a
 stable hosted runner and an immutable, digest-pinned Docker Official Image.
+
+The guide, source builds, archive tools and publication use the same tag grammar.
+Use `vMAJOR.MINOR.PATCH` with no leading zeros in the three core numbers. An
+optional prerelease suffix follows [SemVer 2.0](https://semver.org/spec/v2.0.0.html):
+dot-separated identifiers contain ASCII letters, digits or hyphens. A digits-only
+identifier cannot have a leading zero (`-rc.0` is valid; `-rc.01` is not).
+Hyphens within an identifier are allowed, including consecutive ones. Build metadata
+(`+suffix`) is excluded because the version also names a container tag.
 
 The workflow-declared
 build-image reference is recorded in each archive's `BUILD-INFO` and checked against the shared
@@ -3662,10 +3703,17 @@ For a candidate, keep the latest stable baseline explicitly separate from the se
 candidate examples. Update the RC highlights, upgrade matrix, guide index and
 `scripts/release/test-release-install-docs.sh` together. Historical release/evidence
 versions identify their original behavior and must not be replaced globally.
-For changes after this candidate, use `## Unreleased (after v0.4.0-rc.1): subject`.
+The extracted archive and packaged-image checks derive the required offline guide from
+the tag selection (`NEXT_VERSION`) below. Tag builds reject a mismatch before packaging.
+For a stable release such as v0.4.0, ship and link the stable guide
+(`docs/upgrade-v0.4.0.md`), not just the last candidate's guide. For local documentation and archive tests,
+install Ubuntu's `cmark-gfm` package so link validation uses an independent Markdown
+parser. When packaging locally, set `GITHUB_REPOSITORY`
+to the GitHub owner/repository that contains the selected commit (including fork builds).
+For changes after this candidate, use `## Unreleased (after v0.4.0-rc.2): subject`.
 The documentation guard permits this next-cycle heading but rejects unqualified
 Unreleased entries and entries still assigned to the previous v0.3.0 boundary. Do not
-label a later change RC.1 or invent an RC.2 version just to pass CI.
+label a later change RC.2 or invent an RC.3 version just to pass CI.
 Keep the 33 pre-RC anchors in the independent frozen baseline under
 `scripts/release/fixtures/`; do not regenerate it from edited headings. The release
 documentation suite runs mutation tests for these links, both SOLO migration rows
@@ -3674,7 +3722,7 @@ must remain effective with Python optimisation enabled.
 The RC.1 headings and upgrade guide are historical version-scoped records: keep
 their version labels and anchors at RC.1 for RC.2 and v0.4.0 stable, rather than
 renaming them globally. Add new release sections and upgrade deltas instead.
-The preparation guard is deliberately an RC.1 snapshot, not a generic SemVer
+The preparation guard is deliberately release-specific, not a generic SemVer
 generator. At the next release, review and update the active version-selection
 policy/tests separately while retaining the frozen historical-anchor contract.
 Prefer behavioural shell/SQL tests for safety invariants; exact prose assertions
@@ -3686,7 +3734,7 @@ fail that job rather than skipping coverage. Local/minimal environments may omit
 the flag and skip unavailable optional shells; set it to `1` to require the full matrix.
 Do not add a speculative `next-version` or edit assembly constants merely to prepare
 this PR: the validated release tag supplies the packaged version and source identity.
-Publication must mark `v0.4.0-rc.1` as a prerelease; it must not advance stable GHCR aliases.
+Publication must mark `v0.4.0-rc.2` as a prerelease; it must not advance stable GHCR aliases.
 After publication, record the actual source SHA, release URL, archive checksums/BUILD-INFO,
 runtime version, immutable container tag/digest and prerelease status. Confirm that all
 identities match the intended tag and that stable aliases were not advanced. Retain this
@@ -3702,7 +3750,7 @@ Record the full SHA of the release-preparation commit as it actually lands on `d
 (the merge commit, or the resulting squash/rebase commit). Validate and commission
 that exact source identity. Tag that recorded SHA, not the later tip of `dev` or
 the PR head/synthetic test-merge ref. Later changes may use the next-cycle Unreleased
-heading and must not silently enter RC.1 during a gap before tagging. If a later
+heading and must not silently enter RC.2 during a gap before tagging. If a later
 commit is deliberately selected instead, review its full delta and repeat the
 applicable validation/commissioning gates before recording the new release target.
 
@@ -3714,7 +3762,7 @@ applicable validation/commissioning gates before recording the new release targe
 Prefer a signed annotated tag:
 
 ```console
-NEXT_VERSION=v0.4.0-rc.1  # Replace with the next unused SemVer version.
+NEXT_VERSION=v0.4.0-rc.2  # Replace with the next unused SemVer version.
 RELEASE_COMMIT=REPLACE_WITH_REVIEWED_MERGE_SHA
 if [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] &&
    git fetch origin dev &&
@@ -3826,7 +3874,7 @@ do not move the Git tag:
 
 ```console
 export REPOSITORY=NINJAK1DD/miningcore
-export TAG=v0.4.0-rc.1
+export TAG=v0.4.0-rc.2
 export IMAGE=ghcr.io/ninjak1dd/miningcore
 export STAGING_TAG="publication-staging-$TAG"
 

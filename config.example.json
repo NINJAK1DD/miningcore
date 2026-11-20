@@ -204,14 +204,15 @@
   //   "publishUrl": "tcp://192.0.2.20:5555",
   //   // false binds/listens; true connects to an already-bound relay endpoint.
   //   "connect": false,
-  //   // Replace with a long random ZeroMQ shared secret.
-  //   "sharedEncryptionKey": "REPLACE_WITH_A_LONG_RANDOM_SECRET"
+  //   // For PPS use bind mode, a local recorder and the shared accounting database.
+  //   // Generate a private random key (at least 32 characters); match it on every receiver.
+  //   "sharedEncryptionKey": "CHANGE_ME_RELAY_SHARED_SECRET"
   // },
   // Advanced central receiver/recorder example:
   // "shareRelays": [
   //   {
   //     "url": "tcp://192.0.2.20:5555",
-  //     "sharedEncryptionKey": "REPLACE_WITH_A_LONG_RANDOM_SECRET"
+  //     "sharedEncryptionKey": "CHANGE_ME_RELAY_SHARED_SECRET"
   //   }
   // ],
 

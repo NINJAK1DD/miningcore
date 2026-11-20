@@ -336,6 +336,9 @@ First satisfy the [standalone ownership precondition](pps-arithmetic-migration.m
 older grant-only deployments need explicit ownership reconciliation.
 An unchanged SOLO/SOLO topology retains its established one-share wire/database
 record and needs no new SQL solely for RC.1 when its v0.3.0 prerequisites are installed.
+For RC.2 that statement covers share accounting only. The wallet payout
+manager still needs [database-wide wallet control](upgrade-v0.4.0-rc.2.md#database-preparation)
+even for SOLO/SOLO. Coordinate all writers and payout managers on the shared database.
 
 The ownership migration was already required before v0.3.0 for every payment-processing cluster,
 including clusters without merged mining. It is also required for recorder/recovery-only deployments

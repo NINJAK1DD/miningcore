@@ -5,8 +5,11 @@ set -euo pipefail
 if [[ $# -ne 5 ]]; then
     echo "Usage: $0 <version> <ubuntu-version> <publish-directory>" >&2
     echo "  <output-directory> <build-image>" >&2
+    echo "Required environment: GITHUB_REPOSITORY=owner/repository containing the source commit (automatic in Actions)." >&2
     exit 64
 fi
+
+: "${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY to the GitHub owner/repository containing the packaged commit}"
 
 version="$1"
 ubuntu_version="$2"
@@ -16,7 +19,8 @@ build_image="$5"
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$repository_root/scripts/release/linux-release-targets.sh"
 
-if [[ ! "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+version_pattern=$(bash "$repository_root/scripts/release/read-release-version-pattern.sh")
+if [[ ! "$version" =~ ^${version_pattern}$ ]]; then
     echo "Version contains unsupported characters: $version" >&2
     exit 64
 fi
@@ -65,7 +69,6 @@ cp "$repository_root/README.md" "$repository_root/LICENSE" \
     "$repository_root/config.example.json" "$package_root/"
 cp "$repository_root/examples/README.md" "$repository_root"/examples/*.json \
     "$package_root/examples/"
-cp "$repository_root/docs/releases.md" "$package_root/INSTALL.md"
 # Ship operator guides, not captured devnet/regtest proof fixtures. Keep those
 # reproducibility inputs in the source repository and isolated lab.
 mkdir -p "$package_root/docs"
@@ -83,6 +86,9 @@ cp "$repository_root/packaging/systemd/miningcore.service" \
     "$repository_root/packaging/systemd/configure-postgresql-ordering.sh" \
     "$repository_root/packaging/systemd/postgresql-ordering.conf.example" \
     "$package_root/systemd/"
+
+python3 "$repository_root/scripts/release/render-release-doc.py" install "$source_commit" \
+    "$GITHUB_REPOSITORY" "$package_root"
 
 cat > "$package_root/BUILD-INFO" <<EOF
 Version: $version

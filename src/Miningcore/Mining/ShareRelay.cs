@@ -61,7 +61,7 @@ public sealed class ShareRelay : IHostedService, IDisposable, IShareRelayQueueMe
 
     public async Task StartAsync(CancellationToken ct)
     {
-        ShareRelaySecurity.Validate(clusterConfig);
+        ShareRelaySecurity.Validate(clusterConfig, message => logger.Warn(message));
         queue = Channel.CreateBounded<Frame>(new BoundedChannelOptions(QueueCapacity)
         { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

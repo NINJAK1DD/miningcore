@@ -549,7 +549,7 @@ scenario_older_rerun_preserves_newer_surfaces() (
 )
 
 scenario_prerelease_never_moves_mutable_surfaces() (
-  reset_fake_services prerelease v1.2.3-rc.1
+  reset_fake_services "prerelease-$1" "$1"
   FAKE_REFERENCES["$MININGCORE_IMAGE:1.2"]=$previous_digest
   FAKE_REFERENCES["$MININGCORE_IMAGE:latest"]=$previous_digest
 
@@ -558,7 +558,7 @@ scenario_prerelease_never_moves_mutable_surfaces() (
   [[ "$FAKE_RELEASE_LAST_PUBLISH_LATEST" == false ]] ||
     fail 'Prerelease became GitHub latest'
   assert_reference_digest "$MININGCORE_IMAGE:$GITHUB_REF_NAME" "$expected_digest"
-  assert_reference_digest "$MININGCORE_IMAGE:1.2.3-rc.1" "$expected_digest"
+  assert_reference_digest "$MININGCORE_IMAGE:${1#v}" "$expected_digest"
   assert_reference_digest "$MININGCORE_IMAGE:1.2" "$previous_digest"
   assert_reference_digest "$MININGCORE_IMAGE:latest" "$previous_digest"
 )
@@ -763,9 +763,37 @@ scenario_asset_visibility_timeout_fails_closed() (
   run_command prepare
 )
 
+scenario_malformed_version_contract_fails_closed() (
+  reset_fake_services malformed-version
+  cp "$repository_root/scripts/release/"{publish-release-state,read-release-version-pattern}.sh "$FAKE_ROOT/"
+  : > "$FAKE_ROOT/release-version.ere"
+  bash -c 'source "$1"; publication_validate_environment' bash "$FAKE_ROOT/publish-release-state.sh"
+)
+
+scenario_missing_version_reader_fails_closed() (
+  reset_fake_services missing-reader
+  cp "$repository_root/scripts/release/"{publish-release-state.sh,release-version.ere} "$FAKE_ROOT/"
+  bash -c 'source "$1"; publication_validate_environment' bash "$FAKE_ROOT/publish-release-state.sh" > "$FAKE_ROOT/stdout"
+)
+
+scenario_reader_warning_does_not_change_release_tag() (
+  reset_fake_services reader-warning v0.4.0-rc.2
+  # A child-shell startup warning must stay visible without entering the ERE.
+  # Inject it deterministically without depending on host locales.
+  bash() {
+    printf '%s\n' 'fixture: reader startup warning' >&2
+    command bash "$@"
+  }
+  publication_validate_environment > "$FAKE_ROOT/stdout" 2> "$FAKE_ROOT/stderr"
+  [[ "$PUBLICATION_VERSION" == '0.4.0-rc.2' ]] || fail 'Reader warning changed the release version'
+  [[ ! -s "$FAKE_ROOT/stdout" ]] || fail 'Reader diagnostic escaped to stdout'
+  grep -Fxq 'fixture: reader startup warning' "$FAKE_ROOT/stderr" || fail 'Reader warning was lost'
+)
+
 scenario_interrupted_publication_resumes
 scenario_older_rerun_preserves_newer_surfaces
-scenario_prerelease_never_moves_mutable_surfaces
+scenario_prerelease_never_moves_mutable_surfaces v1.2.3-rc.1
+scenario_prerelease_never_moves_mutable_surfaces v1.2.3-beta.1
 scenario_completed_release_survives_pruned_stage_and_metadata_edits
 scenario_legacy_assets_without_server_digests_use_byte_fallback
 scenario_completed_release_recovers_from_one_immutable_tag
@@ -773,7 +801,11 @@ scenario_missing_asset_clears_stale_state
 scenario_opaque_token_config_escaping_is_injection_safe
 scenario_github_cli_warning_does_not_change_version_parse
 
+scenario_reader_warning_does_not_change_release_tag
+
 for scenario in \
+  scenario_missing_version_reader_fails_closed \
+  scenario_malformed_version_contract_fails_closed \
   scenario_conflicting_version_tag_fails_closed \
   scenario_changed_asset_is_not_overwritten \
   scenario_non_authoritative_api_failure_is_fatal \
@@ -802,6 +834,17 @@ for scenario in \
   grep -Fq 'HUMAN ACTION REQUIRED:' "$test_root/$scenario.out" ||
     fail "$scenario did not provide a human-action diagnostic"
 done
+
+version_error="$test_root/scenario_malformed_version_contract_fails_closed.out"
+if [[ $(wc -l < "$version_error") -ne 1 ]] ||
+    ! grep -Fq 'expected one nonempty line of printable ASCII without whitespace' "$version_error"; then
+  fail 'Malformed version contract must produce one actionable publication diagnostic'
+fi
+
+[[ ! -s "$test_root/missing-reader/stdout" ]] || fail 'Missing-reader diagnostic was written to stdout'
+[[ $(<"$test_root/scenario_missing_version_reader_fails_closed.out") == \
+  'HUMAN ACTION REQUIRED: read-release-version-pattern.sh is missing or unreadable; restore the release checkout' ]] ||
+  fail 'Missing reader did not produce a single actionable diagnostic on stderr'
 
 grep -Fq 'does not have the expected workflow title' \
   "$test_root/scenario_foreign_same_tag_draft_fails_closed.out" ||

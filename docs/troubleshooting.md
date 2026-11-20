@@ -45,6 +45,13 @@ These commands answer five initial questions:
 
 An active process alone does not prove mining or payouts are healthy.
 
+## When an RC.2 upgrade stops
+
+For RC.2 use the [RC.2 cutover checklist](upgrade-v0.4.0-rc.2.md).
+A missing or incompatible wallet control is not fixed by the RC.1 migration
+selector. Keep services stopped and verify the database, protocol and grants
+with the separate administrator before retrying.
+
 ## When an RC.1 upgrade stops
 
 Start here if the [RC.1 archive upgrade block](releases.md#upgrade-to-v040-rc1)
